@@ -1,0 +1,6 @@
+formulas filled in: 1
+A2  date  2026-11-13  [yyyy-mm-dd]
+B4  number  810  [General]
+C2  number  18240.5  [#,##0.00 "USD"]
+D2  percent  0.031  [0.0%]
+sheets: ["Summary","Notes"]

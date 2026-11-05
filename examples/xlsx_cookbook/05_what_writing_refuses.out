@@ -1,3 +1,3 @@
 overwrite a formula cell: xlsx.set: refusing to overwrite a formula cell; the formula would recalculate and revert the value
-create a new cell:        xlsx.set: creating a new cell is not supported yet; only existing cells can be written
+a value no cell holds:    xlsx.set: a duration of months or years has no length in days, so no cell can hold it
 unknown sheet:            xlsx: no such sheet: No Such Sheet

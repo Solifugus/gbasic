@@ -24,6 +24,10 @@
 #   3. NEGATIVE -- the container errors, each pinned: not a ZIP at all, and a
 #      truncated file. A misread container must say so rather than produce a
 #      workbook with plausible missing pieces.
+#   2j. NUMBER FORMATS -- cells typed by their number format (G13), checked
+#      against values Python computed; and whole numbers exact (G15).
+#   2k. CREATING -- xlsx.new, add_sheet, set making cells, typed values,
+#      set_formula (G14), read back here and by LibreOffice as shown.
 #   4. VALGRIND -- the golden under valgrind. A refcounted handle owning a part
 #      tree, sheet table and shared-string table is exactly where a leak hides.
 #
@@ -1242,6 +1246,58 @@ else
     printf 'SKIP independent-reader tier (libreoffice not installed)\n'
 fi
 
+# --- Tier 2j: NUMBER FORMATS -- what a number is, from its cell's format (G13) -
+# Gap G13 from the gBASIC books: every date arrived as a serial. Each cell of
+# examples/fixtures/xlsx/formats.xlsx (and the 1904-system formats1904.xlsx)
+# is a serial under one format; its kind is labelled by hand and its value
+# computed by Python's datetime (tools/make_xlsx_formats_fixture.py), both
+# committed in formats.expected. Checked through a cell record and through
+# xlsx.grid, and whole numbers as exact (G15).
+if timeout 120 ./gbasic tests/xlsx_formats/formats_test.bas examples/fixtures/xlsx >"$out" 2>"$err" </dev/null &&
+   grep -q '^mismatches: 0$' "$out" && [ ! -s "$err" ] && [ "$(sed -n 's/^checks: //p' "$out")" -ge 160 ]; then
+    printf 'PASS number formats: date, datetime, time, duration and percent, both epochs, both readings (%s checks)\n' \
+        "$(sed -n 's/^checks: //p' "$out")"
+else
+    printf 'FAIL number formats\n'
+    grep -E 'MISMATCH|checks|mismatches' "$out" | head -10
+    head -5 "$err"
+    status=1
+fi
+
+# --- Tier 2k: CREATING a workbook (G14) -----------------------------------------
+# xlsx.new, add_sheet, cells made in row and column order, typed values as a
+# serial and a number format, set_formula and recalc: read back by this engine
+# (tests/xlsx_formats/create_test.bas), then by LibreOffice, exported AS SHOWN,
+# so a format that another reader does not apply would show as a bare number.
+if timeout 120 ./gbasic tests/xlsx_formats/create_test.bas "$tmp/made.xlsx" examples/fixtures/xlsx >"$out" 2>"$err" </dev/null &&
+   grep -q '^mismatches: 0$' "$out" && [ ! -s "$err" ] && [ "$(sed -n 's/^checks: //p' "$out")" -ge 28 ]; then
+    printf 'PASS creating a workbook: sheets, cells in order, typed values, formulas, refusals (%s checks)\n' \
+        "$(sed -n 's/^checks: //p' "$out")"
+    if command -v libreoffice >/dev/null 2>&1; then
+        rm -f "$tmp/made.csv"
+        timeout 240 libreoffice --headless --convert-to 'csv:Text - txt - csv (StarCalc):44,34,76,1,,0,false,true,true' \
+            "$tmp/made.xlsx" --outdir "$tmp" >/dev/null 2>&1
+        miss=""
+        for want in '2026-11-05 13:45:10' '2026-11-05' '1:30:00' '1,234.50 USD' '15.3%' '06:30:00' '$1,234.50' ',42'; do
+            grep -qF -- "$want" "$tmp/made.csv" 2>/dev/null || miss="$miss [$want]"
+        done
+        if [ -z "$miss" ]; then
+            printf 'PASS   and LibreOffice shows every typed cell as formatted, and the formula total\n'
+        else
+            printf 'FAIL LibreOffice did not show:%s\n' "$miss"
+            head -5 "$tmp/made.csv" 2>/dev/null
+            status=1
+        fi
+    else
+        printf 'SKIP   LibreOffice is absent, so no other reader opened the created workbook\n'
+    fi
+else
+    printf 'FAIL creating a workbook\n'
+    grep -E 'MISMATCH|checks|mismatches' "$out" | head -10
+    head -5 "$err"
+    status=1
+fi
+
 # --- Tier 3: negative ----------------------------------------------------------
 printf -- '-- negative (container errors are reported, not guessed at)\n'
 negative() { # label file expected-substring
@@ -1282,15 +1338,25 @@ else
     status=1
 fi
 
-# Creating a cell that does not exist is refused rather than placed wrongly.
-printf 'program main(args)\n  wb = xlsx.open("%s")\n  xlsx.set(wb, "Ledger", "Z99", 1)\nend program\n' "$FIXTURE" >"$tmp/neg3.bas"
-if timeout 60 ./gbasic "$tmp/neg3.bas" >/dev/null 2>"$err" </dev/null; then
-    printf 'FAIL negative %-18s (invented a cell)\n' "new cell"
-    status=1
-elif grep -qF "creating a new cell is not supported" "$err"; then
-    printf 'PASS negative %-18s new-cell creation refused explicitly\n' "new cell"
+# Creating a cell that does not exist PLACES it (G14; it used to be refused,
+# which beat placing it wrongly): Z99 in a new row after the last, read back
+# after a save, with the dimension widened to hold it. A reference that is not
+# one is still refused by name.
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  xlsx.set(wb, "Ledger", "Z99", 1)\n  wb.save(args[0])\n  b = xlsx.open(args[0])\n  print b.cell("Ledger", "Z99").value\n  print b.dims("Ledger").last_row\n  print b.cell("Ledger", "B2").value\nend program\n' "$FIXTURE" >"$tmp/neg3.bas"
+if [ "$(timeout 60 ./gbasic "$tmp/neg3.bas" "$tmp/z99.xlsx" 2>"$err" </dev/null | tr '\n' ' ')" = "1 99 1250.5 " ]; then
+    printf 'PASS %-27s a new cell is placed, and the rest of the sheet stands\n' "new cell"
 else
-    printf 'FAIL negative %-18s wrong message: %s\n' "new cell" "$(cat "$err")"
+    printf 'FAIL %-27s %s\n' "new cell" "$(cat "$err")"
+    status=1
+fi
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  xlsx.set(wb, "Ledger", "z9", 1)\nend program\n' "$FIXTURE" >"$tmp/neg3b.bas"
+if timeout 60 ./gbasic "$tmp/neg3b.bas" >/dev/null 2>"$err" </dev/null; then
+    printf 'FAIL negative %-18s (accepted a malformed reference)\n' "bad ref"
+    status=1
+elif grep -qF "is not a cell reference" "$err"; then
+    printf 'PASS negative %-18s a malformed reference is refused by name\n' "bad ref"
+else
+    printf 'FAIL negative %-18s wrong message: %s\n' "bad ref" "$(cat "$err")"
     status=1
 fi
 

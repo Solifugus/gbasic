@@ -139,7 +139,9 @@ program main(args)
 
   ' `kind` is how you tell a number from text from a boolean from an Excel
   ' error. Note "error" is its own kind: #DIV/0! is a VALUE the sheet holds,
-  ' not a failure of the read.
+  ' not a failure of the read. A6 holds the number 45000, and its number
+  ' format is a date one, so it reads as the date it shows; c.serial keeps
+  ' the number, and c.format names the format.
   print ""
   print "the sheet has no row 4 and no column C, so those cells are simply not there:"
   print "  C2 present = " + (not is_unknown(wb.cell("Ledger", "C2")))
@@ -160,7 +162,7 @@ stored cells: 12
   B3 kind=number value=-99.25
   A5 kind=text value=Total
   B5 kind=number formula=SUM(B2:B3) value=1151.25
-  A6 kind=number value=45000
+  A6 kind=date value=2023-03-15
   B6 kind=boolean value=true
   A7 kind=error value=#DIV/0!
   D7 kind=number formula=B5*2 value=2302.5
@@ -178,6 +180,29 @@ cells you were handed, or ask for one by reference and test it with
 `kind` distinguishes `text`, `number`, `boolean` and `error`. Note that `error`
 is a kind of *value*: `#DIV/0!` is something the sheet legitimately holds, not a
 failure of the read.
+
+**A number's format says what it is** *(2026-11-05)*. A date in a spreadsheet
+is a number, a serial count of days, and only the cell's number format says
+so. Each cell record therefore carries `format` (the format code, `"General"`
+by default) and `format_id`, and a number whose format is a date, a time or a
+percent comes back as what it shows:
+
+| kind | the format has | `value` is |
+|---|---|---|
+| `date` | day, month or year parts | a gBASIC date |
+| `datetime` | date and time parts | a datetime, to the second |
+| `time` | time parts only | a time of day |
+| `duration` | an elapsed part, `[h]`, `[m]` or `[s]` | a duration (`[h]:mm` holding 0.104 is 2 hours 30 minutes) |
+| `percent` | a `%` | the number as stored (0.15) |
+| `number` | anything else | the number |
+
+`serial` keeps the stored number for every number-backed kind, so nothing is
+lost by the reading. The workbook's date system is honoured (1900, with
+Excel's phantom 1900-02-29 at serial 60 left a plain number since no date
+holds it, or 1904). `m` is read as Excel reads it: minutes after an `h` or
+before an `s`, months otherwise; quoted text, colours and locale tags are
+skipped. `xlsx.grid` (and so `grid`, `consolidate` and `dbframe`) sees the
+same typed values. A whole number is exact, as `number("42")` is.
 
 ---
 
@@ -293,7 +318,7 @@ end program
 
 ```
 before: B2 = 1250.5
-wrote 4050 bytes
+wrote 4049 bytes
 
 after:  A1 = Renamed
 after:  B2 = 9999.99
@@ -336,11 +361,13 @@ program main(args)
   print "overwrite a formula cell: " + error.message
   error.clear()
 
-  ' 2. Creating a cell that does not exist. The sheet is sparse, and inventing
-  '    a cell means guessing its style and its place in the row order, so a new
-  '    cell is refused rather than placed wrongly.
-  wb.set("Ledger", "Z99", 1)
-  print "create a new cell:        " + error.message
+  ' 2. A value no cell can hold. A cell holds a number and a format, so a
+  '    date becomes a serial and a duration a fraction of days -- but a
+  '    duration of MONTHS has no length in days, and any number written for it
+  '    would be a guess. (A cell that does not exist yet is simply made, in its
+  '    place in the row: recipe 13.)
+  wb.set("Ledger", "Z99", 2 months)
+  print "a value no cell holds:    " + error.message
   error.clear()
 
   ' 3. A sheet that is not there. Note this is a genuine miss -- a name that
@@ -356,7 +383,7 @@ end program
 
 ```
 overwrite a formula cell: xlsx.set: refusing to overwrite a formula cell; the formula would recalculate and revert the value
-create a new cell:        xlsx.set: creating a new cell is not supported yet; only existing cells can be written
+a value no cell holds:    xlsx.set: a duration of months or years has no length in days, so no cell can hold it
 unknown sheet:            xlsx: no such sheet: No Such Sheet
 ```
 
@@ -1043,6 +1070,76 @@ keep — it caught the compiler lowering `AND` while the evaluator still reporte
 
 ---
 
+## 13. Make a workbook from nothing
+
+`xlsx.new()` is a workbook with one empty sheet, and `add_sheet` adds more. A
+cell that is not there yet is made by `set`, in its place in the row. Typed
+values are written the way a spreadsheet holds them, a number and a number
+format: a date is a serial under `yyyy-mm-dd`, a duration a fraction of days
+under `[h]:mm:ss`, money its amount with the currency in the format. Any Excel
+format code can be given as `{ format: "0.0%" }`. A formula goes in with
+`set_formula`, and `recalc` gives it its value before the save, so a reader
+that does not calculate still sees one.
+
+<!--CODE:13_making_a_workbook-->
+
+```basic
+' Recipe 13 — Make a workbook from nothing.
+'
+' xlsx.new() is a workbook with one empty sheet; add_sheet adds more. `set`
+' makes a cell that is not there yet, in its place in the row. A typed value
+' is written the way a spreadsheet holds it, a number and a number format, so
+' a date written reads back as a date, here and in Excel. A formula is written
+' with set_formula, and recalc gives it its value.
+
+program main(args)
+  wb = xlsx.new("Summary")
+  wb.add_sheet("Notes")
+
+  wb.set("Summary", "A1", "Week")
+  wb.set("Summary", "B1", "Counted")
+  wb.set("Summary", "C1", "Value")
+  wb.set("Summary", "A2", {date}"2026-11-13")
+  wb.set("Summary", "B2", 412)
+  wb.set("Summary", "C2", {USD}"18240.50")
+  wb.set("Summary", "A3", {date}"2026-11-20")
+  wb.set("Summary", "B3", 398)
+  wb.set("Summary", "C3", {USD}"17911.00")
+  wb.set("Summary", "D2", 0.031, { format: "0.0%" })   ' any Excel number format, by its code
+  wb.set_formula("Summary", "B4", "SUM(B2:B3)")
+  wb.set("Notes", "A1", "Counted by the Tuesday team")
+  r = wb.recalc()
+  print "formulas filled in: " + string(r.changed)
+
+  out = temp_file({ prefix: "summary-" })
+  wb.save(string(out))
+  back = xlsx.open(string(out))
+  for each ref in ["A2", "B4", "C2", "D2"]
+    c = back.cell("Summary", ref)
+    print ref + "  " + c.kind + "  " + string(c.value) + "  [" + c.format + "]"
+  end for
+  print "sheets: " + string(back.sheets())
+  delete(out)
+end program
+```
+
+<!--OUT:13_making_a_workbook-->
+
+```
+formulas filled in: 1
+A2  date  2026-11-13  [yyyy-mm-dd]
+B4  number  810  [General]
+C2  number  18240.5  [#,##0.00 "USD"]
+D2  percent  0.031  [0.0%]
+sheets: ["Summary","Notes"]
+```
+
+What a cell cannot hold is refused by name rather than guessed: a date before
+1900 (or before 1904 in a 1904-system workbook), and a duration of months,
+which has no length in days. LibreOffice opens what this writes and shows each
+typed cell formatted (`tests/run_xlsx.sh`, the creating tier). Fonts, fills,
+borders and column widths are not written.
+
 ## Where to go next
 
 - `docs/xlsx_design.md` — the design, the corpus measurements, and the record of
@@ -1053,7 +1150,8 @@ keep — it caught the compiler lowering `AND` while the evaluator still reporte
 
 ## Known limits
 
-- Creating a new cell is not supported; only existing cells can be written.
+- Writing sets values, formulas and number formats only: no fonts, fills,
+  borders, column widths or merges.
 - Dynamic arrays (which spill) and `LET`/`LAMBDA` are not implemented.
 - `YEARFRAC` basis 1, `XLOOKUP` non-exact modes and `AGGREGATE` 14–19 are
   refused rather than approximated.

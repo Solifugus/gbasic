@@ -1,5 +1,6 @@
 root: root qname=root
-attrs: {"xmlns:ns":"urn:example","attr":"plain","qattr":"qualified"}
+attrs: {"xmlns:ns":"urn:example","attr":"plain","ns:qattr":"qualified"}
+both ids: {"xmlns:r":"urn:r","id":"plain","r:id":"rel"}
 children: 10
 0 elem mixed qname=mixed text=[text bold tail ital end]
 1 elem entities qname=entities text=[& < > " é A]
@@ -21,4 +22,4 @@ deep:     [deep]
 empty:    []
 dups:     2
 --- encode ---
-<root xmlns:ns="urn:example" attr="plain" qattr="qualified"><mixed>text <b>bold</b> tail <i>ital</i> end</mixed><entities>&amp; &lt; &gt; " é A</entities><cdata>raw &lt;not&gt; parsed &amp; kept</cdata><empty/><spaced>   leading and trailing   </spaced><ns:qualified>in a namespace</ns:qualified><nested><a><b><c>deep</c></b></a></nested><utf8>héllo — 日本語</utf8><dup>one</dup><dup>two</dup></root>
+<root xmlns:ns="urn:example" attr="plain" ns:qattr="qualified"><mixed>text <b>bold</b> tail <i>ital</i> end</mixed><entities>&amp; &lt; &gt; " é A</entities><cdata>raw &lt;not&gt; parsed &amp; kept</cdata><empty/><spaced>   leading and trailing   </spaced><ns:qualified>in a namespace</ns:qualified><nested><a><b><c>deep</c></b></a></nested><utf8>héllo — 日本語</utf8><dup>one</dup><dup>two</dup></root>

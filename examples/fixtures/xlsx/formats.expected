@@ -1,0 +1,27 @@
+formats.xlsx A1 date 2023-03-15 45000
+formats.xlsx A2 datetime 2023-03-15 06:00:00 45000.25
+formats.xlsx A3 time 13:30:00 0.5625
+formats.xlsx A4 duration 108900 1.2604166666666667
+formats.xlsx A5 percent 0.15 0.15
+formats.xlsx A6 percent 0.125 0.125
+formats.xlsx A7 number 42 42
+formats.xlsx A8 number 1234.5 1234.5
+formats.xlsx A9 time 00:05:00 0.0034722222222222225
+formats.xlsx A10 date 2023-03-15 45000
+formats.xlsx A11 datetime 2023-03-15 23:59:59 45000.99998842592
+formats.xlsx A12 duration 9000 0.10416666666666667
+formats.xlsx A13 percent 0.153 0.153
+formats.xlsx A14 number 45000 45000
+formats.xlsx A15 date 2023-03-15 45000
+formats.xlsx A16 date 1900-02-28 59
+formats.xlsx A17 number 60 60
+formats.xlsx A18 date 1900-03-01 61
+formats.xlsx A19 date 1900-01-01 1
+formats.xlsx A20 date 2023-03-15 45000
+formats.xlsx A21 number 45000 45000
+formats.xlsx A22 time 18:00:00 0.75
+formats.xlsx A23 number -1 -1
+formats.xlsx A24 duration 129600 1.5
+formats.xlsx A25 number 45000 45000
+formats1904.xlsx A1 date 2023-03-15 43538
+formats1904.xlsx A2 date 1904-01-01 0

@@ -378,7 +378,19 @@ static int xml_element_to_record(xmlNode *elem, int depth, int keep_space,
     }
     for (xmlAttr *a = elem->properties; a; a = a->next) {
         xmlChar *val = xmlNodeListGetString(elem->doc, a->children, 1);
-        record_set(&attrs, (const char *)a->name,
+        /* KEYED AS WRITTEN, prefix included (gap G18 from the gBASIC books):
+         * keyed by the local name, `<s id="plain" r:id="rel"/>` gave one
+         * field, `id`, holding "rel", and the plain id was gone without a
+         * word. The streaming reader already used the qualified name, and
+         * xml.encode writes the key back as the attribute's name, so this is
+         * also what makes r:id survive a parse and an encode. */
+        char qname[512];
+        if (a->ns && a->ns->prefix) {
+            snprintf(qname, sizeof(qname), "%s:%s", (const char *)a->ns->prefix, (const char *)a->name);
+        } else {
+            snprintf(qname, sizeof(qname), "%s", (const char *)a->name);
+        }
+        record_set(&attrs, qname,
                    value_string(val ? (const char *)val : ""));
         if (val) {
             xmlFree(val);

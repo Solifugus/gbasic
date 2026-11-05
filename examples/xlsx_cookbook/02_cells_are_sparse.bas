@@ -22,7 +22,9 @@ program main(args)
 
   ' `kind` is how you tell a number from text from a boolean from an Excel
   ' error. Note "error" is its own kind: #DIV/0! is a VALUE the sheet holds,
-  ' not a failure of the read.
+  ' not a failure of the read. A6 holds the number 45000, and its number
+  ' format is a date one, so it reads as the date it shows; c.serial keeps
+  ' the number, and c.format names the format.
   print ""
   print "the sheet has no row 4 and no column C, so those cells are simply not there:"
   print "  C2 present = " + (not is_unknown(wb.cell("Ledger", "C2")))

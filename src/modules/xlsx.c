@@ -69,6 +69,14 @@ struct XlsxWorkbook {
     size_t shared_count;
     XlsxDefinedName *defined;
     size_t defined_count;
+    /* number formats (G13), read from xl/styles.xml on first use */
+    int styles_loaded;
+    int date1904;
+    long *xf_fmt;        /* cellXfs, in order: each style's numFmtId */
+    size_t xf_count;
+    long *fmt_ids;       /* numFmts: the workbook's own codes */
+    char **fmt_codes;
+    size_t fmt_count;
 };
 
 typedef struct XlsxWorkbook XlsxWorkbook;
@@ -565,6 +573,93 @@ static char *xlsx_translate_formula(const char *src, long drow, long dcol);
  * Collected in a pre-pass because the reading paths need it before they reach
  * the continuations, and a master may in principle follow one. Full rationale
  * on xlsx_translate_formula. */
+/* WHOLE NUMBERS ARE EXACT (gap G15 from the gBASIC books). `<v>42</v>` came
+ * back inexact, as did row numbers and check's counts, so G-SQL refused them
+ * for an integer column, where number("42") and decode answer exact. The rule
+ * is decode's: digits that fit 64 bits are exact; a fraction or an exponent is
+ * not. A computed value that is whole and within 2^53 is exact too, since a
+ * double holds it exactly. */
+static Value xlsx_num(double d) {
+    if (d == floor(d) && fabs(d) <= 9007199254740992.0) {
+        return value_number_exact((long long)d);
+    }
+    return value_number(d);
+}
+
+/* Whether recalculation CHANGED a number: whether what the save writes, the
+ * value to Excel's 15 significant digits, differs. `!=` on the doubles counted
+ * E14*F14 = 3663.2000000000003 against its cached 3663.2 as a change, which
+ * the save then wrote back as 3663.2: `changed` ran one high on the book's
+ * workbook before any edit (gap G16 from the gBASIC books). */
+static int xlsx_num_differs(double a, double b) {
+    char x[40], y[40];
+    snprintf(x, sizeof x, "%.15g", a);
+    snprintf(y, sizeof y, "%.15g", b);
+    return strcmp(x, y) != 0;
+}
+
+/* A rebuilt part keeps the original's bytes OUTSIDE its elements (gap G17
+ * from the gBASIC books): libxml writes "\n" after the XML declaration, where
+ * Excel writes "\r\n", and adds a newline after the root's closing tag, which
+ * Excel does not. Neither is content, but a program checking that nothing
+ * outside the cells changed saw both. So the space between the declaration
+ * and the root, and after the root, is the original's. */
+static void xlsx_part_replace(XlsxPart *sp, const char *dumped, size_t n) {
+    const char *old = (const char *)sp->data;
+    size_t on = sp->length;
+    /* the dump's declaration, its root, and its end */
+    const char *decl_end = n > 5 && memcmp(dumped, "<?xml", 5) == 0 ? strstr(dumped, "?>") : NULL;
+    size_t body_at = 0, body_end = n;
+    if (decl_end) {
+        body_at = (size_t)(decl_end - dumped) + 2;
+        while (body_at < n && (dumped[body_at] == '\n' || dumped[body_at] == '\r' || dumped[body_at] == ' ')) body_at++;
+    }
+    while (body_end > body_at && (dumped[body_end - 1] == '\n' || dumped[body_end - 1] == '\r' ||
+                                  dumped[body_end - 1] == ' ' || dumped[body_end - 1] == '\t')) body_end--;
+    /* the original's spacing around its root */
+    const char *gap = "", *tail = "";
+    size_t gap_n = 0, tail_n = 0;
+    if (old && on > 5 && memcmp(old, "<?xml", 5) == 0) {
+        const char *oe = NULL;
+        for (size_t i = 0; i + 1 < on; i++) {
+            if (old[i] == '?' && old[i + 1] == '>') { oe = old + i + 2; break; }
+        }
+        if (oe) {
+            gap = oe;
+            while ((size_t)(gap + gap_n - old) < on && (gap[gap_n] == '\n' || gap[gap_n] == '\r' || gap[gap_n] == ' '))
+                gap_n++;
+        }
+    }
+    if (old) {
+        size_t e = on;
+        while (e > 0 && (old[e - 1] == '\n' || old[e - 1] == '\r' || old[e - 1] == ' ' || old[e - 1] == '\t')) e--;
+        tail = old + e;
+        tail_n = on - e;
+    }
+    size_t len = (decl_end ? body_at - 0 : 0);
+    size_t decl_n = decl_end ? (size_t)(decl_end - dumped) + 2 : 0;
+    len = decl_n + (decl_end ? gap_n : 0) + (body_end - body_at) + tail_n;
+    unsigned char *out = malloc(len ? len : 1);
+    if (!out) abort();
+    size_t at = 0;
+    memcpy(out + at, dumped, decl_n); at += decl_n;
+    if (decl_end) { memcpy(out + at, gap, gap_n); at += gap_n; }
+    memcpy(out + at, dumped + body_at, body_end - body_at); at += body_end - body_at;
+    memcpy(out + at, tail, tail_n); at += tail_n;
+    free(sp->data);
+    sp->data = out;
+    sp->length = at;
+}
+
+static Value xlsx_num_text(const char *t) {
+    const char *p = t;
+    if (*p == '-' || *p == '+') p++;
+    if (*p && strspn(p, "0123456789") == strlen(p) && strlen(p) <= 18) {
+        return value_number_exact(strtoll(t, NULL, 10));
+    }
+    return value_number(strtod(t, NULL));
+}
+
 typedef struct { long si; char *text; long row, col; } XlsxSharedMaster;
 typedef struct { XlsxSharedMaster *items; size_t count; } XlsxShared;
 
@@ -616,6 +711,274 @@ static void xlsx_shared_free(XlsxShared *sh) {
 static const XlsxSharedMaster *xlsx_shared_find(const XlsxShared *sh, long si) {
     for (size_t i = 0; i < sh->count; i++) if (sh->items[i].si == si) return &sh->items[i];
     return NULL;
+}
+
+/* ------------------------------------------------------- number formats (G13)
+ *
+ * A date is a number in a cell; only the cell's NUMBER FORMAT says it is one
+ * (gap G13 from the gBASIC books, where every date arrived as a serial and the
+ * book's reader decoded xl/styles.xml itself, seventy lines of it). So the
+ * styles part is read once: each cell style (cellXfs, in order) names a format
+ * id, ids below 164 are Excel's built-in formats, and the rest are the
+ * workbook's own (numFmts). The format code then classifies the number:
+ *
+ *   date      day, month or year parts and no time parts     a gBASIC date
+ *   datetime  both                                           a datetime, to the second
+ *   time      time parts only                                a time of day
+ *   duration  an elapsed part, [h] [m] or [s]                a duration
+ *   percent   a % outside quotes                             the number, as stored
+ *   number    anything else                                  the number
+ *
+ * The serial counts days from the workbook's epoch: 1899-12-30 in the 1900
+ * system, with Excel's phantom 1900-02-29 at serial 60 (which no date holds,
+ * so that cell stays a number), or 1904-01-01 when workbookPr says date1904.
+ * The serial itself stays on the record, so nothing is lost by the reading. */
+
+typedef enum { XF_NUMBER, XF_DATE, XF_DATETIME, XF_TIME, XF_DURATION, XF_PERCENT } XlsxFmtClass;
+
+static const char *xlsx_builtin_format(long id) {
+    switch (id) {
+    case 0: return "General";
+    case 1: return "0";
+    case 2: return "0.00";
+    case 3: return "#,##0";
+    case 4: return "#,##0.00";
+    case 9: return "0%";
+    case 10: return "0.00%";
+    case 11: return "0.00E+00";
+    case 12: return "# ?/?";
+    case 13: return "# ?\?/??";
+    case 14: return "mm-dd-yy";
+    case 15: return "d-mmm-yy";
+    case 16: return "d-mmm";
+    case 17: return "mmm-yy";
+    case 18: return "h:mm AM/PM";
+    case 19: return "h:mm:ss AM/PM";
+    case 20: return "h:mm";
+    case 21: return "h:mm:ss";
+    case 22: return "m/d/yy h:mm";
+    case 37: return "#,##0 ;(#,##0)";
+    case 38: return "#,##0 ;[Red](#,##0)";
+    case 39: return "#,##0.00;(#,##0.00)";
+    case 40: return "#,##0.00;[Red](#,##0.00)";
+    case 45: return "mm:ss";
+    case 46: return "[h]:mm:ss";
+    case 47: return "mmss.0";
+    case 48: return "##0.0E+0";
+    case 49: return "@";
+    default:
+        /* 27-36 and 50-58 are East Asian locale dates, whose codes the file
+         * does not carry; they are dates whatever the locale writes */
+        if ((id >= 27 && id <= 36) || (id >= 50 && id <= 58)) return "yyyy-mm-dd";
+        return NULL;
+    }
+}
+
+static void xlsx_load_styles(XlsxWorkbook *wb) {
+    if (wb->styles_loaded) {
+        return;
+    }
+    wb->styles_loaded = 1;
+    XlsxPart *wbp = xlsx_find_part(wb, "xl/workbook.xml");
+    if (wbp) {
+        xmlDocPtr doc = xlsx_parse_part(wbp);
+        xmlNodePtr root = doc ? xmlDocGetRootElement(doc) : NULL;
+        for (xmlNodePtr n = root ? root->children : NULL; n; n = n->next) {
+            if (xlsx_is(n, "workbookPr")) {
+                char *d = xlsx_prop(n, "date1904");
+                wb->date1904 = d && (strcmp(d, "1") == 0 || strcmp(d, "true") == 0);
+                free(d);
+            }
+        }
+        if (doc) xmlFreeDoc(doc);
+    }
+    XlsxPart *sp = xlsx_find_part(wb, "xl/styles.xml");
+    xmlDocPtr doc = sp ? xlsx_parse_part(sp) : NULL;
+    xmlNodePtr root = doc ? xmlDocGetRootElement(doc) : NULL;
+    for (xmlNodePtr n = root ? root->children : NULL; n; n = n->next) {
+        if (xlsx_is(n, "numFmts")) {
+            for (xmlNodePtr f = n->children; f; f = f->next) {
+                if (!xlsx_is(f, "numFmt")) continue;
+                char *id = xlsx_prop(f, "numFmtId"), *code = xlsx_prop(f, "formatCode");
+                if (id && code) {
+                    long *ids = realloc(wb->fmt_ids, (wb->fmt_count + 1) * sizeof *ids);
+                    char **codes = realloc(wb->fmt_codes, (wb->fmt_count + 1) * sizeof *codes);
+                    if (!ids || !codes) abort();
+                    wb->fmt_ids = ids;
+                    wb->fmt_codes = codes;
+                    wb->fmt_ids[wb->fmt_count] = strtol(id, NULL, 10);
+                    wb->fmt_codes[wb->fmt_count] = code;
+                    code = NULL;
+                    wb->fmt_count++;
+                }
+                free(id);
+                free(code);
+            }
+        } else if (xlsx_is(n, "cellXfs")) {
+            for (xmlNodePtr x = n->children; x; x = x->next) {
+                if (!xlsx_is(x, "xf")) continue;
+                char *id = xlsx_prop(x, "numFmtId");
+                long *g = realloc(wb->xf_fmt, (wb->xf_count + 1) * sizeof *g);
+                if (!g) abort();
+                wb->xf_fmt = g;
+                wb->xf_fmt[wb->xf_count++] = id ? strtol(id, NULL, 10) : 0;
+                free(id);
+            }
+        }
+    }
+    if (doc) xmlFreeDoc(doc);
+}
+
+/* The format code and id a cell style names: "General" and 0 when the style
+ * is out of range or the id is one neither table holds. */
+static const char *xlsx_style_format(XlsxWorkbook *wb, long style, long *id_out) {
+    xlsx_load_styles(wb);
+    long id = style >= 0 && (size_t)style < wb->xf_count ? wb->xf_fmt[style] : 0;
+    *id_out = id;
+    for (size_t i = 0; i < wb->fmt_count; i++) {
+        if (wb->fmt_ids[i] == id) return wb->fmt_codes[i];
+    }
+    const char *b = xlsx_builtin_format(id);
+    return b ? b : "General";
+}
+
+/* What a format code says the number is. Only the first section counts (the
+ * positive one); quoted text, escapes, fills, padding and bracketed colours,
+ * conditions and locales are skipped. `m` is minutes after an h or before an
+ * s, months otherwise, as Excel reads it. */
+static XlsxFmtClass xlsx_classify_format(const char *code) {
+    if (!code) return XF_NUMBER;
+    int date = 0, time = 0, elapsed = 0, percent = 0;
+    char last = 0;              /* the last date/time letter seen: y d h s m */
+    size_t n = strlen(code);
+    if (n == 7 && strncasecmp(code, "general", 7) == 0) return XF_NUMBER;
+    for (size_t i = 0; i < n; i++) {
+        char ch = code[i];
+        if (ch == ';') break;
+        if (ch == '"') {
+            i++;
+            while (i < n && code[i] != '"') i++;
+            continue;
+        }
+        if (ch == '\\' || ch == '_' || ch == '*') { i++; continue; }
+        if (ch == '[') {
+            size_t j = i + 1;
+            while (j < n && code[j] != ']') j++;
+            size_t len = j - i - 1;
+            int all_hms = len > 0;
+            for (size_t k = i + 1; k < j; k++) {
+                char c = (char)tolower((unsigned char)code[k]);
+                if (c != 'h' && c != 'm' && c != 's') all_hms = 0;
+            }
+            if (all_hms) elapsed = 1;
+            i = j;
+            continue;
+        }
+        if (ch == '%') { percent = 1; continue; }
+        if ((ch == 'A' || ch == 'a') && (strncasecmp(code + i, "am/pm", 5) == 0)) { time = 1; i += 4; continue; }
+        if ((ch == 'A' || ch == 'a') && (strncasecmp(code + i, "a/p", 3) == 0)) { time = 1; i += 2; continue; }
+        char c = (char)tolower((unsigned char)ch);
+        if (c == 'y' || c == 'd') { date = 1; last = c; continue; }
+        if (c == 'h' || c == 's') { time = 1; last = c; continue; }
+        if (c == 'm') {
+            size_t j = i;
+            while (j < n && tolower((unsigned char)code[j]) == 'm') j++;
+            /* look ahead past separators for an s */
+            size_t k = j;
+            while (k < n && strchr(":. ", code[k])) k++;
+            int before_s = k < n && tolower((unsigned char)code[k]) == 's';
+            if ((last == 'h' || before_s) && j - i <= 2) time = 1;
+            else date = 1;
+            last = 'm';
+            i = j - 1;
+            continue;
+        }
+    }
+    if (elapsed) return XF_DURATION;
+    if (date && time) return XF_DATETIME;
+    if (date) return XF_DATE;
+    if (time) return XF_TIME;
+    if (percent) return XF_PERCENT;
+    return XF_NUMBER;
+}
+
+/* days since 1970-01-01 -> y/m/d (Howard Hinnant's civil_from_days) */
+static void xlsx_civil(long long z, int *y, int *m, int *d) {
+    z += 719468;
+    long long era = (z >= 0 ? z : z - 146096) / 146097;
+    long long doe = z - era * 146097;
+    long long yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    long long yy = yoe + era * 400;
+    long long doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    long long mp = (5 * doy + 2) / 153;
+    *d = (int)(doy - (153 * mp + 2) / 5 + 1);
+    *m = (int)(mp < 10 ? mp + 3 : mp - 9);
+    *y = (int)(yy + (*m <= 2));
+}
+
+/* The value a number formatted as `cls` stands for, and its kind's name; 0
+ * when the number cannot be one (a negative date, the phantom 1900-02-29),
+ * which leaves the cell a plain number. */
+static int xlsx_typed_value(XlsxWorkbook *wb, double serial, XlsxFmtClass cls, Value *out, const char **kind) {
+    if (cls == XF_PERCENT) {
+        *out = xlsx_num(serial);
+        *kind = "percent";
+        return 1;
+    }
+    if (cls == XF_DURATION) {
+        double secs = serial * 86400.0;
+        long long s = (long long)llround(secs);
+        Duration du = {0};
+        du.hours = (int)(s / 3600);
+        du.minutes = (int)((s / 60) % 60);
+        du.seconds = (int)(s % 60);
+        *out = value_duration(du);
+        *kind = "duration";
+        return 1;
+    }
+    if (cls == XF_TIME) {
+        if (serial < 0) return 0;
+        long long s = (long long)llround((serial - floor(serial)) * 86400.0) % 86400;
+        DateTime dt = {0};
+        dt.time_only = 1;
+        dt.hour = (int)(s / 3600);
+        dt.minute = (int)((s / 60) % 60);
+        dt.second = (int)(s % 60);
+        dt.precision = PREC_SECOND;
+        *out = value_datetime(dt);
+        *kind = "time";
+        return 1;
+    }
+    if (cls != XF_DATE && cls != XF_DATETIME) return 0;
+    if (serial < 1 && !wb->date1904) return 0;
+    if (serial < 0) return 0;
+    long long day = (long long)floor(serial);
+    long long secs = (long long)llround((serial - (double)day) * 86400.0);
+    if (secs >= 86400) { day++; secs -= 86400; }
+    long long epoch;    /* the serial-0 day, as days since 1970-01-01 */
+    if (wb->date1904) {
+        epoch = -24107;                       /* 1904-01-01 */
+    } else if (day >= 61) {
+        epoch = -25569;                       /* 1899-12-30 */
+    } else if (day == 60) {
+        return 0;                             /* Excel's 1900-02-29, which never was */
+    } else {
+        epoch = -25568;                       /* 1899-12-31: before the phantom day */
+    }
+    DateTime dt = {0};
+    xlsx_civil(epoch + day, &dt.year, &dt.month, &dt.day);
+    if (cls == XF_DATE) {
+        dt.precision = PREC_DAY;
+        *kind = "date";
+    } else {
+        dt.hour = (int)(secs / 3600);
+        dt.minute = (int)((secs / 60) % 60);
+        dt.second = (int)(secs % 60);
+        dt.precision = PREC_SECOND;
+        *kind = "datetime";
+    }
+    *out = value_datetime(dt);
+    return 1;
 }
 
 static Value xlsx_cell_record(XlsxWorkbook *wb, xmlNodePtr c, const XlsxShared *shared) {
@@ -689,11 +1052,26 @@ static Value xlsx_cell_record(XlsxWorkbook *wb, xmlNodePtr c, const XlsxShared *
     } else {
         kind = "number";
         if (vtext) {
-            val = value_number(strtod(vtext, NULL));
+            val = xlsx_num_text(vtext);
+        }
+    }
+    long style_n = style ? strtol(style, NULL, 10) : 0, format_id = 0;
+    const char *format = xlsx_style_format(wb, style_n, &format_id);
+    Value serial = value_unknown();
+    if (strcmp(kind, "number") == 0 && vtext) {
+        Value typed;
+        const char *tk = NULL;
+        double num = strtod(vtext, NULL);
+        if (xlsx_typed_value(wb, num, xlsx_classify_format(format), &typed, &tk)) {
+            serial = val;
+            val = typed;
+            kind = tk;
+        } else {
+            serial = value_copy(val);
         }
     }
 
-    RecordField *fields = calloc(5, sizeof(RecordField));
+    RecordField *fields = calloc(8, sizeof(RecordField));
     if (!fields) {
         abort();
     }
@@ -711,7 +1089,16 @@ static Value xlsx_cell_record(XlsxWorkbook *wb, xmlNodePtr c, const XlsxShared *
     *fields[3].value = formula ? value_string(formula) : value_unknown();
     fields[4].name = field_name_new("style");
     fields[4].value = cell_alloc();
-    *fields[4].value = style ? value_number(strtod(style, NULL)) : value_number(0);
+    *fields[4].value = style ? xlsx_num_text(style) : value_number_exact(0);
+    fields[5].name = field_name_new("format");
+    fields[5].value = cell_alloc();
+    *fields[5].value = value_string(format);
+    fields[6].name = field_name_new("format_id");
+    fields[6].value = cell_alloc();
+    *fields[6].value = value_number_exact(format_id);
+    fields[7].name = field_name_new("serial");
+    fields[7].value = cell_alloc();
+    *fields[7].value = serial;
 
     free(ref);
     free(type);
@@ -719,7 +1106,7 @@ static Value xlsx_cell_record(XlsxWorkbook *wb, xmlNodePtr c, const XlsxShared *
     free(formula);
     free(vtext);
     free(inline_text);
-    return value_record(fields, 5);
+    return value_record(fields, 8);
 }
 
 /* ------------------------------------------------------------- ZIP writing
@@ -968,6 +1355,7 @@ typedef struct {
      * SUM(IF(NG=C4,D4)) into a per-row comparison), so these are REFUSED by
      * name until array semantics exist -- reported, never guessed. */
     int array_formula;
+    long style;             /* the s attribute: its number format types the value (G13) */
 } XlsxSnapCell;
 
 /* A sheet snapshot, plus an INDEX from (row,col) to position.
@@ -1271,6 +1659,9 @@ static int xlsx_snapshot(XlsxWorkbook *wb, const char *sheet_name, XlsxSnap *out
                 if (!ref || !xlsx_parse_ref(ref, &col, &row)) { free(ref); continue; }
                 free(ref);
                 char *type = xlsx_prop(c, "t");
+                char *sty = xlsx_prop(c, "s");
+                long style_n = sty ? strtol(sty, NULL, 10) : 0;
+                free(sty);
                 char *formula = NULL, *vtext = NULL, *inl = NULL;
                 long shared_si = -1;
                 int shared_master = 0;
@@ -1332,6 +1723,7 @@ static int xlsx_snapshot(XlsxWorkbook *wb, const char *sheet_name, XlsxSnap *out
                 sc->str = NULL; sc->num = 0; sc->kind = XV_EMPTY;
                 sc->hidden = row_hidden;
                 sc->array_formula = is_array;
+                sc->style = style_n;
                 if (type && strcmp(type, "s") == 0) {
                     long idx = vtext ? strtol(vtext, NULL, 10) : -1;
                     sc->kind = XV_STR;
@@ -4951,11 +5343,7 @@ static void xlsx_writeback_sheet(XlsxWorkbook *wb, const char *sheet_name,
     xmlDocDumpMemory(doc, &dumped, &dumped_len);
     xmlFreeDoc(doc);
     if (dumped) {
-        free(sp->data);
-        sp->data = malloc((size_t)dumped_len ? (size_t)dumped_len : 1);
-        if (!sp->data) abort();
-        memcpy(sp->data, dumped, (size_t)dumped_len);
-        sp->length = (size_t)dumped_len;
+        xlsx_part_replace(sp, (const char *)dumped, (size_t)dumped_len);
         xmlFree(dumped);
     }
 }
@@ -5071,7 +5459,7 @@ static void xlsx_topo_visit(const XlsxWorkbook *wb, long sheet_idx,
 
 static Value xlsx_val_to_gbasic(XlsxVal v) {
     switch (v.kind) {
-    case XV_NUM:  return value_number(v.num);
+    case XV_NUM:  return xlsx_num(v.num);
     case XV_BOOL: return value_bool((int)v.num);
     case XV_STR:  return value_string(v.str ? v.str : "");
     case XV_ERR:  return value_string(v.str ? v.str : "#ERROR");
@@ -5124,28 +5512,462 @@ static void xlsx_workbook_release(XlsxWorkbook *wb) {
         free(wb->defined[i].refers);
     }
     free(wb->defined);
+    free(wb->xf_fmt);
+    for (size_t i = 0; i < wb->fmt_count; i++) {
+        free(wb->fmt_codes[i]);
+    }
+    free(wb->fmt_codes);
+    free(wb->fmt_ids);
     free(wb->path);
     free(wb);
 }
 
 /* ------------------------------------------------------------ the gBASIC API */
 
-/* {ok, workbook, message} -- the try_decode shape, for the try_open twin. */
+#if HAVE_ZLIB && HAVE_LIBXML2
+/* ====================================================== CREATING (gap G14)
+ *
+ * The engine edited workbooks and could not make one (gap G14 from the gBASIC
+ * books, whose simulated warehouse had to be a Python script). A new workbook
+ * is the smallest set of parts Excel and LibreOffice open: content types, the
+ * package and workbook relationships, the workbook, a styles part (cell style
+ * 0, General) and one empty sheet. A sheet is added by appending to those
+ * parts' text, and a cell is placed in its row, in column order, the row
+ * inserted in row order when absent. Typed values become what a spreadsheet
+ * holds: a serial and a number format (G13 read backwards), so a date written
+ * reads back as the date. */
+
+static void xlsx_add_part(XlsxWorkbook *wb, const char *name, const char *text) {
+    XlsxPart *g = realloc(wb->parts, (wb->part_count + 1) * sizeof *g);
+    if (!g) abort();
+    wb->parts = g;
+    XlsxPart *p = &wb->parts[wb->part_count++];
+    memset(p, 0, sizeof *p);
+    p->name = copy_string(name);
+    p->length = strlen(text);
+    p->data = malloc(p->length ? p->length : 1);
+    if (!p->data) abort();
+    memcpy(p->data, text, p->length);
+    p->modelled = 1;
+}
+
+/* Insert `text` before the last occurrence of `tag` in a part's bytes. 0 when
+ * the tag is not there. */
+static int xlsx_part_insert_before(XlsxPart *p, const char *tag, const char *text) {
+    size_t tn = strlen(tag), xn = strlen(text);
+    if (!p || p->length < tn) return 0;
+    size_t at = (size_t)-1;
+    for (size_t i = p->length - tn + 1; i-- > 0;) {
+        if (memcmp(p->data + i, tag, tn) == 0) { at = i; break; }
+    }
+    if (at == (size_t)-1) return 0;
+    unsigned char *d = malloc(p->length + xn);
+    if (!d) abort();
+    memcpy(d, p->data, at);
+    memcpy(d + at, text, xn);
+    memcpy(d + at + xn, p->data + at, p->length - at);
+    free(p->data);
+    p->data = d;
+    p->length += xn;
+    return 1;
+}
+
+static void xlsx_reload_sheets(XlsxWorkbook *wb) {
+    for (size_t i = 0; i < wb->sheet_count; i++) {
+        free(wb->sheets[i].name);
+        free(wb->sheets[i].part);
+        free(wb->sheets[i].rel_id);
+    }
+    free(wb->sheets);
+    wb->sheets = NULL;
+    wb->sheet_count = 0;
+    xlsx_load_sheets(wb);
+}
+
+static void xlsx_styles_forget(XlsxWorkbook *wb) {
+    free(wb->xf_fmt);
+    wb->xf_fmt = NULL;
+    wb->xf_count = 0;
+    for (size_t i = 0; i < wb->fmt_count; i++) free(wb->fmt_codes[i]);
+    free(wb->fmt_codes);
+    free(wb->fmt_ids);
+    wb->fmt_codes = NULL;
+    wb->fmt_ids = NULL;
+    wb->fmt_count = 0;
+    wb->styles_loaded = 0;
+}
+
+static const char *XLSX_NS = "http://schemas.openxmlformats.org/spreadsheetml/2006/main";
+static const char *XLSX_REL_NS = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+static const char *XLSX_WS_CT = "application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml";
+static const char *XLSX_WS_REL = "http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet";
+
+/* Excel's rules for a sheet name: 1 to 31 characters, none of []:*?/\, not
+ * beginning or ending with an apostrophe, and unique ignoring case. */
+static int xlsx_sheet_name_ok(XlsxWorkbook *wb, const char *name, char *why, size_t wn) {
+    size_t n = strlen(name);
+    if (n == 0 || string_cp_count(name) > 31) {
+        snprintf(why, wn, "a sheet name is 1 to 31 characters");
+        return 0;
+    }
+    if (strpbrk(name, "[]:*?/\\")) {
+        snprintf(why, wn, "a sheet name cannot hold any of [ ] : * ? / \\");
+        return 0;
+    }
+    if (name[0] == '\'' || name[n - 1] == '\'') {
+        snprintf(why, wn, "a sheet name cannot begin or end with an apostrophe");
+        return 0;
+    }
+    for (size_t i = 0; i < wb->sheet_count; i++) {
+        if (strcasecmp(wb->sheets[i].name, name) == 0) {
+            snprintf(why, wn, "there is already a sheet %s (names are compared without case)", wb->sheets[i].name);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static int xlsx_add_sheet(XlsxWorkbook *wb, const char *name, char *why, size_t wn) {
+    if (!xlsx_sheet_name_ok(wb, name, why, wn)) return 0;
+    XlsxPart *wbp = xlsx_find_part(wb, "xl/workbook.xml");
+    XlsxPart *relp = xlsx_find_part(wb, "xl/_rels/workbook.xml.rels");
+    XlsxPart *ctp = xlsx_find_part(wb, "[Content_Types].xml");
+    if (!wbp || !relp || !ctp) {
+        snprintf(why, wn, "the workbook has no workbook part, relationships or content types to add a sheet to");
+        return 0;
+    }
+    /* a part, a relationship id and a sheet id nothing holds yet */
+    char part[64], rel[32], text[1024];
+    int k = 1;
+    do {
+        snprintf(part, sizeof part, "xl/worksheets/sheet%d.xml", k++);
+    } while (xlsx_find_part(wb, part));
+    long max_rid = 0, max_sid = 0;
+    for (size_t i = 0; i + 7 < relp->length; i++) {
+        if (memcmp(relp->data + i, "Id=\"rId", 7) == 0) {
+            long v = strtol((const char *)relp->data + i + 7, NULL, 10);
+            if (v > max_rid) max_rid = v;
+        }
+    }
+    for (size_t i = 0; i + 9 < wbp->length; i++) {
+        if (memcmp(wbp->data + i, "sheetId=\"", 9) == 0) {
+            long v = strtol((const char *)wbp->data + i + 9, NULL, 10);
+            if (v > max_sid) max_sid = v;
+        }
+    }
+    snprintf(rel, sizeof rel, "rId%ld", max_rid + 1);
+    /* the name is escaped for an attribute */
+    char esc[400];
+    size_t e = 0;
+    for (const char *p = name; *p && e + 7 < sizeof esc; p++) {
+        if (*p == '&') { memcpy(esc + e, "&amp;", 5); e += 5; }
+        else if (*p == '"') { memcpy(esc + e, "&quot;", 6); e += 6; }
+        else if (*p == '<') { memcpy(esc + e, "&lt;", 4); e += 4; }
+        else if (*p == '>') { memcpy(esc + e, "&gt;", 4); e += 4; }
+        else esc[e++] = *p;
+    }
+    esc[e] = '\0';
+    snprintf(text, sizeof text, "<sheet name=\"%s\" sheetId=\"%ld\" r:id=\"%s\"/>", esc, max_sid + 1, rel);
+    if (!xlsx_part_insert_before(wbp, "</sheets>", text)) {
+        snprintf(why, wn, "the workbook part has no sheet list");
+        return 0;
+    }
+    snprintf(text, sizeof text, "<Relationship Id=\"%s\" Type=\"%s\" Target=\"%s\"/>", rel, XLSX_WS_REL,
+             part + 3);
+    xlsx_part_insert_before(relp, "</Relationships>", text);
+    snprintf(text, sizeof text, "<Override PartName=\"/%s\" ContentType=\"%s\"/>", part, XLSX_WS_CT);
+    xlsx_part_insert_before(ctp, "</Types>", text);
+    snprintf(text, sizeof text,
+             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n<worksheet xmlns=\"%s\" "
+             "xmlns:r=\"%s\"><sheetData/></worksheet>", XLSX_NS, XLSX_REL_NS);
+    xlsx_add_part(wb, part, text);
+    xlsx_reload_sheets(wb);
+    return 1;
+}
+
+static XlsxWorkbook *xlsx_new_workbook(const char *first_sheet) {
+    XlsxWorkbook *wb = calloc(1, sizeof *wb);
+    if (!wb) abort();
+    wb->ref_count = 1;
+    char text[2048];
+    snprintf(text, sizeof text,
+             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n<Types xmlns=\"http://schemas."
+             "openxmlformats.org/package/2006/content-types\"><Default Extension=\"rels\" ContentType=\"application/"
+             "vnd.openxmlformats-package.relationships+xml\"/><Default Extension=\"xml\" ContentType=\"application/"
+             "xml\"/><Override PartName=\"/xl/workbook.xml\" ContentType=\"application/vnd.openxmlformats-"
+             "officedocument.spreadsheetml.sheet.main+xml\"/><Override PartName=\"/xl/styles.xml\" ContentType=\""
+             "application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml\"/></Types>");
+    xlsx_add_part(wb, "[Content_Types].xml", text);
+    xlsx_add_part(wb, "_rels/.rels",
+                  "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n<Relationships xmlns=\"http://"
+                  "schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://"
+                  "schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument\" Target=\"xl/"
+                  "workbook.xml\"/></Relationships>");
+    snprintf(text, sizeof text,
+             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n<workbook xmlns=\"%s\" xmlns:r=\"%s\">"
+             "<workbookPr/><sheets></sheets></workbook>", XLSX_NS, XLSX_REL_NS);
+    xlsx_add_part(wb, "xl/workbook.xml", text);
+    xlsx_add_part(wb, "xl/_rels/workbook.xml.rels",
+                  "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n<Relationships xmlns=\"http://"
+                  "schemas.openxmlformats.org/package/2006/relationships\"><Relationship Id=\"rId1\" Type=\"http://"
+                  "schemas.openxmlformats.org/officeDocument/2006/relationships/styles\" Target=\"styles.xml\"/>"
+                  "</Relationships>");
+    snprintf(text, sizeof text,
+             "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>\r\n<styleSheet xmlns=\"%s\"><numFmts "
+             "count=\"0\"/><fonts count=\"1\"><font><sz val=\"11\"/><name val=\"Calibri\"/></font></fonts><fills "
+             "count=\"2\"><fill><patternFill patternType=\"none\"/></fill><fill><patternFill patternType=\"gray125\"/>"
+             "</fill></fills><borders count=\"1\"><border><left/><right/><top/><bottom/><diagonal/></border></borders>"
+             "<cellStyleXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\"/></cellStyleXfs>"
+             "<cellXfs count=\"1\"><xf numFmtId=\"0\" fontId=\"0\" fillId=\"0\" borderId=\"0\" xfId=\"0\"/></cellXfs>"
+             "<cellStyles count=\"1\"><cellStyle name=\"Normal\" xfId=\"0\" builtinId=\"0\"/></cellStyles></styleSheet>",
+             XLSX_NS);
+    xlsx_add_part(wb, "xl/styles.xml", text);
+    xlsx_load_sheets(wb);
+    char why[200];
+    if (!xlsx_add_sheet(wb, first_sheet, why, sizeof why)) {
+        xlsx_add_sheet(wb, "Sheet1", why, sizeof why);
+    }
+    return wb;
+}
+
+/* The cell style showing `code`, added when the workbook has none: its numFmt
+ * (a built-in id when the code is one, else the next custom id) and an xf
+ * using it. -1 with *why when the workbook has no styles part to add to. */
+static long xlsx_style_for(XlsxWorkbook *wb, const char *code, char *why, size_t wn) {
+    xlsx_load_styles(wb);
+    /* Written as the workbook's OWN format, never a built-in id but General:
+     * a built-in id is read by each program's locale and table (LibreOffice
+     * showed [h]:mm:ss under id 46 as "01:30:00 AM"), the code is not. */
+    long fid = strcmp(code, "General") == 0 ? 0 : -1;
+    for (size_t i = 0; i < wb->fmt_count && fid < 0; i++) {
+        if (strcmp(wb->fmt_codes[i], code) == 0) fid = wb->fmt_ids[i];
+    }
+    XlsxPart *sp = xlsx_find_part(wb, "xl/styles.xml");
+    if (!sp) {
+        snprintf(why, wn, "the workbook has no styles part, so a number format cannot be added");
+        return -1;
+    }
+    for (size_t i = 0; i < wb->xf_count; i++) {
+        if (fid >= 0 && wb->xf_fmt[i] == fid) return (long)i;   /* a style already showing it */
+    }
+    xmlDocPtr doc = xlsx_parse_part(sp);
+    xmlNodePtr root = doc ? xmlDocGetRootElement(doc) : NULL;
+    if (!root) {
+        if (doc) xmlFreeDoc(doc);
+        snprintf(why, wn, "the styles part is not well-formed XML");
+        return -1;
+    }
+    xmlNodePtr numfmts = NULL, cellxfs = NULL;
+    for (xmlNodePtr n = root->children; n; n = n->next) {
+        if (xlsx_is(n, "numFmts")) numfmts = n;
+        if (xlsx_is(n, "cellXfs")) cellxfs = n;
+    }
+    if (!cellxfs) {
+        xmlFreeDoc(doc);
+        snprintf(why, wn, "the styles part has no cell styles (cellXfs)");
+        return -1;
+    }
+    char buf[32];
+    if (fid < 0) {
+        fid = 164;
+        for (size_t i = 0; i < wb->fmt_count; i++) if (wb->fmt_ids[i] >= fid) fid = wb->fmt_ids[i] + 1;
+        if (!numfmts) {
+            /* numFmts comes first in a styleSheet */
+            numfmts = xmlNewNode(root->ns, (const xmlChar *)"numFmts");
+            if (root->children) xmlAddPrevSibling(root->children, numfmts);
+            else xmlAddChild(root, numfmts);
+        }
+        xmlNodePtr f = xmlNewChild(numfmts, root->ns, (const xmlChar *)"numFmt", NULL);
+        snprintf(buf, sizeof buf, "%ld", fid);
+        xmlSetProp(f, (const xmlChar *)"numFmtId", (const xmlChar *)buf);
+        xmlSetProp(f, (const xmlChar *)"formatCode", (const xmlChar *)code);
+        snprintf(buf, sizeof buf, "%zu", wb->fmt_count + 1);
+        xmlSetProp(numfmts, (const xmlChar *)"count", (const xmlChar *)buf);
+    }
+    xmlNodePtr xf = xmlNewChild(cellxfs, root->ns, (const xmlChar *)"xf", NULL);
+    snprintf(buf, sizeof buf, "%ld", fid);
+    xmlSetProp(xf, (const xmlChar *)"numFmtId", (const xmlChar *)buf);
+    xmlSetProp(xf, (const xmlChar *)"fontId", (const xmlChar *)"0");
+    xmlSetProp(xf, (const xmlChar *)"fillId", (const xmlChar *)"0");
+    xmlSetProp(xf, (const xmlChar *)"borderId", (const xmlChar *)"0");
+    xmlSetProp(xf, (const xmlChar *)"xfId", (const xmlChar *)"0");
+    xmlSetProp(xf, (const xmlChar *)"applyNumberFormat", (const xmlChar *)"1");
+    long style = (long)wb->xf_count;
+    snprintf(buf, sizeof buf, "%ld", style + 1);
+    xmlSetProp(cellxfs, (const xmlChar *)"count", (const xmlChar *)buf);
+    xmlChar *dumped = NULL;
+    int dn = 0;
+    xmlDocDumpMemory(doc, &dumped, &dn);
+    xmlFreeDoc(doc);
+    if (dumped) {
+        xlsx_part_replace(sp, (const char *)dumped, (size_t)dn);
+        xmlFree(dumped);
+    }
+    xlsx_styles_forget(wb);
+    return style;
+}
+
+/* days since 1970-01-01 (Howard Hinnant's days_from_civil) */
+static long long xlsx_days(int y, int m, int d) {
+    y -= m <= 2;
+    long long era = (y >= 0 ? y : y - 399) / 400;
+    long long yoe = y - era * 400;
+    long long doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;
+    long long doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    return era * 146097 + doe - 719468;
+}
+
+/* A typed value as a serial and the format that shows it. 1 done; 0 with
+ * *why for what a cell cannot hold; -1 when the value is not a typed one. */
+static int xlsx_serial_of(XlsxWorkbook *wb, Value v, double *serial, const char **code, char *why, size_t wn) {
+    if (v.kind == VALUE_DURATION) {
+        Duration d = v.as.duration;
+        if (d.years || d.months) {
+            snprintf(why, wn, "a duration of months or years has no length in days, so no cell can hold it");
+            return 0;
+        }
+        double secs = (double)d.weeks * 604800.0 + (double)d.days * 86400.0 + d.hours * 3600.0 + d.minutes * 60.0 +
+                      d.seconds;
+        *serial = secs / 86400.0;
+        *code = "[h]:mm:ss";
+        return 1;
+    }
+    if (v.kind != VALUE_DATETIME) return -1;
+    DateTime t = v.as.datetime;
+    double frac = (t.hour * 3600.0 + t.minute * 60.0 + t.second) / 86400.0;
+    if (t.time_only) {
+        *serial = frac;
+        *code = "hh:mm:ss";
+        return 1;
+    }
+    xlsx_load_styles(wb);
+    long long days = xlsx_days(t.year, t.precision >= PREC_MONTH ? t.month : 1, t.precision >= PREC_DAY ? t.day : 1);
+    long long s;
+    if (wb->date1904) {
+        s = days + 24107;
+        if (s < 0) {
+            snprintf(why, wn, "a 1904-system workbook holds no date before 1904-01-01");
+            return 0;
+        }
+    } else {
+        s = days + 25569;
+        if (s <= 60) s = days + 25568;      /* before Excel's phantom 1900-02-29 */
+        if (s < 1) {
+            snprintf(why, wn, "a spreadsheet holds no date before 1900-01-01");
+            return 0;
+        }
+    }
+    *serial = (double)s + (t.precision >= PREC_HOUR ? frac : 0);
+    *code = t.precision >= PREC_HOUR ? "yyyy-mm-dd hh:mm:ss" : "yyyy-mm-dd";
+    return 1;
+}
+
+static void xlsx_col_letters(long col, char *out) {
+    char tmp[8];
+    int n = 0;
+    long c = col + 1;
+    while (c > 0 && n < 7) {
+        tmp[n++] = (char)('A' + (c - 1) % 26);
+        c = (c - 1) / 26;
+    }
+    for (int i = 0; i < n; i++) out[i] = tmp[n - 1 - i];
+    out[n] = '\0';
+}
+
+/* The <c> for `ref`, made when absent: in its row in column order, the row
+ * made in row order when absent, and <dimension> widened to hold it. */
+static xmlNodePtr xlsx_cell_node(xmlDocPtr doc, const char *ref, int create) {
+    long col = 0, row = 0;
+    if (!xlsx_parse_ref(ref, &col, &row)) return NULL;
+    xmlNodePtr root = xmlDocGetRootElement(doc);
+    xmlNodePtr data = NULL, dim = NULL;
+    for (xmlNodePtr n = root ? root->children : NULL; n; n = n->next) {
+        if (xlsx_is(n, "sheetData")) data = n;
+        if (xlsx_is(n, "dimension")) dim = n;
+    }
+    if (!data) return NULL;
+    xmlNodePtr rnode = NULL, after_row = NULL;
+    for (xmlNodePtr r = data->children; r; r = r->next) {
+        if (!xlsx_is(r, "row")) continue;
+        char *rv = xlsx_prop(r, "r");
+        long rn = rv ? strtol(rv, NULL, 10) : 0;
+        free(rv);
+        if (rn == row) { rnode = r; break; }
+        if (rn < row) after_row = r;
+        else break;
+    }
+    if (!rnode) {
+        if (!create) return NULL;
+        char buf[24];
+        snprintf(buf, sizeof buf, "%ld", row);
+        rnode = xmlNewNode(data->ns, (const xmlChar *)"row");
+        xmlSetProp(rnode, (const xmlChar *)"r", (const xmlChar *)buf);
+        if (after_row) xmlAddNextSibling(after_row, rnode);
+        else if (data->children) xmlAddPrevSibling(data->children, rnode);
+        else xmlAddChild(data, rnode);
+    }
+    xmlNodePtr after = NULL;
+    for (xmlNodePtr c = rnode->children; c; c = c->next) {
+        if (!xlsx_is(c, "c")) continue;
+        char *cv = xlsx_prop(c, "r");
+        long cc = 0, cr = 0;
+        int ok = cv && xlsx_parse_ref(cv, &cc, &cr);
+        free(cv);
+        if (!ok) continue;
+        if (cc == col) return c;
+        if (cc < col) after = c;
+        else break;
+    }
+    if (!create) return NULL;
+    xmlNodePtr cnode = xmlNewNode(data->ns, (const xmlChar *)"c");
+    xmlSetProp(cnode, (const xmlChar *)"r", (const xmlChar *)ref);
+    if (after) xmlAddNextSibling(after, cnode);
+    else if (rnode->children) xmlAddPrevSibling(rnode->children, cnode);
+    else xmlAddChild(rnode, cnode);
+    if (dim) {
+        char *dv = xlsx_prop(dim, "ref");
+        long c0 = col, r0 = row, c1 = col, r1 = row;
+        if (dv) {
+            char *colon = strchr(dv, ':');
+            long a = 0, b = 0;
+            if (colon) *colon = '\0';
+            if (xlsx_parse_ref(dv, &a, &b)) { c0 = a < c0 ? a : c0; r0 = b < r0 ? b : r0; c1 = a > c1 ? a : c1; r1 = b > r1 ? b : r1; }
+            if (colon && xlsx_parse_ref(colon + 1, &a, &b)) { c0 = a < c0 ? a : c0; r0 = b < r0 ? b : r0; c1 = a > c1 ? a : c1; r1 = b > r1 ? b : r1; }
+            free(dv);
+        }
+        char l0[8], l1[8], buf[48];
+        xlsx_col_letters(c0, l0);
+        xlsx_col_letters(c1, l1);
+        if (c0 == c1 && r0 == r1) snprintf(buf, sizeof buf, "%s%ld", l0, r0);
+        else snprintf(buf, sizeof buf, "%s%ld:%s%ld", l0, r0, l1, r1);
+        xmlSetProp(dim, (const xmlChar *)"ref", (const xmlChar *)buf);
+    }
+    return cnode;
+}
+
+#endif /* HAVE_ZLIB && HAVE_LIBXML2: creating */
+
+/* {ok, value, workbook, message}: the try_decode shape, whose field is
+ * `value` (gap G15 from the gBASIC books), and `workbook`, the name it had,
+ * the same handle, kept so programs written against it still run. */
 static Value xlsx_try_result(int ok, Value workbook, const char *message) {
-    RecordField *fields = calloc(3, sizeof(RecordField));
+    RecordField *fields = calloc(4, sizeof(RecordField));
     if (!fields) {
         abort();
     }
     fields[0].name = field_name_new("ok");
     fields[0].value = cell_alloc();
     *fields[0].value = value_bool(ok);
-    fields[1].name = field_name_new("workbook");
+    fields[1].name = field_name_new("value");
     fields[1].value = cell_alloc();
-    *fields[1].value = workbook;
-    fields[2].name = field_name_new("message");
+    *fields[1].value = value_copy(workbook);
+    fields[2].name = field_name_new("workbook");
     fields[2].value = cell_alloc();
-    *fields[2].value = value_string(message);
-    return value_record(fields, 3);
+    *fields[2].value = workbook;
+    fields[3].name = field_name_new("message");
+    fields[3].value = cell_alloc();
+    *fields[3].value = value_string(message);
+    return value_record(fields, 4);
 }
 
 static Value xlsx_eval_call(AstExpr *expr) {
@@ -5303,7 +6125,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
             *fields[0].value = value_string(wb->parts[i].name);
             fields[1].name = field_name_new("bytes");
             fields[1].value = cell_alloc();
-            *fields[1].value = value_number((double)wb->parts[i].length);
+            *fields[1].value = value_number_exact((long long)wb->parts[i].length);
             fields[2].name = field_name_new("modelled");
             fields[2].value = cell_alloc();
             *fields[2].value = value_bool(wb->parts[i].modelled);
@@ -5524,16 +6346,16 @@ static Value xlsx_eval_call(AstExpr *expr) {
         *fields[0].value = value_bool(seen != 0);
         fields[1].name = field_name_new("first_row");
         fields[1].value = cell_alloc();
-        *fields[1].value = value_number((double)min_r);
+        *fields[1].value = value_number_exact((long long)min_r);
         fields[2].name = field_name_new("last_row");
         fields[2].value = cell_alloc();
-        *fields[2].value = value_number((double)max_r);
+        *fields[2].value = value_number_exact((long long)max_r);
         fields[3].name = field_name_new("first_col");
         fields[3].value = cell_alloc();
-        *fields[3].value = value_number((double)min_c);
+        *fields[3].value = value_number_exact((long long)min_c);
         fields[4].name = field_name_new("last_col");
         fields[4].value = cell_alloc();
-        *fields[4].value = value_number((double)max_c);
+        *fields[4].value = value_number_exact((long long)max_c);
         value_free(wbv);
         value_free(shv);
         return value_record(fields, 5);
@@ -5546,14 +6368,73 @@ static Value xlsx_eval_call(AstExpr *expr) {
      * Excel recalculates and silently reverts the edit. Until the recalc engine
      * exists (§13.D) this refuses to write over a formula rather than guess
      * which the caller meant. */
-    if (strcmp(name, "set") == 0) {
-        if (expr->as.call.args.count != 4) {
-            return xlsx_raise("xlsx.set expects four arguments (workbook, sheet, ref, value)");
+    /* xlsx.new([first sheet]) -> a workbook with one empty sheet (G14) */
+    if (strcmp(name, "new") == 0) {
+        if (expr->as.call.args.count > 1) {
+            return xlsx_raise("xlsx.new expects at most one argument, the first sheet's name");
+        }
+        char first[256] = "Sheet1";
+        if (expr->as.call.args.count == 1) {
+            Value nv = eval_expr(expr->as.call.args.items[0]);
+            if (nv.kind != VALUE_STRING) {
+                value_free(nv);
+                return xlsx_raise("xlsx.new: the sheet name must be text");
+            }
+            snprintf(first, sizeof first, "%s", nv.as.string);
+            value_free(nv);
+        }
+        XlsxWorkbook *wb = xlsx_new_workbook(first);
+        if (strcmp(wb->sheet_count ? wb->sheets[0].name : "", first) != 0) {
+            xlsx_workbook_release(wb);
+            return xlsx_raise("xlsx.new: a sheet name is 1 to 31 characters, none of [ ] : * ? / \\");
+        }
+        return value_workbook(wb);
+    }
+
+    /* xlsx.add_sheet(wb, name) -> true; the sheet is last in tab order */
+    if (strcmp(name, "add_sheet") == 0) {
+        if (expr->as.call.args.count != 2) {
+            return xlsx_raise("xlsx.add_sheet expects a workbook and a sheet name");
+        }
+        Value wbv = eval_expr(expr->as.call.args.items[0]);
+        Value nv = eval_expr(expr->as.call.args.items[1]);
+        if (wbv.kind != VALUE_WORKBOOK || nv.kind != VALUE_STRING) {
+            value_free(wbv); value_free(nv);
+            return xlsx_raise("xlsx.add_sheet expects a workbook and a sheet name");
+        }
+        char why[300], m[400];
+        int ok = xlsx_add_sheet(wbv.as.workbook, nv.as.string, why, sizeof why);
+        if (!ok) {
+            snprintf(m, sizeof m, "xlsx.add_sheet: %s", why);
+        }
+        value_free(wbv); value_free(nv);
+        return ok ? value_bool(1) : xlsx_raise(m);
+    }
+
+    if (strcmp(name, "set") == 0 || strcmp(name, "set_formula") == 0) {
+        int formula_mode = strcmp(name, "set_formula") == 0;
+        size_t argc = expr->as.call.args.count;
+        if (argc != 4 && !(argc == 5 && !formula_mode)) {
+            return xlsx_raise(formula_mode ? "xlsx.set_formula expects four arguments (workbook, sheet, ref, formula)"
+                                           : "xlsx.set expects four arguments (workbook, sheet, ref, value), and "
+                                             "optionally { format: \"0.0%\" }");
         }
         Value wbv = eval_expr(expr->as.call.args.items[0]);
         Value shv = eval_expr(expr->as.call.args.items[1]);
         Value refv = eval_expr(expr->as.call.args.items[2]);
         Value newv = eval_expr(expr->as.call.args.items[3]);
+        char fmt_given[256] = "";
+        if (argc == 5) {
+            Value ov = eval_expr(expr->as.call.args.items[4]);
+            RecordField *ff = ov.kind == VALUE_RECORD ? record_find(&ov, "format") : NULL;
+            int bad = ov.kind != VALUE_RECORD || ov.as.record.count != 1 || !ff || ff->value->kind != VALUE_STRING;
+            if (!bad) snprintf(fmt_given, sizeof fmt_given, "%s", ff->value->as.string);
+            value_free(ov);
+            if (bad) {
+                value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+                return xlsx_raise("xlsx.set: the options are { format: \"...\" }, an Excel number format code");
+            }
+        }
         if (wbv.kind != VALUE_WORKBOOK || shv.kind != VALUE_STRING || refv.kind != VALUE_STRING) {
             value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
             return xlsx_raise("xlsx.set expects a workbook, a sheet name and a ref");
@@ -5633,13 +6514,22 @@ static Value xlsx_eval_call(AstExpr *expr) {
             }
         }
         if (!target) {
-            /* Creating a cell means placing it in the right row in column
-             * order, and inserting the row if absent. Not yet implemented, and
-             * saying so beats writing it into the wrong place. */
-            xmlFreeDoc(doc);
-            value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
-            return xlsx_raise("xlsx.set: creating a new cell is not supported yet; "
-                              "only existing cells can be written");
+            /* Placed in its row in column order, the row made in row order
+             * when absent (G14): it used to be refused */
+            long cc = 0, cr = 0;
+            if (!xlsx_parse_ref(refv.as.string, &cc, &cr)) {
+                xmlFreeDoc(doc);
+                char m[200];
+                snprintf(m, sizeof m, "xlsx.set: %s is not a cell reference such as B7", refv.as.string);
+                value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+                return xlsx_raise(m);
+            }
+            target = xlsx_cell_node(doc, refv.as.string, 1);
+            if (!target) {
+                xmlFreeDoc(doc);
+                value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+                return xlsx_raise("xlsx.set: the sheet has no sheetData to hold the cell");
+            }
         }
 
         int has_formula = 0;
@@ -5648,7 +6538,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
                 has_formula = 1;
             }
         }
-        if (has_formula) {
+        if (has_formula && !formula_mode) {
             xmlFreeDoc(doc);
             value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
             return xlsx_raise("xlsx.set: refusing to overwrite a formula cell; "
@@ -5664,7 +6554,62 @@ static Value xlsx_eval_call(AstExpr *expr) {
             child = next;
         }
         char buf[64];
-        if (newv.kind == VALUE_NUMBER) {
+        double serial = 0;
+        const char *code = NULL;
+        char why[300] = "";
+        int typed = formula_mode ? -1 : xlsx_serial_of(wb, newv, &serial, &code, why, sizeof why);
+        char money_code[64];
+        if (!formula_mode && newv.kind == VALUE_MONEY) {
+            /* the amount, and its currency in the format: a cell holds no currency */
+            char amount[96];
+            money_render(newv.as.money, newv.as.money.exponent, amount, sizeof amount);
+            serial = strtod(amount, NULL);
+            const char *alpha = currency_alpha_of(newv.as.money.currency);
+            char zeros[24] = "";
+            for (int z = 0; z < newv.as.money.exponent && z < 20; z++) zeros[z] = '0';
+            snprintf(money_code, sizeof money_code, "#,##0%s%s \"%s\"", newv.as.money.exponent ? "." : "", zeros,
+                     alpha ? alpha : "");
+            code = money_code;
+            typed = 1;
+        }
+        if (typed == 0) {
+            xmlFreeDoc(doc);
+            char m[400];
+            snprintf(m, sizeof m, "xlsx.set: %s", why);
+            value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+            return xlsx_raise(m);
+        }
+        if (fmt_given[0]) {
+            code = fmt_given;
+        }
+        if (code) {
+            long style = xlsx_style_for(wb, code, why, sizeof why);
+            if (style < 0) {
+                xmlFreeDoc(doc);
+                char m[400];
+                snprintf(m, sizeof m, "xlsx.set: %s", why);
+                value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+                return xlsx_raise(m);
+            }
+            snprintf(buf, sizeof buf, "%ld", style);
+            xmlSetProp(target, (const xmlChar *)"s", (const xmlChar *)buf);
+        }
+        if (formula_mode) {
+            if (newv.kind != VALUE_STRING || !*newv.as.string) {
+                xmlFreeDoc(doc);
+                value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+                return xlsx_raise("xlsx.set_formula: the formula must be text, such as \"SUM(B2:B9)\"");
+            }
+            /* no cached value: recalc computes it, and a reader that does
+             * not calculate sees the cell empty rather than wrong */
+            xmlUnsetProp(target, (const xmlChar *)"t");
+            const char *f = newv.as.string[0] == '=' ? newv.as.string + 1 : newv.as.string;
+            xmlNewTextChild(target, NULL, (const xmlChar *)"f", (const xmlChar *)f);
+        } else if (typed == 1) {
+            xmlUnsetProp(target, (const xmlChar *)"t");
+            snprintf(buf, sizeof buf, "%.15g", serial);
+            xmlNewChild(target, NULL, (const xmlChar *)"v", (const xmlChar *)buf);
+        } else if (newv.kind == VALUE_NUMBER) {
             xmlUnsetProp(target, (const xmlChar *)"t");
             snprintf(buf, sizeof buf, "%.15g", newv.as.num.value);
             xmlNewChild(target, NULL, (const xmlChar *)"v", (const xmlChar *)buf);
@@ -5683,7 +6628,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
         } else {
             xmlFreeDoc(doc);
             value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
-            return xlsx_raise("xlsx.set: value must be a number, boolean or string");
+            return xlsx_raise("xlsx.set: value must be a number, boolean, text, date, datetime, time, duration or money");
         }
 
         xmlChar *dumped = NULL;
@@ -5694,13 +6639,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
             value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
             return xlsx_raise("xlsx.set: could not serialize the sheet");
         }
-        free(sp->data);
-        sp->data = malloc((size_t)dumped_len ? (size_t)dumped_len : 1);
-        if (!sp->data) {
-            abort();
-        }
-        memcpy(sp->data, dumped, (size_t)dumped_len);
-        sp->length = (size_t)dumped_len;
+        xlsx_part_replace(sp, (const char *)dumped, (size_t)dumped_len);
         xmlFree(dumped);
 
         value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
@@ -5746,7 +6685,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
         if (put != len || closed != 0) {
             return xlsx_raise("xlsx.save: short write");
         }
-        return value_number((double)len);
+        return value_number_exact((long long)len);
     }
 
     /* Evaluate one cell's formula against the sheet's cached values. */
@@ -5827,9 +6766,21 @@ static Value xlsx_eval_call(AstExpr *expr) {
             if (!cols || !vals || !kinds) abort();
             for (size_t k = 0; k < width; k++) {
                 const XlsxSnapCell *c = &snap.cells[i + k];
-                cols[k] = value_number((double)c->col);
+                cols[k] = value_number_exact((long long)c->col);
                 switch (c->kind) {
-                case XV_NUM:  vals[k] = value_number(c->num); kinds[k] = value_string("number"); break;
+                case XV_NUM: {
+                    /* typed by the cell's number format, as a cell record is */
+                    long fid = 0;
+                    const char *tk = NULL;
+                    XlsxFmtClass cls = xlsx_classify_format(xlsx_style_format(wb, c->style, &fid));
+                    if (xlsx_typed_value(wb, c->num, cls, &vals[k], &tk)) {
+                        kinds[k] = value_string(tk);
+                    } else {
+                        vals[k] = xlsx_num(c->num);
+                        kinds[k] = value_string("number");
+                    }
+                    break;
+                }
                 case XV_BOOL: vals[k] = value_bool((int)c->num); kinds[k] = value_string("boolean"); break;
                 case XV_STR:  vals[k] = value_string(c->str ? c->str : ""); kinds[k] = value_string("text"); break;
                 case XV_ERR:  vals[k] = value_string(c->str ? c->str : "#ERROR"); kinds[k] = value_string("error"); break;
@@ -5845,7 +6796,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
                 if (!a || !b || !c2 || !d) abort();
                 rownos = a; rcols = b; rvals = c2; rkinds = d;
             }
-            rownos[nrows] = value_number((double)row);
+            rownos[nrows] = value_number_exact((long long)row);
             rcols[nrows] = value_array(cols, width);
             rvals[nrows] = value_array(vals, width);
             rkinds[nrows] = value_array(kinds, width);
@@ -5881,13 +6832,13 @@ static Value xlsx_eval_call(AstExpr *expr) {
         fields[4].name = field_name_new("rkinds");
         fields[4].value = cell_alloc(); *fields[4].value = value_array(rkinds, nrows);
         fields[5].name = field_name_new("first_row");
-        fields[5].value = cell_alloc(); *fields[5].value = value_number((double)min_r);
+        fields[5].value = cell_alloc(); *fields[5].value = value_number_exact((long long)min_r);
         fields[6].name = field_name_new("last_row");
-        fields[6].value = cell_alloc(); *fields[6].value = value_number((double)max_r);
+        fields[6].value = cell_alloc(); *fields[6].value = value_number_exact((long long)max_r);
         fields[7].name = field_name_new("first_col");
-        fields[7].value = cell_alloc(); *fields[7].value = value_number((double)min_c);
+        fields[7].value = cell_alloc(); *fields[7].value = value_number_exact((long long)min_c);
         fields[8].name = field_name_new("last_col");
-        fields[8].value = cell_alloc(); *fields[8].value = value_number((double)max_c);
+        fields[8].value = cell_alloc(); *fields[8].value = value_number_exact((long long)max_c);
         fields[9].name = field_name_new("any");
         fields[9].value = cell_alloc(); *fields[9].value = value_bool(any);
         value_free(wbv); value_free(shv);
@@ -6037,7 +6988,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
             } else if (c) {
                 /* Not a formula: the literal is its own value. */
                 switch (c->kind) {
-                case XV_NUM: out = value_number(c->num); break;
+                case XV_NUM: out = xlsx_num(c->num); break;
                 case XV_BOOL: out = value_bool((int)c->num); break;
                 case XV_STR: out = value_string(c->str ? c->str : ""); break;
                 case XV_ERR: out = value_string(c->str ? c->str : "#ERROR"); break;
@@ -6234,13 +7185,13 @@ static Value xlsx_eval_call(AstExpr *expr) {
         RecordField *fields = calloc(5, sizeof(RecordField));
         if (!fields) abort();
         fields[0].name = field_name_new("agree");
-        fields[0].value = cell_alloc(); *fields[0].value = value_number((double)agree);
+        fields[0].value = cell_alloc(); *fields[0].value = value_number_exact((long long)agree);
         fields[1].name = field_name_new("disagree");
-        fields[1].value = cell_alloc(); *fields[1].value = value_number((double)disagree);
+        fields[1].value = cell_alloc(); *fields[1].value = value_number_exact((long long)disagree);
         fields[2].name = field_name_new("volatile_skipped");
-        fields[2].value = cell_alloc(); *fields[2].value = value_number((double)volatile_n);
+        fields[2].value = cell_alloc(); *fields[2].value = value_number_exact((long long)volatile_n);
         fields[3].name = field_name_new("unsupported");
-        fields[3].value = cell_alloc(); *fields[3].value = value_number((double)unsupported_n);
+        fields[3].value = cell_alloc(); *fields[3].value = value_number_exact((long long)unsupported_n);
         fields[4].name = field_name_new("notes");
         fields[4].value = cell_alloc(); *fields[4].value = value_array(rows, rn);
         return value_record(fields, 5);
@@ -6399,7 +7350,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
             if (unsup) { unsupported_n++; xv_free(v); continue; }
             int differs = 0;
             if (v.kind != c->kind) differs = 1;
-            else if (v.kind == XV_NUM && v.num != c->num) differs = 1;
+            else if (v.kind == XV_NUM && xlsx_num_differs(v.num, c->num)) differs = 1;
             else if (v.kind == XV_BOOL && ((int)v.num != 0) != ((int)c->num != 0)) differs = 1;
             else if ((v.kind == XV_STR || v.kind == XV_ERR) &&
                      strcmp(v.str ? v.str : "", c->str ? c->str : "") != 0) differs = 1;
@@ -6428,13 +7379,13 @@ static Value xlsx_eval_call(AstExpr *expr) {
         RecordField *fields = calloc(4, sizeof(RecordField));
         if (!fields) abort();
         fields[0].name = field_name_new("evaluated");
-        fields[0].value = cell_alloc(); *fields[0].value = value_number((double)evaluated);
+        fields[0].value = cell_alloc(); *fields[0].value = value_number_exact((long long)evaluated);
         fields[1].name = field_name_new("changed");
-        fields[1].value = cell_alloc(); *fields[1].value = value_number((double)changed);
+        fields[1].value = cell_alloc(); *fields[1].value = value_number_exact((long long)changed);
         fields[2].name = field_name_new("circular");
-        fields[2].value = cell_alloc(); *fields[2].value = value_number((double)circular);
+        fields[2].value = cell_alloc(); *fields[2].value = value_number_exact((long long)circular);
         fields[3].name = field_name_new("unsupported");
-        fields[3].value = cell_alloc(); *fields[3].value = value_number((double)unsupported_n);
+        fields[3].value = cell_alloc(); *fields[3].value = value_number_exact((long long)unsupported_n);
         return value_record(fields, 4);
     }
 
@@ -6489,7 +7440,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
              * anything downstream — that is the whole point of the ordering. */
             int differs = 0;
             if (v.kind != c->kind) differs = 1;
-            else if (v.kind == XV_NUM && v.num != c->num) differs = 1;
+            else if (v.kind == XV_NUM && xlsx_num_differs(v.num, c->num)) differs = 1;
             else if (v.kind == XV_BOOL && ((int)v.num != 0) != ((int)c->num != 0)) differs = 1;
             else if ((v.kind == XV_STR || v.kind == XV_ERR) &&
                      strcmp(v.str ? v.str : "", c->str ? c->str : "") != 0) differs = 1;
@@ -6517,13 +7468,13 @@ static Value xlsx_eval_call(AstExpr *expr) {
         RecordField *fields = calloc(4, sizeof(RecordField));
         if (!fields) abort();
         fields[0].name = field_name_new("evaluated");
-        fields[0].value = cell_alloc(); *fields[0].value = value_number((double)evaluated);
+        fields[0].value = cell_alloc(); *fields[0].value = value_number_exact((long long)evaluated);
         fields[1].name = field_name_new("changed");
-        fields[1].value = cell_alloc(); *fields[1].value = value_number((double)changed);
+        fields[1].value = cell_alloc(); *fields[1].value = value_number_exact((long long)changed);
         fields[2].name = field_name_new("circular");
-        fields[2].value = cell_alloc(); *fields[2].value = value_number((double)circular);
+        fields[2].value = cell_alloc(); *fields[2].value = value_number_exact((long long)circular);
         fields[3].name = field_name_new("unsupported");
-        fields[3].value = cell_alloc(); *fields[3].value = value_number((double)unsupported_n);
+        fields[3].value = cell_alloc(); *fields[3].value = value_number_exact((long long)unsupported_n);
         return value_record(fields, 4);
     }
 

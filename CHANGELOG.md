@@ -16,6 +16,31 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Spreadsheets: number formats, creating workbooks, and XML attributes
+
+Gaps G13-G18 from the gBASIC books (volume 3's gap ledger).
+
+- **Cells typed by their number format (G13).** A cell record now carries
+  `format`, `format_id` and `serial`, and a number formatted as a date, time
+  or percent comes back as `date`, `datetime`, `time`, `duration` or
+  `percent`, the value a gBASIC date, datetime, time or duration. The 1900
+  and 1904 date systems are honoured. `xlsx.grid` (so `grid`, `consolidate`,
+  `dbframe`) sees the same. *Behaviour change:* a date cell's `kind` was
+  `number` and its `value` the serial.
+- **Creating a workbook (G14):** `xlsx.new([first sheet])`, `add_sheet`,
+  `set` making a missing cell in row and column order, typed values written
+  as a serial and a number format (`{ format: "..." }` for any code), money
+  as its amount with the currency in the format, and `set_formula`.
+- **Whole numbers are exact (G15)**: cell values, row numbers, counts.
+  `xlsx.try_open` also answers `value`, the `try_decode` field name.
+- **`recalc`'s `changed` (G16)** counts what the save would write differently,
+  to Excel's 15 digits; a float's last bits are not a change.
+- **A rebuilt part keeps the original's bytes around its root (G17)**: no
+  newline after `</worksheet>`, Excel's CRLF after the declaration.
+- **XML attributes keyed as written (G18)**: `r:id` keeps its prefix, so a
+  plain `id` beside it is no longer overwritten, and an encode writes it back
+  in its namespace. *Behaviour change* for code reading `attrs.id` for `r:id`.
+
 ### G-SQL: savepoints, atomic statements, and three small gaps
 
 Gaps G6-G9 from the gBASIC books (volume 3's gap ledger).

@@ -8,7 +8,7 @@ stored cells: 12
   B3 kind=number value=-99.25
   A5 kind=text value=Total
   B5 kind=number formula=SUM(B2:B3) value=1151.25
-  A6 kind=number value=45000
+  A6 kind=date value=2023-03-15
   B6 kind=boolean value=true
   A7 kind=error value=#DIV/0!
   D7 kind=number formula=B5*2 value=2302.5

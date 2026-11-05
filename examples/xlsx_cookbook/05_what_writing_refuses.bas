@@ -17,11 +17,13 @@ program main(args)
   print "overwrite a formula cell: " + error.message
   error.clear()
 
-  ' 2. Creating a cell that does not exist. The sheet is sparse, and inventing
-  '    a cell means guessing its style and its place in the row order, so a new
-  '    cell is refused rather than placed wrongly.
-  wb.set("Ledger", "Z99", 1)
-  print "create a new cell:        " + error.message
+  ' 2. A value no cell can hold. A cell holds a number and a format, so a
+  '    date becomes a serial and a duration a fraction of days -- but a
+  '    duration of MONTHS has no length in days, and any number written for it
+  '    would be a guess. (A cell that does not exist yet is simply made, in its
+  '    place in the row: recipe 13.)
+  wb.set("Ledger", "Z99", 2 months)
+  print "a value no cell holds:    " + error.message
   error.clear()
 
   ' 3. A sheet that is not there. Note this is a genuine miss -- a name that

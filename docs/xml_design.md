@@ -61,7 +61,10 @@ No new value kind. An element is a record:
     name:     "infoTable",          ' local name (namespace prefix stripped)
     qname:    "ns1:infoTable",      ' qualified name as written
     ns:       "http://...",         ' namespace URI, or nothing
-    attrs:    { cik: "0000320193" } ' attribute record (values are strings)
+    attrs:    { cik: "0000320193" } ' attribute record (values are strings), keyed
+                                    ' by the name as written: `r:id`, prefix and all
+                                    ' (2026-11-05, gap G18; a prefixed attribute lost
+                                    ' its prefix and could overwrite a plain one)
     children: [ ... ]               ' ordered: element records and strings
 }
 ```

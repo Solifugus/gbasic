@@ -21,9 +21,14 @@ d = xml.parse(read(src))
 
 print "root: " + d.name + " qname=" + d.qname
 
-' NOTE `xmlns:ns` KEEPS its prefix while `ns:qattr` LOSES it. That asymmetry is
-' current behaviour, not a typo in this fixture.
+' A namespaced attribute is keyed AS WRITTEN, `ns:qattr`, as `xmlns:ns` is.
+' It used to lose its prefix (`qattr`), so the encode below wrote it back
+' outside its namespace, and an `id` beside an `r:id` was overwritten (gap G18
+' from the gBASIC books).
 print "attrs: " + encode(d.attrs)
+' and the case that lost data: a plain id beside a prefixed one
+s = xml.parse("<s xmlns:r=\"urn:r\" id=\"plain\" r:id=\"rel\"/>")
+print "both ids: " + encode(s.attrs)
 
 ' COMMENTS ARE DROPPED. A leading and an interior comment are both absent, so
 ' the count here is elements and text only -- the single most likely thing a
