@@ -203,6 +203,56 @@ else
     fail "matrix reached through stats AND through the alias, same answer ($(head -1 "$scratch/err"))"
 fi
 
+# ONE FILE BY TWO SPELLINGS IS ONE LIBRARY. Transward's layout, in shape: the
+# program loads `util.bas`, and a library in `web/` loads the same file as
+# `../util.bas`. Paths were compared as TEXT, so `./util.bas` and
+# `./web/../util.bas` were two libraries claiming one name and the program was
+# refused before a line ran (10 of Transward's 25 tests, 2026-11-05).
+# THE CONTROLS ARE WHAT KEEP THIS HONEST: two DIFFERENT files declaring one
+# name are still refused (negative_alias_same_declared_name, above), and a
+# cycle spelled two ways is reported as the cycle it is -- before the fix it
+# was misreported as a name collision.
+printf 'TIER spelling: one file reached by two path spellings is one library\n'
+here="$PWD"
+tw="$scratch/tw"
+mkdir -p "$tw/src/web" "$tw/cyc/sub"
+printf 'library util\nfunction hi()\n    return "hi"\nend function\nend library\n' \
+    >"$tw/src/util.bas"
+printf 'library server\nload util from "../util.bas"\nfunction greet()\n    return util.hi() + " from server"\nend function\nend library\n' \
+    >"$tw/src/web/server.bas"
+printf 'load util from "util.bas"\nload server from "web/server.bas"\nprint server.greet()\nprint util.hi()\n' \
+    >"$tw/src/main.bas"
+for where in src .; do
+    prog=main.bas
+    [ "$where" = . ] && prog=src/main.bas
+    (cd "$tw/$where" && timeout -k 5 30 "$here/gbasic" "$prog") \
+        >"$scratch/sp.out" 2>"$scratch/sp.err"
+    if [ "$(cat "$scratch/sp.out")" = "$(printf 'hi from server\nhi')" ] && [ ! -s "$scratch/sp.err" ]; then
+        pass "util.bas and web/../util.bas are one library (run from $where)"
+    else
+        fail "util.bas and web/../util.bas are one library (run from $where): $(head -c 200 "$scratch/sp.err")"
+    fi
+done
+ln -s util.bas "$tw/src/util_link.bas"
+printf 'load util from "util.bas"\nload util from "util_link.bas"\nprint util.hi()\n' >"$tw/src/linked.bas"
+if (cd "$tw/src" && timeout -k 5 30 "$here/gbasic" linked.bas) >"$scratch/sp.out" 2>"$scratch/sp.err" \
+   && [ "$(cat "$scratch/sp.out")" = hi ]; then
+    pass "a symbolic link to the file is the same file"
+else
+    fail "a symbolic link to the file is the same file: $(head -c 200 "$scratch/sp.err")"
+fi
+printf 'library a\nload b from "sub/b.bas"\nfunction fa()\n    return 1\nend function\nend library\n' \
+    >"$tw/cyc/a.bas"
+printf 'library b\nload a from "../sub/../a.bas"\nfunction fb()\n    return 2\nend function\nend library\n' \
+    >"$tw/cyc/sub/b.bas"
+printf 'load a from "cyc/a.bas"\nprint a.fa()\n' >"$tw/cmain.bas"
+(cd "$tw" && timeout -k 5 30 "$here/gbasic" cmain.bas) >"$scratch/sp.out" 2>"$scratch/sp.err"
+if grep -qF "circular use detected for a from" "$scratch/sp.err" && [ ! -s "$scratch/sp.out" ]; then
+    pass "a cycle spelled two ways is reported as a cycle, and nothing ran"
+else
+    fail "a cycle spelled two ways is reported as a cycle: $(head -c 200 "$scratch/sp.err")"
+fi
+
 # AN ACTOR IS A FRESH PROCESS WITH A FRESH FUNCTION TABLE. The child is
 # fork+exec: it re-parses the source and re-runs the `load`, so the effective
 # name has to be reconstructed there rather than carried across -- and a

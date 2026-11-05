@@ -8518,9 +8518,18 @@ static char *read_source_file(const char *path) {
     return source;
 }
 
+/* ONE FILE, HOWEVER IT IS SPELLED. A library reached as `util.bas` from the
+ * program and as `../util.bas` from a library in a subfolder is one file, and
+ * every question asked of a loaded path -- was it parsed, was it imported,
+ * does a name already answer for it, is this a cycle -- compares files, not
+ * spellings. Comparing spellings refused Transward's own layout ("the name
+ * 'util' already refers to library 'util' from ./util.bas, and cannot also
+ * refer to ... ./web/../util.bas") and would have parsed the file twice. */
+static int same_file_path(const char *a, const char *b);
+
 static LoadedFile *loaded_file_find(const char *path) {
     for (size_t i = 0; i < loaded_file_count; i++) {
-        if (strcmp(loaded_files[i].path, path) == 0) {
+        if (same_file_path(loaded_files[i].path, path)) {
             return &loaded_files[i];
         }
     }
@@ -8615,7 +8624,7 @@ static LoadedFile *loaded_file_get(const char *path) {
 
 static int use_pair_contains(UsePair *pairs, size_t count, const char *path, const char *library) {
     for (size_t i = 0; i < count; i++) {
-        if (strcmp(pairs[i].path, path) == 0 && strcmp(pairs[i].library, library) == 0) {
+        if (strcmp(pairs[i].library, library) == 0 && same_file_path(pairs[i].path, path)) {
             return 1;
         }
     }
@@ -9249,7 +9258,7 @@ static int library_name_claim(const char *effective, const char *path, const cha
         if (strcmp(held->effective, effective) != 0) {
             continue;
         }
-        if (strcmp(held->path, path) == 0 && strcmp(held->declared, declared) == 0) {
+        if (strcmp(held->declared, declared) == 0 && same_file_path(held->path, path)) {
             return 1;
         }
         char message[640];

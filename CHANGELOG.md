@@ -16,6 +16,19 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### One file loaded by two spellings is one library
+
+- **A library file is recognised as one file however its path is spelled.**
+  A program that loads `util.bas` and a library in `web/` that loads
+  `../util.bas` used to be refused before running: "the name 'util' already
+  refers to library 'util' from ./util.bas, and cannot also refer to library
+  'util' from ./web/../util.bas". Loads are now compared as files (after
+  resolving `..` and symbolic links), so this is one library, parsed once.
+  Two *different* files declaring one name are still refused, and a cycle
+  spelled two ways is reported as a cycle rather than as a name collision.
+  Found by Transward, whose service would not start
+  (`tests/run_alias.sh`, tier `spelling`).
+
 ### Capturing a window as a picture
 
 - **`qt.capture(win, file, { part, scale })`**, also `win.capture(...)`, writes a
