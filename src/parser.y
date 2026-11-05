@@ -264,6 +264,10 @@ static char *copy_string_literal(gb_parse_ctx *ctx, const char *start, int lengt
                  * (gbasic-books volume 3, gap G5). It used to be an unknown
                  * escape: the two characters, and a warning. */
                 text[out++] = '\r';
+            } else if (start[i] == 'f') {
+                /* A form feed is how a print-image report marks a page, and
+                 * reading those reports is ARI's whole job (gap G29). */
+                text[out++] = '\f';
             } else if (start[i] == '"' || start[i] == '\\') {
                 text[out++] = start[i];
             } else if (start[i] == 'u') {

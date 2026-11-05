@@ -275,6 +275,30 @@ else
     status=1
 fi
 
+# --- Tier 3e: the book's gaps G24-G28 --------------------------------------------
+#
+# From the gBASIC books (volume 3, Chapter 7, a purchase-order spool): `last`
+# reaching back past an amount printed as asterisks, `within columns` dropping
+# the type, `ends` without `starts`, `wraps` on continuation lines, and
+# two-digit years under a declared century. Self-checking, by hand.
+out4=$(mktemp)
+if GBASIC_PATH=stdlib ./gbasic tests/ari_book_test.bas >"$out4" 2>&1; then
+    mism4="$(sed -n 's/^mismatches: //p' "$out4")"
+    checks4="$(sed -n 's/^checks: //p' "$out4")"
+    if [ "$mism4" = "0" ] && [ "${checks4:-0}" -ge 51 ]; then
+        printf 'PASS book gaps     %s checks, 0 mismatches\n' "$checks4"
+    else
+        printf 'FAIL book gaps     %s checks, %s mismatches\n' "$checks4" "$mism4"
+        grep MISMATCH "$out4" || true
+        status=1
+    fi
+else
+    printf 'FAIL book gaps     probe program exited nonzero\n'
+    tail -10 "$out4"
+    status=1
+fi
+rm -f "$out4"
+
 # --- Tier 3d: the span report ---------------------------------------------------
 #
 # `ari.trace` -- which source spans the specification claimed, and what stayed

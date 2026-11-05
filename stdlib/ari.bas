@@ -741,6 +741,37 @@ library ari
         return { val: unknown, why: "no-date-found", at: 0, length: 0 }
     end function
 
+    ' TWO-DIGIT YEARS, read only under a declared century (gap G28; limitation
+    ' B4/B5). The century is a DECISION a report never prints, so it is never
+    ' guessed: with none declared the answer is `two-digit-year`, which names
+    ' what to declare, rather than `no-date-found`, which blamed the data. B4
+    ' measured why the pattern alone is worse than the miss -- `26-10-16`, and
+    ' then a raise -- so the year is widened to four digits FIRST and the
+    ' ordinary recognizer, dialect and validation included, reads the result.
+    ' These patterns stay out of date_patterns(), which ari_discover profiles
+    ' columns with: a two-digit year is not a date until someone says so.
+    function _date_in_yy(text, dialect, century)
+        pats = [ "(?<![0-9])([0-9]{1,2})([/.-])([0-9]{1,2})[/.-]([0-9]{2})(?![0-9])",
+                 "(?<![0-9])([0-9]{1,2})([-/. ])([A-Za-z]{3})[-/. ]([0-9]{2})(?![0-9])",
+                 "(?<![A-Za-z])([A-Za-z]{3})([-/. ])([0-9]{1,2})[-/. ]([0-9]{2})(?![0-9])" ]
+        for each p in pats
+            m = match(text, regex(p))
+            if not is_unknown(m) then
+                if is_unknown(century) then
+                    return { val: unknown, why: "two-digit-year", at: m.start, length: m.length }
+                end if
+                sep = m.groups[1]
+                wide = m.groups[0] + sep + m.groups[2] + sep + century + m.groups[3]
+                dr = _date_in(wide, dialect)
+                if is_unknown(dr.val) then
+                    return { val: unknown, why: dr.why, at: m.start, length: m.length }
+                end if
+                return { val: dr.val, why: "", at: m.start, length: m.length }
+            end if
+        end for
+        return { val: unknown, why: "no-date-found", at: 0, length: 0 }
+    end function
+
     ' The extent of a span's trimmed content, so an untyped field claims the
     ' text it returned rather than the whitespace around it. `trim` begins at the
     ' first non-blank character, so the first occurrence of the trimmed text in
@@ -755,6 +786,24 @@ library ari
             return { at: 0, length: len(t) }
         end if
         return { at: a, length: len(t) }
+    end function
+
+    ' `last <type>` MUST NOT REACH BACK PAST AN OVERFLOW (gap G24). When an
+    ' amount is too wide for its picture the report prints it as asterisks, and
+    ' the last money-shaped token left on the line is the one BEFORE it -- the
+    ' unit price, read as the open amount with nothing said. Measured on the
+    ' book's spool: 1,305,000.00 printed as stars, read as 1,450.00.
+    '
+    ' NOT "the last token must be of the type", which was the first version and
+    ' the ledger's own suggestion: the delinquency fixture prints days past due
+    ' AFTER the balance (`24,368.82     44`), so `last money` there is rightly
+    ' the last money and not the last token, and that rule refused every row.
+    ' What refuses is a run of three or more `*` (or `#`, a spreadsheet's
+    ' overflow) after the match: a field that was there and could not be
+    ' printed. A single `*` is a flag a report prints beside an amount.
+    function _overflow_after(span, got)
+        after = got.at + got.length
+        return contains(mid(span, after, len(span) - after), regex("(^|[ ])[*#]{3,}([ ]|$)"))
     end function
 
     ' Convert an extracted span according to its declared type. `as <type>`
@@ -869,6 +918,9 @@ library ari
             if is_unknown(mv) then
                 return { val: unknown, why: "malformed-money" }
             end if
+            if want_last and _overflow_after(span, mv) then
+                return { val: unknown, why: "overflow-after-money", at: mv.at, length: mv.length }
+            end if
             ' A native money value, not a bare number: that is what §4 promised
             ' and what makes the output flow into frame/stats as designed. It
             ' also prints its cents correctly, which a number above $9,999.99
@@ -880,6 +932,9 @@ library ari
             if is_unknown(iv) then
                 return { val: unknown, why: "no-integer-found" }
             end if
+            if want_last and _overflow_after(span, iv) then
+                return { val: unknown, why: "overflow-after-integer", at: iv.at, length: iv.length }
+            end if
             return { val: iv.val, why: "", at: iv.at, length: iv.length }
         end if
         if eff = "decimal" then
@@ -887,11 +942,26 @@ library ari
             if is_unknown(dv) then
                 return { val: unknown, why: "no-decimal-found" }
             end if
+            if want_last and _overflow_after(span, dv) then
+                return { val: unknown, why: "overflow-after-decimal", at: dv.at, length: dv.length }
+            end if
             return { val: dv.val, why: "", at: dv.at, length: dv.length }
         end if
         if eff = "date" then
             dr = _date_in(span, dialect)
+            if is_unknown(dr.val) and dr.why = "no-date-found" then
+                dr = _date_in_yy(span, dialect, ctx.usings["century"])
+            end if
             if is_unknown(dr.val) then
+                ' A DECLARED no-date is `nothing`: the report said there is
+                ' none, which is a value, not a failure to find one (G28).
+                nd = ctx.usings["no date"]
+                if not is_unknown(nd) then
+                    at = find(span, nd)
+                    if not is_nothing(at) then
+                        return { val: nothing, why: "", at: at, length: len(nd) }
+                    end if
+                end if
                 return dr
             end if
             return { val: _to_date(dr.val), why: "", at: dr.at, length: dr.length }
@@ -1020,7 +1090,15 @@ library ari
             ty = am.groups[0]
             rest = trim(mid(rest, 0, am.start))
         end if
-        return { name: fname, locator: rest, type: ty }
+        ' `wraps`: in a `rows continue(...)` record the field's text goes on
+        ' onto the continuation lines, and is joined (gap G27).
+        wraps = false
+        wm = match(rest, regex("[ ]+wraps[ ]*$"))
+        if not is_unknown(wm) then
+            wraps = true
+            rest = trim(mid(rest, 0, wm.start))
+        end if
+        return { name: fname, locator: rest, type: ty, wraps: wraps }
     end function
 
     ' `section <name> [repeats] [starts(<pat>)] [ends(<pat>)]:`
@@ -1126,6 +1204,20 @@ library ari
             end if
 
             if starts_with(t, "using ") then
+                ' Two declarations for dates that are not types (gap G28):
+                ' `using century: 20` says what a two-digit year is, and `using
+                ' no date: 00/00/00` names the token a report prints for none.
+                ' Their values are kept as written; _check_usings judges them.
+                dm = match(t, regex("^using[ ]+(century|no[ ]+date)[ ]*:[ ]*(.*?)[ ]*$"))
+                if not is_unknown(dm) then
+                    k = dm.groups[0]
+                    if k != "century" then
+                        k = "no date"
+                    end if
+                    sec.usings[k] = dm.groups[1]
+                    i = i + 1
+                    continue
+                end if
                 um = match(t, regex("^using[ ]+([A-Za-z_]+)[ ]*:[ ]*([A-Za-z_][A-Za-z0-9_]*)"))
                 if not is_unknown(um) then
                     sec.usings[um.groups[0]] = um.groups[1]
@@ -1314,6 +1406,23 @@ library ari
         builtins = builtin_types()
         for each k in keys(sec.usings)
             v = sec.usings[k]
+            if k = "century" then
+                cm = match(v, regex("^[0-9]{2}$"))
+                if is_unknown(cm) then
+                    append(errs, ("`using century: " + v + "` in section `" + path
+                        + "`: a century is two digits, the ones a two-digit year"
+                        + " is written after: `using century: 20` reads 26 as 2026."))
+                end if
+                continue
+            end if
+            if k = "no date" then
+                if v = "" then
+                    append(errs, ("`using no date:` in section `" + path
+                        + "` names no token: write the text the report prints"
+                        + " for no date, `using no date: 00/00/00`."))
+                end if
+                continue
+            end if
             if not contains(builtins, k) then
                 append(errs, ("`using " + k + ": " + v + "` in section `" + path
                     + "` rebinds `" + k + "`, which is not a built-in type."
@@ -1519,7 +1628,17 @@ library ari
         ' say it, then dropped.
         loc = replace(loc, "right flush of ", "right of ")
 
-        sm = match(loc, regex("^(first|last)[ ]+([A-Za-z_]+)[ ]*$"))
+        ' The type a `first`/`last` locator carries survives the qualifiers
+        ' around it: `last money within columns 102-117` is money, as `last
+        ' money` is, and so is `down 1 of "X" last money` (gap G25). A
+        ' qualifier narrows WHERE to look, never WHAT comes back; both used to
+        ' return text, and the first also lost `last` and read the first token.
+        v = _parse_vertical(loc)
+        core = loc
+        if not is_unknown(v) then
+            core = v.inner
+        end if
+        sm = match(core, regex("^(first|last)[ ]+([A-Za-z_]+)([ ]+within[ ]+columns[ ]+[0-9]+-[0-9]+)?[ ]*$"))
         if not is_unknown(sm) then
             if sm.groups[0] = "last" then
                 want_last = true
@@ -1529,7 +1648,6 @@ library ari
             end if
         end if
 
-        v = _parse_vertical(loc)
         if not is_unknown(v) then
             ' Find the anchor line, then walk the offset window from it.
             i = 0
@@ -1597,6 +1715,43 @@ library ari
             return { val: unknown, why: "anchor-not-found", line: 0, src: "", at: 0, length: 0, type: ty, anchors: [] }
         end if
 
+        ' `wraps` (gap G27): a description too long for its column goes on
+        ' under itself on continuation lines, so the value is the text at this
+        ' locator on EVERY line of the record, joined with one space. Each
+        ' piece is claimed where it is, so a trace still names every physical
+        ' line the value came from. Only for text: an amount does not wrap.
+        if f.wraps and (ty = "" or ty = "text") then
+            pieces = []
+            first = unknown
+            more = []
+            for each row in block
+                r = _locate_in_line(row.text, loc)
+                if r.ok then
+                    t = trim(r.span)
+                    if t != "" then
+                        te = _trim_extent(r.span)
+                        append(pieces, t)
+                        part = { line: row.line, src: row.text, at: r.at + te.at, length: te.length,
+                                 anchors: r.anchors }
+                        if is_unknown(first) then
+                            first = part
+                        else
+                            append(more, part)
+                        end if
+                    end if
+                end if
+            end for
+            if count(pieces) = 0 then
+                return { val: unknown, why: "not-found", line: 0, src: "", at: 0, length: 0, type: ty, anchors: [] }
+            end if
+            anchors = []
+            for each an in first.anchors
+                append(anchors, { line: first.line, src: first.src, at: an.at, length: an.length })
+            end for
+            return { val: join(pieces, " "), why: "", line: first.line, src: first.src,
+                     at: first.at, length: first.length, type: ty, anchors: anchors, more: more }
+        end if
+
         why = "not-found"
         for each row in block
             r = _locate_in_line(row.text, loc)
@@ -1638,7 +1793,38 @@ library ari
     function _find_instances(grid, lo, hi, sec)
         spans = []
         if sec.starts = "" then
-            append(spans, { lo: lo, hi: hi })
+            if sec.ends = "" then
+                append(spans, { lo: lo, hi: hi })
+                return spans
+            end if
+            ' `ends` WITH NO `starts` (gap G26). It was ignored: the section
+            ' took every line to the end of its parent, the terminator
+            ' included. Now an instance runs from where the last one ended to
+            ' the next `ends` line, which belongs to neither; without
+            ' `repeats` there is one. What follows the last `ends` is an
+            ' instance only if a non-blank line is in it.
+            a = lo
+            j = lo
+            while j < hi
+                e = _line_matches(grid[j].text, sec.ends)
+                if e then
+                    append(spans, { lo: a, hi: j })
+                    if not sec.repeats then
+                        return spans
+                    end if
+                    a = j + 1
+                end if
+                j = j + 1
+            end while
+            k = a
+            while k < hi
+                nb = not _is_blank(grid[k].text)
+                if nb then
+                    append(spans, { lo: a, hi: hi })
+                    return spans
+                end if
+                k = k + 1
+            end while
             return spans
         end if
         i = lo
@@ -1717,6 +1903,13 @@ library ari
             append(out, { path: path, field: f.name, kind: "field", rule: f.locator,
                           type: got.type, text: mid(got.src, got.at, got.length),
                           line: got.line, start: got.at, length: got.length })
+        end if
+        if has(got, "more") then
+            for each m in got.more
+                append(out, { path: path, field: f.name, kind: "field", rule: f.locator,
+                              type: got.type, text: mid(m.src, m.at, m.length),
+                              line: m.line, start: m.at, length: m.length })
+            end for
         end if
         for each an in got.anchors
             if an.length > 0 then
@@ -1844,7 +2037,15 @@ library ari
         end if
 
         for each child in sec.sections
-            spans = _find_instances(grid, lo, hi, child)
+            ' A section's `starts` line is not offered to a child that has no
+            ' `starts` of its own but an `ends`: that child begins after the
+            ' heading, or its first row is the heading (gap G26). A child with
+            ' neither still sees the whole parent, as it always has.
+            clo = lo
+            if sec.starts != "" and child.starts = "" and child.ends != "" then
+                clo = lo + 1
+            end if
+            spans = _find_instances(grid, clo, hi, child)
             if child.repeats then
                 items = []
                 idx = 0
@@ -2160,6 +2361,9 @@ library ari
             amb = contains(k, "ambiguous-date")
             if amb then
                 hint = "declare `using date: dmy` (or mdy) on the enclosing section"
+            end if
+            if contains(k, "two-digit-year") then
+                hint = "declare `using century: 20` (or 19) on the enclosing section"
             end if
             append(findings, { what: k, count: tally[k], hint: hint })
         end for

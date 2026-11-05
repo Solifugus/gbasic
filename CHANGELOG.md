@@ -16,6 +16,42 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Reading print-image reports: overflows, wrapped lines, two-digit years
+
+Gaps G24 to G30 from the gBASIC books (volume 3's gap ledger, Chapter 7).
+
+- **`last money` no longer reaches back past an overflow.** When an amount is
+  too wide for its picture, the report prints asterisks, and `last money`
+  returned the money before it, the unit price, with nothing said. A run of
+  three or more `*` or `#` after the match now makes the field `unknown`, with
+  `overflow-after-money`. The same applies to `last integer` and `last decimal`.
+  Other text after the amount, such as a days-past-due column or a one-star
+  flag, is still fine.
+- **`last money within columns a-b` is money**, where it was text, and it now
+  takes the last amount in the window rather than the first. The inner locator
+  of `down 1 of "X" last money` keeps its type too.
+- **A section with `ends(...)` and no `starts(...)` ends where it says.** It
+  used to run to the end of its parent, terminator included, and its first row
+  was the parent's heading. With `repeats`, each `ends` line closes one
+  instance.
+- **`wraps` on a field**, inside `rows continue(<pat>):`, joins the field's text
+  from every line of the record with one space. `ari.trace` claims each piece
+  on its own line. `rows continue(...)` itself was already there; the spec
+  language page wrongly listed multi-line records as unsupported.
+- **Two-digit years under a declared century.** With `using century: 20`,
+  `11/15/26` reads as 15 November 2026. With `using no date: 00/00/00`, that
+  token reads as `nothing`, with no diagnostic. Without a century, the field
+  stays `unknown`, but the reason is now `two-digit-year` rather than
+  `no-date-found`, and `ari.inspect` names the declaration. This strikes ARI
+  limitations B4 and B5.
+- **`\f` in a string is a form feed**, the page break of a print-image report.
+  It used to keep both characters and warn. Code that meant the two characters
+  `\f` now writes `\\f`.
+- **`program_file()`** answers the running program's own file, as an absolute
+  file reference with links resolved, so a program can find a file beside
+  itself: `read({file}join_path(directory_name(program_file()), "spec.ari"))`.
+  It answers `unknown` at the prompt.
+
 ### ZIP files
 
 Gap G11 from the gBASIC books (volume 3's gap ledger).

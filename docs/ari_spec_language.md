@@ -114,10 +114,12 @@ section     := "section" NAME section-mod* ":" INDENT section-body DEDENT
 section-mod := "repeats" | "starts(" pattern ")" | "ends(" pattern ")"
 section-body:= using-decl* (field | section | rows)+
 
-rows        := "rows:" INDENT field+ DEDENT
+rows        := "rows" ("continue(" pattern ")")? ":" INDENT field+ DEDENT
 using-decl  := "using" base-type ":" NAME
+             | "using" "century" ":" DIGIT DIGIT
+             | "using" "no" "date" ":" TEXT
 
-field       := "field" NAME ":" locator ("as" type-ref)?
+field       := "field" NAME ":" locator "wraps"? ("as" type-ref)?
 ```
 
 Three rules that the sketch left implicit and the fixtures made load-bearing:
@@ -129,9 +131,23 @@ Three rules that the sketch left implicit and the fixtures made load-bearing:
   next occurrence of its own `starts` pattern, or the end of its parent —
   whichever comes first. That is what makes `Branch:` and `Teller:` work, since
   neither carries a terminator.
+- **An `ends` with no `starts`** ends the section at the first line matching
+  it, which belongs to neither side, and the section begins after its parent's
+  `starts` line, so a `rows:` block does not take the parent's heading as a row.
+  With `repeats`, each instance runs from the line after one `ends` to the next,
+  and what follows the last is an instance if it holds a non-blank line. *(Gap
+  G26 from the gBASIC books: `ends` used to be ignored without `starts`, and the
+  section ran to the end of its parent, terminator included.)*
 - **`rows:` means one record per remaining line** in the enclosing section, and
   makes that section's output a frame. It is the common case and deserves its
   own word rather than a `repeats` section with a synthetic line pattern.
+- **`rows continue(<pat>):`** makes a line matching `<pat>` a continuation of
+  the record above it rather than a record of its own. Every locator then sees
+  the record's lines together. A field marked **`wraps`**, such as `field
+  description: columns 5-28 wraps`, takes its text from every line of the
+  record and joins the pieces with one space. `ari.trace` claims each piece on
+  its own line, so the value still names every physical line it came from. Only
+  text wraps. *(`wraps` is gap G27.)*
 
 ## 4. Locators
 
@@ -147,6 +163,19 @@ A locator answers "where is the value", relative to the current record's lines.
 | `down <n> of <locator>` | apply the locator `n` lines below the anchor |
 | `up <n> of <locator>` | the same, upward |
 | `<locator> within columns <a>-<b>` | restrict the search to a column range |
+
+A qualifier narrows **where** to look and never changes **what** comes back:
+`last money within columns 102-117` is money, as `last money` is, and so is the
+inner locator of `down 1 of "X" last money`. *(Gap G25: both came back as text,
+and the first also lost `last`.)*
+
+**`last <type>` refuses to reach back past an overflow.** When an amount is too
+wide for its picture, the report prints asterisks, and the last money-shaped
+token left on the line is the one before it, typically the unit price. A run of
+three or more `*` (or `#`) after the match therefore makes the field `unknown`
+with `overflow-after-money` (or `-integer`, `-decimal`). Other text after the
+match is fine: a days-past-due column after a balance is still a balance, and
+so is a one- or two-star flag. *(Gap G24.)*
 
 Distances accept the §5 forms — exact (`5`), range (`2-10`, `3-`, `-8`) and
 `flush`. A range means "search these offsets and take the first that matches",
@@ -199,6 +228,15 @@ section rows repeats starts(/^ROW /):
     using date: dmy
     field posted: first date as date
 ```
+
+**Two-digit years need a declared century**, `using century: 20`, under which
+`11/15/26` is 15 November 2026 (with `using date: mdy`) and `16-OCT-26` is 16
+October 2026. Without one the field is `unknown` with `two-digit-year`, and
+`ari.inspect` gives the declaration as its hint. A century is a decision the
+report never prints, so it is never guessed. **`using no date: 00/00/00`**
+names the token a report prints for no date, which then reads as `nothing`, with
+no diagnostic, because the report has said there is none. *(Gap G28; it
+strikes limitation B4 and B5.)*
 
 **A declaration is authoritative, not a hint.** Under `using date: mdy`,
 `27/12/2026` is `unknown` with `invalid-date` — month 27 does not exist, and the
@@ -441,6 +479,7 @@ rewritten rather than left standing.
   into "portable, or a loud failure", which is the standard applied everywhere
   else here. Not blocking: the fixture case needs `/(^| )X/`, not `\b`.
 
-- **Multi-line records.** Neither fixture has a wrapped or continuation line, and
-  the grammar has no way to say "this record spans two physical lines." Real
-  reports have them. Deferred, but it is a gap, not an omission.
+- **Multi-line records** were listed here as open after `rows continue(...)`
+  had shipped with the delinquency fixture. The listing misled the gBASIC books
+  (gap G27), so it is now in §3, together with `wraps`, which a wrapped
+  description needed and did not have.

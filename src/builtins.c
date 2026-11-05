@@ -31,6 +31,7 @@ int gbasic_builtin_function(const char *name) {
         "zone_offset",
         "zone_resolve",
         "monotonic",
+        "program_file",
         "base32_decode",
         "base32_encode",
         "base64_encode",

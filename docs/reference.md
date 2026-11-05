@@ -23,6 +23,7 @@ Supported string escapes:
 - `\n` newline
 - `\t` tab
 - `\r` carriage return, so a CRLF line ending is `"\r\n"` *(after 0.10.0)*
+- `\f` form feed, the page break of a print-image report *(after 0.10.0)*
 - `\\` backslash
 - `\"` double quote
 - `\u{...}` Unicode codepoint by hex value, e.g. `\u{1F600}` → `😀` (range
@@ -8533,8 +8534,19 @@ plain string alike, so a value straight out of a listing needs no conversion:
   resolve `directory_name(p)` instead.
 - `file_type(p)` — `"file"`, `"folder"` or `"other"`, and `unknown` when
   nothing is there.
+- `program_file()` — the running program's own file, as an absolute file
+  reference with links resolved, so a program can find a file beside itself
+  whatever the working directory (*after 0.10.0*). `read` resolves a relative
+  path against the working directory, unlike `load`, which resolves beside the
+  loading file. It answers the program that was run even when a library asks,
+  and `unknown` at the prompt:
 
-All seven **refuse a path containing an interior NUL byte** rather than
+  ```basic
+  here = directory_name(program_file())
+  spec = read({file}join_path(here, "open_po.ari"))
+  ```
+
+The seven that take a path **refuse a path containing an interior NUL byte** rather than
 splitting it, because a path crosses into the system as a NUL-terminated C
 string: a name split out of `"/a/b" + chr(0) + "x/c.txt"` describes a path that
 cannot be opened, and every answer here is used to build another path. Before
@@ -10691,6 +10703,12 @@ whole program without needing a call site.
   "table_column"}` names the columns, and only those are loaded. Every value is
   bound. Inside a caller's transaction the load is a savepoint.
 - `ari` — the anchor-relative report parser (`docs/ari_spec_language.md`).
+  *After 0.10.0* (gaps G24–G28 from the gBASIC books): `last money` refuses
+  to read past an amount printed as asterisks (`overflow-after-money`); a
+  `within columns` qualifier keeps the type; a section with `ends` and no
+  `starts` ends there; a `wraps` field joins its text across a
+  `rows continue(...)` record; and `using century: 20` with
+  `using no date: 00/00/00` reads two-digit years and a report's empty date.
   `ari_parse_spec(spec_text)` parses a spec on its own, and
   `clean_grid(report_text, spec_text)` exposes the page-furniture pass
   independently of any spec — useful, and testable, without parsing anything.

@@ -101,6 +101,19 @@ print count(p)'
     && ok '\r is one byte, 13, silently, in an ordinary literal and in a modifier literal' \
     || bad '\r escape' "rc=$rc out=[$out] err=[$err]"
 
+echo "--- TIER 3c: \\f is a form feed, in both stages (gbasic-books G29) ---"
+# A print-image report marks each page with one; it warned and kept the two
+# characters until 2026-11-05. By byte, as 3b.
+run 'print len("a\fb")
+print byte_at("a\fb", 1)
+p {split "\f"}= "page 1" + chr(12) + "page 2"
+print count(p)'
+[ "$rc" = "0" ] && [ "$out" = "3
+12
+2" ] && [ -z "$err" ] \
+    && ok '\f is one byte, 12, silently, in an ordinary literal and in a modifier literal' \
+    || bad '\f escape' "rc=$rc out=[$out] err=[$err]"
+
 echo "--- TIER 4: CONTROLS -- malformed unicode is STILL REFUSED ---"
 # The relaxation is narrow: an UNKNOWN escape is now advice, a MALFORMED \u{}
 # is still an error. Without this tier, "escapes were relaxed" could quietly

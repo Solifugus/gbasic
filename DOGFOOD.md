@@ -13232,3 +13232,17 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   open item. Both are documented behaviour, so there is no ledger row to
   probe. A candidate for Matthew's "fumbles are findings": `{money}` could
   name `{USD}` in its refusal.
+
+## 2026-11-05 — CC — while: writing `program_file()` (book gap G30)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** the obvious line, `read(join_path(directory_name(program_file()),
+  "spec.txt"))`, is refused with "read expects a file reference".
+  `directory_name` and `join_path` answer text even when handed a file or
+  folder reference, and `read` takes only a reference, so the type is lost two
+  calls in and has to be put back with `{file}`. The same shape as gap G25 in
+  ARI: a step that narrows *where* drops *what kind*.
+- **Workaround:** `read({file}join_path(here, "spec.txt"))`, which is what the
+  reference shows. Not an open item: documented behaviour, so there is no
+  ledger row to probe. A candidate for Matthew's "fumbles are findings":
+  `join_path` of a folder reference could answer a reference.

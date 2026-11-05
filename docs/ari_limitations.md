@@ -192,8 +192,6 @@ these are *gaps to decide about*, not defects.
 | **B1** | `1,234` | `malformed-money` | Whole amounts with no cents. Common in summary and count columns. |
 | **B2** | `1,234.5` | `malformed-money` | One decimal place. |
 | **B3** | `1 234,56` | `malformed-money` | Space grouping (French/SI). |
-| **B4** | `10/16/26` | `no-date-found` | **Two-digit year.** Ubiquitous in legacy print-image output, and the one on this list most likely to appear in a real report. Needs a century rule, which is a *decision* (a sliding window? a declared pivot?) and not merely a pattern. **Measured**: adding the pattern alone and nothing else does not produce a wrong date — it produces `26-10-16` and then a **raise**, `date modifier expects an ISO-like date string`, which ends the parse. The naive fix is not merely incomplete, it is worse than the miss. |
-| **B5** | `16-OCT-26` | `no-date-found` | Two-digit year, alphabetic month. Same decision as B4, and the same measured consequence. |
 | **B6** | `20261016` | `no-date-found` | Compact `YYYYMMDD`. **Deliberately contentious**: it is also a plausible identifier and a plausible integer, so recognising it as a date by default would be exactly the silent guess §8 forbids. Probably belongs in a declared `type` block rather than the built-in union. |
 | **B7** | `OCTOBER 16, 2026` | `no-date-found` | Full month name. |
 | **B8** | `2026/10/16` | `no-date-found` | ISO order with slashes. |
@@ -202,6 +200,25 @@ these are *gaps to decide about*, not defects.
 | **B9** | a custom `date` type whose rule **captures** its components — `/([0-9]{2})\/([0-9]{2})\/([0-9]{4})/ -> dmy` | `no-date-found` | With no `/re/repl/` and at least one capture, `_convert` takes `groups[0]` as the value. That is right for money — a capture is how the digits are pulled out of the symbols and the sign — and never right for a date, where the captures are the components and the first is a two-digit day. **The control is the same rule without parentheses, which works**, so the difference is the capture and nothing else. Found writing `tests/ari_using_test.bas` (2026-09-17) and recorded rather than fixed, because the sweep rule below is *Class A first, and on its own*. It is Class B by this file's own definition — an honest `unknown` with a diagnostic — but note the diagnostic **misattributes**: `no-date-found` points at the data when the spec is what is wrong. |
 
 ---
+
+#### B4 and B5 — struck 2026-11-05
+
+Two-digit years (`10/16/26`, `16-OCT-26`) are **read under a declared
+century**, `using century: 20`, and a report's token for no date is declared
+too, `using no date: 00/00/00`, which reads as `nothing` with no diagnostic.
+Gap G28 from the gBASIC books: an ERP spool in volume 3's Chapter 7 prints
+both.
+
+**The century is declared, never guessed**, which is what this entry said the
+fix needed. With none declared the field is still `unknown`, but the reason is
+`two-digit-year`, naming what to declare, where it was `no-date-found`, which
+blamed the data; `inspect` gives the declaration as its hint. The measured
+hazard (the pattern alone produced `26-10-16` and then a raise) is avoided by
+widening the year to four digits first and handing the result to the ordinary
+recognizer, so dialect and month-length validation apply unchanged. The
+patterns stay out of `date_patterns()`, which `ari_discover` profiles with. The
+checks are in `tests/ari_book_test.bas`; the undeclared refusal stays probed
+in `tests/ari_limitations_test.bas`.
 
 #### B10 — struck 2026-09-17
 

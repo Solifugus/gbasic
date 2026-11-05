@@ -270,9 +270,9 @@ check("B2 one decimal place is still refused", read_money("1,234.5"), unknown)
 check("B3 space grouping is still refused", read_money("1 234,56"), unknown)
 check("B3 control: comma grouping still works", read_money("1,234.56"), 1234.56)
 
-check("B4 a two-digit year is still refused", read_date("10/16/26"), unknown)
+check("B4 (struck) with no century declared, a two-digit year is still refused", read_date("10/16/26"), unknown)
 check("B4 control: a four-digit year still works", read_date("10/16/2026"), "2026-10-16")
-check("B5 a two-digit year with an alphabetic month is still refused",
+check("B5 (struck) with no century declared, an alphabetic month and a two-digit year still refused",
       read_date("16-OCT-26"), unknown)
 check("B5 control: the four-digit form still works", read_date("16-OCT-2026"), "2026-10-16")
 check("B6 compact YYYYMMDD is still refused", read_date("20261016"), unknown)
@@ -287,7 +287,7 @@ check("B11 control: exactly two decimals read", read_money("1,234.56"), 1234.56)
 ' The diagnostics are part of the contract: a refusal that said nothing would be
 ' a different and worse limitation than the one recorded.
 check("B1 says why", why_of("1,234", money_spec()), "malformed-money")
-check("B4 says why", why_of("10/16/26", date_spec()), "no-date-found")
+check("B4 (struck) says why: the year, which a century declaration settles", why_of("10/16/26", date_spec()), "two-digit-year")
 
 ' B9 -- a custom DATE type whose rule CAPTURES its components. Found while
 ' writing tests/ari_using_test.bas, and recorded rather than fixed because the

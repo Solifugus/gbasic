@@ -153,6 +153,32 @@ else
     pass "_parent_dir is gone entirely"
 fi
 
+printf 'TIER program_file: where the running program is (gbasic-books G30)\n'
+# `read` resolves against the working directory, so a program could not find
+# a file beside itself. The answer must be the same from two working
+# directories, absolute, the real file behind a link, a file value (so it
+# composes), and unknown at the prompt. Checked against the path the shell
+# knows the program by, never against gBASIC's own answer.
+mkdir -p "$work/pf/conf" "$work/elsewhere"
+printf 'p = program_file()\nprint p\nprint type(p)\nprint read({file}join_path(directory_name(p), "conf/spec.txt"))\n' \
+    > "$work/pf/prog.bas"
+printf 'beside the program\n' > "$work/pf/conf/spec.txt"
+real=$(cd "$work/pf" && pwd -P)/prog.bas
+want=$(printf '%s\nfile\nbeside the program' "$real")
+a=$(cd "$work/pf" && "$OLDPWD/gbasic" prog.bas 2>&1) || true
+b=$(cd "$work/elsewhere" && "$OLDPWD/gbasic" ../pf/prog.bas 2>&1) || true
+[ "$a" = "$want" ] && pass "from the program's own folder" || { printf '%s\n' "$a"; fail "own folder"; }
+[ "$b" = "$want" ] && pass "from another folder, by a relative path" || { printf '%s\n' "$b"; fail "another folder"; }
+ln -s "$work/pf/prog.bas" "$work/elsewhere/link.bas"
+c=$(cd "$work/elsewhere" && "$OLDPWD/gbasic" link.bas 2>&1) || true
+[ "$c" = "$want" ] && pass "through a symbolic link: the real file's folder" || { printf '%s\n' "$c"; fail "link"; }
+d=$(printf 'print program_file()\n' | ./gbasic --repl 2>&1 | grep -c '^unknown$') || true
+[ "$d" = "1" ] && pass "unknown at the prompt" || fail "the prompt answered a file"
+printf 'print program_file(1)\n' > "$work/pf/arg.bas"
+e=$(./gbasic "$work/pf/arg.bas" 2>&1) || true
+case "$e" in *"program_file expects no arguments"*) true ;; *) false ;; esac \
+    && pass "an argument is refused" || fail "an argument was accepted"
+
 printf 'TIER valgrind\n'
 if vg_available; then
     if vg_run ./gbasic tests/path_split_test.bas >/dev/null 2>"$work/vg.err"; then

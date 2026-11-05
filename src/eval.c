@@ -1682,9 +1682,17 @@ static size_t string_cp_index_at_byte(const char *data, size_t byte_off) {
     return string_codepoint_count(data, byte_off);
 }
 
+/* The running program's own file, absolute, for `program_file()` (gap G30).
+ * Resolved once, when the program is named, so the answer does not depend on
+ * anything that happens later. The prompt names itself `<prompt>`, which is no
+ * file, so it has none. */
+static char *root_source_real = NULL;
+
 void eval_set_source_path(const char *path) {
     free(root_source_path);
     root_source_path = path ? copy_string(path) : NULL;
+    free(root_source_real);
+    root_source_real = (path && path[0] != '<') ? gb_realpath(path) : NULL;
 }
 void gb_set_reexec_path(const char *path) {
     free(reexec_source_path);
@@ -32850,6 +32858,20 @@ static Value eval_call(AstExpr *expr) {
      * system is suspended, so an interval spanning a suspend reads short. That
      * is the right behaviour for timing work and the wrong one for timing
      * wall-clock elapsed; it is documented rather than papered over. */
+    /* WHERE THE PROGRAM IS, so it can find a file beside itself (gap G30).
+     * `load` already resolves beside the loading file, but `read` resolves
+     * against the working directory, and nothing said where the program was.
+     * It is the ROOT program even when a library asks, because "beside the
+     * program" is the configuration a person puts there; unknown at the
+     * prompt. A file value, so `directory_name` and `join_path` compose. */
+    if (strcmp(expr->as.call.name, "program_file") == 0) {
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("program_file expects no arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        return root_source_real ? value_file(root_source_real) : value_unknown();
+    }
+
     if (strcmp(expr->as.call.name, "monotonic") == 0) {
         if (expr->as.call.args.count != 0) {
             runtime_error_raise("monotonic expects no arguments", 1003, "invalid function call");
@@ -38093,6 +38115,8 @@ static Value modifier_string_literal(const char *inner, size_t len) {
             out[w++] = '\t';
         } else if (esc == 'r') {
             out[w++] = '\r';
+        } else if (esc == 'f') {
+            out[w++] = '\f';
         } else if (esc == '"' || esc == '\\') {
             out[w++] = esc;
         } else if (esc == 'u') {
@@ -44593,6 +44617,8 @@ static void runtime_teardown(void) {
     current_import_path = NULL;
     free(root_source_path);
     root_source_path = NULL;
+    free(root_source_real);
+    root_source_real = NULL;
     free(reexec_source_path);
     reexec_source_path = NULL;
     env_clear(&global_env);
