@@ -132,7 +132,7 @@ program main(args)
     if error then
         m = error.message
         error.clear()
-        check("read still refuses a directory reference", contains(m, "expects a file reference"), true)
+        check("read still refuses a directory reference", contains(m, "expects a path string or file reference"), true)
     else
         check("read still refuses a directory reference", false, true)
     end if

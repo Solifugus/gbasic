@@ -5423,6 +5423,13 @@ orders freely.
 - **Suggestion:** let `read`, `write` and `append` take a string the way
   `list`, `bytes` and `file_name` already do, or say in the reference's Files
   section that whole-file I/O is the exception and why.
+- **Status: FIXED 2026-11-05**, asked for again by Matthew ("gBASIC should
+  require as little unnecessary work of the programmer as reasonably
+  possible"). Every file function takes a path string now, taken as `{file}`
+  would take it, except `append`: it is also the array verb, so a string there
+  is refused with a message naming `{file}path` rather than quietly creating a
+  file. (`bytes` in the entry above was wrong: it refused a string too.)
+  Held by `tests/run_file_path_string.sh`.
 
 ## 2026-09-12 — CC — while: testing the new `timer` module
 - **Type:** missing-feature
@@ -13246,3 +13253,5 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   reference shows. Not an open item: documented behaviour, so there is no
   ledger row to probe. A candidate for Matthew's "fumbles are findings":
   `join_path` of a folder reference could answer a reference.
+- **Status: FIXED 2026-11-05** from the other end: `read` takes the string, so
+  the line works as written (see the 2026-09-09 entry).

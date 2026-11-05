@@ -16,6 +16,28 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### File functions take a path string
+
+- **Every file function takes a path string or a `{file}` reference.**
+  `read`, `write`, `exists`, `delete`, `read_lines`, `bytes`, `lines`,
+  `chars`, `overwrite`, `read_at`, `file_size`, `file_mtime`, `lock`,
+  `unlock`, the source of `copy` and `move`, and `with lock` refused a string,
+  while `join_path`, `list`, `csv.records`, `zip.read` and `xml.parse_file`
+  took either. A string is taken as `{file}` would take it. So
+  `read(join_path(here, "spec.txt"))` works, where it needed `{file}` in front.
+- **`append` still refuses a string**, because it is also the array verb and
+  `append(name, "-2026")` would create a file by accident. Its message now
+  says to write `{file}path`.
+- **`append` reaches a `{file}` in a record field or written inline.**
+  `append(cfg.log, line)` and `append({file}"run.log", line)` were taken for
+  the array verb and refused; only a `{file}` variable worked.
+- **Refusal wording**: the eight pinned messages "<verb> expects a file
+  reference" now read "<verb> expects a path string or file reference" (and
+  `copy`/`move`: "... for both source and target"). The negative goldens that
+  pinned them now pass a number, since a string is no longer refused.
+  `append` given a string adds the `{file}path` hint, which moves
+  `negative_append_type.err`.
+
 ### Reading print-image reports: overflows, wrapped lines, two-digit years
 
 Gaps G24 to G30 from the gBASIC books (volume 3's gap ledger, Chapter 7).

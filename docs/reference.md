@@ -8235,6 +8235,24 @@ the output is decode-compatible, `decode(quote(text))` round-trips strings.
 
 File functions (see also the file/directory value types):
 
+**Every file function takes a path string or a `{file}` reference**
+(*since 0.11.0*), and a string is taken exactly as `{file}` would take it, an
+interior NUL refused the same way. So
+`read(join_path(directory_name(program_file()), "spec.txt"))` needs no
+conversion, though `join_path` answers text. Before 0.11.0 the whole-file
+verbs (`read`, `write`, `exists`, `delete`, `read_lines`, `bytes`, `lines`,
+`chars`, `overwrite`, `read_at`, `file_size`, `file_mtime`, `lock`, `unlock`,
+`copy` and `move`'s source, and `with lock`) refused a string while every
+path function beside them took one.
+
+**`append` is the one exception.** It is also the array verb, and a string
+there is far more often a slip than a file name: `append(name, "-2026")`
+would otherwise create a file called whatever `name` held. It refuses a
+string and says to write `{file}path`. It does append to a `{file}` held
+anywhere, a variable, a record field (`append(cfg.log, line)`) or an inline
+`append({file}"run.log", line)`; before 0.11.0 only a bare variable worked
+and the other two were taken for the array verb and refused.
+
 - `exists(f)` — whether the path exists.
 - `read(f)` / `write(f, text)` / `append(f, text)` — whole-file I/O.
   **Binary-safe in both directions** (*since 0.1.0-rc9*): a gBASIC string may
@@ -8669,12 +8687,12 @@ File metadata and atomic replacement:
   (metadata only, not a read). This is the binary byte count, so it counts
   embedded NULs and is unaffected by text length; a zero-byte file returns `0`.
   Numbers hold integers exactly up to 2⁵³ (8 PiB), well beyond any real file, so
-  there is no practical truncation. Requires a file reference. A directory has
+  there is no practical truncation. Takes a path string or a file reference. A directory has
   no content size and raises; a missing path raises with the OS reason.
 - `file_mtime(f)` — the file's last-modification time as a `datetime`, from
   `stat`, in local time. **Second resolution:** gBASIC's `datetime` has no
   sub-second field, so any nanosecond part of the filesystem timestamp is
-  dropped rather than fabricated. Requires a file reference; works for
+  dropped rather than fabricated. Takes a path string or a file reference; works for
   directories too (a directory's mtime is a real change signal). A missing path
   raises with the OS reason. There is no locale/string coercion — the value is a
   `datetime`, comparable and lens-able like any other.

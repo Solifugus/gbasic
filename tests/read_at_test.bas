@@ -246,11 +246,10 @@ program main(args)
         error.clear()
     end if
 
+    ' Since 2026-11-05 a path string is taken as `{file}` would take it
+    ' (tests/run_file_path_string.sh); this was the refusal until then.
     r = read_at(root + "/ten.txt", 0, 4)
-    refused("a plain string is refused -- it takes a file reference", error)
-    if error then
-        error.clear()
-    end if
+    check("a plain string is taken as the file it names", r, read_at(f, 0, 4))
 
     r = read_at({file}(root + "/missing.txt"), 0, 4)
     refused("a file that is not there is refused", error)

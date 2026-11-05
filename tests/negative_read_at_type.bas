@@ -1,1 +1,1 @@
-print read_at("stdlib/web.bas", 0, 4)
+print read_at(42, 0, 4)

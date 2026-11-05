@@ -1,1 +1,1 @@
-delete("tests/not-a-file-value.txt")
+delete(42)

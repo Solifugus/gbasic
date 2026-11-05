@@ -1,1 +1,1 @@
-file_mtime("tests/nap-fs-not-a-file-value.txt")
+file_mtime(42)

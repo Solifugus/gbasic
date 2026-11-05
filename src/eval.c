@@ -10390,6 +10390,32 @@ static int path_string_reject_nul(const char *who, Value v) {
     return 0;
 }
 
+/* A path string where a file is wanted is taken as that file, exactly as
+ * `{file}` would take it: the string becomes a reference, and an interior NUL
+ * is refused the same way. Until 2026-11-05 every whole-file verb refused the
+ * string, so `read(join_path(here, "spec.txt"))` raised while `join_path`,
+ * `list`, `csv.records`, `zip.read` and `xml.parse_file` all took either --
+ * the two verbs a program calls most were the exception to a rule every
+ * neighbour kept (DOGFOOD 2026-09-09, and again from the book's G30).
+ *
+ * Returns 1 with *v a file reference, or *v untouched when it was neither a
+ * string nor a file (the caller's own kind check refuses it, by name); 0
+ * after raising, with *v freed. */
+static int file_arg_from_path(const char *who, Value *v) {
+    if (v->kind != VALUE_STRING) {
+        return 1;
+    }
+    if (!path_string_reject_nul(who, *v)) {
+        value_free(*v);
+        *v = value_null();
+        return 0;
+    }
+    Value file = value_file(v->as.string);
+    value_free(*v);
+    *v = file;
+    return 1;
+}
+
 static int copy_file_path(const char *source_path, const char *target_path) {
     if (strcmp(source_path, target_path) == 0) {
         return 0;
@@ -10702,6 +10728,64 @@ static int file_call_only_asks(const char *name) {
     return 0;
 }
 
+/* `write` and `append` once their arguments are values. Takes ownership of
+ * both. A separate function because `append` reaches it from two doors: the
+ * file verbs here, and the array verb, which hands over when the place it was
+ * given holds a file -- `append(log, line)` with `log` a `{file}` variable,
+ * a record field or an inline `{file}"x"`. */
+static Value file_write_text(const char *name, Value file_value, Value text_value) {
+    if (!file_arg_from_path(name, &file_value)) {
+        value_free(text_value);
+        return value_null();
+    }
+    if (file_value.kind != VALUE_FILE || text_value.kind != VALUE_STRING) {
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "%s expects a path string or file reference, and the text to write", name);
+        runtime_error_raise(message, 1004, "file operation");
+        value_free(file_value);
+        value_free(text_value);
+        return value_null();
+    }
+    FILE *file = fopen(file_value.as.file_path, strcmp(name, "write") == 0 ? "wb" : "ab");
+    if (!file) {
+        char message[512];
+        snprintf(message, sizeof(message), "could not write file: %s (%s)",
+                 file_value.as.file_path,
+                 strerror(path_open_errno(file_value.as.file_path, errno)));
+        runtime_error_raise(message, 1004, "file operation");
+        value_free(file_value);
+        value_free(text_value);
+        return value_bool(0);
+    }
+    /* THE FLUSH IS THE WRITE. fwrite fills stdio's buffer and the bytes
+     * reach the file in fclose, so a write that fails there -- a full
+     * disk, a quota, a locked range on Windows -- failed AFTER every check
+     * above had passed. fclose's result used to be ignored: writing to
+     * /dev/full returned TRUE with exit 0 (measured), and on Windows a
+     * write inside `with lock(f)` vanished the same way. A write that did
+     * not happen now raises exactly as one that could not start does. */
+    size_t len = string_length(text_value.as.string);
+    int failed = fwrite(text_value.as.string, 1, len, file) != len || ferror(file);
+    int saved_errno = errno;
+    if (fclose(file) != 0 && !failed) {
+        failed = 1;
+        saved_errno = errno;
+    }
+    if (failed) {
+        char message[512];
+        snprintf(message, sizeof(message), "could not write file: %s (%s)",
+                 file_value.as.file_path, strerror(saved_errno));
+        runtime_error_raise(message, 1004, "file operation");
+        value_free(file_value);
+        value_free(text_value);
+        return value_bool(0);
+    }
+    value_free(file_value);
+    value_free(text_value);
+    return value_bool(1);
+}
+
 static Value eval_file_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
 
@@ -10739,11 +10823,15 @@ static Value eval_file_call(AstExpr *expr) {
          * until now the only way to ask it was to lie about the type -- which
          * is what the `ensure_dir` ceremony in stdlib/persist.bas did. */
         int dir_ok = strcmp(name, "exists") == 0;
+        if (!file_arg_from_path(name, &file_value)) {
+            return value_null();
+        }
         if (file_value.kind != VALUE_FILE &&
             !(dir_ok && file_value.kind == VALUE_DIR)) {
             char message[256];
             snprintf(message, sizeof(message), "%s expects a %s", name,
-                     dir_ok ? "file or directory reference" : "file reference");
+                     dir_ok ? "path string, file reference or directory reference"
+                            : "path string or file reference");
             runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             return value_null();
@@ -10888,8 +10976,11 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(file_value);
             return value_null();
         }
+        if (!file_arg_from_path(name, &file_value)) {
+            return value_null();
+        }
         if (file_value.kind != VALUE_FILE) {
-            runtime_error_raise("delete expects a file reference", 1004, "file operation");
+            runtime_error_raise("delete expects a path string or file reference", 1004, "file operation");
             value_free(file_value);
             return value_null();
         }
@@ -10917,9 +11008,12 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(file_value);
             return value_null();
         }
+        if (!file_arg_from_path(name, &file_value)) {
+            return value_null();
+        }
         if (file_value.kind != VALUE_FILE) {
             char message[256];
-            snprintf(message, sizeof(message), "%s expects a file reference", name);
+            snprintf(message, sizeof(message), "%s expects a path string or file reference", name);
             runtime_error_raise(message, 1004, "file operation");
             value_free(file_value);
             return value_null();
@@ -11075,12 +11169,16 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(target);
             return value_null();
         }
+        if (!file_arg_from_path(name, &source)) {
+            value_free(target);
+            return value_null();
+        }
         const char *target_path = file_target_path(target);
         if (source.kind != VALUE_FILE || !target_path) {
             char message[256];
             snprintf(message,
                      sizeof(message),
-                     "%s expects a file reference and file reference or string target",
+                     "%s expects a path string or file reference for both source and target",
                      name);
             runtime_error_raise(message, 1004, "file operation");
             value_free(source);
@@ -11906,8 +12004,13 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(position_value);
             return value_null();
         }
+        if (!file_arg_from_path(name, &file_value)) {
+            value_free(text_value);
+            value_free(position_value);
+            return value_null();
+        }
         if (file_value.kind != VALUE_FILE) {
-            runtime_error_raise("overwrite expects a file reference", 1004, "file operation");
+            runtime_error_raise("overwrite expects a path string or file reference", 1004, "file operation");
             value_free(file_value);
             value_free(text_value);
             value_free(position_value);
@@ -12046,8 +12149,13 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(count_value);
             return value_null();
         }
+        if (!file_arg_from_path(name, &file_value)) {
+            value_free(position_value);
+            value_free(count_value);
+            return value_null();
+        }
         if (file_value.kind != VALUE_FILE) {
-            runtime_error_raise("read_at expects a file reference", 1004, "file operation");
+            runtime_error_raise("read_at expects a path string or file reference", 1004, "file operation");
             value_free(file_value);
             value_free(position_value);
             value_free(count_value);
@@ -12213,51 +12321,7 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(text_value);
             return value_null();
         }
-        if (file_value.kind != VALUE_FILE || text_value.kind != VALUE_STRING) {
-            char message[256];
-            snprintf(message, sizeof(message), "%s expects a file reference and string", name);
-            runtime_error_raise(message, 1004, "file operation");
-            value_free(file_value);
-            value_free(text_value);
-            return value_null();
-        }
-        FILE *file = fopen(file_value.as.file_path, strcmp(name, "write") == 0 ? "wb" : "ab");
-        if (!file) {
-            char message[512];
-            snprintf(message, sizeof(message), "could not write file: %s (%s)",
-                     file_value.as.file_path,
-                     strerror(path_open_errno(file_value.as.file_path, errno)));
-            runtime_error_raise(message, 1004, "file operation");
-            value_free(file_value);
-            value_free(text_value);
-            return value_bool(0);
-        }
-        /* THE FLUSH IS THE WRITE. fwrite fills stdio's buffer and the bytes
-         * reach the file in fclose, so a write that fails there -- a full
-         * disk, a quota, a locked range on Windows -- failed AFTER every check
-         * above had passed. fclose's result used to be ignored: writing to
-         * /dev/full returned TRUE with exit 0 (measured), and on Windows a
-         * write inside `with lock(f)` vanished the same way. A write that did
-         * not happen now raises exactly as one that could not start does. */
-        size_t len = string_length(text_value.as.string);
-        int failed = fwrite(text_value.as.string, 1, len, file) != len || ferror(file);
-        int saved_errno = errno;
-        if (fclose(file) != 0 && !failed) {
-            failed = 1;
-            saved_errno = errno;
-        }
-        if (failed) {
-            char message[512];
-            snprintf(message, sizeof(message), "could not write file: %s (%s)",
-                     file_value.as.file_path, strerror(saved_errno));
-            runtime_error_raise(message, 1004, "file operation");
-            value_free(file_value);
-            value_free(text_value);
-            return value_bool(0);
-        }
-        value_free(file_value);
-        value_free(text_value);
-        return value_bool(1);
+        return file_write_text(name, file_value, text_value);
     }
 
     return value_null();
@@ -13605,13 +13669,27 @@ static Value builtin_join_value(Value array, Value separator) {
     return result;
 }
 
+/* Every other file verb takes a path string since 2026-11-05; `append` cannot,
+ * because it is also the array verb and a string there is far more often a
+ * slip than a file name -- `append(name, "-2026")` would quietly create a
+ * file called whatever `name` held. So it refuses, and says how to ask. */
+static void append_refuse(ValueKind kind, int prepend) {
+    if (!prepend && kind == VALUE_STRING) {
+        runtime_error_raise("append expects an array, or a file reference to add text to a file; "
+                            "it does not take a string as a path, so write {file}path",
+                            1003, "invalid function call");
+        return;
+    }
+    runtime_error_raise(prepend ? "prepend expects an array" : "append expects an array",
+                        1003, "invalid function call");
+}
+
 static Value append_to_array_value(Value array, Value item, int prepend) {
+    ValueKind array_kind = array.kind;
     if (array.kind != VALUE_ARRAY) {
         value_free(array);
         value_free(item);
-        runtime_error_raise(prepend ? "prepend expects an array" : "append expects an array",
-                            1003,
-                            "invalid function call");
+        append_refuse(array_kind, prepend);
         return value_null();
     }
 
@@ -13631,9 +13709,7 @@ static Value append_to_array_value(Value array, Value item, int prepend) {
 static Value append_to_array_ref(Value *array, Value item, int prepend) {
     if (!array || array->kind != VALUE_ARRAY) {
         value_free(item);
-        runtime_error_raise(prepend ? "prepend expects an array" : "append expects an array",
-                            1003,
-                            "invalid function call");
+        append_refuse(array ? array->kind : VALUE_NULL, prepend);
         return value_null();
     }
 
@@ -36905,6 +36981,15 @@ static Value eval_call(AstExpr *expr) {
                 value_free(item);
                 return value_null();
             }
+            if (!prepend && array->kind == VALUE_FILE) {
+                /* A record field holding a `{file}`. Only a bare variable
+                 * reached the file verb before, by the check above, so
+                 * `append(cfg.log, line)` raised "append expects an array". */
+                if (repl_effect_watch) {
+                    repl_note_effect();
+                }
+                return file_write_text("append", value_copy(*array), item);
+            }
             repl_note_lvalue_effect(array_expr);
             Value result = append_to_array_ref(array, item, prepend);
             if (!error_action_pending()) {
@@ -36920,6 +37005,14 @@ static Value eval_call(AstExpr *expr) {
             value_free(array);
             value_free(item);
             return value_null();
+        }
+        if (!prepend && array.kind == VALUE_FILE) {
+            /* `append({file}"run.log", line)`: an inline reference is not a
+             * variable, so this too used to fall through to the array verb. */
+            if (repl_effect_watch) {
+                repl_note_effect();
+            }
+            return file_write_text("append", array, item);
         }
         return append_to_array_value(array, item, prepend);
     }
@@ -43488,8 +43581,13 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_column = previous_column;
             return eval_error_result();
         }
+        if (!file_arg_from_path("with lock", &file_value)) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
         if (file_value.kind != VALUE_FILE) {
-            runtime_error_raise("with lock expects a file reference", 1004, "file operation");
+            runtime_error_raise("with lock expects a path string or file reference", 1004, "file operation");
             value_free(file_value);
             current_line = previous_line;
             current_column = previous_column;

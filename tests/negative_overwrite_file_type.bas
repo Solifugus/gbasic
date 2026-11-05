@@ -1,1 +1,1 @@
-overwrite("tests/not-a-file-value.txt", "x", 0)
+overwrite(42, "x", 0)

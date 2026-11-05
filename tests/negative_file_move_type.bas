@@ -1,1 +1,1 @@
-move("tests/not-a-file-value.txt", "tests/not-used.txt")
+move(42, "tests/not-used.txt")

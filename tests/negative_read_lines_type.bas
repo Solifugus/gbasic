@@ -1,1 +1,1 @@
-read_lines("tests/not-a-file-value.txt")
+read_lines(42)
