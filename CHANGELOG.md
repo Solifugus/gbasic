@@ -16,6 +16,25 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### `net`: datagrams (UDP)
+
+Increment N3 of docs/networking_design.md. Core; no library needed.
+
+- **`net.datagram({ port, address, max_datagram })`** makes a UDP socket.
+  With a port it is a server's, on loopback unless `address:` says otherwise;
+  with neither, a client's, on any address and a port the system picks.
+- **`send_to(bytes, { address | host, port } [, timeout])`** sends one
+  datagram; a received datagram's `from` is a valid target, so a reply is
+  `u.send_to(answer, e.from)`. No send queue: the system takes it before
+  `send_to` returns.
+- **`receive([timeout])`** (waited) answers `{ data, from, truncated, size }`;
+  watched, each datagram is a `datagram` event with the same fields and the
+  socket as `socket`. A datagram is never split or joined.
+- **Truncation is reported**: past `max_datagram` (default 65536), `data`
+  holds what fit, `truncated` is true and `size` is what was sent.
+- A datagram longer than UDP carries is `too_large`; IPv6 and an IPv4 address
+  sent from a socket bound to `"::"` work.
+
 ### `net`: TLS
 
 Increment N2 of docs/networking_design.md. Needs libssl in the build; without

@@ -46,8 +46,10 @@
 #define NET_DEFAULT_BUFFER (16u * 1024u * 1024u)
 #define NET_LOW_WATER (64u * 1024u)
 #define NET_READ_CHUNK 65536
+#define NET_DEFAULT_DATAGRAM 65536u   /* more than any UDP payload (65507 over IPv4) */
+#define NET_DATAGRAMS_PER_PASS 64
 
-typedef enum { NET_CONNECTION = 0, NET_LISTENER = 1 } NetKind;
+typedef enum { NET_CONNECTION = 0, NET_LISTENER = 1, NET_DATAGRAM = 2 } NetKind;
 
 /* Why a handshake is under way, which decides what its end reports. */
 enum {
@@ -148,6 +150,10 @@ struct NetSocket {
     int tls_event_pending;   /* a `tls` event is owed: a watched start_tls finished */
     int announced;           /* the program has been handed this connection */
     Value tls_info;          /* what the handshake established; null before it finishes */
+    /* datagram (N3) */
+    size_t max_datagram;     /* a longer datagram is delivered cut, and says so */
+    char *dgram_buf;
+    Value dgram_pending;     /* records read by the loop, owed as `datagram` events */
 #if HAVE_LIBSSL
     SSL *ssl;
     NetTlsServer *tls_server;     /* a TLS listener's contexts, and an accepted connection's */
@@ -232,6 +238,7 @@ static const char *net_errno_code(int e) {
         return "unreachable";
     case EADDRINUSE: return "address_in_use";
     case EACCES: case EPERM: return "permission";
+    case EMSGSIZE: return "too_large";     /* a datagram longer than the protocol carries */
     case ENOENT: return "refused";     /* a Unix path nobody is listening on */
     default: return "failed";
     }
@@ -390,6 +397,8 @@ static void net_socket_free(NetSocket *s) {
     free(s->path);
     free(s->host);
     value_free(s->tls_info);
+    free(s->dgram_buf);
+    value_free(s->dgram_pending);
 #if HAVE_LIBSSL
     if (s->tls_server) {
         net_tls_server_release(s->tls_server);
@@ -424,6 +433,7 @@ static NetSocket *net_socket_new(NetKind kind) {
     s->out_ceiling = NET_DEFAULT_BUFFER;
     s->last_activity = net_now();
     s->tls_info = value_null();
+    s->dgram_pending = value_null();
     net_registry_add(s);
     if (!net_sigpipe_ignored) {
         /* A write to a peer that left must be an ERROR, never a process
@@ -486,9 +496,11 @@ static int net_events_watched(void) {
     return 0;
 }
 
-/* Append one event and fire the watcher. Returns 0 when the watcher raised. */
-static int net_emit(const char *kind, NetSocket *conn, NetSocket *listener,
-                    const char *code, const char *message) {
+/* Append one event and fire the watcher. Returns 0 when the watcher raised.
+ * A datagram socket's events name it as `socket` (it is neither a connection
+ * nor a listener), and carry `extra`'s fields: data, from, truncated, size. */
+static int net_emit_full(const char *kind, NetSocket *conn, NetSocket *listener,
+                         const char *code, const char *message, Value *extra) {
     Symbol *symbol = env_find_in_frame(&global_env, "net");
     if (!symbol || symbol->value.kind != VALUE_RECORD) {
         return 1;
@@ -501,6 +513,11 @@ static int net_emit(const char *kind, NetSocket *conn, NetSocket *listener,
     Value e = value_record(NULL, 0);
     record_set(&e, "kind", value_string(kind));
     record_set(&e, "id", value_number_exact(subject ? subject->id : 0));
+    if (conn && conn->kind == NET_DATAGRAM) {
+        conn->ref_count++;
+        record_set(&e, "socket", value_net(conn));
+        conn = NULL;
+    }
     if (conn) {
         conn->ref_count++;
         record_set(&e, "connection", value_net(conn));
@@ -515,9 +532,19 @@ static int net_emit(const char *kind, NetSocket *conn, NetSocket *listener,
     }
     record_set(&e, "code", code ? value_string(code) : value_null());
     record_set(&e, "message", message ? value_string(message) : value_null());
+    if (extra && extra->kind == VALUE_RECORD) {
+        for (size_t i = 0; i < extra->as.record.count; i++) {
+            record_set(&e, extra->as.record.fields[i].name, value_copy(*extra->as.record.fields[i].value));
+        }
+    }
     Value ignored = append_to_array_ref(events->value, e, 0);
     value_free(ignored);
     return watcher_trigger_change("net.events");
+}
+
+static int net_emit(const char *kind, NetSocket *conn, NetSocket *listener,
+                    const char *code, const char *message) {
+    return net_emit_full(kind, conn, listener, code, message, NULL);
 }
 
 /* ---- reading and writing the descriptor ------------------------------------- */
@@ -1979,6 +2006,13 @@ static NetSocket *net_arg_socket(AstExpr *expr, const char *verb, int want_kind,
         value_free(v);
         return NULL;
     }
+    if (v.kind == VALUE_NET && v.as.net->kind == NET_DATAGRAM && want_kind >= 0 && want_kind != NET_DATAGRAM) {
+        snprintf(msg, sizeof msg, "%s: a datagram socket has no stream; each datagram comes whole from "
+                 "receive or a datagram event, and goes with send_to", verb);
+        value_free(v);
+        net_refuse(msg);
+        return NULL;
+    }
     if (v.kind != VALUE_NET || (want_kind >= 0 && (int)v.as.net->kind != want_kind)) {
         snprintf(msg, sizeof msg, "%s expects a %s from net.%s", verb,
                  want_kind == NET_LISTENER ? "listener" : "connection",
@@ -2400,6 +2434,24 @@ static Value net_do_simple(AstExpr *expr, const char *verb) {
     }
     char msg[300];
     Value result = value_bool(1);
+    if (s->kind == NET_DATAGRAM && strcmp(verb, "net.close") != 0 && strcmp(verb, "net.abort") != 0) {
+        value_free(owner);
+        snprintf(msg, sizeof msg, "%s: a datagram socket has no stream; each datagram comes whole from "
+                 "receive or a datagram event, and send_to hands one to the system before it returns", verb);
+        return net_refuse(msg);
+    }
+    if (s->kind == NET_DATAGRAM) {
+        /* nothing is queued, so a close is at once, watched or waited */
+        if (s->open) {
+            if (s->watched) {
+                net_mark_closed(s, strcmp(verb, "net.abort") == 0 ? "aborted" : "local");
+            } else {
+                net_close_fd(s);
+            }
+        }
+        value_free(owner);
+        return result;
+    }
     if (strcmp(verb, "net.buffered") == 0) {
         result = value_number_exact((long long)s->in.len);
     } else if (strcmp(verb, "net.queued") == 0) {
@@ -2695,6 +2747,428 @@ static Value net_do_resolve(AstExpr *expr) {
     return out;
 }
 
+/* ---- datagrams (N3) --------------------------------------------------------------- *
+ *
+ * docs/networking_design.md §4. A datagram socket is UDP, and A DATAGRAM IS
+ * NEVER SPLIT OR JOINED: one receive, or one `datagram` event, is one datagram,
+ * whatever arrived around it. One longer than the socket's `max_datagram` is
+ * delivered with the bytes that fit and `truncated: true` (and, where the
+ * system tells it, `size`, the length that was sent), never silently cut.
+ *
+ * There is NO SEND QUEUE. A datagram is either taken by the kernel or not, so
+ * send_to hands it over before returning; a kernel that has no room waits for
+ * room within the timeout, which on a datagram socket is the kernel's own
+ * buffer draining to the network, not a peer reading. */
+
+/* Where `to` ({ address: or host:, port: }) names, in the socket's family. 0
+ * having raised. An IPv4 address is mapped for a socket bound to IPv6. */
+static int net_dgram_target(NetSocket *s, Value to, AstExpr *expr, struct sockaddr_storage *out,
+                            socklen_t *out_len) {
+    const char *verb = "net.send_to";
+    static const char *const known[] = { "address", "host", "port", NULL };
+    char msg[400];
+    if (to.kind != VALUE_RECORD) {
+        net_refuse("net.send_to: say where to send it, as { address: \"127.0.0.1\", port: 514 } "
+                   "(a received datagram's `from` is one)");
+        return 0;
+    }
+    if (!net_check_options(to, verb, known)) {
+        return 0;
+    }
+    const char *address = NULL, *host = NULL;
+    double port = -1;
+    if (!net_opt_text(&to, "address", verb, &address) || !net_opt_text(&to, "host", verb, &host) ||
+        !net_opt_count(&to, "port", verb, 1, 65535, &port)) {
+        return 0;
+    }
+    if (address && host) {
+        net_refuse("net.send_to: give an address or a host, not both");
+        return 0;
+    }
+    if (!address && !host) {
+        net_refuse("net.send_to: say where to send it: an address (or host) and a port");
+        return 0;
+    }
+    if (port < 0) {
+        net_refuse("net.send_to: say which port to send it to");
+        return 0;
+    }
+    const char *name = address ? address : host;
+    char port_text[16];
+    snprintf(port_text, sizeof port_text, "%d", (int)port);
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_flags = AI_NUMERICHOST;
+    int rc = getaddrinfo(name, port_text, &hints, &res);
+    if (rc != 0 && address) {
+        snprintf(msg, sizeof msg,
+                 "net.send_to: address must be a numeric address such as \"127.0.0.1\" or \"::1\", not \"%s\" "
+                 "(a name goes in host:)", name);
+        net_refuse(msg);
+        return 0;
+    }
+    if (rc != 0) {
+        /* a name: resolving it blocks, as net.resolve does */
+        if (!net_blocking_warning(expr, "net.send_to to a host name")) {
+            return 0;
+        }
+        hints.ai_flags = 0;
+        hints.ai_family = s->family == AF_INET ? AF_INET : AF_UNSPEC;
+        rc = getaddrinfo(name, port_text, &hints, &res);
+        if (rc != 0 || !res) {
+            snprintf(msg, sizeof msg, "net.send_to: %s does not resolve (%s)", name, gai_strerror(rc));
+            net_raise(net_gai_code(rc), msg);
+            return 0;
+        }
+    }
+    /* the first address the socket can reach */
+    struct addrinfo *pick = NULL;
+    for (struct addrinfo *a = res; a && !pick; a = a->ai_next) {
+        if (a->ai_family == s->family || (s->family == AF_INET6 && a->ai_family == AF_INET)) {
+            pick = a;
+        }
+    }
+    if (!pick) {
+        snprintf(msg, sizeof msg,
+                 "net.send_to: %s is an IPv%s address and this socket is bound to IPv%s; make the socket "
+                 "with address: \"%s\" to send to it", name, s->family == AF_INET ? "6" : "4",
+                 s->family == AF_INET ? "4" : "6", s->family == AF_INET ? "::" : "0.0.0.0");
+        freeaddrinfo(res);
+        net_refuse(msg);
+        return 0;
+    }
+    memset(out, 0, sizeof *out);
+    /* Linux takes a plain IPv4 address on an IPv6 socket too (measured: this
+     * block removed, run_net.sh stays green), but the portable contract is an
+     * address of the socket's own family, so it is mapped here. */
+    if (s->family == AF_INET6 && pick->ai_family == AF_INET) {
+        struct sockaddr_in6 *m = (struct sockaddr_in6 *)out;
+        const struct sockaddr_in *v4 = (const struct sockaddr_in *)pick->ai_addr;
+        m->sin6_family = AF_INET6;
+        m->sin6_port = v4->sin_port;
+        m->sin6_addr.s6_addr[10] = 0xff;
+        m->sin6_addr.s6_addr[11] = 0xff;
+        memcpy(&m->sin6_addr.s6_addr[12], &v4->sin_addr, 4);
+        *out_len = sizeof *m;
+    } else {
+        memcpy(out, pick->ai_addr, pick->ai_addrlen);
+        *out_len = pick->ai_addrlen;
+    }
+    freeaddrinfo(res);
+    return 1;
+}
+
+/* Read one datagram. 1 with *out a { data, from, truncated, size } record, 0
+ * when none is waiting, -1 on a failure (code and message set). */
+static int net_dgram_recv_one(NetSocket *s, Value *out, const char **code, char *message, size_t msize) {
+    struct sockaddr_storage from;
+    struct iovec iov = { s->dgram_buf, s->max_datagram };
+    struct msghdr mh;
+    memset(&mh, 0, sizeof mh);
+    memset(&from, 0, sizeof from);
+    mh.msg_name = &from;
+    mh.msg_namelen = sizeof from;
+    mh.msg_iov = &iov;
+    mh.msg_iovlen = 1;
+    int flags = 0;
+#ifdef __linux__
+    flags |= MSG_TRUNC;      /* Linux answers the length that was SENT, so `size` is known */
+#endif
+    ssize_t got = recvmsg(s->fd, &mh, flags);
+    if (got < 0) {
+        if (errno == EAGAIN || errno == EWOULDBLOCK || errno == EINTR) {
+            return 0;
+        }
+        int e = errno;
+        *code = net_errno_code(e);
+        snprintf(message, msize, "net: receiving a datagram failed (%s)", strerror(e));
+        return -1;
+    }
+    int truncated = (mh.msg_flags & MSG_TRUNC) || (size_t)got > s->max_datagram;
+    size_t kept = (size_t)got > s->max_datagram ? s->max_datagram : (size_t)got;
+    Value r = value_record(NULL, 0);
+    record_set(&r, "data", value_string_n(s->dgram_buf, kept));
+    record_set(&r, "from", net_address_record((struct sockaddr *)&from));
+    record_set(&r, "truncated", value_bool(truncated));
+#ifdef __linux__
+    record_set(&r, "size", value_number_exact((long long)got));
+#else
+    record_set(&r, "size", truncated ? value_unknown() : value_number_exact((long long)got));
+#endif
+    s->last_activity = net_now();
+    *out = r;
+    return 1;
+}
+
+static Value net_do_datagram(AstExpr *expr) {
+    static const char *const known[] = { "port", "address", "max_datagram", NULL };
+    const char *verb = "net.datagram";
+    Value opts = value_record(NULL, 0);
+    if (expr->as.call.args.count > 1) {
+        value_free(opts);
+        return net_refuse("net.datagram expects one options record, such as { port: 5140 }");
+    }
+    if (expr->as.call.args.count == 1) {
+        value_free(opts);
+        opts = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(opts);
+            return value_null();
+        }
+        if (opts.kind != VALUE_RECORD) {
+            value_free(opts);
+            return net_refuse("net.datagram expects an options record, such as { port: 5140 }");
+        }
+    }
+    if (!net_check_options(opts, verb, known)) {
+        value_free(opts);
+        return value_null();
+    }
+    const char *address = NULL;
+    double port = -1, max_datagram = NET_DEFAULT_DATAGRAM;
+    if (!net_opt_text(&opts, "address", verb, &address) ||
+        !net_opt_count(&opts, "port", verb, 0, 65535, &port) ||
+        !net_opt_count(&opts, "max_datagram", verb, 1, NET_DEFAULT_DATAGRAM, &max_datagram)) {
+        value_free(opts);
+        return value_null();
+    }
+    /* A socket that names a port is a server's, and binds to loopback unless
+     * told otherwise (P6). One that names neither is a client's: it gets what
+     * an unbound UDP socket gets at its first send, any address and a port the
+     * system picks, because a client bound to loopback could reach nothing
+     * else. */
+    const char *bind_to = address ? address : (port >= 0 ? "127.0.0.1" : "0.0.0.0");
+    if (port < 0) {
+        port = 0;
+    }
+    char msg[400];
+    struct addrinfo hints, *res = NULL;
+    memset(&hints, 0, sizeof hints);
+    hints.ai_family = AF_UNSPEC;
+    hints.ai_socktype = SOCK_DGRAM;
+    hints.ai_flags = AI_PASSIVE | AI_NUMERICHOST;
+    char port_text[16];
+    snprintf(port_text, sizeof port_text, "%d", (int)port);
+    if (getaddrinfo(bind_to, port_text, &hints, &res) != 0 || !res) {
+        snprintf(msg, sizeof msg,
+                 "net.datagram: address must be a numeric address such as \"127.0.0.1\", \"0.0.0.0\" "
+                 "or \"::\", not \"%s\"", bind_to);
+        value_free(opts);
+        return net_refuse(msg);
+    }
+    int fd = socket(res->ai_family, SOCK_DGRAM | SOCK_CLOEXEC, 0);
+    if (fd < 0 || bind(fd, res->ai_addr, res->ai_addrlen) != 0) {
+        int e = errno;
+        if (fd >= 0) {
+            close(fd);
+        }
+        freeaddrinfo(res);
+        snprintf(msg, sizeof msg, "net.datagram: could not bind %s port %d (%s)", bind_to, (int)port, strerror(e));
+        value_free(opts);
+        return net_raise(net_errno_code(e), msg);
+    }
+    NetSocket *s = net_socket_new(NET_DATAGRAM);
+    s->family = res->ai_family;
+    freeaddrinfo(res);
+    net_set_nonblocking(fd);
+    s->fd = fd;
+    s->open = 1;
+    s->max_datagram = (size_t)max_datagram;
+    s->dgram_buf = malloc(s->max_datagram);
+    if (!s->dgram_buf) {
+        abort();
+    }
+    s->dgram_pending = value_array(NULL, 0);
+    struct sockaddr_storage ss;
+    socklen_t len = sizeof ss;
+    if (getsockname(fd, (struct sockaddr *)&ss, &len) == 0) {
+        s->port = ss.ss_family == AF_INET6 ? ntohs(((struct sockaddr_in6 *)&ss)->sin6_port)
+                                           : ntohs(((struct sockaddr_in *)&ss)->sin_port);
+    }
+    value_free(opts);
+    s->watched = net_events_watched();
+    if (s->watched) {
+        s->ref_count++;
+        s->loop_ref = 1;
+    }
+    return value_net(s);
+}
+
+static NetSocket *net_arg_datagram(AstExpr *expr, const char *verb, Value *owner) {
+    char msg[200];
+    NetSocket *s = net_arg_socket(expr, verb, -1, owner);
+    if (s && s->kind != NET_DATAGRAM) {
+        snprintf(msg, sizeof msg, "%s expects a datagram socket from net.datagram; a %s has a stream, "
+                 "so it uses write and the take and read families", verb,
+                 s->kind == NET_LISTENER ? "listener's connection" : "connection");
+        value_free(*owner);
+        net_refuse(msg);
+        return NULL;
+    }
+    return s;
+}
+
+/* send_to(socket, bytes, to [, timeout]) -> the bytes sent */
+static Value net_do_send_to(AstExpr *expr) {
+    Value owner;
+    NetSocket *s = net_arg_datagram(expr, "net.send_to", &owner);
+    if (!s) {
+        return value_null();
+    }
+    size_t argc = expr->as.call.args.count;
+    if (argc < 3 || argc > 4) {
+        value_free(owner);
+        return net_refuse("net.send_to expects a datagram socket, the bytes, and where to send them "
+                          "({ address:, port: }), with an optional timeout");
+    }
+    Value data = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(data);
+        value_free(owner);
+        return value_null();
+    }
+    if (data.kind != VALUE_STRING) {
+        value_free(data);
+        value_free(owner);
+        return net_refuse("net.send_to: the data must be text (bytes); convert a number with string() or pack()");
+    }
+    Value to = eval_expr(expr->as.call.args.items[2]);
+    if (error_action_pending()) {
+        value_free(to);
+        value_free(data);
+        value_free(owner);
+        return value_null();
+    }
+    double timeout = 10;
+    if (argc == 4) {
+        Value t = eval_expr(expr->as.call.args.items[3]);
+        timeout = error_action_pending() ? -2 : net_seconds(t, "net.send_to");
+        value_free(t);
+        if (timeout < 0) {
+            value_free(to);
+            value_free(data);
+            value_free(owner);
+            return value_null();
+        }
+    }
+    if (!s->open) {
+        value_free(to);
+        value_free(data);
+        value_free(owner);
+        return net_raise("closed", "net.send_to: this datagram socket is closed");
+    }
+    struct sockaddr_storage dest;
+    socklen_t dest_len = 0;
+    if (!net_dgram_target(s, to, expr, &dest, &dest_len)) {
+        value_free(to);
+        value_free(data);
+        value_free(owner);
+        return value_null();
+    }
+    value_free(to);
+    size_t n = string_length(data.as.string);
+    char msg[300];
+    double deadline = net_now() + timeout;
+    for (;;) {
+        int flags = 0;
+#ifdef MSG_NOSIGNAL
+        flags |= MSG_NOSIGNAL;
+#endif
+        ssize_t sent = sendto(s->fd, data.as.string, n, flags, (struct sockaddr *)&dest, dest_len);
+        if (sent >= 0) {
+            break;
+        }
+        int e = errno;
+        if (e == EINTR) {
+            continue;
+        }
+        if (e == EAGAIN || e == EWOULDBLOCK || e == ENOBUFS) {
+            double left = deadline - net_now();
+            if (left <= 0) {
+                value_free(data);
+                value_free(owner);
+                return net_raise("timeout", "net.send_to: the system had no room for the datagram within the timeout");
+            }
+            struct pollfd p = { s->fd, POLLOUT, 0 };
+            poll(&p, 1, (int)(left * 1000) + 1);
+            continue;
+        }
+        value_free(data);
+        value_free(owner);
+        if (e == EMSGSIZE) {
+            snprintf(msg, sizeof msg,
+                     "net.send_to: %zu bytes is longer than one datagram can carry (65507 over IPv4)", n);
+        } else {
+            snprintf(msg, sizeof msg, "net.send_to: sending failed (%s)", strerror(e));
+        }
+        return net_raise(net_errno_code(e), msg);
+    }
+    s->last_activity = net_now();
+    value_free(data);
+    value_free(owner);
+    return value_number_exact((long long)n);
+}
+
+/* receive(socket [, timeout]) -> { data, from, truncated, size }, waited only */
+static Value net_do_receive(AstExpr *expr) {
+    const char *verb = "net.receive";
+    Value owner;
+    NetSocket *s = net_arg_datagram(expr, verb, &owner);
+    if (!s) {
+        return value_null();
+    }
+    if (expr->as.call.args.count > 2) {
+        value_free(owner);
+        return net_refuse("net.receive expects a datagram socket and an optional timeout");
+    }
+    if (s->watched) {
+        value_free(owner);
+        return net_refuse("net.receive: this socket is watched, so each datagram arrives as a datagram event");
+    }
+    double timeout = -1;
+    if (expr->as.call.args.count == 2) {
+        Value t = eval_expr(expr->as.call.args.items[1]);
+        timeout = error_action_pending() ? -2 : net_seconds(t, verb);
+        value_free(t);
+        if (timeout < 0) {
+            value_free(owner);
+            return value_null();
+        }
+    }
+    if (!net_blocking_warning(expr, verb)) {
+        value_free(owner);
+        return value_null();
+    }
+    double deadline = timeout >= 0 ? net_now() + timeout : -1;
+    char msg[300];
+    for (;;) {
+        if (!s->open) {
+            value_free(owner);
+            return net_raise("closed", "net.receive: this datagram socket is closed");
+        }
+        Value r;
+        const char *code = NULL;
+        int got = net_dgram_recv_one(s, &r, &code, msg, sizeof msg);
+        if (got > 0) {
+            value_free(owner);
+            return r;
+        }
+        if (got < 0) {
+            value_free(owner);
+            return net_raise(code, msg);
+        }
+        double left = deadline >= 0 ? deadline - net_now() : -1;
+        if (deadline >= 0 && left <= 0) {
+            value_free(owner);
+            return net_raise("timeout", "net.receive: no datagram arrived within the timeout");
+        }
+        struct pollfd p = { s->fd, POLLIN, 0 };
+        poll(&p, 1, left < 0 ? -1 : (int)(left * 1000) + 1);
+    }
+}
+
 static Value net_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     char verb[64];
@@ -2703,6 +3177,9 @@ static Value net_eval_call(AstExpr *expr) {
     if (strcmp(name, "listen") == 0) return net_do_listen(expr);
     if (strcmp(name, "resolve") == 0) return net_do_resolve(expr);
     if (strcmp(name, "start_tls") == 0) return net_do_start_tls(expr);
+    if (strcmp(name, "datagram") == 0) return net_do_datagram(expr);
+    if (strcmp(name, "send_to") == 0) return net_do_send_to(expr);
+    if (strcmp(name, "receive") == 0) return net_do_receive(expr);
     if (strcmp(name, "write") == 0) return net_do_write(expr);
     if (strcmp(name, "take") == 0 || strcmp(name, "take_exactly") == 0 || strcmp(name, "take_until") == 0 ||
         strcmp(name, "take_line") == 0 || strcmp(name, "peek_exactly") == 0) {
@@ -2727,7 +3204,8 @@ static Value net_eval_call(AstExpr *expr) {
 static int net_field(NetSocket *s, const char *field, Value *out) {
     if (strcmp(field, "id") == 0) { *out = value_number_exact(s->id); return 1; }
     if (strcmp(field, "kind") == 0) {
-        *out = value_string(s->kind == NET_LISTENER ? "listener" : "connection");
+        *out = value_string(s->kind == NET_LISTENER ? "listener" :
+                            s->kind == NET_DATAGRAM ? "datagram" : "connection");
         return 1;
     }
     if (strcmp(field, "open") == 0) { *out = value_bool(s->open); return 1; }
@@ -2752,7 +3230,7 @@ static int net_field(NetSocket *s, const char *field, Value *out) {
         return 1;
     }
     if (strcmp(field, "peer") == 0) {
-        *out = s->kind == NET_LISTENER ? value_unknown() : net_endpoint(s, 1);
+        *out = s->kind != NET_CONNECTION ? value_unknown() : net_endpoint(s, 1);
         return 1;
     }
     if (strcmp(field, "local") == 0) { *out = net_endpoint(s, 0); return 1; }
@@ -2765,6 +3243,10 @@ static int net_field(NetSocket *s, const char *field, Value *out) {
         return 1;
     }
     if (strcmp(field, "peer_credentials") == 0) { *out = net_peer_credentials(s); return 1; }
+    if (strcmp(field, "max_datagram") == 0 && s->kind == NET_DATAGRAM) {
+        *out = value_number_exact((long long)s->max_datagram);
+        return 1;
+    }
     if (strcmp(field, "connections") == 0 && s->kind == NET_LISTENER) {
         *out = value_number_exact((long long)s->children);
         return 1;
@@ -2809,7 +3291,7 @@ static size_t net_collect_fds(struct pollfd *p, NetSocket **who, size_t max) {
         if (s->resolving && s->resolve) {
             fd = s->resolve->pipe_fd[0];
             ev = POLLIN;
-        } else if (s->kind == NET_LISTENER) {
+        } else if (s->kind == NET_LISTENER || s->kind == NET_DATAGRAM) {
             ev = POLLIN;
         } else if (s->connecting) {
             ev = POLLOUT;
@@ -2855,7 +3337,8 @@ static long net_poll_timeout_ms(long tick_ms) {
         if (s->idle_s > 0 && s->kind == NET_CONNECTION && s->last_activity + s->idle_s - now < best) {
             best = s->last_activity + s->idle_s - now;
         }
-        if (s->connected_pending || s->closed_pending || s->error_pending || s->tls_event_pending) {
+        if (s->connected_pending || s->closed_pending || s->error_pending || s->tls_event_pending ||
+            (s->dgram_pending.kind == VALUE_ARRAY && s->dgram_pending.as.array.store->count > 0)) {
             best = 0;
         }
     }
@@ -2906,6 +3389,25 @@ static void net_service_io(struct pollfd *p, NetSocket **who, size_t n) {
                 net_fail(s, code, msg);
             } else if (!s->connecting) {
                 net_connected(s, value_null());
+            }
+            continue;
+        }
+        if (s->kind == NET_DATAGRAM) {
+            /* A bounded number a pass, so one busy socket cannot hold the
+             * loop; the rest wait in the kernel, which drops what overflows
+             * its buffer, as UDP does everywhere. */
+            for (int k = 0; k < NET_DATAGRAMS_PER_PASS; k++) {
+                Value r;
+                int got = net_dgram_recv_one(s, &r, &code, msg, sizeof msg);
+                if (got < 0) {
+                    net_fail(s, code, msg);
+                    break;
+                }
+                if (got == 0) {
+                    break;
+                }
+                Value ignored = append_to_array_ref(&s->dgram_pending, r, 0);
+                value_free(ignored);
             }
             continue;
         }
@@ -3075,6 +3577,22 @@ static int net_deliver(void) {
             ok = net_emit("tls", s, NULL, NULL, NULL);
             if (!ok) break;
         }
+        if (s->kind == NET_DATAGRAM && s->dgram_pending.kind == VALUE_ARRAY) {
+            /* One event per datagram, in arrival order. They are taken off
+             * the front one at a time, so a watcher that raises leaves the
+             * rest owed rather than lost. */
+            ArrayStorage *st = s->dgram_pending.as.array.store;
+            size_t done = 0;
+            while (ok && done < st->count) {
+                Value r = st->items[done];
+                done++;
+                ok = net_emit_full("datagram", s, NULL, NULL, NULL, &r);
+                value_free(r);
+            }
+            memmove(st->items, st->items + done, sizeof(Value) * (st->count - done));
+            st->count -= done;
+            if (!ok) break;
+        }
         if (s->kind == NET_CONNECTION && s->in.len > 0 && !s->data_notified) {
             s->data_notified = 1;
             ok = net_emit("data", s, NULL, NULL, NULL);
@@ -3103,7 +3621,7 @@ static int net_deliver(void) {
             s->error_pending = 0;
             /* A connection a TLS listener never announced (its handshake
              * failed) names that listener, the one thing the program knows. */
-            ok = net_emit("error", s->kind == NET_CONNECTION ? s : NULL,
+            ok = net_emit("error", s->kind != NET_LISTENER ? s : NULL,
                           s->kind == NET_LISTENER ? s : (s->announced ? NULL : s->listener),
                           s->error_code, s->error_message);
             if (s->kind == NET_LISTENER) {
@@ -3122,7 +3640,7 @@ static int net_deliver(void) {
         if (s->closed_pending && !s->closed_delivered) {
             s->closed_delivered = 1;
             s->closed_pending = 0;
-            ok = net_emit("closed", s->kind == NET_CONNECTION ? s : NULL,
+            ok = net_emit("closed", s->kind != NET_LISTENER ? s : NULL,
                           s->kind == NET_LISTENER ? s : (s->announced ? NULL : s->listener),
                           s->close_code ? s->close_code : "local", NULL);
             net_drop_loop_ref(s);

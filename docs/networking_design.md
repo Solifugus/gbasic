@@ -2,7 +2,8 @@
 
 Status: **Ruled 2026-11-04** (§13: Matthew took every recommendation); **N1 shipped 2026-11-04** (`load net`, `pack`/`unpack`;
 `tests/run_net.sh`); **N2 shipped 2026-11-04** (TLS: `tls:` on connect and
-listen, `start_tls`, §5 and the note below it). N3 (UDP) is next. Asked for by
+listen, `start_tls`, §5 and the note below it); **N3 shipped 2026-11-04**
+(UDP: `net.datagram`, §4 and the note below it). N4 (WebSockets) is next. Asked for by
 Matthew, to fill the gap beneath two named uses and the ones that will follow:
 
 1. **An SSH server and client for Transward**, which today drives OpenSSH
@@ -238,6 +239,30 @@ kind `datagram`. **A datagram is never split or joined**: one event is one
 datagram. One larger than `max_datagram` (default 64 KiB) is reported as
 truncated (`truncated: true`), never silently cut. Multicast and broadcast are
 options (`broadcast: true`, `join: "239.1.2.3"`) for a later increment.
+
+**As built (N3).** As drafted, plus three decisions the draft did not make:
+
+- **A socket that names no port is a client's** and binds to `0.0.0.0` on a
+  port the system picks, which is what an unbound UDP socket gets at its first
+  send. One that names a port is a server's and binds to loopback (P6). A
+  client bound to loopback could reach nothing but loopback, and making every
+  client say `address: "0.0.0.0"` is one more thing to remember for no safety:
+  an ephemeral port serves nothing until something is sent from it.
+- **No send queue.** `send_to` hands the datagram to the system before it
+  returns, waiting for room within a timeout (default 10 seconds) when there is
+  none. A queue would add `writable`, `queued` and drain-on-close to datagrams
+  for a case loopback cannot produce: the kernel drops a datagram a full
+  receiver has no room for rather than refusing the send, so the wait is
+  reachable only on a link slower than the program, and is NOT exercised by
+  the suite.
+- **The target is a record, and a received `from` is one**, so a reply is
+  `u.send_to(answer, e.from)`. `address:` is numeric; a name goes in `host:`
+  and is resolved, blocking, as `net.resolve` is.
+
+Datagram events name the socket as `socket` (it is neither a `connection` nor
+a `listener`). `size` is the length that was sent, which Linux reports
+(`MSG_TRUNC`); elsewhere it is `unknown` for a truncated datagram. Unix
+datagram sockets, multicast and broadcast are not built.
 
 ## 5. TLS
 

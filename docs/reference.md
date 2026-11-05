@@ -3505,7 +3505,7 @@ nothing is reported.
 *(added 2026-11-04; [networking_design.md](networking_design.md))* TCP and
 Unix sockets, client and server: the layer under any protocol that is not HTTP.
 Core, with no library to install, except TLS, which needs libssl in the build.
-UDP and WebSockets follow (N3 and N4 in the design).
+UDP is [Datagrams](#datagrams-udp); WebSockets follow (N4 in the design).
 
 `load net` binds a global record `net` holding `events`, as `load http` binds
 `http`. A **connection** or **listener** is waited or watched, never both,
@@ -3622,6 +3622,7 @@ Each event in `net.events` is `{ kind, id, connection, listener, code, message }
 | `idle` | the idle timeout passed; `closed` follows |
 | `error` | the connection failed (`code`, `message`); `closed` follows. On a listener, `code` `limit` means a connection was refused at `max_connections` |
 | `closed` | `code` says why: `peer`, `local`, `aborted`, `idle`, or a failure's code |
+| `datagram` | a datagram socket received one: `socket`, `data`, `from`, `truncated`, `size` (see [Datagrams](#datagrams-udp)) |
 
 **A `data` event means new bytes, not unread bytes.** Take everything you can
 use in the handler: bytes left buffered are not reported again until more
@@ -3631,7 +3632,7 @@ and a program whose sockets have all closed lets the loop end.
 
 ### What a connection says about itself
 
-`c.id`, `c.kind` (`"connection"` or `"listener"`), `c.open`, `c.watched`,
+`c.id`, `c.kind` (`"connection"`, `"listener"` or `"datagram"`), `c.open`, `c.watched`,
 `c.peer` and `c.local` (`{ address, port }` or `{ path }`), `c.port`, `c.path`,
 `c.tls` (see [TLS](#tls)), `listener.connections` (how many are open), and
 on a Unix connection `c.peer_credentials`: `{ pid, uid, gid }` of the process
@@ -3654,6 +3655,7 @@ Raised with code 1004 and source `net`, and `error.details.code`:
 | `permission` | a privileged port, or a path's permissions |
 | `backpressure` | a write past the send ceiling |
 | `too_long` | a count or delimiter past the receive ceiling |
+| `too_large` | a datagram longer than one datagram can carry (see [Datagrams](#datagrams-udp)) |
 | `tls_verify` | a certificate did not verify; libssl's reason is in `details.reason` |
 | `tls_failed` | the handshake or the TLS connection failed otherwise, or a certificate or key did not load; the message says why |
 | `unexpected_data` | `start_tls` with bytes already buffered (see [TLS](#tls)) |
@@ -3769,6 +3771,76 @@ truncation; `abort` does not. `shutdown_write` sends it too, and the peer may
 still send. A peer that closes without one is reported as closed by the peer,
 as most TLS stacks do; a protocol that frames its messages detects truncation
 itself.
+
+### Datagrams (UDP)
+
+*(added 2026-11-04, N3)* `net.datagram(options)` makes a UDP socket. **A
+datagram is never split or joined**: one `receive`, or one `datagram` event,
+is one datagram, whatever arrived around it. Waited or watched, as a
+connection is.
+
+```basic
+load net
+
+u = net.datagram()                              ' a client's: any address, a port the system picks
+u.send_to("<13>hello", { address: "127.0.0.1", port: 5140 })
+r = u.receive(5 seconds)                        ' { data, from, truncated, size }
+u.send_to("thanks", r.from)                     ' from is { address, port }: a reply goes straight back
+u.close()
+```
+
+```basic
+load net
+
+watch(net.events)
+    while count(net.events) > 0
+        e = take_first(net.events)
+        if e.kind = "datagram" then
+            e.socket.send_to(e.data, e.from)    ' an echo server
+        end if
+    end while
+end watch
+
+srv = net.datagram({ port: 5140 })              ' 127.0.0.1 unless address: says otherwise
+```
+
+| option | meaning |
+|---|---|
+| `port` | the port to bind; 0 asks the system. A socket with a port is a server's and binds to `127.0.0.1` unless `address:` says otherwise |
+| `address` | a numeric address to bind (`"0.0.0.0"`, `"::"`, `"::1"`). With neither, the socket is a client's and binds to `0.0.0.0` on a port the system picks, which is what an unbound UDP socket gets at its first send: bound to loopback, a client could reach nothing else |
+| `max_datagram` | the longest datagram delivered whole, 1 to 65536 bytes (default 65536, more than UDP carries) |
+
+- **`send_to(bytes, to [, timeout])`** sends one datagram and answers the
+  bytes sent. `to` is `{ address:, port: }` (numeric) or `{ host:, port: }`
+  (a name, resolved as `net.resolve` does, so it blocks). A received `from`
+  is a valid `to`. There is **no send queue**: the system takes the datagram
+  before `send_to` returns, and when it has no room, `send_to` waits for some
+  within the timeout (default 10 seconds). An IPv4 address is reachable from
+  a socket bound to `"::"`; a socket bound to IPv4 refuses an IPv6 address,
+  naming the fix.
+- **`receive([timeout])`**, waited only, answers `{ data, from, truncated,
+  size }`. Without a timeout it waits until one arrives.
+- **A datagram longer than `max_datagram` is reported, never silently cut**:
+  `data` holds the bytes that fit, `truncated` is `true`, and `size` is the
+  length that was sent (`unknown` off Linux, where the system does not say).
+  The rest of it is gone; the next receive is the next datagram.
+- **Watched**, each datagram is an event `{ kind: "datagram", socket, data,
+  from, truncated, size }`. Datagram events name the socket as `socket`, and
+  `connection` and `listener` are `nothing`; so do its `error` and `closed`.
+  A watched datagram socket keeps the loop alive until it is closed.
+- `close` and `abort` end it at once, since nothing is queued (`closed` says
+  `local` or `aborted`). The stream verbs (`write`, the take and read
+  families, `queued`, `flush`, `shutdown_write`) are refused on it, and
+  `send_to` and `receive` on a connection.
+- `u.kind` is `"datagram"`; `u.port`, `u.local`, `u.open`, `u.watched` and
+  `u.max_datagram` are as for a connection, and `u.peer` is `unknown`.
+- Failures add `too_large` (longer than one datagram can carry, 65507 bytes
+  over IPv4) to the codes above; `timeout`, `closed`, `address_in_use` and
+  `name_not_found` mean what they do for a connection.
+
+Multicast and broadcast are not built (a later increment, §4 of the design);
+`broadcast:` is refused as an unknown option. Unix datagram sockets are not
+built either.
 
 ## Timer Module
 

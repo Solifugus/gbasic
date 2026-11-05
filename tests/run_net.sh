@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# `net`: TCP and Unix sockets, and pack/unpack (docs/networking_design.md, N1).
+# `net`: TCP and Unix sockets, TLS, datagrams, and pack/unpack
+# (docs/networking_design.md, N1-N3).
 #
 # Tiers:
 #   1. PACK -- tests/net/pack_test.bas, self-checking; the expected bytes were
@@ -45,9 +46,22 @@
 #      Skips without openssl, or when the build has no libssl.
 #   7. VALGRIND -- the fixtures and a watched server under memcheck, and
 #      --track-fds over the waited fixture: no socket left open at exit; and
-#      the TLS client and server.
+#      the TLS client and server, and the datagram fixtures.
+#   8. DATAGRAMS (N3) -- UDP, where one receive is one datagram:
+#        waited   tests/net/datagram_test.bas, both ends in one process: every
+#                 byte value, three datagrams as three receives, an empty one,
+#                 the largest IPv4 one and one byte more refused, truncation
+#                 past max_datagram reported with the sent size, IPv6 and a
+#                 mapped IPv4 address, the named failures and the refusals;
+#                 then again against a Python echo server
+#        watched  tests/net/datagram_watched.bas: 100 datagrams as 100 events
+#                 in order across loop passes, the event's fields, a truncated
+#                 event, close and abort, and the program ending
+#        peer     tests/net/datagram_server.bas driven by tests/net/udp_peer.py:
+#                 1000 random datagrams in lock step, a burst of 100 none split
+#                 or joined, 65507 bytes whole, truncation reported
 #
-# Tiers 3-6 need python3 and skip, saying so, without it.
+# Tiers 3-6 and 8's Python parts need python3 and skip, saying so, without it.
 . "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
 
@@ -304,6 +318,46 @@ if [ "$tls" = 1 ]; then
     fi
 fi
 
+# --- Tier 8: datagrams -------------------------------------------------------
+FIXTURE_ARGS="" fixture tests/net/datagram_test.bas 45 "datagrams, waited: boundaries, truncation, IPv6, named failures"
+FIXTURE_ARGS="" fixture tests/net/datagram_watched.bas 13 "datagrams, watched: events in order across passes, closes"
+if ! command -v python3 >/dev/null 2>&1; then
+    printf 'SKIP datagrams against Python: no python3, so UDP was not checked against another implementation\n'
+else
+    rm -f "$work/uecho"
+    timeout 120 python3 -I tests/net/udp_peer.py echo "$work/uecho" >/dev/null 2>&1 &
+    uepid=$!
+    pids="$pids $uepid"
+    for _ in $(seq 100); do [ -s "$work/uecho" ] && break; sleep 0.05; done
+    FIXTURE_ARGS="$(cat "$work/uecho")" fixture tests/net/datagram_test.bas 49 "datagrams, waited, against Python's echo server"
+    kill "$uepid" 2>/dev/null
+    rm -f "$work/uready"
+    timeout 60 ./gbasic --line-buffered tests/net/datagram_server.bas "$work/uready" >"$work/us.out" 2>&1 </dev/null &
+    uspid=$!
+    pids="$pids $uspid"
+    for _ in $(seq 100); do [ -s "$work/uready" ] && break; sleep 0.05; done
+    read -r uport usmall <"$work/uready"
+    udp_peer() {
+        if out=$(timeout 60 python3 -I tests/net/udp_peer.py "$@" 2>&1); then
+            printf '%s\n' "$out" | grep -v '^INFO'
+        else
+            printf '%s\n' "$out" | grep -E '^FAIL|Error' | head -3
+            fail "udp peer $1"
+        fi
+    }
+    udp_peer lockstep "$uport"
+    udp_peer burst "$uport"
+    udp_peer big "$uport"
+    udp_peer trunc "$uport" "$usmall"
+    udp_peer quit "$uport"
+    if wait "$uspid" && [ ! -s "$work/us.out" ]; then
+        printf 'PASS   and the watched datagram server ended when its sockets closed, with nothing unexpected\n'
+    else
+        fail "the watched datagram server did not end cleanly"
+        head -5 "$work/us.out"
+    fi
+fi
+
 # --- Tier 7: valgrind --------------------------------------------------------
 if vg_available; then
     for f in tests/net/pack_test.bas tests/net/waited_test.bas; do
@@ -325,6 +379,25 @@ if vg_available; then
     else
         fail "--track-fds found $open_sockets socket(s) open at exit"
         grep -A3 'Open AF_' "$work/fds.log" | head -12
+    fi
+    for f in tests/net/datagram_test.bas tests/net/datagram_watched.bas; do
+        if VG_EXTRA="--log-file=$work/vgd.log" timeout 300 bash tests/net/vg_wrap.sh ./gbasic "$f" \
+               >"$work/vgd.out" 2>&1 </dev/null && grep -q '^mismatches: 0$' "$work/vgd.out"; then
+            printf 'PASS valgrind %s\n' "$f"
+        else
+            fail "valgrind $f"
+            grep -E 'MISMATCH|mismatches' "$work/vgd.out" | head -5
+            grep -B2 -A12 'Invalid\|definitely' "$work/vgd.log" | head -30
+        fi
+    done
+    VG_EXTRA="--log-file=$work/fdd.log" timeout 300 bash tests/net/vg_wrap.sh ./gbasic tests/net/datagram_test.bas \
+        >/dev/null 2>&1 </dev/null
+    open_sockets=$(grep -c 'Open AF_\(INET\|INET6\|UNIX\) socket' "$work/fdd.log")
+    if [ "$open_sockets" = 0 ] && grep -q 'FILE DESCRIPTORS' "$work/fdd.log"; then
+        printf 'PASS --track-fds: no datagram socket left open at exit\n'
+    else
+        fail "--track-fds found $open_sockets datagram socket(s) open at exit"
+        grep -A3 'Open AF_' "$work/fdd.log" | head -12
     fi
     if command -v python3 >/dev/null 2>&1; then
         rm -f "$work/ready"
