@@ -1,7 +1,8 @@
 # Networking: sockets, TLS, datagrams and WebSockets
 
 Status: **Ruled 2026-11-04** (§13: Matthew took every recommendation); **N1 shipped 2026-11-04** (`load net`, `pack`/`unpack`;
-`tests/run_net.sh`). N2 (TLS) is next. Asked for by
+`tests/run_net.sh`); **N2 shipped 2026-11-04** (TLS: `tls:` on connect and
+listen, `start_tls`, §5 and the note below it). N3 (UDP) is next. Asked for by
 Matthew, to fill the gap beneath two named uses and the ones that will follow:
 
 1. **An SSH server and client for Transward**, which today drives OpenSSH
@@ -262,6 +263,26 @@ Over libssl, which `webserver` already links for its own TLS.
 - **The peer's certificate is readable**: `c.tls.peer_certificate` is
   `{ subject, issuer, not_before, not_after, sha256 }`, so a program can pin a
   certificate by fingerprint.
+
+**As built (N2), and where it differs from the draft above.** The server
+options are spelled as `webserver.listen`'s are (`cert`, `key`, and `certs:
+[{ host, cert, key }]` for SNI) rather than the draft's `certificate:` and
+`sni: {...}`: the loading is shared code (`webserver_tls_build`), and one
+vocabulary for one thing is less to remember. Mutual TLS is `client_ca` and
+`require_client_cert`, and a client certificate is `cert` and `key` on the
+client's record. Three decisions the draft did not make:
+
+- **`start_tls` refuses bytes already buffered** (`unexpected_data`). They
+  arrived in plaintext; reading them as part of the TLS stream is the STARTTLS
+  injection (CVE-2011-0411 and its family).
+- **A TLS listener announces a connection after its handshake**, so `c.tls` is
+  ready in the `accepted` handler. A handshake that fails is an `error` event
+  naming the connection and its listener, with no `accepted`.
+- **A refused client certificate is named the same however it lands.** TLS
+  1.3 refuses it after the client's handshake has finished, so a client finds
+  out at its next read or write. When that write meets the closed socket first,
+  the alert waiting behind it is read, so the failure is `tls_failed` naming
+  the alert either way, not a broken pipe one time in some.
 
 ## 6. WebSockets: a library over `net`, not a module
 

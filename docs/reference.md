@@ -3504,8 +3504,8 @@ nothing is reported.
 
 *(added 2026-11-04; [networking_design.md](networking_design.md))* TCP and
 Unix sockets, client and server: the layer under any protocol that is not HTTP.
-Core, with no library to install. TLS, UDP and WebSockets follow (N2 to N4 in
-the design).
+Core, with no library to install, except TLS, which needs libssl in the build.
+UDP and WebSockets follow (N3 and N4 in the design).
 
 `load net` binds a global record `net` holding `events`, as `load http` binds
 `http`. A **connection** or **listener** is waited or watched, never both,
@@ -3599,8 +3599,9 @@ A count or delimiter that cannot fit the receive buffer is refused at the call
 - `c.write(bytes) -> count` queues the bytes and sends what the socket will take
   now; the rest goes as the socket allows, so a partial send is never the
   program's to handle. Past the send ceiling (16 MiB queued) a write is refused
-  (`backpressure`); a watched connection then reports `writable` when the queue
-  drains below 64 KiB.
+  (`backpressure`). A watched connection whose queue reached 64 KiB then reports
+  `writable` when it drains below that, so "write while `c.queued()` is under
+  64 KiB" always gets its event.
 - `c.queued()`: bytes not yet sent. `c.flush([timeout])` (waited) blocks until
   they are.
 - `c.shutdown_write()` half-closes. `c.close()` closes once the queue drains;
@@ -3612,10 +3613,11 @@ Each event in `net.events` is `{ kind, id, connection, listener, code, message }
 
 | kind | when |
 |---|---|
-| `accepted` | a listener took a connection (`listener` is set) |
-| `connected` | a watched connect finished |
+| `accepted` | a listener took a connection (`listener` is set); on a TLS listener, once its handshake is done |
+| `connected` | a watched connect finished (with `tls:`, its handshake too) |
+| `tls` | a watched `start_tls` finished its handshake |
 | `data` | new bytes arrived since the last `data` event |
-| `writable` | the send queue drained below 64 KiB after being above it |
+| `writable` | the send queue drained below 64 KiB after reaching it |
 | `full` | the receive buffer reached its ceiling, and reading has paused until the program takes |
 | `idle` | the idle timeout passed; `closed` follows |
 | `error` | the connection failed (`code`, `message`); `closed` follows. On a listener, `code` `limit` means a connection was refused at `max_connections` |
@@ -3631,7 +3633,7 @@ and a program whose sockets have all closed lets the loop end.
 
 `c.id`, `c.kind` (`"connection"` or `"listener"`), `c.open`, `c.watched`,
 `c.peer` and `c.local` (`{ address, port }` or `{ path }`), `c.port`, `c.path`,
-`c.tls` (`nothing` until N2), `listener.connections` (how many are open), and
+`c.tls` (see [TLS](#tls)), `listener.connections` (how many are open), and
 on a Unix connection `c.peer_credentials`: `{ pid, uid, gid }` of the process
 at the other end (`pid` is `unknown` on the BSDs and macOS). That is how a
 local server authenticates a user by who they are.
@@ -3652,9 +3654,121 @@ Raised with code 1004 and source `net`, and `error.details.code`:
 | `permission` | a privileged port, or a path's permissions |
 | `backpressure` | a write past the send ceiling |
 | `too_long` | a count or delimiter past the receive ceiling |
+| `tls_verify` | a certificate did not verify; libssl's reason is in `details.reason` |
+| `tls_failed` | the handshake or the TLS connection failed otherwise, or a certificate or key did not load; the message says why |
+| `unexpected_data` | `start_tls` with bytes already buffered (see [TLS](#tls)) |
 
 A watched connection reports the same code in its `error` event. Misuse (a
 missing option, a wrong kind of argument) is the ordinary 1003.
+
+### TLS
+
+*(added 2026-11-04, N2)* Encrypted connections, client and server, and an
+upgrade of one already open. Optional: TLS needs libssl in the build, as
+`webserver`'s does, and without it a `tls:` option is refused with a sentence
+saying so. Everything above (the take and read families, backpressure, idle
+timeouts, the events) works on a TLS connection unchanged.
+
+<!--fragment: needs a TLS server on the network; tests/net/tls_client.bas is the runnable form-->
+```basic
+load net
+
+c = net.connect({ host: "example.com", port: 443, tls: true })
+c.write("HEAD / HTTP/1.0" + chr(13) + chr(10) + "Host: example.com" + chr(13) + chr(10) + chr(13) + chr(10))
+print c.read_line(10 seconds)
+print c.tls.version + " " + c.tls.peer_certificate.subject
+c.close()
+```
+
+**A client verifies by default**: against the system's trusted certificates,
+with the host name checked against the certificate (an address is checked
+against its IP names, and sends no SNI). A failure raises `tls_verify` with
+libssl's reason in `error.details.reason`, such as `hostname mismatch`,
+`certificate has expired` or `unable to get local issuer certificate`. Not
+verifying is spelled out: `tls: { verify: false }`.
+
+`tls:` on `net.connect` is `true` or a record:
+
+| option | meaning |
+|---|---|
+| `server_name` | the name checked, and sent as SNI (default: `host`). A Unix socket has no host, so it needs this or `verify: false` |
+| `ca` | a file or directory of authorities to trust instead of the system's |
+| `verify` | `false` accepts any certificate |
+| `cert`, `key` | a client certificate, for a server that asks for one |
+
+`tls:` on `net.listen` is a record, the one `webserver.listen` takes, loaded by
+the same code:
+
+| option | meaning |
+|---|---|
+| `cert`, `key` | the certificate chain and its private key, PEM files |
+| `certs` | `[ { host, cert, key } ]`, chosen by the name the client asks for (SNI). A name not listed gets `cert` |
+| `client_ca` | ask each client for a certificate from these authorities |
+| `require_client_cert` | `true` refuses a client without one; needs `client_ca` |
+
+Certificates load when the listener is made, so a file that does not load, or
+a key that is not the certificate's, raises `tls_failed` at `listen` naming the
+file. TLS 1.2 is the floor on both sides.
+
+**The handshake is part of making the connection.** A waited `net.connect`
+returns when it has finished, within the one `timeout`; a watched one reports
+`connected` after it, and a TLS listener reports `accepted` after it, so
+`c.tls` is ready in both handlers. A handshake that fails on a listener is an
+`error` event naming the `connection` and its `listener`, then `closed`, with
+no `accepted` (the program was never handed it); one that never finishes is
+closed at the listener's `idle`. A waited `accept` on a TLS listener waits for
+the handshake too, and raises if it fails, so a waited TLS server catches its
+`accept`: one bad client would otherwise end it.
+
+A TLS 1.3 server refuses a client certificate after the client's handshake has
+finished, so a client learns of it at its next read or write, as `tls_failed`
+naming the server's alert (`tlsv13 alert certificate required`). That is the
+same whichever of the two comes first.
+
+#### `start_tls`: upgrading an open connection
+
+`c.start_tls(tls [, timeout])` begins the handshake on a connection that is
+already open, as PostgreSQL's `SSLRequest` and the `STARTTLS` of SMTP, LDAP and
+IMAP need. `tls` is what `connect` or `listen` would take, by which side the
+connection is: one from a listener takes the server's options.
+
+<!--fragment: needs a PostgreSQL server; tests/net/tls_peer.py's pg service is the runnable form-->
+```basic
+c = net.connect({ host: "db.example.com", port: 5432 })
+c.write(pack(">I I", [8, 80877103]))          ' PostgreSQL's SSLRequest
+if c.read_exactly(1, 10 seconds) = "S" then
+    c.start_tls(true)
+end if
+```
+
+Waited, it returns `true` once the handshake is done (within `timeout`,
+default 30 seconds) and closes the connection if it fails. Watched, it returns
+at once and a `tls` event reports the end. What was written before it is sent
+in plaintext first.
+
+**Bytes that arrived before the handshake are refused.** If any are buffered,
+`start_tls` raises `unexpected_data`: they came in plaintext, and reading them
+as part of the TLS stream is the STARTTLS injection. Take them first if the
+protocol allows them.
+
+#### What a TLS connection says about itself
+
+`c.tls` is `nothing` on a plain connection and until the handshake finishes,
+then `{ version, cipher, server_name, peer_certificate }`. `peer_certificate`
+is `nothing` when the peer sent none (a client nobody asked), otherwise
+`{ subject, issuer, not_before, not_after, sha256 }`: names as RFC 2253 text
+(`CN=localhost`), times as UTC datetimes, and `sha256` the certificate's
+fingerprint in lowercase hex, `openssl x509 -fingerprint -sha256` without the
+colons, so a program can pin a certificate. The facts outlive the connection,
+so a `closed` handler can read them. A listener's `l.tls` is
+`{ hosts, client_certificate }`, the second `"none"`, `"requested"` or
+`"required"`.
+
+`close` sends TLS's `close_notify`, which is how the peer tells an end from a
+truncation; `abort` does not. `shutdown_write` sends it too, and the peer may
+still send. A peer that closes without one is reported as closed by the peer,
+as most TLS stacks do; a protocol that frames its messages detects truncation
+itself.
 
 ## Timer Module
 

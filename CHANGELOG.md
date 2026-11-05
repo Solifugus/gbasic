@@ -16,6 +16,32 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### `net`: TLS
+
+Increment N2 of docs/networking_design.md. Needs libssl in the build; without
+it a `tls:` option is refused with a sentence.
+
+- **`tls:` on `net.connect`**: `true`, or `{ server_name, ca, verify, cert,
+  key }`. Verification is on by default (the system store, the name checked
+  against the certificate); `verify: false` is spelled out. A failure raises
+  `tls_verify` with libssl's reason in `error.details.reason`.
+- **`tls:` on `net.listen`**: the record `webserver.listen` takes (`cert`,
+  `key`, `certs` for SNI), loaded by the same code, plus `client_ca` and
+  `require_client_cert` for mutual TLS. Certificates load at `listen`.
+- **`c.start_tls(tls [, timeout])`** upgrades an open connection, as
+  PostgreSQL's SSLRequest and STARTTLS need. It refuses bytes already buffered
+  (`unexpected_data`), which is the STARTTLS injection.
+- **`c.tls`**: `{ version, cipher, server_name, peer_certificate }`, the
+  certificate as `{ subject, issuer, not_before, not_after, sha256 }`. New
+  event `tls`; new codes `tls_verify`, `tls_failed`, `unexpected_data`.
+- `webserver`'s certificate loading now reports into a buffer so both modules
+  share it; its messages are unchanged.
+- **Fixed (N1): `writable` for a queue at exactly 64 KiB.** It armed only
+  above the mark, so a program writing "while `queued()` is under 64 KiB"
+  could stop at exactly 65536 and never be told to continue. It now arms at
+  the mark and fires below it. Seen once under the gate's load; the check
+  builds the boundary byte by byte.
+
 ### `net`: TCP and Unix sockets, and `pack`/`unpack`
 
 Increment N1 of docs/networking_design.md (Matthew, 2026-11-04), the layer

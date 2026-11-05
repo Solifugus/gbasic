@@ -66,7 +66,10 @@ LIBCRYPTO_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --
 # raises the usual clean "not available in this build" error.
 LIBSSL_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libssl && printf 1 || printf 0)
 LIBSSL_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libssl 2>/dev/null)
-LIBSSL_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libssl 2>/dev/null)
+# libcrypto too: net's TLS reads certificates (X509_digest, ASN1_TIME_to_tm)
+# with libcrypto's own calls, and libssl's .pc names only -lssl, so a build
+# with LIBCRYPTO_AVAILABLE=0 failed to link (run_platform.sh).
+LIBSSL_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs libssl libcrypto 2>/dev/null)
 
 LIBXML2_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists libxml-2.0 && printf 1 || printf 0)
 LIBXML2_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags libxml-2.0 2>/dev/null)

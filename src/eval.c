@@ -21889,16 +21889,16 @@ static void webserver_format_address(const struct sockaddr_storage *address,
  * hardening literature is about. The error buffer carries the FILE name:
  * "handshake failure" three weeks later is not a message anyone can act on,
  * "could not load key mysite.key" today is. */
-static SSL_CTX *webserver_tls_make_ctx(const char *cert, const char *key,
+static SSL_CTX *webserver_tls_make_ctx(const char *who, const char *cert, const char *key,
                                        char *err, size_t err_size) {
     SSL_CTX *ctx = SSL_CTX_new(TLS_server_method());
     if (!ctx) {
-        snprintf(err, err_size, "webserver: could not create a TLS context");
+        snprintf(err, err_size, "%s: could not create a TLS context", who);
         return NULL;
     }
     SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
     if (SSL_CTX_use_certificate_chain_file(ctx, cert) != 1) {
-        snprintf(err, err_size, "webserver: could not load certificate '%s'", cert);
+        snprintf(err, err_size, "%s: could not load certificate '%s'", who, cert);
         SSL_CTX_free(ctx);
         return NULL;
     }
@@ -21909,14 +21909,14 @@ static SSL_CTX *webserver_tls_make_ctx(const char *cert, const char *key,
          * permissions on a key that loads fine and belongs to a different
          * certificate. Say both. */
         snprintf(err, err_size,
-                 "webserver: could not use private key '%s' (unreadable, or it does not match the certificate)",
-                 key);
+                 "%s: could not use private key '%s' (unreadable, or it does not match the certificate)",
+                 who, key);
         SSL_CTX_free(ctx);
         return NULL;
     }
     if (SSL_CTX_check_private_key(ctx) != 1) {
         snprintf(err, err_size,
-                 "webserver: key '%s' does not match certificate '%s'", key, cert);
+                 "%s: key '%s' does not match certificate '%s'", who, key, cert);
         SSL_CTX_free(ctx);
         return NULL;
     }
@@ -22556,18 +22556,18 @@ static int webserver_listen_options(AstExpr *expr, char *address, size_t address
 
 #if HAVE_LIBSSL
 /* Build every context a tls: option describes. On failure everything built so
- * far is freed and the raise names the file that refused. The DEFAULT pair
+ * far is freed and `err` names the file that refused; the caller raises it in
+ * its own module's terms. SHARED by webserver and net's TLS listeners, so the
+ * two cannot load the same certificate differently. The DEFAULT pair
  * may be omitted when certs: is present -- the first entry then answers
  * clients that send no SNI at all. */
-static int webserver_tls_build(Value *tls, SSL_CTX **out_default,
-                               char ***out_hosts, SSL_CTX ***out_ctxs,
+static int webserver_tls_build(Value *tls, const char *who, char *err, size_t err_size,
+                               SSL_CTX **out_default, char ***out_hosts, SSL_CTX ***out_ctxs,
                                size_t *out_count) {
     *out_default = NULL;
     *out_hosts = NULL;
     *out_ctxs = NULL;
     *out_count = 0;
-    char err[512];
-
     const char *cert = NULL;
     const char *key = NULL;
     RecordField *cert_f = record_find(tls, "cert");
@@ -22580,14 +22580,14 @@ static int webserver_tls_build(Value *tls, SSL_CTX **out_default,
     Value *sni_items = NULL;
     if (certs_f) {
         if (certs_f->value->kind != VALUE_ARRAY) {
-            webserver_raise("webserver: tls.certs must be an array of { host, cert, key } records");
+            snprintf(err, err_size, "%s: tls.certs must be an array of { host, cert, key } records", who);
             return 0;
         }
         sni_items = certs_f->value->as.array.store->items;
         sni_total = certs_f->value->as.array.store->count;
     }
     if ((!cert || !key) && sni_total == 0) {
-        webserver_raise("webserver: tls needs cert and key (or a certs: list)");
+        snprintf(err, err_size, "%s: tls needs cert and key (or a certs: list)", who);
         return 0;
     }
 
@@ -22602,7 +22602,7 @@ static int webserver_tls_build(Value *tls, SSL_CTX **out_default,
         }
         for (size_t i = 0; i < sni_total; i++) {
             if (sni_items[i].kind != VALUE_RECORD) {
-                webserver_raise("webserver: every tls.certs entry must be a { host, cert, key } record");
+                snprintf(err, err_size, "%s: every tls.certs entry must be a { host, cert, key } record", who);
                 goto fail;
             }
             RecordField *h = record_find(&sni_items[i], "host");
@@ -22611,13 +22611,12 @@ static int webserver_tls_build(Value *tls, SSL_CTX **out_default,
             if (!h || h->value->kind != VALUE_STRING ||
                 !c || c->value->kind != VALUE_STRING ||
                 !k || k->value->kind != VALUE_STRING) {
-                webserver_raise("webserver: every tls.certs entry must be a { host, cert, key } record");
+                snprintf(err, err_size, "%s: every tls.certs entry must be a { host, cert, key } record", who);
                 goto fail;
             }
-            ctxs[i] = webserver_tls_make_ctx(c->value->as.string, k->value->as.string,
-                                             err, sizeof(err));
+            ctxs[i] = webserver_tls_make_ctx(who, c->value->as.string, k->value->as.string,
+                                             err, err_size);
             if (!ctxs[i]) {
-                webserver_raise(err);
                 goto fail;
             }
             hosts[i] = copy_string(h->value->as.string);
@@ -22627,9 +22626,8 @@ static int webserver_tls_build(Value *tls, SSL_CTX **out_default,
 
     SSL_CTX *dflt = NULL;
     if (cert && key) {
-        dflt = webserver_tls_make_ctx(cert, key, err, sizeof(err));
+        dflt = webserver_tls_make_ctx(who, cert, key, err, err_size);
         if (!dflt) {
-            webserver_raise(err);
             goto fail;
         }
     } else {
@@ -22815,7 +22813,10 @@ static Value webserver_eval_inherited(AstExpr *expr) {
             char **sni_hosts = NULL;
             SSL_CTX **sni_ctxs = NULL;
             size_t sni_count = 0;
-            if (!webserver_tls_build(&tls_opts, &tls_default, &sni_hosts, &sni_ctxs, &sni_count)) {
+            char tls_err[512];
+            if (!webserver_tls_build(&tls_opts, "webserver", tls_err, sizeof(tls_err),
+                                     &tls_default, &sni_hosts, &sni_ctxs, &sni_count)) {
+                webserver_raise(tls_err);
                 for (long j = 0; j <= i; j++) {
                     value_free(items[j]);
                 }
@@ -22952,7 +22953,10 @@ static Value webserver_eval_listen(AstExpr *expr) {
     SSL_CTX **sni_ctxs = NULL;
     size_t sni_count = 0;
     if (tls_opts.kind == VALUE_RECORD) {
-        if (!webserver_tls_build(&tls_opts, &tls_default, &sni_hosts, &sni_ctxs, &sni_count)) {
+        char tls_err[512];
+        if (!webserver_tls_build(&tls_opts, "webserver", tls_err, sizeof(tls_err),
+                                 &tls_default, &sni_hosts, &sni_ctxs, &sni_count)) {
+            webserver_raise(tls_err);
             value_free(tls_opts);
             close(fd);
             return value_null();

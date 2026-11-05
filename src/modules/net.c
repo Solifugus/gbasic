@@ -7,7 +7,8 @@
  * WHAT IT IS: `load net` binds a global `net` record holding `events`, and the
  * verbs make CONNECTIONS and LISTENERS -- one value kind, VALUE_NET, whose
  * `kind` field says which. Core, not optional: sockets are POSIX and need no
- * library (TLS, N2, will sit behind HAVE_LIBSSL).
+ * library. TLS (N2) is the one optional part: it sits behind HAVE_LIBSSL, and
+ * without it a `tls:` option is refused with a sentence.
  *
  * THE RULES IT KEEPS, each from the design's §2:
  *   P1  ONE LOOP. A watched socket's descriptor joins webserver_loop_iterate's
@@ -37,6 +38,9 @@
 #include <arpa/inet.h>
 #include <sys/un.h>
 #include <pthread.h>
+#if HAVE_LIBSSL
+#include <openssl/x509v3.h>
+#endif
 
 #define NET_ERROR_CODE 1004
 #define NET_DEFAULT_BUFFER (16u * 1024u * 1024u)
@@ -44,6 +48,29 @@
 #define NET_READ_CHUNK 65536
 
 typedef enum { NET_CONNECTION = 0, NET_LISTENER = 1 } NetKind;
+
+/* Why a handshake is under way, which decides what its end reports. */
+enum {
+    NET_TLS_NONE = 0,
+    NET_TLS_CONNECT = 1,     /* net.connect with tls: -> `connected` */
+    NET_TLS_UPGRADE = 2,     /* start_tls -> a `tls` event */
+    NET_TLS_ACCEPT = 3       /* accepted on a TLS listener -> `accepted` */
+};
+
+#if HAVE_LIBSSL
+/* A TLS listener's contexts: the default one and those chosen by SNI, built by
+ * webserver_tls_build, which webserver uses for its own listeners. Counted,
+ * because a connection still handshaking needs the SNI table after its
+ * listener has closed. */
+typedef struct NetTlsServer {
+    size_t refs;
+    SSL_CTX *dflt;
+    char **hosts;
+    SSL_CTX **ctxs;
+    size_t count;
+    int client_certificate;  /* 0 none, 1 requested, 2 required */
+} NetTlsServer;
+#endif
 
 typedef struct {
     char *data;
@@ -110,6 +137,21 @@ struct NetSocket {
     double child_idle_s;
     size_t child_buffer;
     struct NetSocket *listener;   /* an accepted connection's listener (borrowed) */
+    char *host;              /* the host net.connect was given: start_tls's default name */
+    /* TLS (N2). The fields that are not libssl types stay outside the guard so
+     * the code that only reads them needs none. */
+    int tls_handshaking;     /* NET_TLS_*: why one is under way, 0 when none is */
+    int tls_want_write;      /* the handshake is starved of POLLOUT rather than POLLIN */
+    int tls_read_wants_write;
+    int tls_write_wants_read;
+    int tls_no_notify;       /* abort: close without TLS's close_notify */
+    int tls_event_pending;   /* a `tls` event is owed: a watched start_tls finished */
+    int announced;           /* the program has been handed this connection */
+    Value tls_info;          /* what the handshake established; null before it finishes */
+#if HAVE_LIBSSL
+    SSL *ssl;
+    NetTlsServer *tls_server;     /* a TLS listener's contexts, and an accepted connection's */
+#endif
 };
 
 static NetSocket **net_sockets = NULL;
@@ -278,7 +320,25 @@ static void net_resolve_finish(NetResolve *r) {
 
 /* Close the descriptor; the struct stays readable (its buffer included, so a
  * program can take what arrived before the close). */
+#if HAVE_LIBSSL
+static void net_tls_server_release(NetTlsServer *t);
+#endif
+
 static void net_close_fd(NetSocket *s) {
+#if HAVE_LIBSSL
+    if (s->ssl) {
+        /* close_notify, once and without waiting: it tells the peer the end
+         * was meant, which is how it tells a close from a truncation. */
+        if (s->fd >= 0 && !s->tls_handshaking && !s->tls_no_notify) {
+            ERR_clear_error();
+            SSL_shutdown(s->ssl);
+        }
+        SSL_free(s->ssl);
+        s->ssl = NULL;
+        ERR_clear_error();
+    }
+    s->tls_handshaking = 0;
+#endif
     if (s->fd >= 0) {
         close(s->fd);
         s->fd = -1;
@@ -301,6 +361,20 @@ static void net_close_fd(NetSocket *s) {
     }
 }
 
+/* The half-close: TLS's close_notify on a TLS connection (the peer may still
+ * send), the socket's own on a plain one. */
+static void net_shut_write(NetSocket *s) {
+#if HAVE_LIBSSL
+    if (s->ssl) {
+        ERR_clear_error();
+        SSL_shutdown(s->ssl);
+        ERR_clear_error();
+        return;
+    }
+#endif
+    shutdown(s->fd, SHUT_WR);
+}
+
 static void net_socket_free(NetSocket *s) {
     net_close_fd(s);
     if (s->resolve) {
@@ -314,6 +388,13 @@ static void net_socket_free(NetSocket *s) {
     free(s->error_code);
     free(s->error_message);
     free(s->path);
+    free(s->host);
+    value_free(s->tls_info);
+#if HAVE_LIBSSL
+    if (s->tls_server) {
+        net_tls_server_release(s->tls_server);
+    }
+#endif
     free(s);
 }
 
@@ -342,6 +423,7 @@ static NetSocket *net_socket_new(NetKind kind) {
     s->in_ceiling = NET_DEFAULT_BUFFER;
     s->out_ceiling = NET_DEFAULT_BUFFER;
     s->last_activity = net_now();
+    s->tls_info = value_null();
     net_registry_add(s);
     if (!net_sigpipe_ignored) {
         /* A write to a peer that left must be an ERROR, never a process
@@ -442,7 +524,20 @@ static int net_emit(const char *kind, NetSocket *conn, NetSocket *listener,
 
 /* Read what the socket has, up to the ceiling. Returns the bytes read, or -1
  * on a failure (code and message set). End of stream sets peer_closed. */
+#if HAVE_LIBSSL
+static long net_tls_fill(NetSocket *s, const char **code, char *message, size_t msize);
+static long net_tls_flush(NetSocket *s, const char **code, char *message, size_t msize);
+#endif
+
 static long net_fill(NetSocket *s, const char **code, char *message, size_t msize) {
+    if (s->tls_handshaking) {
+        return 0;            /* nothing is the program's until the handshake is done */
+    }
+#if HAVE_LIBSSL
+    if (s->ssl) {
+        return net_tls_fill(s, code, message, msize);
+    }
+#endif
     long total = 0;
     char chunk[NET_READ_CHUNK];
     while (s->fd >= 0 && !s->peer_closed && s->in.len < s->in_ceiling) {
@@ -474,6 +569,14 @@ static long net_fill(NetSocket *s, const char **code, char *message, size_t msiz
 }
 
 static long net_flush_some(NetSocket *s, const char **code, char *message, size_t msize) {
+    if (s->tls_handshaking) {
+        return 0;            /* what was written waits for the handshake */
+    }
+#if HAVE_LIBSSL
+    if (s->ssl) {
+        return net_tls_flush(s, code, message, msize);
+    }
+#endif
     long total = 0;
     while (s->fd >= 0 && s->out.len > 0) {
         int flags = 0;
@@ -722,6 +825,642 @@ static const char *net_gai_code(int rc) {
     }
 }
 
+/* ---- TLS (N2) ---------------------------------------------------------------------- *
+ *
+ * docs/networking_design.md §5. TLS rides UNDER the buffers: net_fill and
+ * net_flush_some hand a TLS socket to the two functions here, so the take and
+ * read families, backpressure, idle timeouts and the events are the same code
+ * for a TLS connection as for a plain one. What TLS adds is a HANDSHAKE, which
+ * runs in the loop (watched) or within a deadline (waited), and two
+ * directions the loop must now poll for: a read that needs to write (a key
+ * update) and a write that needs to read.
+ *
+ * VERIFICATION IS ON for a client: the system trust store (or `ca:`), and the
+ * name checked against the certificate. `verify: false` is spelled out by
+ * whoever wants it. */
+
+#if HAVE_LIBSSL
+static SSL_CTX *net_tls_default_client = NULL;   /* `tls: true`: built once, shared */
+
+static void net_raise_reason(const char *code, const char *message, const char *reason) {
+    if (raise_in_flight) {
+        return;
+    }
+    Value details = value_record(NULL, 0);
+    record_set(&details, "code", value_string(code));
+    if (reason) {
+        record_set(&details, "reason", value_string(reason));
+    }
+    error_set_state_full(message, NET_ERROR_CODE, "net", details, value_null(), 0, 0);
+    error_generation++;
+    raise_in_flight = 1;
+}
+
+/* libssl's own words for the newest queued error, or a fallback. */
+static const char *net_tls_error_text(const char *fallback) {
+    unsigned long e = ERR_peek_last_error();
+    const char *r = e ? ERR_reason_error_string(e) : NULL;
+    return r ? r : fallback;
+}
+
+/* The errno behind an SSL_ERROR_SYSCALL. OpenSSL 3 also queues it as a
+ * system error, so "the queue is empty" is not the test for a system failure
+ * (measured: a refused client certificate under valgrind's timing reported "a
+ * protocol error" for what was EPIPE). */
+static int net_tls_errno(void) {
+    if (errno) {
+        return errno;
+    }
+#ifdef ERR_SYSTEM_ERROR
+    unsigned long e = ERR_peek_last_error();
+    if (e && ERR_SYSTEM_ERROR(e)) {
+        return ERR_GET_REASON(e);
+    }
+#endif
+    return 0;
+}
+
+static SSL_CTX *net_tls_client_ctx(const char *ca, const char *cert, const char *key, int verify,
+                                   const char *verb) {
+    char msg[600];
+    SSL_CTX *ctx = SSL_CTX_new(TLS_client_method());
+    if (!ctx) {
+        net_raise_reason("tls_failed", "net: could not create a TLS context", net_tls_error_text(NULL));
+        return NULL;
+    }
+    SSL_CTX_set_min_proto_version(ctx, TLS1_2_VERSION);
+#ifdef SSL_OP_IGNORE_UNEXPECTED_EOF
+    SSL_CTX_set_options(ctx, SSL_OP_IGNORE_UNEXPECTED_EOF);
+#endif
+    if (verify) {
+        SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, NULL);
+        struct stat st;
+        int loaded = ca ? (stat(ca, &st) == 0 && S_ISDIR(st.st_mode)
+                               ? SSL_CTX_load_verify_locations(ctx, NULL, ca)
+                               : SSL_CTX_load_verify_locations(ctx, ca, NULL))
+                        : SSL_CTX_set_default_verify_paths(ctx);
+        if (loaded != 1) {
+            if (ca) {
+                snprintf(msg, sizeof msg, "%s: could not load the certificate authorities in '%s'", verb, ca);
+            } else {
+                snprintf(msg, sizeof msg, "%s: could not load the system's trusted certificates", verb);
+            }
+            SSL_CTX_free(ctx);
+            net_raise_reason("tls_failed", msg, net_tls_error_text(NULL));
+            return NULL;
+        }
+    }
+    if (cert || key) {
+        if (!cert || !key) {
+            SSL_CTX_free(ctx);
+            snprintf(msg, sizeof msg, "%s: a client certificate needs both cert and key", verb);
+            net_refuse(msg);
+            return NULL;
+        }
+        if (SSL_CTX_use_certificate_chain_file(ctx, cert) != 1) {
+            snprintf(msg, sizeof msg, "%s: could not load certificate '%s'", verb, cert);
+            SSL_CTX_free(ctx);
+            net_raise_reason("tls_failed", msg, net_tls_error_text(NULL));
+            return NULL;
+        }
+        if (SSL_CTX_use_PrivateKey_file(ctx, key, SSL_FILETYPE_PEM) != 1 || SSL_CTX_check_private_key(ctx) != 1) {
+            snprintf(msg, sizeof msg,
+                     "%s: could not use private key '%s' (unreadable, or it does not match the certificate)",
+                     verb, key);
+            SSL_CTX_free(ctx);
+            net_raise_reason("tls_failed", msg, net_tls_error_text(NULL));
+            return NULL;
+        }
+    }
+    ERR_clear_error();
+    return ctx;
+}
+
+static SSL *net_tls_new_ssl(SSL_CTX *ctx) {
+    SSL *ssl = SSL_new(ctx);
+    if (!ssl) {
+        abort();
+    }
+    /* The send queue is a buffer that moves (compaction) and grows (more
+     * writes) between a write libssl could not finish and its retry; these
+     * two modes are what make that legal. */
+    SSL_set_mode(ssl, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER);
+    return ssl;
+}
+
+/* A client's SSL for `tls:` (true, or a record), ready for its descriptor.
+ * `host` is the name connected to, the default server_name. NULL having raised. */
+static SSL *net_tls_client_ssl(Value *opt, const char *verb, const char *host) {
+    static const char *const known[] = { "server_name", "ca", "verify", "cert", "key", NULL };
+    char msg[400];
+    const char *server_name = host, *ca = NULL, *cert = NULL, *key = NULL;
+    int verify = 1;
+    char where[96];
+    snprintf(where, sizeof where, "%s tls", verb);
+    if (opt->kind == VALUE_RECORD) {
+        if (!net_check_options(*opt, where, known)) {
+            return NULL;
+        }
+        const char *name = NULL;
+        if (!net_opt_text(opt, "server_name", where, &name) || !net_opt_text(opt, "ca", where, &ca) ||
+            !net_opt_text(opt, "cert", where, &cert) || !net_opt_text(opt, "key", where, &key)) {
+            return NULL;
+        }
+        if (name) {
+            server_name = name;
+        }
+        Value *v = net_opt(opt, "verify");
+        if (v) {
+            if (v->kind != VALUE_BOOL) {
+                snprintf(msg, sizeof msg, "%s: verify must be true or false", where);
+                net_refuse(msg);
+                return NULL;
+            }
+            verify = v->as.boolean;
+        }
+    } else if (opt->kind != VALUE_BOOL || !opt->as.boolean) {
+        snprintf(msg, sizeof msg, "%s: tls must be true or a record such as { server_name: \"example.com\" }", verb);
+        net_refuse(msg);
+        return NULL;
+    }
+    if (verify && !server_name) {
+        snprintf(msg, sizeof msg,
+                 "%s: a Unix socket has no host name to check the certificate against; give tls a "
+                 "server_name, or verify: false", verb);
+        net_refuse(msg);
+        return NULL;
+    }
+    SSL_CTX *ctx = NULL;
+    if (verify && !ca && !cert && !key) {
+        if (!net_tls_default_client) {
+            net_tls_default_client = net_tls_client_ctx(NULL, NULL, NULL, 1, verb);
+            if (!net_tls_default_client) {
+                return NULL;
+            }
+        }
+        ctx = net_tls_default_client;
+        SSL_CTX_up_ref(ctx);
+    } else {
+        ctx = net_tls_client_ctx(ca, cert, key, verify, verb);
+        if (!ctx) {
+            return NULL;
+        }
+    }
+    SSL *ssl = net_tls_new_ssl(ctx);
+    SSL_CTX_free(ctx);                  /* the SSL holds its own reference */
+    SSL_set_connect_state(ssl);
+    if (server_name) {
+        unsigned char probe[sizeof(struct in6_addr)];
+        int literal = inet_pton(AF_INET, server_name, probe) == 1 || inet_pton(AF_INET6, server_name, probe) == 1;
+        if (!literal) {
+            SSL_set_tlsext_host_name(ssl, server_name);    /* SNI is for names, never addresses */
+        }
+        if (verify) {
+            X509_VERIFY_PARAM *param = SSL_get0_param(ssl);
+            X509_VERIFY_PARAM_set_hostflags(param, X509_CHECK_FLAG_NO_PARTIAL_WILDCARDS);
+            int ok = literal ? X509_VERIFY_PARAM_set1_ip_asc(param, server_name)
+                             : X509_VERIFY_PARAM_set1_host(param, server_name, 0);
+            if (ok != 1) {
+                SSL_free(ssl);
+                snprintf(msg, sizeof msg, "%s: '%s' cannot be checked against a certificate", verb, server_name);
+                net_refuse(msg);
+                return NULL;
+            }
+        }
+    }
+    return ssl;
+}
+
+static void net_tls_server_release(NetTlsServer *t) {
+    if (!t || --t->refs > 0) {
+        return;
+    }
+    for (size_t i = 0; i < t->count; i++) {
+        SSL_CTX_free(t->ctxs[i]);
+        free(t->hosts[i]);
+    }
+    free(t->ctxs);
+    free(t->hosts);
+    SSL_CTX_free(t->dflt);
+    free(t);
+}
+
+/* SNI, as webserver_sni_select does it: an exact, case-insensitive name, and
+ * the default context for a name it does not know. */
+static int net_tls_sni_select(SSL *ssl, int *alert, void *arg) {
+    (void)alert;
+    NetTlsServer *t = (NetTlsServer *)arg;
+    const char *name = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+    if (t && name) {
+        for (size_t i = 0; i < t->count; i++) {
+            if (strcasecmp(t->hosts[i], name) == 0) {
+                SSL_set_SSL_CTX(ssl, t->ctxs[i]);
+                break;
+            }
+        }
+    }
+    return SSL_TLSEXT_ERR_OK;
+}
+
+/* A listener's (or a server-side start_tls's) contexts from its `tls:` record.
+ * NULL having raised. */
+static NetTlsServer *net_tls_server_new(Value *opt, const char *verb) {
+    static const char *const known[] = { "cert", "key", "certs", "client_ca", "require_client_cert", NULL };
+    char msg[600];
+    char where[96];
+    snprintf(where, sizeof where, "%s tls", verb);
+    if (opt->kind != VALUE_RECORD) {
+        snprintf(msg, sizeof msg, "%s: a server's tls must be a record with cert and key (or certs:)", verb);
+        net_refuse(msg);
+        return NULL;
+    }
+    const char *client_ca = NULL;
+    if (!net_check_options(*opt, where, known) || !net_opt_text(opt, "client_ca", where, &client_ca)) {
+        return NULL;
+    }
+    int require = 0;
+    Value *rv = net_opt(opt, "require_client_cert");
+    if (rv) {
+        if (rv->kind != VALUE_BOOL) {
+            snprintf(msg, sizeof msg, "%s: require_client_cert must be true or false", where);
+            net_refuse(msg);
+            return NULL;
+        }
+        require = rv->as.boolean;
+    }
+    if (require && !client_ca) {
+        snprintf(msg, sizeof msg,
+                 "%s: require_client_cert needs client_ca, the authorities a client's certificate must "
+                 "come from", where);
+        net_refuse(msg);
+        return NULL;
+    }
+    NetTlsServer *t = calloc(1, sizeof *t);
+    if (!t) {
+        abort();
+    }
+    t->refs = 1;
+    if (!webserver_tls_build(opt, verb, msg, sizeof msg, &t->dflt, &t->hosts, &t->ctxs, &t->count)) {
+        free(t);
+        net_raise_reason("tls_failed", msg, net_tls_error_text(NULL));
+        ERR_clear_error();
+        return NULL;
+    }
+    t->client_certificate = client_ca ? (require ? 2 : 1) : 0;
+    /* Every context gets the same settings, because SNI swaps the context in
+     * mid-handshake and the one it swaps in is the one that verifies. */
+    for (size_t i = 0; i <= t->count; i++) {
+        SSL_CTX *ctx = i < t->count ? t->ctxs[i] : t->dflt;
+        if (i == t->count && t->count > 0 && t->dflt == t->ctxs[0]) {
+            break;                       /* the default IS the first named context */
+        }
+#ifdef SSL_OP_IGNORE_UNEXPECTED_EOF
+        SSL_CTX_set_options(ctx, SSL_OP_IGNORE_UNEXPECTED_EOF);
+#endif
+        SSL_CTX_set_session_id_context(ctx, (const unsigned char *)"gbasic-net", 10);
+        if (client_ca) {
+            STACK_OF(X509_NAME) *names = SSL_load_client_CA_file(client_ca);
+            if (SSL_CTX_load_verify_locations(ctx, client_ca, NULL) != 1 || !names) {
+                if (names) {
+                    sk_X509_NAME_pop_free(names, X509_NAME_free);
+                }
+                snprintf(msg, sizeof msg, "%s: could not load client_ca '%s'", where, client_ca);
+                net_raise_reason("tls_failed", msg, net_tls_error_text(NULL));
+                ERR_clear_error();
+                net_tls_server_release(t);
+                return NULL;
+            }
+            SSL_CTX_set_client_CA_list(ctx, names);
+            SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | (require ? SSL_VERIFY_FAIL_IF_NO_PEER_CERT : 0), NULL);
+        }
+    }
+    SSL_CTX_set_tlsext_servername_callback(t->dflt, net_tls_sni_select);
+    SSL_CTX_set_tlsext_servername_arg(t->dflt, t);
+    ERR_clear_error();
+    return t;
+}
+
+/* Begin a handshake on a connected descriptor. The first step is taken by the
+ * caller or by the loop, which polls for writing first: a client's opening
+ * flight is a write. */
+static void net_tls_attach(NetSocket *s, SSL *ssl, int why) {
+    s->ssl = ssl;
+    SSL_set_fd(ssl, s->fd);
+    s->tls_handshaking = why;
+    s->tls_want_write = SSL_is_server(ssl) ? 0 : 1;
+}
+
+static Value net_tls_name_text(X509_NAME *name) {
+    BIO *b = BIO_new(BIO_s_mem());
+    if (!b) {
+        abort();
+    }
+    X509_NAME_print_ex(b, name, 0, XN_FLAG_RFC2253 & ~ASN1_STRFLGS_ESC_MSB);
+    char *data = NULL;
+    long n = BIO_get_mem_data(b, &data);
+    Value v = value_string_n(data ? data : "", n > 0 ? (size_t)n : 0);
+    BIO_free(b);
+    return v;
+}
+
+static Value net_tls_time(const ASN1_TIME *t) {
+    struct tm tm;
+    memset(&tm, 0, sizeof tm);
+    if (!t || ASN1_TIME_to_tm(t, &tm) != 1) {
+        return value_unknown();
+    }
+    DateTime dt = {0};
+    dt.year = tm.tm_year + 1900;
+    dt.month = tm.tm_mon + 1;
+    dt.day = tm.tm_mday;
+    dt.hour = tm.tm_hour;
+    dt.minute = tm.tm_min;
+    dt.second = tm.tm_sec;
+    dt.precision = PREC_SECOND;
+    return value_datetime(dt);
+}
+
+/* The facts of a finished handshake, taken once: they outlive the SSL, which
+ * is freed at close, so a program reads c.tls in its `closed` handler too. */
+static Value net_tls_snapshot(SSL *ssl) {
+    Value r = value_record(NULL, 0);
+    record_set(&r, "version", value_string(SSL_get_version(ssl)));
+    const char *cipher = SSL_get_cipher_name(ssl);
+    record_set(&r, "cipher", cipher ? value_string(cipher) : value_unknown());
+    const char *name = SSL_get_servername(ssl, TLSEXT_NAMETYPE_host_name);
+    record_set(&r, "server_name", name ? value_string(name) : value_unknown());
+#if OPENSSL_VERSION_NUMBER >= 0x30000000L
+    X509 *peer = SSL_get1_peer_certificate(ssl);
+#else
+    X509 *peer = SSL_get_peer_certificate(ssl);
+#endif
+    if (!peer) {
+        record_set(&r, "peer_certificate", value_null());
+        return r;
+    }
+    Value c = value_record(NULL, 0);
+    record_set(&c, "subject", net_tls_name_text(X509_get_subject_name(peer)));
+    record_set(&c, "issuer", net_tls_name_text(X509_get_issuer_name(peer)));
+    record_set(&c, "not_before", net_tls_time(X509_get0_notBefore(peer)));
+    record_set(&c, "not_after", net_tls_time(X509_get0_notAfter(peer)));
+    unsigned char md[EVP_MAX_MD_SIZE];
+    unsigned int mdlen = 0;
+    char hex[EVP_MAX_MD_SIZE * 2 + 1];
+    if (X509_digest(peer, EVP_sha256(), md, &mdlen) == 1) {
+        for (unsigned int i = 0; i < mdlen; i++) {
+            snprintf(hex + i * 2, 3, "%02x", md[i]);
+        }
+        record_set(&c, "sha256", value_string_n(hex, (size_t)mdlen * 2));
+    } else {
+        record_set(&c, "sha256", value_unknown());
+    }
+    X509_free(peer);
+    record_set(&r, "peer_certificate", c);
+    return r;
+}
+
+/* One step of the handshake: 1 finished, 0 still going, -1 failed with the
+ * code, message and reason set. */
+static int net_tls_step(NetSocket *s, const char **code, char *msg, size_t msize, char *reason, size_t rsize) {
+    ERR_clear_error();
+    errno = 0;
+    int r = SSL_do_handshake(s->ssl);
+    if (r == 1) {
+        int why = s->tls_handshaking;
+        s->tls_handshaking = 0;
+        value_free(s->tls_info);
+        s->tls_info = net_tls_snapshot(s->ssl);
+        if (s->watched) {
+            if (why == NET_TLS_CONNECT) {
+                s->connected_pending = 1;
+            } else if (why == NET_TLS_UPGRADE) {
+                s->tls_event_pending = 1;
+            } else if (why == NET_TLS_ACCEPT) {
+                s->connected_pending = 2;
+            }
+        }
+        s->last_activity = net_now();
+        return 1;
+    }
+    int e = SSL_get_error(s->ssl, r);
+    if (e == SSL_ERROR_WANT_READ) {
+        s->tls_want_write = 0;
+        return 0;
+    }
+    if (e == SSL_ERROR_WANT_WRITE) {
+        s->tls_want_write = 1;
+        return 0;
+    }
+    long vr = SSL_get_verify_result(s->ssl);
+    if (vr != X509_V_OK) {
+        *code = "tls_verify";
+        snprintf(reason, rsize, "%s", X509_verify_cert_error_string(vr));
+        snprintf(msg, msize, "net: the %s certificate did not verify: %s",
+                 SSL_is_server(s->ssl) ? "client's" : "server's", reason);
+    } else {
+        *code = "tls_failed";
+        if (e == SSL_ERROR_SYSCALL) {
+            int err = net_tls_errno();
+            snprintf(reason, rsize, "%s", err ? strerror(err) : "the peer closed the connection during the handshake");
+        } else {
+            snprintf(reason, rsize, "%s", net_tls_error_text("the handshake failed"));
+        }
+        snprintf(msg, msize, "net: the TLS handshake failed: %s", reason);
+    }
+    ERR_clear_error();
+    return -1;
+}
+
+/* A waited handshake, within a deadline (<= 0: none). 1 done, 0 raised. */
+static int net_tls_wait(NetSocket *s, double deadline, const char *verb) {
+    char msg[400], reason[256];
+    for (;;) {
+        const char *code = NULL;
+        int r = net_tls_step(s, &code, msg, sizeof msg, reason, sizeof reason);
+        if (r == 1) {
+            return 1;
+        }
+        if (r < 0) {
+            net_raise_reason(code, msg, reason);
+            return 0;
+        }
+        double left = deadline > 0 ? deadline - net_now() : -1;
+        if (deadline > 0 && left <= 0) {
+            snprintf(msg, sizeof msg, "%s: the TLS handshake did not finish within the timeout", verb);
+            net_raise("timeout", msg);
+            return 0;
+        }
+        struct pollfd p = { s->fd, (short)(s->tls_want_write ? POLLOUT : POLLIN), 0 };
+        int pr = poll(&p, 1, left < 0 ? -1 : (int)(left * 1000) + 1);
+        if (pr < 0 && errno != EINTR) {
+            net_raise("failed", "net: poll failed during the TLS handshake");
+            return 0;
+        }
+    }
+}
+
+/* After a send failed because the peer had gone: did it say why first? A TLS
+ * 1.3 server refuses a client certificate AFTER the client's handshake has
+ * finished, so its alert can be waiting, unread, when the client's next write
+ * finds the socket closed. Reading it names the refusal ("certificate
+ * required") instead of the broken pipe it caused, whichever of the two the
+ * timing happened to produce. Bytes that come before the alert are the
+ * peer's, and are kept. */
+static int net_tls_read_alert(NetSocket *s, char *reason, size_t rsize) {
+    char chunk[NET_READ_CHUNK];
+    for (int guard = 0; guard < 64; guard++) {
+        ERR_clear_error();
+        errno = 0;
+        int n = SSL_read(s->ssl, chunk, (int)sizeof chunk);
+        if (n > 0) {
+            netbuf_append(&s->in, chunk, (size_t)n);
+            continue;
+        }
+        if (SSL_get_error(s->ssl, n) != SSL_ERROR_SSL) {
+            return 0;
+        }
+        const char *text = net_tls_error_text(NULL);
+        if (!text) {
+            return 0;
+        }
+        snprintf(reason, rsize, "%s", text);
+        return 1;
+    }
+    return 0;
+}
+
+static long net_tls_fill(NetSocket *s, const char **code, char *message, size_t msize) {
+    long total = 0;
+    char chunk[NET_READ_CHUNK];
+    s->tls_read_wants_write = 0;
+    while (s->fd >= 0 && !s->peer_closed && s->in.len < s->in_ceiling) {
+        size_t room = s->in_ceiling - s->in.len;
+        ERR_clear_error();
+        errno = 0;
+        int n = SSL_read(s->ssl, chunk, (int)(room < sizeof chunk ? room : sizeof chunk));
+        if (n > 0) {
+            netbuf_append(&s->in, chunk, (size_t)n);
+            total += n;
+            continue;
+        }
+        int e = SSL_get_error(s->ssl, n);
+        if (e == SSL_ERROR_WANT_READ) {
+            break;
+        }
+        if (e == SSL_ERROR_WANT_WRITE) {
+            s->tls_read_wants_write = 1;
+            break;
+        }
+        if (e == SSL_ERROR_ZERO_RETURN) {
+            s->peer_closed = 1;
+            break;
+        }
+        if (e == SSL_ERROR_SYSCALL) {
+            int err = net_tls_errno();
+            if (err == EINTR) {
+                continue;
+            }
+            if (err == 0) {
+                s->peer_closed = 1;      /* end of stream without close_notify (older libssl) */
+                break;
+            }
+            *code = net_errno_code(err);
+            snprintf(message, msize, "net: the connection failed: %s", strerror(err));
+            ERR_clear_error();
+            return -1;
+        }
+        *code = "tls_failed";
+        snprintf(message, msize, "net: the TLS connection failed: %s", net_tls_error_text("a protocol error"));
+        ERR_clear_error();
+        return -1;
+    }
+    if (total > 0) {
+        s->last_activity = net_now();
+    }
+    return total;
+}
+
+static long net_tls_flush(NetSocket *s, const char **code, char *message, size_t msize) {
+    long total = 0;
+    s->tls_write_wants_read = 0;
+    while (s->fd >= 0 && s->out.len > 0) {
+        size_t len = s->out.len < (1u << 30) ? s->out.len : (1u << 30);
+        ERR_clear_error();
+        errno = 0;
+        int n = SSL_write(s->ssl, s->out.data + s->out.off, (int)len);
+        if (n > 0) {
+            netbuf_consume(&s->out, (size_t)n);
+            total += n;
+            continue;
+        }
+        int e = SSL_get_error(s->ssl, n);
+        if (e == SSL_ERROR_WANT_WRITE) {
+            break;
+        }
+        if (e == SSL_ERROR_WANT_READ) {
+            s->tls_write_wants_read = 1;
+            break;
+        }
+        if (e == SSL_ERROR_SYSCALL) {
+            int err = net_tls_errno();
+            if (err == EINTR) {
+                continue;
+            }
+            err = err ? err : EPIPE;
+            char reason[256];
+            if ((err == EPIPE || err == ECONNRESET) && net_tls_read_alert(s, reason, sizeof reason)) {
+                *code = "tls_failed";
+                snprintf(message, msize, "net: the peer ended the TLS connection: %s", reason);
+            } else {
+                *code = net_errno_code(err);
+                snprintf(message, msize, "net: the connection failed while sending: %s", strerror(err));
+            }
+            ERR_clear_error();
+            return -1;
+        }
+        *code = "tls_failed";
+        snprintf(message, msize, "net: the TLS connection failed while sending: %s",
+                 net_tls_error_text("a protocol error"));
+        ERR_clear_error();
+        return -1;
+    }
+    if (total > 0) {
+        s->last_activity = net_now();
+    }
+    return total;
+}
+
+/* Decrypted bytes libssl holds that poll cannot see: a record larger than the
+ * room left, kept when the buffer reached its ceiling. */
+static int net_tls_has_pending(NetSocket *s) {
+    return s->ssl && !s->tls_handshaking && !s->paused && !s->peer_closed && SSL_has_pending(s->ssl);
+}
+#endif
+
+#if !HAVE_LIBSSL
+/* A `tls:` option in a build without libssl. */
+static int net_tls_unavailable(const char *verb) {
+    char msg[200];
+    snprintf(msg, sizeof msg,
+             "%s: TLS is not available in this build (install the libssl development files and rebuild)", verb);
+    net_refuse(msg);
+    return 0;
+}
+#endif
+
+/* A waited handshake where one is under way; always 1 in a build without TLS,
+ * where none ever is. */
+static int net_tls_wait_or_refuse(NetSocket *s, double deadline, const char *verb) {
+#if HAVE_LIBSSL
+    return net_tls_wait(s, deadline, verb);
+#else
+    (void)s;
+    (void)deadline;
+    (void)verb;
+    return 1;
+#endif
+}
+
 /* Begin a non-blocking connect to the next address. Returns 1 when one is in
  * progress or done, 0 when the addresses ran out (code set). */
 static int net_try_next(NetSocket *s, const char **code, int *last_errno) {
@@ -779,8 +1518,36 @@ static void *net_resolve_thread(void *arg) {
     return NULL;
 }
 
+/* The descriptor is connected: report it, or begin the handshake first. A
+ * WAITED handshake finishes here within what is left of the connect timeout;
+ * 0 means it raised, and the socket and `opts` have been released. */
+static int net_connected(NetSocket *s, Value opts) {
+#if HAVE_LIBSSL
+    if (s->ssl) {
+        net_tls_attach(s, s->ssl, NET_TLS_CONNECT);
+        if (s->connect_deadline <= 0) {
+            s->connect_deadline = net_now() + s->connect_timeout_s;   /* the handshake is within it */
+        }
+        if (!s->watched) {
+            if (!net_tls_wait(s, s->connect_deadline > 0 ? s->connect_deadline : net_now() + s->connect_timeout_s,
+                              "net.connect")) {
+                value_free(opts);
+                net_socket_release(s);
+                return 0;
+            }
+        }
+        return 1;
+    }
+#endif
+    (void)opts;
+    if (s->watched) {
+        s->connected_pending = 1;
+    }
+    return 1;
+}
+
 static Value net_do_connect(AstExpr *expr) {
-    static const char *const known[] = { "host", "port", "path", "timeout", "idle", "buffer", NULL };
+    static const char *const known[] = { "host", "port", "path", "timeout", "idle", "buffer", "tls", NULL };
     if (expr->as.call.args.count != 1) {
         return net_refuse("net.connect expects one options record, such as { host: \"example.com\", port: 7000 }");
     }
@@ -816,8 +1583,35 @@ static Value net_do_connect(AstExpr *expr) {
         value_free(opts);
         return net_refuse("net.connect needs a host and a port, or a path for a Unix socket");
     }
+    Value *tls_opt = net_opt(&opts, "tls");
+    if (tls_opt && tls_opt->kind == VALUE_BOOL && !tls_opt->as.boolean) {
+        tls_opt = NULL;                  /* tls: false is plain */
+    }
+#if HAVE_LIBSSL
+    SSL *ssl = NULL;
+    if (tls_opt) {
+        /* Built before connecting, so a bad option or an unreadable ca: file
+         * is refused without a connection made and dropped. */
+        ssl = net_tls_client_ssl(tls_opt, "net.connect", host);
+        if (!ssl) {
+            value_free(opts);
+            return value_null();
+        }
+    }
+#else
+    if (tls_opt) {
+        value_free(opts);
+        net_tls_unavailable("net.connect");
+        return value_null();
+    }
+#endif
 
     NetSocket *s = net_socket_new(NET_CONNECTION);
+    s->host = host ? copy_string(host) : NULL;
+    s->announced = 1;                    /* the program holds what connect returns */
+#if HAVE_LIBSSL
+    s->ssl = ssl;      /* its descriptor is set when the connection is made */
+#endif
     s->in_ceiling = (size_t)buffer;
     s->idle_s = idle;
     s->connect_timeout_s = timeout;
@@ -848,8 +1642,8 @@ static Value net_do_connect(AstExpr *expr) {
         net_socket_options(fd, AF_UNIX);
         s->fd = fd;
         s->open = 1;
-        if (s->watched) {
-            s->connected_pending = 1;
+        if (!net_connected(s, opts)) {
+            return value_null();
         }
     } else {
         char port_text[16];
@@ -936,8 +1730,11 @@ static Value net_do_connect(AstExpr *expr) {
                 freeaddrinfo(s->addrs);
                 s->addrs = NULL;
                 s->next_addr = NULL;
+                if (!net_connected(s, opts)) {
+                    return value_null();
+                }
             } else if (!s->connecting) {
-                s->connected_pending = 1;
+                net_connected(s, opts);
             }
         }
     }
@@ -953,7 +1750,7 @@ static Value net_do_connect(AstExpr *expr) {
 
 static Value net_do_listen(AstExpr *expr) {
     static const char *const known[] = { "port", "address", "path", "mode", "backlog",
-                                         "max_connections", "idle", "buffer", NULL };
+                                         "max_connections", "idle", "buffer", "tls", NULL };
     if (expr->as.call.args.count != 1) {
         return net_refuse("net.listen expects one options record, such as { port: 7000 }");
     }
@@ -996,7 +1793,29 @@ static Value net_do_listen(AstExpr *expr) {
         return net_refuse("net.listen: mode is the permissions of a Unix socket's path, so it needs path");
     }
     char msg[400];
+    Value *tls_opt = net_opt(&opts, "tls");
+#if HAVE_LIBSSL
+    NetTlsServer *tls_server = NULL;
+    if (tls_opt) {
+        /* Certificates are loaded now, so a listener that cannot serve TLS is
+         * refused at listen rather than at its first client. */
+        tls_server = net_tls_server_new(tls_opt, "net.listen");
+        if (!tls_server) {
+            value_free(opts);
+            return value_null();
+        }
+    }
+#else
+    if (tls_opt) {
+        value_free(opts);
+        net_tls_unavailable("net.listen");
+        return value_null();
+    }
+#endif
     NetSocket *s = net_socket_new(NET_LISTENER);
+#if HAVE_LIBSSL
+    s->tls_server = tls_server;
+#endif
     s->max_connections = (size_t)max_conn;
     s->child_idle_s = idle;
     s->child_buffer = (size_t)buffer;
@@ -1134,6 +1953,15 @@ static NetSocket *net_accept_one(NetSocket *l, int *refused_for_limit) {
         c->path = copy_string(l->path);
     }
     l->children++;
+#if HAVE_LIBSSL
+    if (l->tls_server) {
+        c->tls_server = l->tls_server;
+        c->tls_server->refs++;
+        SSL *ssl = net_tls_new_ssl(l->tls_server->dflt);
+        SSL_set_accept_state(ssl);
+        net_tls_attach(c, ssl, NET_TLS_ACCEPT);
+    }
+#endif
     return c;
 }
 
@@ -1232,7 +2060,7 @@ static int net_wait_flush(NetSocket *s, double deadline, const char *verb) {
             net_raise("timeout", msg);
             return 0;
         }
-        struct pollfd p = { s->fd, POLLOUT, 0 };
+        struct pollfd p = { s->fd, (short)(s->tls_write_wants_read ? POLLIN : POLLOUT), 0 };
         poll(&p, 1, left > 1e6 ? -1 : (int)(left * 1000) + 1);
     }
     return 1;
@@ -1494,7 +2322,7 @@ static Value net_do_read(AstExpr *expr, const char *verb) {
             value_free(owner);
             return net_raise("timeout", msg);
         }
-        struct pollfd p = { s->fd, (short)(POLLIN | (s->out.len > 0 ? POLLOUT : 0)), 0 };
+        struct pollfd p = { s->fd, (short)(POLLIN | (s->out.len > 0 || s->tls_read_wants_write ? POLLOUT : 0)), 0 };
         int pr = poll(&p, 1, left < 0 ? -1 : (int)(left * 1000) + 1);
         if (pr < 0 && errno != EINTR) {
             value_free(delim);
@@ -1553,7 +2381,11 @@ static Value net_do_write(AstExpr *expr) {
             }
         }
     }
-    if (s->out.len > NET_LOW_WATER) {
+    /* AT the mark arms, BELOW it fires: the two meet exactly. Arming only
+     * above it stalled a program that wrote "while queued() < 64 KiB" -- it
+     * stops at exactly 65536, which TLS's 16 KiB records make likely, and no
+     * writable ever came (run_net.sh's drip, under the gate's load). */
+    if (s->out.len >= NET_LOW_WATER) {
         s->want_writable = 1;
     }
     value_free(owner);
@@ -1599,7 +2431,7 @@ static Value net_do_simple(AstExpr *expr, const char *verb) {
                 return value_null();
             }
             if (s->out.len == 0) {
-                shutdown(s->fd, SHUT_WR);
+                net_shut_write(s);
             }
             s->write_shut = 1;
         }
@@ -1630,6 +2462,7 @@ static Value net_do_simple(AstExpr *expr, const char *verb) {
                 struct linger lg = { 1, 0 };
                 setsockopt(s->fd, SOL_SOCKET, SO_LINGER, &lg, sizeof lg);
             }
+            s->tls_no_notify = 1;
             netbuf_consume(&s->out, s->out.len);
             if (s->watched) {
                 net_mark_closed(s, "aborted");
@@ -1669,6 +2502,15 @@ static Value net_do_simple(AstExpr *expr, const char *verb) {
             int limited = 0;
             NetSocket *c = net_accept_one(s, &limited);
             if (c) {
+                if (c->tls_handshaking) {
+                    double until = deadline >= 0 ? deadline : net_now() + (c->idle_s > 0 ? c->idle_s : 30);
+                    if (!net_tls_wait_or_refuse(c, until, verb)) {
+                        net_socket_release(c);
+                        value_free(owner);
+                        return value_null();
+                    }
+                }
+                c->announced = 1;
                 value_free(owner);
                 return value_net(c);
             }
@@ -1684,6 +2526,111 @@ static Value net_do_simple(AstExpr *expr, const char *verb) {
         snprintf(msg, sizeof msg, "%s: not a verb", verb);
         result = net_refuse(msg);
     }
+    value_free(owner);
+    return result;
+}
+
+/* start_tls(connection, tls [, timeout]): the handshake on a connection that
+ * is already open, as PostgreSQL's SSLRequest, SMTP's STARTTLS and LDAP's and
+ * IMAP's upgrades need. A connection that came from a listener takes the
+ * server's side (cert and key); one from net.connect the client's. */
+static Value net_do_start_tls(AstExpr *expr) {
+    const char *verb = "net.start_tls";
+    Value owner;
+    NetSocket *s = net_arg_socket(expr, verb, NET_CONNECTION, &owner);
+    if (!s) {
+        return value_null();
+    }
+    size_t argc = expr->as.call.args.count;
+    if (argc < 2 || argc > 3) {
+        value_free(owner);
+        return net_refuse("net.start_tls expects a connection, its tls options (true, or a record) and an "
+                          "optional timeout");
+    }
+    Value opt = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(opt);
+        value_free(owner);
+        return value_null();
+    }
+    double timeout = 30;
+    if (argc == 3) {
+        Value t = eval_expr(expr->as.call.args.items[2]);
+        timeout = error_action_pending() ? -1 : net_seconds(t, verb);
+        value_free(t);
+        if (timeout < 0) {
+            value_free(opt);
+            value_free(owner);
+            return value_null();
+        }
+    }
+    Value result = value_null();
+#if !HAVE_LIBSSL
+    (void)s;
+    net_tls_unavailable(verb);
+#else
+    char msg[400];
+    if (!s->open || s->closing || s->write_shut || s->peer_closed) {
+        net_raise("closed", "net.start_tls: the connection is closed");
+    } else if (s->ssl) {
+        net_refuse("net.start_tls: this connection is already TLS");
+    } else if (s->connecting) {
+        net_refuse("net.start_tls: the connection has not finished connecting; wait for the connected event");
+    } else if (s->in.len > 0) {
+        /* THE STARTTLS INJECTION (CVE-2011-0411 and its family): bytes that
+         * arrived in plaintext after the upgrade was asked for would be read
+         * as if they came over TLS. They are the peer's, sent too early, and
+         * the upgrade is refused rather than letting them through. */
+        snprintf(msg, sizeof msg,
+                 "net.start_tls: %zu bytes arrived before the handshake and are still buffered; they came "
+                 "in plaintext, so they cannot be read as part of the TLS stream (take them first if the "
+                 "protocol allows them)", s->in.len);
+        net_raise("unexpected_data", msg);
+    } else {
+        const char *code = NULL;
+        if (s->out.len > 0) {
+            /* what the program wrote before the upgrade goes in plaintext */
+            if (!s->watched) {
+                net_wait_flush(s, net_now() + timeout, verb);
+            } else if (net_flush_some(s, &code, msg, sizeof msg) < 0) {
+                net_raise(code, msg);
+            } else if (s->out.len > 0) {
+                net_refuse("net.start_tls: what was written before the upgrade has not all been sent; call "
+                           "it once queued() is 0 (the writable event says when)");
+            }
+        }
+        if (!error_action_pending()) {
+            SSL *ssl = NULL;
+            if (s->listener) {
+                NetTlsServer *t = net_tls_server_new(&opt, verb);
+                if (t) {
+                    if (s->tls_server) {
+                        net_tls_server_release(s->tls_server);
+                    }
+                    s->tls_server = t;
+                    ssl = net_tls_new_ssl(t->dflt);
+                    SSL_set_accept_state(ssl);
+                }
+            } else {
+                ssl = net_tls_client_ssl(&opt, verb, s->host);
+            }
+            if (ssl) {
+                net_tls_attach(s, ssl, NET_TLS_UPGRADE);
+                s->connect_deadline = net_now() + timeout;
+                if (s->watched) {
+                    result = value_bool(1);       /* the tls event says it finished */
+                } else if (net_blocking_warning(expr, verb) &&
+                           net_tls_wait(s, s->connect_deadline, verb)) {
+                    s->connect_deadline = 0;
+                    result = value_bool(1);
+                } else {
+                    net_close_fd(s);              /* a stream a handshake failed on is unusable */
+                }
+            }
+        }
+    }
+#endif
+    value_free(opt);
     value_free(owner);
     return result;
 }
@@ -1755,6 +2702,7 @@ static Value net_eval_call(AstExpr *expr) {
     if (strcmp(name, "connect") == 0) return net_do_connect(expr);
     if (strcmp(name, "listen") == 0) return net_do_listen(expr);
     if (strcmp(name, "resolve") == 0) return net_do_resolve(expr);
+    if (strcmp(name, "start_tls") == 0) return net_do_start_tls(expr);
     if (strcmp(name, "write") == 0) return net_do_write(expr);
     if (strcmp(name, "take") == 0 || strcmp(name, "take_exactly") == 0 || strcmp(name, "take_until") == 0 ||
         strcmp(name, "take_line") == 0 || strcmp(name, "peek_exactly") == 0) {
@@ -1784,7 +2732,25 @@ static int net_field(NetSocket *s, const char *field, Value *out) {
     }
     if (strcmp(field, "open") == 0) { *out = value_bool(s->open); return 1; }
     if (strcmp(field, "watched") == 0) { *out = value_bool(s->watched); return 1; }
-    if (strcmp(field, "tls") == 0) { *out = value_null(); return 1; }
+    if (strcmp(field, "tls") == 0) {
+#if HAVE_LIBSSL
+        if (s->kind == NET_LISTENER && s->tls_server) {
+            Value r = value_record(NULL, 0);
+            Value hosts = value_array(NULL, 0);
+            for (size_t i = 0; i < s->tls_server->count; i++) {
+                Value ignored = append_to_array_ref(&hosts, value_string(s->tls_server->hosts[i]), 0);
+                value_free(ignored);
+            }
+            record_set(&r, "hosts", hosts);
+            static const char *const asks[] = { "none", "requested", "required" };
+            record_set(&r, "client_certificate", value_string(asks[s->tls_server->client_certificate]));
+            *out = r;
+            return 1;
+        }
+#endif
+        *out = value_copy(s->tls_info);
+        return 1;
+    }
     if (strcmp(field, "peer") == 0) {
         *out = s->kind == NET_LISTENER ? value_unknown() : net_endpoint(s, 1);
         return 1;
@@ -1847,11 +2813,13 @@ static size_t net_collect_fds(struct pollfd *p, NetSocket **who, size_t max) {
             ev = POLLIN;
         } else if (s->connecting) {
             ev = POLLOUT;
+        } else if (s->tls_handshaking) {
+            ev = s->tls_want_write ? POLLOUT : POLLIN;
         } else {
-            if (!s->paused && !s->peer_closed) {
+            if ((!s->paused && !s->peer_closed) || s->tls_write_wants_read) {
                 ev |= POLLIN;
             }
-            if (s->out.len > 0) {
+            if (s->out.len > 0 || s->tls_read_wants_write) {
                 ev |= POLLOUT;
             }
         }
@@ -1876,13 +2844,18 @@ static long net_poll_timeout_ms(long tick_ms) {
         if (!s->watched || !s->open) {
             continue;
         }
-        if (s->connecting && s->connect_deadline > 0 && s->connect_deadline - now < best) {
+        if ((s->connecting || s->tls_handshaking) && s->connect_deadline > 0 && s->connect_deadline - now < best) {
             best = s->connect_deadline - now;
         }
+#if HAVE_LIBSSL
+        if (net_tls_has_pending(s)) {
+            best = 0;
+        }
+#endif
         if (s->idle_s > 0 && s->kind == NET_CONNECTION && s->last_activity + s->idle_s - now < best) {
             best = s->last_activity + s->idle_s - now;
         }
-        if (s->connected_pending || s->closed_pending || s->error_pending) {
+        if (s->connected_pending || s->closed_pending || s->error_pending || s->tls_event_pending) {
             best = 0;
         }
     }
@@ -1900,6 +2873,11 @@ static void net_service_io(struct pollfd *p, NetSocket **who, size_t n) {
     for (size_t i = 0; i < n; i++) {
         NetSocket *s = who[i];
         short re = p[i].revents;
+#if HAVE_LIBSSL
+        if (net_tls_has_pending(s)) {
+            re |= POLLIN;            /* bytes libssl holds are readable whatever poll says */
+        }
+#endif
         if (!re || !s->open) {
             continue;
         }
@@ -1927,7 +2905,7 @@ static void net_service_io(struct pollfd *p, NetSocket **who, size_t n) {
                          strerror(last_errno ? last_errno : ECONNREFUSED));
                 net_fail(s, code, msg);
             } else if (!s->connecting) {
-                s->connected_pending = 1;
+                net_connected(s, value_null());
             }
             continue;
         }
@@ -1956,14 +2934,16 @@ static void net_service_io(struct pollfd *p, NetSocket **who, size_t n) {
                  * one here leaked every accepted connection (valgrind,
                  * run_net.sh's watched-server tier). */
                 c->loop_ref = 1;
-                c->connected_pending = 2;    /* 2 = owed as an `accepted` event */
+                if (!c->tls_handshaking) {
+                    c->connected_pending = 2;    /* 2 = owed as an `accepted` event */
+                }                                /* (a TLS one owes it when the handshake is done) */
             }
             continue;
         }
         if (s->connecting) {
             int step = net_connect_step(s, &code, &last_errno);
             if (step == 1) {
-                s->connected_pending = 1;
+                net_connected(s, value_null());
                 if (s->addrs) {
                     freeaddrinfo(s->addrs);
                     s->addrs = NULL;
@@ -1976,7 +2956,23 @@ static void net_service_io(struct pollfd *p, NetSocket **who, size_t n) {
             }
             continue;
         }
-        if (re & (POLLIN | POLLHUP | POLLERR)) {
+#if HAVE_LIBSSL
+        if (s->tls_handshaking) {
+            char reason[256];
+            int step = net_tls_step(s, &code, msg, sizeof msg, reason, sizeof reason);
+            if (step < 0) {
+                net_fail(s, code, msg);
+                continue;
+            }
+            /* Finished or not, nothing more this pass. Bytes still in the
+             * kernel are the next poll's, bytes libssl holds are
+             * net_tls_has_pending's, and what the program wrote is polled for
+             * because it is queued (forcing a read and a write here was
+             * measured to change nothing). */
+            continue;
+        }
+#endif
+        if ((re & (POLLIN | POLLHUP | POLLERR)) || (s->tls_read_wants_write && (re & POLLOUT))) {
             long got = net_fill(s, &code, msg, sizeof msg);
             if (got < 0) {
                 net_fail(s, code, msg);
@@ -1994,13 +2990,13 @@ static void net_service_io(struct pollfd *p, NetSocket **who, size_t n) {
                 s->paused = 1;
             }
         }
-        if ((re & POLLOUT) && s->out.len > 0) {
+        if (((re & POLLOUT) || (s->tls_write_wants_read && (re & POLLIN))) && s->out.len > 0) {
             if (net_flush_some(s, &code, msg, sizeof msg) < 0) {
                 net_fail(s, code, msg);
                 continue;
             }
             if (s->out.len == 0 && s->write_shut) {
-                shutdown(s->fd, SHUT_WR);
+                net_shut_write(s);
             }
         }
         if (re & POLLNVAL) {
@@ -2019,6 +3015,12 @@ static void net_service_time(void) {
         }
         if (s->connecting && s->connect_deadline > 0 && now >= s->connect_deadline) {
             net_fail(s, "timeout", "net.connect: the connection did not complete within the timeout");
+            continue;
+        }
+        if (s->tls_handshaking && ((s->connect_deadline > 0 && now >= s->connect_deadline) ||
+                                   (s->connect_deadline <= 0 && s->idle_s > 0 &&
+                                    now - s->last_activity >= s->idle_s))) {
+            net_fail(s, "timeout", "net: the TLS handshake did not finish within the timeout");
             continue;
         }
         if (!s->connecting && s->idle_s > 0 && now - s->last_activity >= s->idle_s) {
@@ -2060,11 +3062,17 @@ static int net_deliver(void) {
         }
         if (s->connected_pending == 2) {
             s->connected_pending = 0;
+            s->announced = 1;
             ok = net_emit("accepted", s, s->listener, NULL, NULL);
             if (!ok) break;
         } else if (s->connected_pending == 1) {
             s->connected_pending = 0;
             ok = net_emit("connected", s, NULL, NULL, NULL);
+            if (!ok) break;
+        }
+        if (s->tls_event_pending) {
+            s->tls_event_pending = 0;
+            ok = net_emit("tls", s, NULL, NULL, NULL);
             if (!ok) break;
         }
         if (s->kind == NET_CONNECTION && s->in.len > 0 && !s->data_notified) {
@@ -2078,7 +3086,7 @@ static int net_deliver(void) {
                           "the receive buffer reached its ceiling; reading has paused until the program takes");
             if (!ok) break;
         }
-        if (s->want_writable && s->out.len <= NET_LOW_WATER && s->open) {
+        if (s->want_writable && s->out.len < NET_LOW_WATER && s->open) {
             s->want_writable = 0;
             ok = net_emit("writable", s, NULL, NULL, NULL);
             if (!ok) break;
@@ -2093,8 +3101,11 @@ static int net_deliver(void) {
         }
         if (s->error_pending) {
             s->error_pending = 0;
+            /* A connection a TLS listener never announced (its handshake
+             * failed) names that listener, the one thing the program knows. */
             ok = net_emit("error", s->kind == NET_CONNECTION ? s : NULL,
-                          s->kind == NET_LISTENER ? s : NULL, s->error_code, s->error_message);
+                          s->kind == NET_LISTENER ? s : (s->announced ? NULL : s->listener),
+                          s->error_code, s->error_message);
             if (s->kind == NET_LISTENER) {
                 free(s->error_code);
                 s->error_code = NULL;
@@ -2112,7 +3123,8 @@ static int net_deliver(void) {
             s->closed_delivered = 1;
             s->closed_pending = 0;
             ok = net_emit("closed", s->kind == NET_CONNECTION ? s : NULL,
-                          s->kind == NET_LISTENER ? s : NULL, s->close_code ? s->close_code : "local", NULL);
+                          s->kind == NET_LISTENER ? s : (s->announced ? NULL : s->listener),
+                          s->close_code ? s->close_code : "local", NULL);
             net_drop_loop_ref(s);
             if (!ok) break;
         }
@@ -2144,4 +3156,10 @@ static void net_shutdown(void) {
     free(net_sockets);
     net_sockets = NULL;
     net_socket_count = 0;
+#if HAVE_LIBSSL
+    if (net_tls_default_client) {
+        SSL_CTX_free(net_tls_default_client);
+        net_tls_default_client = NULL;
+    }
+#endif
 }
