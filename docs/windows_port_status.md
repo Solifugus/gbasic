@@ -1739,3 +1739,40 @@ skip for libraries this build lacks) and on Linux.
 > satisfies its conclusion) and `run_glob` must SKIP (a copy makes it report a
 > false failure about gBASIC). Everything else §28 listed was already guarded,
 > including `run_repl`'s whole interrupt tier behind `has_cap signals`.
+
+## 31. net and the G-SQL owner do not build for Windows (2026-11-05)
+
+Asked by Transward (`transward/docs/gbasic-requests-for-revision.md` §5, §6):
+does the Windows port cover the webserver, actors, process, SQLite/G-SQL,
+crypto and net? **For net and for G-SQL's owner and client, no.** The baseline
+of 0 errors in `tools/cross-build-windows.baseline` was recorded on 2026-10-02,
+before the G-SQL owner (2026-10-29) and the net module (2026-11-04) existed,
+and nobody has built for Windows since.
+
+**The probe had stopped measuring, and said nothing.** From the PCRE2 change
+(2026-11-03), `eval.c` stopped at its first include, `pcre2.h`, on any cross
+toolchain without PCRE2. A fatal error is not an `error:` line, so the count
+silently left out `eval.c` and every module it includes, and the total fell from
+the real surface to the G-SQL files beside it. It now lists every file that
+stops at a fatal error, calls the total a floor, and fails `--ratchet`. It also
+borrows the host's `pcre2.h` where the toolchain has none (declarations only, and
+the probe never links) and gains an honest `netinet/tcp.h` (Winsock's
+`ws2tcpip.h`). With those, Ubuntu's mingw gcc 13 measures 44 errors:
+
+| file | errors | causes |
+|---|---|---|
+| `src/modules/net.c` | 17 | Unix sockets (`sockaddr_un`), `SOCK_CLOEXEC`, `SHUT_WR`, `MSG_TRUNC`, `recvmsg`/`iovec` for datagrams |
+| `src/gsql/owner.c` | 18 | Unix sockets, `fcntl` (`FD_CLOEXEC`, `O_NONBLOCK`), `sigaction`/`SIGPIPE`/`SIGALRM`, `nfds_t`, `mkdir` arity |
+| `src/gsql/client.c` | 7 | the same, and `WNOHANG` (it starts the owner) |
+| `src/gsql/lsm.c` | 2 | `TIME_UTC` (MSVCRT; UCRT has it) |
+
+These are compile errors, so they are a floor. §5's warning applies: a socket
+is not a file descriptor on Windows, and `close`/`fcntl` on one compile and
+fail at run time. Porting net and the owner is its own increment, on a Windows
+machine. Windows 10 (1803) and later have `AF_UNIX` (`afunix.h`), so the
+owner's socket need not change kind. How the client starts the owner (its
+`WNOHANG` says it waits on a child) was not read for this note. The crypto
+added the same week
+(`src/modules/crypto_ssh.c`, `src/vendor/bcrypt_pbkdf.c`) is not in this count,
+because the probe builds without libcrypto. It is portable C over OpenSSL, and
+is unmeasured on Windows.

@@ -62,6 +62,7 @@ printf '#pragma once\n#include <winsock2.h>\n#define poll WSAPoll\n'          > 
 printf '#pragma once\n#include <winsock2.h>\n#include <ws2tcpip.h>\n'         > "$shim/sys/socket.h"
 printf '#pragma once\n#include <winsock2.h>\n#include <ws2tcpip.h>\n'         > "$shim/netinet/in.h"
 printf '#pragma once\n#include <ws2tcpip.h>\n'                                > "$shim/arpa/inet.h"
+printf '#pragma once\n#include <winsock2.h>\n#include <ws2tcpip.h>\n'         > "$shim/netinet/tcp.h"
 # Deliberate lies, so the compiler gets past them and shows what is BEHIND them.
 for lie in termios.h netdb.h sys/wait.h sys/select.h sys/ioctl.h sys/file.h sys/un.h; do
     printf '#pragma once\n/* PROBE STUB -- empty on purpose. A real port replaces this. */\n' > "$shim/$lie"
@@ -86,6 +87,14 @@ int regexec(const regex_t *, const char *, size_t, regmatch_t *, int);
 size_t regerror(int, const regex_t *, char *, size_t);
 void regfree(regex_t *);
 EOF
+# PCRE2 (the regex engine since 2026-11-03) is a real dependency of the
+# Windows build too (MSYS2 ships it). A cross toolchain without it stops eval.c
+# at line 20, so the HOST's pcre2.h is borrowed when there is one: it is
+# declarations only and portable C, and this probe compiles without linking.
+if [ ! -f "$($CC_WIN -print-sysroot 2>/dev/null)/include/pcre2.h" ] && [ -f /usr/include/pcre2.h ] &&
+   ! printf '#include <pcre2.h>\n' | $CC_WIN -DPCRE2_CODE_UNIT_WIDTH=8 -E -x c - >/dev/null 2>&1; then
+    cp /usr/include/pcre2.h "$shim/pcre2.h"
+fi
 
 log="$(mktemp)"
 # CLEAN WITHOUT `make clean`, for three measured reasons (2026-10-02):
@@ -133,6 +142,18 @@ echo
 echo "-- errors by file --"
 grep -oE "^[a-z/._]*\.c:[0-9]+:[0-9]+: error" "$log" | cut -d: -f1 | sort | uniq -c | sort -rn
 echo
+# A FATAL ERROR STOPS ITS FILE AT THAT LINE, and is not an `error:` line, so a
+# file that never compiled added NOTHING to the count. Measured 2026-11-05:
+# from the PCRE2 change (2026-11-03) eval.c stopped at its first include on a
+# toolchain without pcre2.h, and with it every module, so the count measured
+# only the G-SQL files beside it and looked like a smaller surface.
+fatal=$(grep -E "fatal error:" "$log" | sed -E 's/^([^:]*):[0-9]+:[0-9]+: fatal error: (.*)/\1: \2/' | sort -u)
+fatal_count=$(printf '%s' "$fatal" | grep -c . || true)
+if [ "$fatal_count" -gt 0 ]; then
+    echo "-- FILES THAT DID NOT COMPILE AT ALL: nothing after the line below was measured --"
+    printf '%s\n' "$fatal" | sed 's/^/   /'
+    echo
+fi
 echo "-- distinct causes --"
 # gcc quotes names with ‘’ in a UTF-8 locale and with plain ' otherwise (MSYS2
 # by default), so accept both -- matching only one printed an EMPTY list there.
@@ -155,6 +176,7 @@ echo "   process.run and process.poll poll a child's PIPES in their own calls an
 echo "   need a Windows mechanism of their own -- two functions, not the loop."
 echo
 echo "TOTAL ERRORS: $errors   (toolchain: $toolchain)"
+[ "$fatal_count" -gt 0 ] && echo "INCOMPLETE: $fatal_count file(s) stopped at a fatal error, so the total is a floor, not the surface"
 
 # Baseline file: line 1 the count, line 2 the toolchain it was measured with.
 if [ "${1:-}" = "--ratchet" ]; then
@@ -167,6 +189,10 @@ if [ "${1:-}" = "--ratchet" ]; then
         echo "     (gcc 13/MSVCRT 82 vs gcc 16/UCRT 123 on the same tree), so the two"
         echo "     numbers say nothing about each other. Run with the baseline's toolchain"
         echo "     (CC_WIN=...), or re-baseline deliberately in its own commit."
+        exit 1
+    fi
+    if [ "$fatal_count" -gt 0 ]; then
+        echo "FAIL NOT COMPARED: $fatal_count file(s) did not compile at all, so the count is not the surface"
         exit 1
     fi
     if [ "$errors" -gt "$base" ]; then
