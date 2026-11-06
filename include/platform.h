@@ -594,6 +594,14 @@ int gb_make_temp_dir(const char *dir, const char *prefix, char *out, size_t out_
  * filesystem" handling. Returns 0 / -1 with errno set. */
 int gb_rename_replace(const char *from, const char *to);
 
+/* Flush a file, or a directory's entries, to stable storage: fsync(2) on a
+ * descriptor opened read-only (Transward §4). A directory is synced so a file
+ * just created or renamed into it survives a crash, which atomic_replace alone
+ * does not promise. WINDOWS: a file is FlushFileBuffers'd; a directory cannot
+ * be opened to flush there, and NTFS journals its entries, so a directory
+ * answers 0 having done nothing. Returns 0 / -1 with errno set. */
+int gb_fsync_path(const char *path);
+
 /* Make stdout and stderr write bytes exactly as given. Called first thing in
  * main, before any output.
  *

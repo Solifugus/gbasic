@@ -216,6 +216,47 @@ for the `full` event.
 from `SO_PEERCRED`). The last is what lets a local database authenticate a
 user by who they are, as PostgreSQL's `peer` authentication does.
 
+**Keepalive and TCP_NODELAY** (Transward §3, 2026-11-05). `keepalive:` on
+`net.connect` and `net.listen` is `true` (the system's timings), `false`, or
+`{ idle, interval, count }`, and a listener's setting is applied to each
+connection it accepts. `c.keepalive` and `c.nodelay` are **read back from the
+socket** with `getsockopt`, so a check of them is the system's answer rather
+than the option echoed. `run_net.sh` tier 9 also reads the kernel's keepalive
+timers from outside the process with `ss -o`. **What is not measured**: probes
+going unanswered. That needs a peer whose kernel stops answering, and this
+machine forbids the unprivileged network namespace that could drop the
+packets, so interval and count are shown set, not shown firing. TCP_NODELAY has
+been on for every TCP socket since N1. SSH wants it, and nothing here turns it
+off.
+
+**Throughput, and the defect it found** (Transward §3). Transward asked for a
+measurement of loopback throughput with AES-GCM per 32 KiB packet in gBASIC.
+The first measurement was 24 MiB/s, with or without the cipher (OpenSSL's
+AES-256-GCM runs at about 5.5 GB/s here). The cost was the receive buffer,
+not the cryptography. A waited reader behind a faster peer holds a full
+buffer, and the buffer compacted whenever its end was reached, so every refill
+moved everything it held: at the default 16 MiB, 1.3 ms per packet. The buffer
+now grows to twice what it holds, and moves its contents down only when the
+consumed space before them is at least as large, so a move is paid for by the
+bytes read since the last one (`netbuf_append`). `run_net.sh` tier 10 asserts
+it as a ratio of two buffer sizes, which was 60x and is now about 2x. Measured
+afterwards (Intel Core Ultra 7 155H, 512 MiB of 32 KiB packets, a gBASIC
+sender and receiver over loopback, best of three):
+
+| | gBASIC | OpenSSH 10, `ssh -c … cat >/dev/null` |
+|---|---|---|
+| plain | about 2,000 MiB/s | |
+| AES-256-GCM per packet, both ends | about 1,200 MiB/s | `aes256-gcm@openssh.com`: about 1,100 MiB/s |
+| | | `aes256-ctr`: about 880 MiB/s; `chacha20-poly1305`: about 540 MiB/s |
+
+These are not like for like. The gBASIC figure has no SSH packet layer
+(padding, sequence numbers, the MAC of a CTR suite), and OpenSSH's includes
+connecting and a process at each end. What they do say is that the two are
+the same order of magnitude now, where before the fix gBASIC was fifty times
+slower. Where the remaining time goes was not profiled (this machine refuses
+`perf`). The programs were a gBASIC sender and sink of the same shape as
+`tests/net/bulk_sink.bas`.
+
 ### Names
 
 - `net.resolve(host) -> [ { address, family } ]`. A name lookup is
@@ -421,15 +462,15 @@ sized honestly:
 | need | for | exists? |
 |---|---|---|
 | TCP client and server, binary framing | the transport | **this design** (§3, §8) |
-| X25519 key exchange | `curve25519-sha256`, the KEX every modern peer offers | **no**, libcrypto has it |
+| X25519 key exchange | `curve25519-sha256`, the KEX every modern peer offers | **yes** since 2026-11-05 (crypto_design §9) |
 | Ed25519 sign/verify | `ssh-ed25519` host and user keys | yes |
 | SHA-256/512, HMAC-SHA-256/512 | the exchange hash, key derivation, `hmac-sha2-*-etm` | yes |
 | AES-256-GCM with a caller's nonce | `aes256-gcm@openssh.com` | yes; check the nonce/AAD shape fits (4-byte length as AAD) |
-| ChaCha20 and Poly1305, raw | `chacha20-poly1305@openssh.com`, OpenSSH's default | **no**, libcrypto has both |
-| AES-CTR | `aes*-ctr` with ETM MACs, for older peers | **no** |
-| RSA verify (and sign) | `rsa-sha2-256/512` keys, still common on servers and in `authorized_keys` | **no** |
-| ECDSA P-256 | `ecdsa-sha2-nistp256` host keys | **no** |
-| OpenSSH key file formats | reading `id_ed25519`, `authorized_keys`, `known_hosts` | **no**, but pure gBASIC over base64 and `unpack` |
+| ChaCha20 and Poly1305, raw | `chacha20-poly1305@openssh.com`, OpenSSH's default | **yes** since 2026-11-05 |
+| AES-CTR | `aes*-ctr` with ETM MACs, for older peers | **yes** since 2026-11-05 |
+| RSA verify (and sign) | `rsa-sha2-256/512` keys, still common on servers and in `authorized_keys` | **yes** since 2026-11-05 |
+| ECDSA P-256/384/521, ECDH, classic DH | `ecdsa-sha2-nistp*` host keys, `ecdh-sha2-*`, `diffie-hellman-group14/16/18` | **yes** since 2026-11-05 |
+| OpenSSH key file formats | reading `id_ed25519`, `authorized_keys`, `known_hosts` | pure gBASIC over base64 and `unpack`; an encrypted key opens with `bcrypt_pbkdf` and `aes_ctr` (`tests/crypto_ssh_keyfile_test.bas`) |
 | a pseudo-terminal | a server's interactive session (`forkpty`, window size) | **no**: `process` has pipes only |
 | raw terminal mode and `SIGWINCH` | an interactive client | **no** for programs; the prompt's line editor does it privately |
 | `process` attached to a pty | the shell a session runs | **no** |

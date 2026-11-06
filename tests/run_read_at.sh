@@ -30,6 +30,9 @@
 #   REOPEN     the cost this builtin HAS, measured rather than hidden: it is
 #              positional and stateless, so it opens the file per call. The tier
 #              states the figure so the advice in the reference is a number.
+#   CHUNKS     tests/read_at_chunks_test.bas: Transward's encryption at rest --
+#              AES-GCM chunks appended and fsync'd, read back by offset; and
+#              strace watching fsync reach the file and its directory.
 #   VALGRIND   a new allocation path per call, bounded by the file.
 #
 # THE FIXTURE TAKES A SECOND ARGUMENT -- a directory on the REPOSITORY'S
@@ -45,6 +48,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 source tests/valgrind_tier.sh
+source tests/build_has.sh
 . "$(dirname "$0")/premise.sh"   # what this machine can demonstrate
 make >/dev/null
 
@@ -224,6 +228,37 @@ if [ "$t_small" -lt 10 ]; then
     fail "32 MB in 4 KB chunks took only ${t_small}ms -- too fast to state a per-call cost from"
 else
     pass "32 MB: ${t_small}ms in $calls_small calls of 4 KB against ${t_big}ms in 512 of 64 KB -- the reopen is real and small"
+fi
+
+printf 'TIER chunks: encryption at rest -- sealed chunks appended, fsync'"'"'d, read back at their offsets\n'
+if ! build_has crypto; then
+    pass "SKIP (no libcrypto in this build -- the chunked round trip was NOT run)"
+else
+    mkdir -p "$work/ch"
+    if timeout -k 5 60 ./gbasic tests/read_at_chunks_test.bas "$work/ch" >"$work/ch.out" 2>"$work/ch.err" \
+       && grep -q '^mismatches: 0$' "$work/ch.out"; then
+        pass "$(sed -n 's/^checks: //p' "$work/ch.out") checks: six chunks appended and read back, refusals"
+    else
+        grep -E '^MISMATCH' "$work/ch.out" | head -5; head -3 "$work/ch.err"
+        fail "the chunked round trip"
+    fi
+    # fsync CANNOT BE SEEN TO WORK FROM INSIDE (only a power cut shows it), so
+    # the system calls are watched from outside: each sync must reach the
+    # kernel as fsync on a descriptor opened on that file and that directory.
+    if command -v strace >/dev/null 2>&1 && strace -o /dev/null true 2>/dev/null; then
+        mkdir -p "$work/st"
+        strace -f -e trace=openat,fsync -o "$work/st.trace" ./gbasic tests/read_at_chunks_test.bas "$work/st" >/dev/null 2>&1
+        synced=$(awk '/openat\(.*O_RDONLY\|O_CLOEXEC\) = [0-9]+$/ { fd = $NF; name = $0; sub(/^[^"]*"/, "", name); sub(/".*/, "", name); last[fd] = name }
+                      /fsync\([0-9]+\) += 0/ { match($0, /fsync\([0-9]+/); fd = substr($0, RSTART + 6, RLENGTH - 6); print last[fd] }' "$work/st.trace")
+        if printf '%s\n' "$synced" | grep -qx "$work/st/vault.bin" && printf '%s\n' "$synced" | grep -qx "$work/st"; then
+            pass "strace: fsync reached the kernel for the file and for its directory"
+        else
+            printf '%s\n' "$synced" | head -3
+            fail "strace did not see fsync on both the file and the directory"
+        fi
+    else
+        pass "SKIP (strace unavailable or not permitted -- the fsync calls were NOT watched)"
+    fi
 fi
 
 printf 'TIER valgrind\n'

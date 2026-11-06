@@ -11095,6 +11095,36 @@ static Value eval_file_call(AstExpr *expr) {
         return when;
     }
 
+    /* fsync(f): what was written to f, or f's entries if it is a directory,
+     * on stable storage before this returns (Transward §4). A failure raises,
+     * since a sync that silently did not happen is the case it exists for. */
+    if (strcmp(name, "fsync") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("fsync expects one file or directory", 1004, "file operation");
+            return value_null();
+        }
+        Value f = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(f);
+            return value_null();
+        }
+        const char *path = file_target_path(f);
+        if (!path) {
+            value_free(f);
+            runtime_error_raise("fsync expects a file reference or a path string", 1004, "file operation");
+            return value_null();
+        }
+        if (gb_fsync_path(path) != 0) {
+            char message[1100];
+            snprintf(message, sizeof(message), "fsync could not sync %s (%s)", path, strerror(errno));
+            value_free(f);
+            runtime_error_raise(message, 1004, "file operation");
+            return value_null();
+        }
+        value_free(f);
+        return value_bool(1);
+    }
+
     if (strcmp(name, "atomic_replace") == 0) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("atomic_replace expects source and destination arguments",
@@ -37398,6 +37428,7 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "file_size") == 0 ||
         strcmp(expr->as.call.name, "file_mtime") == 0 ||
         strcmp(expr->as.call.name, "atomic_replace") == 0 ||
+        strcmp(expr->as.call.name, "fsync") == 0 ||
         strcmp(expr->as.call.name, "overwrite") == 0 ||
         strcmp(expr->as.call.name, "read_at") == 0 ||
         strcmp(expr->as.call.name, "lock") == 0 ||

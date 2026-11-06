@@ -52,6 +52,24 @@ reader sees.
   byte for byte), `ssh-keygen` and `openssl dgst`
   (`docs/crypto_design.md` §9, `tests/run_crypto_ssh.sh`).
 
+### Networking and files for SSH: keepalive, a faster full buffer, fsync
+
+- **`keepalive:` on `net.connect` and `net.listen`**: `true`, `false`, or
+  `{ idle, interval, count }`, with a listener's setting given to each
+  connection it accepts. `c.keepalive` and `c.nodelay` read back what the
+  socket is doing. TCP_NODELAY was already on for every TCP socket.
+- **A waited reader behind a faster peer is about 100 times faster.** A full
+  receive buffer moved everything it held on every refill, so at the default
+  16 MiB a reader took 1.3 ms per 32 KiB packet (24 MiB/s on loopback). It
+  now refills in time proportional to what it consumed. Loopback with
+  AES-GCM per packet at both ends measured about 1,200 MiB/s afterwards. Found
+  by the throughput measurement Transward asked for
+  (`docs/networking_design.md` §3, `tests/run_net.sh` tiers 9-10).
+- **`fsync(f)`** puts a file, or a directory's entries, on stable storage and
+  raises if it cannot. With `append` and `read_at` it gives the
+  chunked-encryption pattern Transward asked for
+  (`tests/read_at_chunks_test.bas`).
+
 ### One file loaded by two spellings is one library
 
 - **A library file is recognised as one file however its path is spelled.**

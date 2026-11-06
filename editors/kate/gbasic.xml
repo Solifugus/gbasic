@@ -162,6 +162,7 @@
       <item>from_bytes</item>
       <item>from_epoch</item>
       <item>from_zone</item>
+      <item>fsync</item>
       <item>has</item>
       <item>has_builtin</item>
       <item>hash_finish</item>

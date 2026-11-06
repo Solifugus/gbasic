@@ -3669,8 +3669,8 @@ count here is bytes. `len` counts codepoints, so framing code uses
 - `net.connect(options) -> connection`: `host` and `port`, or `path` for a Unix
   socket; `timeout` (connect, default 30 seconds); `idle` (close after this
   long with no traffic; none by default on a client); `buffer` (the receive
-  ceiling, default 16 MiB). `idle` is enforced by the event loop, so it applies
-  to watched connections. Each resolved address is tried in turn within the
+  ceiling, default 16 MiB); `keepalive` (below). `idle` is enforced by the
+  event loop, so it applies to watched connections. Each resolved address is tried in turn within the
   one timeout. A **watched** connect returns at once and reports `connected`; a
   connect to a **name** then resolves on a helper thread, so the loop never
   stalls on a lookup.
@@ -3678,9 +3678,25 @@ count here is bytes. `len` counts codepoints, so framing code uses
   `listener.port`), or `path` and optionally `mode` (`"0600"`) for a Unix
   socket; `address` (default `127.0.0.1`; `"0.0.0.0"` or `"::"` to reach the
   network, numeric only); `backlog`; `max_connections` (default 1024);
-  `idle` (default 5 minutes, for each accepted connection); `buffer`. A Unix
-  path that already exists is refused (`address_in_use`), and closing the
-  listener removes the path it made.
+  `idle` (default 5 minutes, for each accepted connection); `buffer`;
+  `keepalive`, given to every connection it accepts. A Unix path that already
+  exists is refused (`address_in_use`), and closing the listener removes the
+  path it made.
+- **`keepalive`** (*since 0.11.0*) asks the system to probe an idle TCP peer,
+  so that the system ends a connection whose peer vanished without closing (a
+  dropped network, a host that went down). That ending was not observed in
+  gBASIC's tests, which can show the timings set but not a peer going silent
+  (`docs/networking_design.md` §3). `true`
+  uses the system's timings. A record `{ idle, interval, count }` sets them:
+  probing begins after `idle` seconds with no traffic, repeats every
+  `interval`, and gives up after `count` unanswered probes. Any part left out
+  is the system's, `idle` and `interval` are whole seconds from 1 to 32767
+  (durations too: `idle: 2 minutes`), and `count` runs from 1 to 127. Off by
+  default, and refused on a Unix socket. It complements `idle`, which closes a
+  connection with no traffic from either end, while keepalive is for a *peer*
+  that stopped answering. **TCP_NODELAY
+  is always on**: a write is sent at once rather than held to be joined with
+  the next one.
 - `listener.accept([timeout]) -> connection` (waited). Watched, connections
   arrive as `accepted` events instead.
 - `net.resolve(host) -> [ { address, family } ]`, blocking.
@@ -3752,7 +3768,10 @@ and a program whose sockets have all closed lets the loop end.
 
 `c.id`, `c.kind` (`"connection"`, `"listener"` or `"datagram"`), `c.open`, `c.watched`,
 `c.peer` and `c.local` (`{ address, port }` or `{ path }`), `c.port`, `c.path`,
-`c.tls` (see [TLS](#tls)), `c.state` (below), `listener.connections` (how many are open), and
+`c.tls` (see [TLS](#tls)), `c.state` (below), `listener.connections` (how many are open),
+on a TCP connection `c.keepalive` (`false` or `{ idle, interval, count }`) and
+`c.nodelay` (`true`), both **read from the socket**, so they are what the
+system is doing rather than what was asked, and
 on a Unix connection `c.peer_credentials`: `{ pid, uid, gid }` of the process
 at the other end (`pid` is `unknown` on the BSDs and macOS). That is how a
 local server authenticates a user by who they are.
@@ -8320,6 +8339,17 @@ and the other two were taken for the array verb and refused.
 
 - `exists(f)` — whether the path exists.
 - `read(f)` / `write(f, text)` / `append(f, text)` — whole-file I/O.
+  `append` adds bytes to the end of a file (`append({file}path, chunk)`), and
+  with `read_at` below is how a file of fixed-size encrypted chunks is written
+  and read back (`tests/read_at_chunks_test.bas`).
+- `fsync(f)` (*since 0.11.0*) — what was written to `f` is on stable storage
+  before it returns; `true`, and it **raises** if the system refuses. `f` may be a
+  directory, which syncs its entries: a file just created or renamed into a
+  directory survives a crash only once the directory is synced too. Durable
+  replacement is therefore `write(temp, data)`, `fsync(temp)`,
+  `atomic_replace(temp, dest)`, `fsync(directory_name(dest))`. On Windows a
+  directory answers `true` having done nothing, since NTFS journals its
+  entries.
   **Binary-safe in both directions** (*since 0.1.0-rc9*): a gBASIC string may
   hold any byte including NUL, and `read` returns the file's full length rather
   than stopping at the first one. Before rc9 `write` was binary-safe and `read`
@@ -8775,7 +8805,7 @@ File metadata and atomic replacement:
   - **Atomicity vs. durability.** This guarantees atomic *visibility*, not
     crash *durability*: surviving a power loss would additionally require
     `fsync` of the file and its containing directory, which this primitive does
-    not perform.
+    not perform: call `fsync` on both (see `fsync` above).
   - **Relationship to `move`.** `move(src, dest)` is unchanged: it still renames
     on the same filesystem and *does* fall back to copy+delete across
     filesystems (so it can cross devices, non-atomically). Use `atomic_replace`

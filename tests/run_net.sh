@@ -61,6 +61,11 @@
 #                 1000 random datagrams in lock step, a burst of 100 none split
 #                 or joined, 65507 bytes whole, truncation reported
 #
+#   9. KEEPALIVE -- tests/net/keepalive_test.bas: `keepalive:` on connect and
+#      listen, read back from the socket, and the kernel's timers read by ss.
+#  10. BULK -- tests/net/bulk_sink.bas behind tests/net/bulk_source.py: a full
+#      buffer's refill costs what was consumed, as a ratio of two buffer sizes.
+#
 # Tiers 3-6 and 8's Python parts need python3 and skip, saying so, without it.
 . "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -u
@@ -358,6 +363,78 @@ else
     fi
 fi
 
+# --- Tier 9: TCP keepalive (Transward §3) ------------------------------------
+# The fixture reads keepalive back from the socket; while it waits, ss reads
+# the KERNEL's keepalive timer from outside the process, so the timings asked
+# for are shown to be the ones running. Interval and count cannot be watched
+# firing here: that needs a peer that stops answering, and the kernel answers
+# keepalive probes on loopback whatever the program does.
+ka=/proc/sys/net/ipv4
+if [ ! -r "$ka/tcp_keepalive_time" ] || ! command -v ss >/dev/null 2>&1; then
+    printf 'SKIP keepalive: needs Linux /proc and ss, so keepalive was NOT measured\n'
+else
+    rm -f "$work/ka.ready"
+    timeout 60 ./gbasic tests/net/keepalive_test.bas "$work/ka.ready" "$(cat $ka/tcp_keepalive_time)" \
+        "$(cat $ka/tcp_keepalive_intvl)" "$(cat $ka/tcp_keepalive_probes)" >"$work/ka.out" 2>"$work/ka.err" </dev/null &
+    kpid=$!
+    pids="$pids $kpid"
+    for _ in $(seq 200); do [ -s "$work/ka.ready" ] && break; sleep 0.05; done
+    kport=$(cat "$work/ka.ready" 2>/dev/null)
+    timer() {   # the seconds left on a socket's keepalive timer, from ss
+        # ss writes the time as 119min, 1min59sec, 6.954sec or 950ms
+        ss -tno state established "( $1 = :$kport )" | sed -n 's/.*timer:(keepalive,\([^,]*\),.*/\1/p' | head -1 |
+            awk '{ t = 0; s = $0
+                   if (match(s, /[0-9.]+min/)) { t += substr(s, RSTART, RLENGTH - 3) * 60 }
+                   if (match(s, /[0-9.]+sec/)) { t += substr(s, RSTART, RLENGTH - 3) }
+                   if (match(s, /[0-9.]+ms/)) { t += substr(s, RSTART, RLENGTH - 2) / 1000 }
+                   print t }'
+    }
+    accepted=$(timer sport)
+    client=$(timer dport)
+    wait "$kpid"
+    n=$(sed -n 's/^checks: //p' "$work/ka.out")
+    if grep -q '^mismatches: 0$' "$work/ka.out" && [ "${n:-0}" -ge 22 ] && [ ! -s "$work/ka.err" ]; then
+        printf 'PASS keepalive read back from the socket (%s checks)\n' "$n"
+    else
+        fail "keepalive fixture"
+        grep -E '^MISMATCH' "$work/ka.out" | head -5
+        head -3 "$work/ka.err"
+    fi
+    if awk -v a="${accepted:-0}" -v c="${client:-0}" 'BEGIN { exit !(a > 4 && a <= 7 && c > 8 && c <= 11) }'; then
+        printf 'PASS   and the kernel runs those timers: %ss left of 7 (accepted), %ss of 11 (connected)\n' "$accepted" "$client"
+    else
+        fail "the kernel's keepalive timers were ${accepted:-none} and ${client:-none}, wanting at most 7 and 11"
+    fi
+fi
+
+# --- Tier 10: a waited reader behind a faster peer ---------------------------
+# A REFILL MUST COST WHAT WAS CONSUMED, NOT WHAT IS HELD. The buffer used to be
+# compacted whenever its end was reached, so a full one moved all it held for
+# every refill: at the default 16 MiB, 1.3 ms per 32 KiB packet, 24 MiB/s on
+# loopback, and 92 times slower than the same reader at 256 KiB. Asserted as a
+# RATIO of the two buffer sizes, which normalises the machine away.
+if ! command -v python3 >/dev/null 2>&1; then
+    printf 'SKIP bulk reader: no python3, so a full buffer'"'"'s refill cost was NOT measured\n'
+else
+    bulk() {   # bulk BUFFER -> seconds to read 128 MiB
+        rm -f "$work/bk.ready"
+        timeout 120 ./gbasic tests/net/bulk_sink.bas "$work/bk.ready" 4096 "$1" >"$work/bk.out" 2>&1 </dev/null &
+        local bpid=$!
+        for _ in $(seq 200); do [ -s "$work/bk.ready" ] && break; sleep 0.05; done
+        timeout 120 python3 -I tests/net/bulk_source.py "$(cat "$work/bk.ready")" 4096
+        wait "$bpid"
+        awk '$1 == 134217728 { print $2 }' "$work/bk.out"
+    }
+    big=$(bulk 16777216)
+    small=$(bulk 262144)
+    if [ -n "$big" ] && [ -n "$small" ] && awk -v b="$big" -v s="$small" 'BEGIN { exit !(b < 10 * s + 0.2) }'; then
+        printf 'PASS a full 16 MiB buffer refills as cheaply as a 256 KiB one (%ss against %ss for 128 MiB)\n' "$big" "$small"
+    else
+        fail "a full buffer's refill costs what it holds: 128 MiB took ${big:-?}s at 16 MiB against ${small:-?}s at 256 KiB"
+        head -3 "$work/bk.out"
+    fi
+fi
+
 # --- Tier 7: valgrind --------------------------------------------------------
 if vg_available; then
     for f in tests/net/pack_test.bas tests/net/waited_test.bas; do
@@ -371,6 +448,17 @@ if vg_available; then
         fi
     done
     rm -f "$work/w.sock"
+    if [ -r /proc/sys/net/ipv4/tcp_keepalive_time ]; then
+        ka=/proc/sys/net/ipv4
+        if vg_run ./gbasic tests/net/keepalive_test.bas "$work/vka.ready" "$(cat $ka/tcp_keepalive_time)" \
+               "$(cat $ka/tcp_keepalive_intvl)" "$(cat $ka/tcp_keepalive_probes)" >"$work/vka.out" 2>"$work/vka.err" </dev/null \
+           && grep -q '^mismatches: 0$' "$work/vka.out"; then
+            printf 'PASS valgrind tests/net/keepalive_test.bas\n'
+        else
+            fail "valgrind keepalive"
+            tail -20 "$work/vka.err"
+        fi
+    fi
     VG_EXTRA="--log-file=$work/fds.log" vg_run ./gbasic tests/net/waited_test.bas \
         "$work/w.sock" "$(id -u)" >/dev/null 2>&1 </dev/null
     open_sockets=$(grep -c 'Open AF_\(INET\|INET6\|UNIX\) socket' "$work/fds.log")

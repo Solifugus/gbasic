@@ -13255,3 +13255,18 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   `join_path` of a folder reference could answer a reference.
 - **Status: FIXED 2026-11-05** from the other end: `read` takes the string, so
   the line works as written (see the 2026-09-09 entry).
+
+## 2026-11-05 — CC — while: writing net fixtures for Transward §3 (keepalive, throughput)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** three times in one session I wrote a script that read `args` at the
+  top level, and each was refused with "undefined variable: args". Arguments
+  reach a program only through `program main(args)`, and the message says
+  nothing about that. A reader who knows other languages expects an `args`
+  (or `argv`) in scope. Separately, `random_bytes(32768)` is refused
+  ("random_bytes length must be between 1 and 4096"), so I built a test packet
+  as `repeat(random_bytes(4096), 8)`.
+- **Workaround:** wrapped each script in `program main(args) ... end program`.
+  Not an open item: documented behaviour, so there is no ledger row to probe. A
+  candidate for Matthew's "fumbles are findings": an undefined `args` outside a
+  program block could name `program main(args)` in its refusal.

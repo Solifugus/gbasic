@@ -337,6 +337,18 @@ int gb_rename_replace(const char *from, const char *to) {
     return rename(from, to);
 }
 
+int gb_fsync_path(const char *path) {
+    int fd = open(path, O_RDONLY | O_CLOEXEC);
+    if (fd < 0) {
+        return -1;
+    }
+    int rc = fsync(fd);
+    int e = errno;
+    close(fd);
+    errno = e;
+    return rc;
+}
+
 long gb_stack_limit_kb(void) {
     struct rlimit rl;
     if (getrlimit(RLIMIT_STACK, &rl) != 0) {

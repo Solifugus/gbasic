@@ -206,6 +206,7 @@ int gbasic_builtin_function(const char *name) {
         "file_size",
         "file_mtime",
         "atomic_replace",
+        "fsync",
         "overwrite",
         "read_at",
         "read_lines",

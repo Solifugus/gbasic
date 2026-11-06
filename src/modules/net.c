@@ -93,6 +93,15 @@ typedef struct {
     struct addrinfo *result;
 } NetResolve;
 
+/* TCP keepalive (Transward §3): `on` with the three settings, each 0 for the
+ * system's own value. */
+typedef struct {
+    int on;
+    int idle;
+    int interval;
+    int count;
+} NetKeepalive;
+
 struct NetSocket {
     NetKind kind;
     long id;
@@ -138,6 +147,8 @@ struct NetSocket {
     size_t children;
     double child_idle_s;
     size_t child_buffer;
+    NetKeepalive keepalive;  /* a connect's, applied to each address tried; a listener's, applied
+                              * to each connection it accepts */
     struct NetSocket *listener;   /* an accepted connection's listener (borrowed) */
     char *host;              /* the host net.connect was given: start_tls's default name */
     /* TLS (N2). The fields that are not libssl types stay outside the guard so
@@ -256,17 +267,30 @@ static void netbuf_compact(NetBuf *b) {
     }
 }
 
+/* A REFILL COSTS WHAT WAS CONSUMED, NOT WHAT IS HELD. The held bytes are moved
+ * down only when the consumed space before them is at least as large, so a
+ * move is paid for by the bytes read since the last one; otherwise the buffer
+ * grows to twice what it must hold. Compacting whenever the end was reached
+ * moved the whole buffer for every refill of a full one: a waited reader
+ * behind a faster peer, at the default 16 MiB, moved 16 MiB per 32 KiB packet
+ * and read loopback at 24 MiB/s (Transward's throughput measurement, §3). The
+ * price is an allocation of up to twice what the buffer holds; pages never
+ * written stay unresident. THE SIZING CARRIES IT (measured): with the old
+ * compact-whenever rule and this growth the suite stays fast, because a buffer
+ * twice what it holds reaches its end only after consuming as much again.
+ * run_net.sh tier 10 is red only with the old function whole. */
 static void netbuf_append(NetBuf *b, const char *src, size_t n) {
     if (n == 0) {
         return;
     }
-    if (b->off + b->len + n > b->cap) {
+    if (b->off + b->len + n > b->cap && b->off >= b->len) {
         netbuf_compact(b);
     }
-    if (b->len + n > b->cap) {
-        size_t nc = b->cap ? b->cap : 4096;
-        while (nc < b->len + n) {
-            nc *= 2;
+    if (b->off + b->len + n > b->cap) {
+        /* off < len here (or it was compacted to 0), so this holds it all */
+        size_t nc = 2 * (b->len + n);
+        if (nc < 4096) {
+            nc = 4096;
         }
         char *p = realloc(b->data, nc);
         if (!p) {
@@ -654,6 +678,61 @@ static void net_socket_options(int fd, int family) {
 #endif
 }
 
+/* macOS names the idle time TCP_KEEPALIVE. */
+#if !defined(TCP_KEEPIDLE) && defined(TCP_KEEPALIVE)
+#define TCP_KEEPIDLE TCP_KEEPALIVE
+#endif
+
+/* Keepalive on a TCP socket. 0 with errno when the system refused a setting:
+ * a keepalive asked for and not set is a connection that is not watched for
+ * a dead peer, and nothing would say so, so the caller refuses the connect. */
+static int net_apply_keepalive(int fd, const NetKeepalive *k) {
+    if (!k->on) {
+        return 1;
+    }
+    int one = 1;
+    if (setsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &one, sizeof one) != 0) {
+        return 0;
+    }
+#if defined(TCP_KEEPIDLE) && defined(TCP_KEEPINTVL) && defined(TCP_KEEPCNT)
+    if ((k->idle && setsockopt(fd, IPPROTO_TCP, TCP_KEEPIDLE, &k->idle, sizeof k->idle) != 0) ||
+        (k->interval && setsockopt(fd, IPPROTO_TCP, TCP_KEEPINTVL, &k->interval, sizeof k->interval) != 0) ||
+        (k->count && setsockopt(fd, IPPROTO_TCP, TCP_KEEPCNT, &k->count, sizeof k->count) != 0)) {
+        return 0;
+    }
+#endif
+    return 1;
+}
+
+/* What the SYSTEM says the socket's keepalive is, not what was asked: false,
+ * or { idle, interval, count } in seconds and probes. */
+static Value net_keepalive_now(int fd) {
+    int on = 0;
+    socklen_t len = sizeof on;
+    if (getsockopt(fd, SOL_SOCKET, SO_KEEPALIVE, &on, &len) != 0) {
+        return value_unknown();
+    }
+    if (!on) {
+        return value_bool(0);
+    }
+    Value r = value_record(NULL, 0);
+#if defined(TCP_KEEPIDLE) && defined(TCP_KEEPINTVL) && defined(TCP_KEEPCNT)
+    static const int opts[] = { TCP_KEEPIDLE, TCP_KEEPINTVL, TCP_KEEPCNT };
+    static const char *const names[] = { "idle", "interval", "count" };
+    for (int i = 0; i < 3; i++) {
+        int v = 0;
+        len = sizeof v;
+        record_set(&r, names[i], getsockopt(fd, IPPROTO_TCP, opts[i], &v, &len) == 0
+                                     ? value_number_exact(v) : value_unknown());
+    }
+#else
+    record_set(&r, "idle", value_unknown());
+    record_set(&r, "interval", value_unknown());
+    record_set(&r, "count", value_unknown());
+#endif
+    return r;
+}
+
 /* ---- options -------------------------------------------------------------------- */
 
 /* A duration or a number of seconds; -1 having raised. */
@@ -750,6 +829,60 @@ static int net_opt_seconds(Value *opts, const char *name, const char *verb, doub
         return 0;
     }
     *out = s;
+    return 1;
+}
+
+/* `keepalive:` -- true (the system's timings), false, or a record of any of
+ * { idle, interval, count }. The limits are Linux's (idle and interval up to
+ * 32767 seconds, count up to 127); whole seconds, since that is the unit the
+ * system takes. */
+static int net_opt_keepalive(Value *opts, const char *verb, NetKeepalive *out) {
+    memset(out, 0, sizeof *out);
+    Value *v = net_opt(opts, "keepalive");
+    char msg[240];
+    if (!v || (v->kind == VALUE_BOOL && !v->as.boolean)) {
+        return 1;
+    }
+    if (v->kind == VALUE_BOOL) {
+        out->on = 1;
+        return 1;
+    }
+    if (v->kind != VALUE_RECORD) {
+        snprintf(msg, sizeof msg, "%s: keepalive must be true, false or a record { idle, interval, count }",
+                 verb);
+        net_refuse(msg);
+        return 0;
+    }
+    static const char *const known[] = { "idle", "interval", "count", NULL };
+    char what[80];
+    snprintf(what, sizeof what, "%s keepalive", verb);
+    if (!net_check_options(*v, what, known)) {
+        return 0;
+    }
+    double idle = 0, interval = 0, count = 0;
+    if (!net_opt_seconds(v, "idle", what, &idle) || !net_opt_seconds(v, "interval", what, &interval) ||
+        !net_opt_count(v, "count", what, 1, 127, &count)) {
+        return 0;
+    }
+    if ((net_opt(v, "idle") && (idle < 1 || idle > 32767 || idle != floor(idle))) ||
+        (net_opt(v, "interval") && (interval < 1 || interval > 32767 || interval != floor(interval)))) {
+        snprintf(msg, sizeof msg, "%s: keepalive's idle and interval must be whole seconds from 1 to 32767",
+                 verb);
+        net_refuse(msg);
+        return 0;
+    }
+#if !(defined(TCP_KEEPIDLE) && defined(TCP_KEEPINTVL) && defined(TCP_KEEPCNT))
+    if (idle || interval || count) {
+        snprintf(msg, sizeof msg, "%s: this system does not let a program set keepalive's timings; "
+                 "keepalive: true uses its own", verb);
+        net_refuse(msg);
+        return 0;
+    }
+#endif
+    out->on = 1;
+    out->idle = (int)idle;
+    out->interval = (int)interval;
+    out->count = (int)count;
     return 1;
 }
 
@@ -1508,6 +1641,11 @@ static int net_try_next(NetSocket *s, const char **code, int *last_errno) {
         }
         net_set_nonblocking(fd);
         net_socket_options(fd, a->ai_family);
+        if (!net_apply_keepalive(fd, &s->keepalive)) {
+            *last_errno = errno;
+            close(fd);
+            continue;
+        }
         int rc = connect(fd, a->ai_addr, a->ai_addrlen);
         if (rc == 0 || errno == EINPROGRESS) {
             s->fd = fd;
@@ -1581,7 +1719,8 @@ static int net_connected(NetSocket *s, Value opts) {
 }
 
 static Value net_do_connect(AstExpr *expr) {
-    static const char *const known[] = { "host", "port", "path", "timeout", "idle", "buffer", "tls", NULL };
+    static const char *const known[] = { "host", "port", "path", "timeout", "idle", "buffer", "tls",
+                                         "keepalive", NULL };
     if (expr->as.call.args.count != 1) {
         return net_refuse("net.connect expects one options record, such as { host: \"example.com\", port: 7000 }");
     }
@@ -1600,18 +1739,24 @@ static Value net_do_connect(AstExpr *expr) {
     }
     const char *host = NULL, *path = NULL;
     double port = -1, timeout = 30, idle = 0, buffer = NET_DEFAULT_BUFFER;
+    NetKeepalive keepalive;
     if (!net_opt_text(&opts, "host", "net.connect", &host) ||
         !net_opt_text(&opts, "path", "net.connect", &path) ||
         !net_opt_count(&opts, "port", "net.connect", 1, 65535, &port) ||
         !net_opt_seconds(&opts, "timeout", "net.connect", &timeout) ||
         !net_opt_seconds(&opts, "idle", "net.connect", &idle) ||
-        !net_opt_count(&opts, "buffer", "net.connect", 1024, 1073741824, &buffer)) {
+        !net_opt_count(&opts, "buffer", "net.connect", 1024, 1073741824, &buffer) ||
+        !net_opt_keepalive(&opts, "net.connect", &keepalive)) {
         value_free(opts);
         return value_null();
     }
     if (path && (host || port >= 0)) {
         value_free(opts);
         return net_refuse("net.connect: give a path for a Unix socket, or a host and a port, not both");
+    }
+    if (path && keepalive.on) {
+        value_free(opts);
+        return net_refuse("net.connect: keepalive is TCP's, and a Unix socket has no network to probe");
     }
     if (!path && (!host || port < 0)) {
         value_free(opts);
@@ -1648,6 +1793,7 @@ static Value net_do_connect(AstExpr *expr) {
 #endif
     s->in_ceiling = (size_t)buffer;
     s->idle_s = idle;
+    s->keepalive = keepalive;
     s->connect_timeout_s = timeout;
     s->watched = net_events_watched();
     char msg[400];
@@ -1784,7 +1930,7 @@ static Value net_do_connect(AstExpr *expr) {
 
 static Value net_do_listen(AstExpr *expr) {
     static const char *const known[] = { "port", "address", "path", "mode", "backlog",
-                                         "max_connections", "idle", "buffer", "tls", NULL };
+                                         "max_connections", "idle", "buffer", "tls", "keepalive", NULL };
     if (expr->as.call.args.count != 1) {
         return net_refuse("net.listen expects one options record, such as { port: 7000 }");
     }
@@ -1803,6 +1949,7 @@ static Value net_do_listen(AstExpr *expr) {
     }
     const char *address = NULL, *path = NULL, *mode = NULL;
     double port = -1, backlog = 128, max_conn = 1024, idle = 300, buffer = NET_DEFAULT_BUFFER;
+    NetKeepalive keepalive;
     if (!net_opt_text(&opts, "address", "net.listen", &address) ||
         !net_opt_text(&opts, "path", "net.listen", &path) ||
         !net_opt_text(&opts, "mode", "net.listen", &mode) ||
@@ -1810,9 +1957,14 @@ static Value net_do_listen(AstExpr *expr) {
         !net_opt_count(&opts, "backlog", "net.listen", 1, 65535, &backlog) ||
         !net_opt_count(&opts, "max_connections", "net.listen", 1, 1000000, &max_conn) ||
         !net_opt_seconds(&opts, "idle", "net.listen", &idle) ||
-        !net_opt_count(&opts, "buffer", "net.listen", 1024, 1073741824, &buffer)) {
+        !net_opt_count(&opts, "buffer", "net.listen", 1024, 1073741824, &buffer) ||
+        !net_opt_keepalive(&opts, "net.listen", &keepalive)) {
         value_free(opts);
         return value_null();
+    }
+    if (path && keepalive.on) {
+        value_free(opts);
+        return net_refuse("net.listen: keepalive is TCP's, and a Unix socket has no network to probe");
     }
     if (path && (address || port >= 0)) {
         value_free(opts);
@@ -1853,6 +2005,7 @@ static Value net_do_listen(AstExpr *expr) {
     s->max_connections = (size_t)max_conn;
     s->child_idle_s = idle;
     s->child_buffer = (size_t)buffer;
+    s->keepalive = keepalive;
     s->watched = net_events_watched();
     int fd = -1;
     if (path) {
@@ -1975,6 +2128,12 @@ static NetSocket *net_accept_one(NetSocket *l, int *refused_for_limit) {
     }
     net_set_nonblocking(fd);
     net_socket_options(fd, l->family);
+    /* a refused setting is not survivable here as it is at connect (there
+     * is no caller to raise to), so the connection is dropped */
+    if (!net_apply_keepalive(fd, &l->keepalive)) {
+        close(fd);
+        return NULL;
+    }
     NetSocket *c = net_socket_new(NET_CONNECTION);
     c->fd = fd;
     c->open = 1;
@@ -3343,6 +3502,20 @@ static int net_field(NetSocket *s, const char *field, Value *out) {
         return 1;
     }
     if (strcmp(field, "peer_credentials") == 0) { *out = net_peer_credentials(s); return 1; }
+    /* read from the socket, so the answer is the system's, not the option's */
+    if (strcmp(field, "keepalive") == 0 || strcmp(field, "nodelay") == 0) {
+        if (s->kind != NET_CONNECTION || s->fd < 0 || s->family == AF_UNIX || s->connecting) {
+            *out = value_unknown();
+        } else if (field[0] == 'k') {
+            *out = net_keepalive_now(s->fd);
+        } else {
+            int on = 0;
+            socklen_t len = sizeof on;
+            *out = getsockopt(s->fd, IPPROTO_TCP, TCP_NODELAY, &on, &len) == 0 ? value_bool(on != 0)
+                                                                              : value_unknown();
+        }
+        return 1;
+    }
     if (strcmp(field, "state") == 0) { *out = value_copy(s->state); return 1; }
     if (strcmp(field, "max_datagram") == 0 && s->kind == NET_DATAGRAM) {
         *out = value_number_exact((long long)s->max_datagram);

@@ -1645,6 +1645,38 @@ int gb_rename_replace(const char *from, const char *to) {
     return -1;
 }
 
+int gb_fsync_path(const char *path) {
+    WCHAR *w = utf8_to_wide(path);
+    if (!w) {
+        errno = EINVAL;
+        return -1;
+    }
+    DWORD attrs = GetFileAttributesW(w);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        free(w);
+        errno = ENOENT;
+        return -1;
+    }
+    if (attrs & FILE_ATTRIBUTE_DIRECTORY) {
+        free(w);
+        return 0;            /* see platform.h: NTFS journals directory entries */
+    }
+    HANDLE h = CreateFileW(w, GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                           NULL, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, NULL);
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) {
+        errno = EACCES;
+        return -1;
+    }
+    BOOL ok = FlushFileBuffers(h);
+    CloseHandle(h);
+    if (!ok) {
+        errno = EIO;
+        return -1;
+    }
+    return 0;
+}
+
 /* _IONBF, not _IOLBF: see the header -- Windows' _IOLBF is full buffering. */
 /* The reserve the Makefile's `-Wl,--stack,8388608` sets. Windows' own default is
  * 1 MB, which is why that flag exists: the 10 000-level decode cap was sized for
