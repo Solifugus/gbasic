@@ -2,7 +2,9 @@
  *
  * THE PRIMITIVES AN SSH IMPLEMENTATION NEEDS THAT gBASIC DID NOT HAVE
  * (docs/crypto_design.md §9): X25519 key exchange, RSA signatures over the
- * components SSH carries, and AES in counter mode with the counter handed back.
+ * components SSH carries, AES in counter mode with the counter handed back,
+ * bcrypt_pbkdf, raw ChaCha20 and Poly1305, ECDSA/ECDH on the NIST curves,
+ * classic Diffie-Hellman, HKDF, and incremental hashing.
  * Asked for by Transward, which is writing its own SSH/SFTP client and server
  * in gBASIC on the net library.
  *
@@ -38,6 +40,10 @@
 #include <openssl/rsa.h>
 #include <openssl/bio.h>
 #include <openssl/decoder.h>
+#include <openssl/ec.h>
+#include <openssl/evp.h>
+#include <openssl/kdf.h>
+#include <openssl/sha.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
 
@@ -297,6 +303,313 @@ static void crypto_ctr_advance(unsigned char *ctr, size_t blocks) {
         add = (add >> 8) + (sum >> 8);
     }
 }
+
+/* ---- ChaCha20 and Poly1305, the raw parts ----------------------------------
+ * `chacha20-poly1305@openssh.com` is NOT RFC 8439's AEAD: OpenSSH builds it from
+ * raw ChaCha20 (two keys, the packet length encrypted under one) and a
+ * one-time Poly1305, so these are the parts, not the AEAD. */
+
+static int crypto_chacha20(const unsigned char *key, const unsigned char *iv,
+                           const unsigned char *in, size_t n, unsigned char *out) {
+    EVP_CIPHER_CTX *ctx = EVP_CIPHER_CTX_new();
+    if (!ctx) abort();
+    int l1 = 0, l2 = 0;
+    int ok = EVP_EncryptInit_ex(ctx, EVP_chacha20(), NULL, key, iv) == 1 &&
+             EVP_EncryptUpdate(ctx, out, &l1, in, (int)n) == 1 &&
+             EVP_EncryptFinal_ex(ctx, out + l1, &l2) == 1 &&
+             (size_t)(l1 + l2) == n;
+    EVP_CIPHER_CTX_free(ctx);
+    return ok;
+}
+
+static int crypto_poly1305(const unsigned char *key, const unsigned char *msg, size_t n,
+                           unsigned char *tag16) {
+    EVP_MAC *mac = EVP_MAC_fetch(NULL, "POLY1305", NULL);
+    EVP_MAC_CTX *ctx = mac ? EVP_MAC_CTX_new(mac) : NULL;
+    size_t len = 0;
+    int ok = ctx && EVP_MAC_init(ctx, key, 32, NULL) == 1 &&
+             EVP_MAC_update(ctx, msg, n) == 1 &&
+             EVP_MAC_final(ctx, tag16, &len, 16) == 1 && len == 16;
+    EVP_MAC_CTX_free(ctx);
+    EVP_MAC_free(mac);
+    return ok;
+}
+
+/* ---- ECDSA and ECDH on the NIST curves -------------------------------------
+ * A key is a record `{ curve, public }` or `{ curve, public, private }`:
+ * `curve` is "p256", "p384" or "p521" (SSH's nistp256/384/521), `public` the
+ * SEC1 uncompressed point (04 || X || Y) SSH carries, `private` the scalar,
+ * big-endian, padded to the curve's size. */
+
+typedef struct {
+    const char *name;     /* gBASIC's */
+    const char *group;    /* OpenSSL's */
+    int nid;
+    size_t bytes;         /* a coordinate or a scalar */
+    const EVP_MD *(*md)(void);
+} CryptoCurve;
+
+static const CryptoCurve crypto_curves[] = {
+    { "p256", "P-256", NID_X9_62_prime256v1, 32, EVP_sha256 },
+    { "p384", "P-384", NID_secp384r1, 48, EVP_sha384 },
+    { "p521", "P-521", NID_secp521r1, 66, EVP_sha512 },
+};
+
+static const CryptoCurve *crypto_curve_named(const char *name) {
+    for (size_t i = 0; i < sizeof(crypto_curves) / sizeof(crypto_curves[0]); i++) {
+        if (strcmp(crypto_curves[i].name, name) == 0) return &crypto_curves[i];
+    }
+    return NULL;
+}
+
+/* The public point of a scalar, uncompressed. */
+static int crypto_ec_public_of(const CryptoCurve *c, const BIGNUM *priv, unsigned char *out,
+                               size_t *outlen) {
+    EC_GROUP *grp = EC_GROUP_new_by_curve_name(c->nid);
+    EC_POINT *pt = grp ? EC_POINT_new(grp) : NULL;
+    int ok = pt && EC_POINT_mul(grp, pt, priv, NULL, NULL, NULL) == 1;
+    if (ok) {
+        *outlen = EC_POINT_point2oct(grp, pt, POINT_CONVERSION_UNCOMPRESSED, out,
+                                     1 + 2 * c->bytes, NULL);
+        ok = *outlen == 1 + 2 * c->bytes;
+    }
+    EC_POINT_free(pt);
+    EC_GROUP_free(grp);
+    return ok;
+}
+
+/* An EVP_PKEY from a curve, a public point and optionally a scalar. NULL with
+ * `why` set. The point is CHECKED to lie on the curve: an ECDH peer that sends
+ * one off it is the invalid-curve attack. Measured, OpenSSL 3.5's import
+ * already refuses such a point, so the explicit public check is a backstop
+ * for a libcrypto that does not: removing it leaves the suite green on this
+ * machine, and that is why it is said here. The pairwise check is not a
+ * backstop -- without it a record pairing one key's scalar with another's
+ * point is accepted (measured). */
+static EVP_PKEY *crypto_ec_key(const CryptoCurve *c, const unsigned char *pub, size_t publen,
+                               const BIGNUM *priv, char *why, size_t why_size) {
+    if (publen != 1 + 2 * c->bytes || pub[0] != 4) {
+        snprintf(why, why_size, "the public key must be an uncompressed %s point (%zu bytes "
+                 "beginning 04)", c->name, 1 + 2 * c->bytes);
+        return NULL;
+    }
+    OSSL_PARAM_BLD *bld = OSSL_PARAM_BLD_new();
+    if (!bld) abort();
+    int ok = OSSL_PARAM_BLD_push_utf8_string(bld, OSSL_PKEY_PARAM_GROUP_NAME, c->group, 0) &&
+             OSSL_PARAM_BLD_push_octet_string(bld, OSSL_PKEY_PARAM_PUB_KEY, pub, publen) &&
+             (!priv || OSSL_PARAM_BLD_push_BN(bld, OSSL_PKEY_PARAM_PRIV_KEY, priv));
+    OSSL_PARAM *params = ok ? OSSL_PARAM_BLD_to_param(bld) : NULL;
+    EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new_from_name(NULL, "EC", NULL);
+    EVP_PKEY *pkey = NULL;
+    ok = params && ctx && EVP_PKEY_fromdata_init(ctx) == 1 &&
+         EVP_PKEY_fromdata(ctx, &pkey, priv ? EVP_PKEY_KEYPAIR : EVP_PKEY_PUBLIC_KEY,
+                           params) == 1;
+    if (ok) {
+        EVP_PKEY_CTX *check = EVP_PKEY_CTX_new(pkey, NULL);
+        ok = check && EVP_PKEY_public_check(check) == 1 &&
+             (!priv || EVP_PKEY_pairwise_check(check) == 1);
+        EVP_PKEY_CTX_free(check);
+        if (!ok) {
+            snprintf(why, why_size, priv ? "the private and public parts are not one %s key"
+                                         : "that point is not on %s", c->name);
+        }
+    } else {
+        snprintf(why, why_size, "that point is not on %s", c->name);
+    }
+    ERR_clear_error();
+    if (!ok) {
+        EVP_PKEY_free(pkey);
+        pkey = NULL;
+    }
+    EVP_PKEY_CTX_free(ctx);
+    OSSL_PARAM_free(params);
+    OSSL_PARAM_BLD_free(bld);
+    return pkey;
+}
+
+/* A big-endian BIGNUM, left-padded to `bytes`. */
+static Value crypto_bn_padded(const BIGNUM *b, size_t bytes) {
+    unsigned char *buf = malloc(bytes ? bytes : 1);
+    if (!buf) abort();
+    if (BN_bn2binpad(b, buf, (int)bytes) < 0) {
+        free(buf);
+        return value_null();
+    }
+    Value v = crypto_ssh_bytes(buf, bytes);
+    OPENSSL_cleanse(buf, bytes);
+    free(buf);
+    return v;
+}
+
+/* Read the record's curve, public point and (if `want_private`) scalar. */
+static EVP_PKEY *crypto_ec_from_record(Value *key, int want_private, const CryptoCurve **curve,
+                                       char *why, size_t why_size) {
+    if (key->kind != VALUE_RECORD) {
+        snprintf(why, why_size, "the key must be a record { curve, public%s }",
+                 want_private ? ", private" : "");
+        return NULL;
+    }
+    RecordField *fc = record_find(key, "curve");
+    RecordField *fp = record_find(key, "public");
+    RecordField *fs = record_find(key, "private");
+    if (!fc || fc->value->kind != VALUE_STRING ||
+        !(*curve = crypto_curve_named(fc->value->as.string))) {
+        snprintf(why, why_size, "the key's `curve` must be \"p256\", \"p384\" or \"p521\"");
+        return NULL;
+    }
+    if (!fp || fp->value->kind != VALUE_STRING) {
+        snprintf(why, why_size, "the key has no `public` point");
+        return NULL;
+    }
+    if (want_private && (!fs || fs->value->kind != VALUE_STRING)) {
+        snprintf(why, why_size, "this is a public key (it has no `private`); it cannot sign or agree");
+        return NULL;
+    }
+    BIGNUM *priv = NULL;
+    if (want_private) {
+        priv = BN_bin2bn((const unsigned char *)fs->value->as.string,
+                         (int)string_length(fs->value->as.string), NULL);
+        if (!priv) abort();
+    }
+    EVP_PKEY *pkey = crypto_ec_key(*curve, (const unsigned char *)fp->value->as.string,
+                                   string_length(fp->value->as.string), priv, why, why_size);
+    BN_clear_free(priv);
+    return pkey;
+}
+
+/* ---- classic Diffie-Hellman ------------------------------------------------
+ * Big-number arithmetic, which is the whole reason it needs a binding: SSH's
+ * groups are 2048 to 8192 bits and gBASIC's numbers are doubles. */
+
+static BIGNUM *crypto_bn_of(Value *v) {
+    if (v->kind != VALUE_STRING || string_length(v->as.string) == 0) return NULL;
+    BIGNUM *b = BN_bin2bn((const unsigned char *)v->as.string,
+                          (int)string_length(v->as.string), NULL);
+    if (!b) abort();
+    return b;
+}
+
+/* ---- incremental hashing ---------------------------------------------------
+ * THE STATE IS A VALUE, not a handle: `s = hash_update(s, chunk)` answers the
+ * new state, so it copies, crosses to an actor and needs no closing, as every
+ * other gBASIC value does. It is OpenSSL's own SHA-2 context, exported as
+ * bytes behind a tag. Those contexts are the deprecated low-level API, and
+ * that is the price of a state that can be copied; EVP's cannot be
+ * serialized.
+ *
+ * A STATE IS CHECKED BEFORE IT IS USED, because it is bytes a program could
+ * have altered: `num` indexes OpenSSL's block buffer, so a forged one past the
+ * block would write past it. A state is refused unless its tag, size, length
+ * and position are a real context's. */
+
+#define CRYPTO_HASH_TAG "gbhash1"
+
+typedef enum { HASH_SHA256 = 1, HASH_SHA384 = 2, HASH_SHA512 = 3 } CryptoHashAlg;
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wdeprecated-declarations"
+#endif
+
+static size_t crypto_hash_ctx_size(int alg) {
+    return alg == HASH_SHA256 ? sizeof(SHA256_CTX) : sizeof(SHA512_CTX);
+}
+
+static Value crypto_hash_state(int alg, const void *ctx) {
+    size_t tag = sizeof(CRYPTO_HASH_TAG) - 1;
+    size_t n = tag + 1 + crypto_hash_ctx_size(alg);
+    unsigned char *buf = malloc(n);
+    if (!buf) abort();
+    memcpy(buf, CRYPTO_HASH_TAG, tag);
+    buf[tag] = (unsigned char)alg;
+    memcpy(buf + tag + 1, ctx, crypto_hash_ctx_size(alg));
+    Value v = crypto_ssh_bytes(buf, n);
+    free(buf);
+    return v;
+}
+
+/* 1 with the algorithm and the context copied out, 0 if `v` is not a state. */
+static int crypto_hash_unpack(Value *v, int *alg, SHA256_CTX *c256, SHA512_CTX *c512) {
+    size_t tag = sizeof(CRYPTO_HASH_TAG) - 1;
+    if (v->kind != VALUE_STRING) return 0;
+    const unsigned char *b = (const unsigned char *)v->as.string;
+    size_t n = string_length(v->as.string);
+    if (n < tag + 1 || memcmp(b, CRYPTO_HASH_TAG, tag) != 0) return 0;
+    *alg = b[tag];
+    if (*alg != HASH_SHA256 && *alg != HASH_SHA384 && *alg != HASH_SHA512) return 0;
+    if (n != tag + 1 + crypto_hash_ctx_size(*alg)) return 0;
+    if (*alg == HASH_SHA256) {
+        memcpy(c256, b + tag + 1, sizeof(*c256));
+        return c256->num < SHA256_CBLOCK && c256->md_len == SHA256_DIGEST_LENGTH;
+    }
+    memcpy(c512, b + tag + 1, sizeof(*c512));
+    return c512->num < SHA512_CBLOCK &&
+           c512->md_len == (*alg == HASH_SHA384 ? SHA384_DIGEST_LENGTH : SHA512_DIGEST_LENGTH);
+}
+
+static Value crypto_hash_new(int alg) {
+    SHA256_CTX c256;
+    SHA512_CTX c512;
+    Value v;
+    if (alg == HASH_SHA256) {
+        SHA256_Init(&c256);
+        v = crypto_hash_state(alg, &c256);
+    } else {
+        if (alg == HASH_SHA384) SHA384_Init(&c512); else SHA512_Init(&c512);
+        v = crypto_hash_state(alg, &c512);
+    }
+    return v;
+}
+
+/* The state after `d`, or (when `d` is NULL) the digest. 0 if `state` is not
+ * one: the context is copied out, advanced and copied back, so the caller's
+ * state is never written. */
+static int crypto_hash_step(Value *state, const unsigned char *d, size_t n, Value *out) {
+    int alg = 0;
+    SHA256_CTX c256;
+    SHA512_CTX c512;
+    memset(&c256, 0, sizeof(c256));
+    memset(&c512, 0, sizeof(c512));
+    if (!crypto_hash_unpack(state, &alg, &c256, &c512)) return 0;
+    if (d) {
+        if (alg == HASH_SHA256) {
+            SHA256_Update(&c256, d, n);
+            *out = crypto_hash_state(alg, &c256);
+        } else {
+            if (alg == HASH_SHA384) SHA384_Update(&c512, d, n); else SHA512_Update(&c512, d, n);
+            *out = crypto_hash_state(alg, &c512);
+        }
+    } else {
+        unsigned char md[SHA512_DIGEST_LENGTH];
+        size_t len;
+        if (alg == HASH_SHA256) {
+            SHA256_Final(md, &c256);
+            len = SHA256_DIGEST_LENGTH;
+        } else if (alg == HASH_SHA384) {
+            SHA384_Final(md, &c512);
+            len = SHA384_DIGEST_LENGTH;
+        } else {
+            SHA512_Final(md, &c512);
+            len = SHA512_DIGEST_LENGTH;
+        }
+        *out = crypto_ssh_bytes(md, len);
+    }
+    OPENSSL_cleanse(&c256, sizeof(c256));
+    OPENSSL_cleanse(&c512, sizeof(c512));
+    return 1;
+}
+
+#if defined(__GNUC__)
+#pragma GCC diagnostic pop
+#endif
+
+static int crypto_hash_alg_named(Value *v) {
+    if (v->kind != VALUE_STRING) return 0;
+    if (strcmp(v->as.string, "sha256") == 0) return HASH_SHA256;
+    if (strcmp(v->as.string, "sha384") == 0) return HASH_SHA384;
+    if (strcmp(v->as.string, "sha512") == 0) return HASH_SHA512;
+    return 0;
+}
 #endif /* HAVE_LIBCRYPTO */
 
 /* ---- dispatch -------------------------------------------------------------*/
@@ -305,7 +618,10 @@ static int crypto_ssh_is(const char *name) {
     static const char *const names[] = {
         "x25519_keypair", "x25519_public", "x25519_shared",
         "rsa_generate", "rsa_public", "rsa_sign", "rsa_verify", "rsa_from_pem", "rsa_to_pem",
-        "aes_ctr", "bcrypt_pbkdf", NULL
+        "aes_ctr", "bcrypt_pbkdf",
+        "chacha20", "poly1305",
+        "ec_keypair", "ec_public", "ecdsa_sign", "ecdsa_verify", "ecdh_shared",
+        "dh_keypair", "dh_shared", "hkdf", "hash_start", "hash_update", "hash_finish", NULL
     };
     for (size_t i = 0; names[i]; i++) {
         if (strcmp(names[i], name) == 0) return 1;
@@ -324,7 +640,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
     CRYPTO_SSH_NO_LIBCRYPTO(name);
     return 1;
 #else
-    Value a[4];
+    Value a[5];
 
     if (strcmp(name, "x25519_keypair") == 0) {
         if (!crypto_ssh_args(expr, name, 0, 0, a)) return 1;
@@ -612,6 +928,395 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         }
         *out = crypto_ssh_bytes(key, (size_t)length);
         OPENSSL_cleanse(key, sizeof(key));
+        return 1;
+    }
+
+    if (strcmp(name, "chacha20") == 0) {
+        if (!crypto_ssh_args(expr, name, 3, 3, a)) return 1;
+        if (a[0].kind != VALUE_STRING || string_length(a[0].as.string) != 32 ||
+            a[1].kind != VALUE_STRING || string_length(a[1].as.string) != 16 ||
+            a[2].kind != VALUE_STRING) {
+            crypto_ssh_free(a, 3);
+            crypto_ssh_raise(name, "expects a 32-byte key, a 16-byte IV (the block counter, "
+                                   "4 bytes little-endian, then the 12-byte nonce) and the data");
+            return 1;
+        }
+        size_t n = string_length(a[2].as.string);
+        unsigned char *buf = malloc(n + 1);
+        if (!buf) abort();
+        int ok = crypto_chacha20((const unsigned char *)a[0].as.string,
+                                 (const unsigned char *)a[1].as.string,
+                                 (const unsigned char *)a[2].as.string, n, buf);
+        crypto_ssh_free(a, 3);
+        if (ok) {
+            *out = crypto_ssh_bytes(buf, n);
+        } else {
+            crypto_ssh_raise(name, "OpenSSL could not run the cipher");
+        }
+        free(buf);
+        return 1;
+    }
+
+    if (strcmp(name, "poly1305") == 0) {
+        if (!crypto_ssh_args(expr, name, 2, 2, a)) return 1;
+        if (a[0].kind != VALUE_STRING || string_length(a[0].as.string) != 32 ||
+            a[1].kind != VALUE_STRING) {
+            crypto_ssh_free(a, 2);
+            crypto_ssh_raise(name, "expects a 32-byte one-time key and the message");
+            return 1;
+        }
+        unsigned char tag[16];
+        int ok = crypto_poly1305((const unsigned char *)a[0].as.string,
+                                 (const unsigned char *)a[1].as.string,
+                                 string_length(a[1].as.string), tag);
+        crypto_ssh_free(a, 2);
+        if (ok) {
+            *out = crypto_ssh_bytes(tag, 16);
+        } else {
+            crypto_ssh_raise(name, "OpenSSL could not compute the tag");
+        }
+        return 1;
+    }
+
+    if (strcmp(name, "ec_keypair") == 0) {
+        if (!crypto_ssh_args(expr, name, 1, 1, a)) return 1;
+        const CryptoCurve *c = a[0].kind == VALUE_STRING ? crypto_curve_named(a[0].as.string) : NULL;
+        value_free(a[0]);
+        if (!c) {
+            crypto_ssh_raise(name, "expects the curve as \"p256\", \"p384\" or \"p521\"");
+            return 1;
+        }
+        EVP_PKEY *pkey = EVP_EC_gen(c->group);
+        BIGNUM *priv = NULL;
+        unsigned char pub[1 + 2 * 66];
+        size_t publen = 0;
+        int ok = pkey && EVP_PKEY_get_bn_param(pkey, OSSL_PKEY_PARAM_PRIV_KEY, &priv) == 1 &&
+                 crypto_ec_public_of(c, priv, pub, &publen);
+        if (ok) {
+            Value rec = value_record(NULL, 0);
+            record_set(&rec, "curve", value_string(c->name));
+            record_set(&rec, "public", crypto_ssh_bytes(pub, publen));
+            record_set(&rec, "private", crypto_bn_padded(priv, c->bytes));
+            *out = rec;
+        } else {
+            crypto_ssh_raise(name, "could not generate a key pair");
+        }
+        BN_clear_free(priv);
+        EVP_PKEY_free(pkey);
+        return 1;
+    }
+
+    if (strcmp(name, "ec_public") == 0) {
+        if (!crypto_ssh_args(expr, name, 2, 2, a)) return 1;
+        const CryptoCurve *c = a[0].kind == VALUE_STRING ? crypto_curve_named(a[0].as.string) : NULL;
+        if (!c || a[1].kind != VALUE_STRING || string_length(a[1].as.string) == 0 ||
+            string_length(a[1].as.string) > c->bytes) {
+            crypto_ssh_free(a, 2);
+            crypto_ssh_raise(name, "expects the curve (\"p256\", \"p384\" or \"p521\") and the "
+                                   "private scalar, big-endian, at most the curve's size");
+            return 1;
+        }
+        BIGNUM *priv = crypto_bn_of(&a[1]);
+        unsigned char pub[1 + 2 * 66];
+        size_t publen = 0;
+        int ok = !BN_is_zero(priv) && crypto_ec_public_of(c, priv, pub, &publen);
+        BN_clear_free(priv);
+        crypto_ssh_free(a, 2);
+        if (ok) {
+            Value rec = value_record(NULL, 0);
+            record_set(&rec, "curve", value_string(c->name));
+            record_set(&rec, "public", crypto_ssh_bytes(pub, publen));
+            *out = rec;
+        } else {
+            crypto_ssh_raise(name, "that scalar is not a private key on the curve");
+        }
+        return 1;
+    }
+
+    if (strcmp(name, "ecdsa_sign") == 0 || strcmp(name, "ecdsa_verify") == 0) {
+        int signing = strcmp(name, "ecdsa_sign") == 0;
+        size_t argc = signing ? 2 : 3;
+        if (!crypto_ssh_args(expr, name, argc, argc, a)) return 1;
+        char why[200];
+        const CryptoCurve *c = NULL;
+        EVP_PKEY *pkey = crypto_ec_from_record(&a[0], signing, &c, why, sizeof(why));
+        if (!pkey) {
+            crypto_ssh_free(a, argc);
+            crypto_ssh_raise(name, why);
+            return 1;
+        }
+        if (a[1].kind != VALUE_STRING) {
+            EVP_PKEY_free(pkey);
+            crypto_ssh_free(a, argc);
+            crypto_ssh_raise(name, "expects the message as bytes");
+            return 1;
+        }
+        /* THE HASH IS THE CURVE'S, as SSH fixes it (RFC 5656 §6.2.1):
+         * SHA-256 for p256, SHA-384 for p384, SHA-512 for p521. An argument
+         * for it would be a way to make an SSH signature no peer checks. */
+        EVP_MD_CTX *mctx = EVP_MD_CTX_new();
+        if (!mctx) abort();
+        const unsigned char *msg = (const unsigned char *)a[1].as.string;
+        size_t msglen = string_length(a[1].as.string);
+        if (signing) {
+            size_t derlen = 0;
+            unsigned char *der = NULL;
+            int ok = EVP_DigestSignInit(mctx, NULL, c->md(), NULL, pkey) == 1 &&
+                     EVP_DigestSign(mctx, NULL, &derlen, msg, msglen) == 1;
+            if (ok) {
+                der = malloc(derlen);
+                if (!der) abort();
+                ok = EVP_DigestSign(mctx, der, &derlen, msg, msglen) == 1;
+            }
+            /* (r, s) AS BYTES, NOT DER: SSH sends them as two mpints. */
+            const unsigned char *p = der;
+            ECDSA_SIG *sig = ok ? d2i_ECDSA_SIG(NULL, &p, (long)derlen) : NULL;
+            if (sig) {
+                Value rec = value_record(NULL, 0);
+                record_set(&rec, "r", crypto_bn_value(ECDSA_SIG_get0_r(sig)));
+                record_set(&rec, "s", crypto_bn_value(ECDSA_SIG_get0_s(sig)));
+                *out = rec;
+            } else {
+                crypto_ssh_raise(name, "OpenSSL could not sign with that key");
+            }
+            ECDSA_SIG_free(sig);
+            free(der);
+        } else {
+            RecordField *fr = a[2].kind == VALUE_RECORD ? record_find(&a[2], "r") : NULL;
+            RecordField *fs = a[2].kind == VALUE_RECORD ? record_find(&a[2], "s") : NULL;
+            if (!fr || !fs || fr->value->kind != VALUE_STRING || fs->value->kind != VALUE_STRING) {
+                EVP_MD_CTX_free(mctx);
+                EVP_PKEY_free(pkey);
+                crypto_ssh_free(a, argc);
+                crypto_ssh_raise(name, "expects the signature as a record { r, s } of big-endian bytes");
+                return 1;
+            }
+            ECDSA_SIG *sig = ECDSA_SIG_new();
+            BIGNUM *r = crypto_bn_of(fr->value);
+            BIGNUM *s = crypto_bn_of(fs->value);
+            int ok = 0;
+            if (sig && r && s && ECDSA_SIG_set0(sig, r, s) == 1) {
+                r = s = NULL;
+                unsigned char *der = NULL;
+                int derlen = i2d_ECDSA_SIG(sig, &der);
+                ok = derlen > 0 && EVP_DigestVerifyInit(mctx, NULL, c->md(), NULL, pkey) == 1 &&
+                     EVP_DigestVerify(mctx, der, (size_t)derlen, msg, msglen) == 1;
+                OPENSSL_free(der);
+            }
+            BN_free(r);
+            BN_free(s);
+            ECDSA_SIG_free(sig);
+            ERR_clear_error();
+            *out = value_bool(ok);
+        }
+        EVP_MD_CTX_free(mctx);
+        EVP_PKEY_free(pkey);
+        crypto_ssh_free(a, argc);
+        return 1;
+    }
+
+    if (strcmp(name, "ecdh_shared") == 0) {
+        if (!crypto_ssh_args(expr, name, 2, 2, a)) return 1;
+        char why[200];
+        const CryptoCurve *c = NULL;
+        EVP_PKEY *mine = crypto_ec_from_record(&a[0], 1, &c, why, sizeof(why));
+        EVP_PKEY *theirs = NULL;
+        if (mine) {
+            if (a[1].kind != VALUE_STRING) {
+                snprintf(why, sizeof(why), "expects the peer's public point as bytes");
+            } else {
+                theirs = crypto_ec_key(c, (const unsigned char *)a[1].as.string,
+                                       string_length(a[1].as.string), NULL, why, sizeof(why));
+            }
+        }
+        crypto_ssh_free(a, 2);
+        if (!mine || !theirs) {
+            EVP_PKEY_free(mine);
+            EVP_PKEY_free(theirs);
+            crypto_ssh_raise(name, why);
+            return 1;
+        }
+        EVP_PKEY_CTX *ctx = EVP_PKEY_CTX_new(mine, NULL);
+        unsigned char secret[66];
+        size_t len = sizeof(secret);
+        int ok = ctx && EVP_PKEY_derive_init(ctx) == 1 &&
+                 EVP_PKEY_derive_set_peer(ctx, theirs) == 1 &&
+                 EVP_PKEY_derive(ctx, secret, &len) == 1 && len == c->bytes;
+        EVP_PKEY_CTX_free(ctx);
+        EVP_PKEY_free(mine);
+        EVP_PKEY_free(theirs);
+        if (ok) {
+            *out = crypto_ssh_bytes(secret, len);
+        } else {
+            crypto_ssh_raise(name, "the key agreement was refused");
+        }
+        OPENSSL_cleanse(secret, sizeof(secret));
+        return 1;
+    }
+
+    if (strcmp(name, "dh_keypair") == 0) {
+        if (!crypto_ssh_args(expr, name, 2, 2, a)) return 1;
+        BIGNUM *p = crypto_bn_of(&a[0]);
+        BIGNUM *gen = crypto_bn_of(&a[1]);
+        crypto_ssh_free(a, 2);
+        /* 2048 BITS IS THE FLOOR (group14, RFC 8268's smallest). A smaller
+         * prime is a mistake or an attack, and either way not SSH. */
+        if (!p || !gen || BN_num_bits(p) < 2048 || !BN_is_odd(p) || BN_cmp(gen, BN_value_one()) <= 0) {
+            BN_free(p);
+            BN_free(gen);
+            crypto_ssh_raise(name, "expects the group's prime p (at least 2048 bits) and its "
+                                   "generator g, as big-endian bytes");
+            return 1;
+        }
+        BN_CTX *bctx = BN_CTX_new();
+        BIGNUM *range = BN_new(), *x = BN_secure_new(), *y = BN_new();
+        if (!bctx || !range || !x || !y) abort();
+        /* x uniform in [2, p-2], and y = g^x mod p in constant time. */
+        int ok = BN_sub(range, p, BN_value_one()) && BN_sub_word(range, 2) &&
+                 BN_priv_rand_range(x, range) && BN_add_word(x, 2) &&
+                 BN_mod_exp_mont_consttime(y, gen, x, p, bctx, NULL);
+        if (ok) {
+            Value rec = value_record(NULL, 0);
+            record_set(&rec, "private", crypto_bn_value(x));
+            record_set(&rec, "public", crypto_bn_value(y));
+            *out = rec;
+        } else {
+            crypto_ssh_raise(name, "could not generate a key pair");
+        }
+        BN_free(range);
+        BN_clear_free(x);
+        BN_free(y);
+        BN_free(p);
+        BN_free(gen);
+        BN_CTX_free(bctx);
+        return 1;
+    }
+
+    if (strcmp(name, "dh_shared") == 0) {
+        if (!crypto_ssh_args(expr, name, 3, 3, a)) return 1;
+        BIGNUM *p = crypto_bn_of(&a[0]);
+        BIGNUM *x = crypto_bn_of(&a[1]);
+        BIGNUM *peer = crypto_bn_of(&a[2]);
+        crypto_ssh_free(a, 3);
+        const char *why = NULL;
+        BIGNUM *pm1 = BN_new();
+        if (!pm1) abort();
+        if (!p || !x || !peer) {
+            why = "expects the prime p, our private exponent and the peer's public value, as big-endian bytes";
+        } else if (!BN_sub(pm1, p, BN_value_one())) {
+            why = "the prime could not be read";
+        } else if (BN_cmp(peer, BN_value_one()) <= 0 || BN_cmp(peer, pm1) >= 0) {
+            /* RFC 4253 §8: e and f outside [1, p-1] are not accepted -- 1 and
+             * p-1 confine the secret to a subgroup of order 2 at most. */
+            why = "the peer's public value must be greater than 1 and less than p - 1";
+        }
+        if (why) {
+            BN_free(p); BN_clear_free(x); BN_free(peer); BN_free(pm1);
+            crypto_ssh_raise(name, why);
+            return 1;
+        }
+        BN_CTX *bctx = BN_CTX_new();
+        BIGNUM *k = BN_secure_new();
+        if (!bctx || !k) abort();
+        int ok = BN_mod_exp_mont_consttime(k, peer, x, p, bctx, NULL);
+        if (ok) {
+            *out = crypto_bn_value(k);
+        } else {
+            crypto_ssh_raise(name, "the key agreement failed");
+        }
+        BN_clear_free(k);
+        BN_free(p); BN_clear_free(x); BN_free(peer); BN_free(pm1);
+        BN_CTX_free(bctx);
+        return 1;
+    }
+
+    if (strcmp(name, "hkdf") == 0) {
+        if (!crypto_ssh_args(expr, name, 5, 5, a)) return 1;
+        static const char *const digests[] = { NULL, "SHA256", "SHA384", "SHA512" };
+        static const int sizes[] = { 0, 32, 48, 64 };
+        int alg = crypto_hash_alg_named(&a[0]);
+        const char *digest = digests[alg];
+        double length = a[4].kind == VALUE_NUMBER ? a[4].as.num.value : 0;
+        const char *why = NULL;
+        char whybuf[160];
+        if (!digest) {
+            why = "expects the hash as \"sha256\", \"sha384\" or \"sha512\"";
+        } else if (a[1].kind != VALUE_STRING || string_length(a[1].as.string) == 0 ||
+                   a[2].kind != VALUE_STRING || a[3].kind != VALUE_STRING) {
+            why = "expects the key material (not empty), the salt and the info as bytes";
+        } else if (!(length >= 1 && length <= 255 * sizes[alg]) || length != (double)(int)length) {
+            /* RFC 5869 §2.3: L <= 255*HashLen. */
+            snprintf(whybuf, sizeof(whybuf), "expects the length in bytes, a whole number from 1 "
+                     "to %d (255 times %s's size)", 255 * sizes[alg], a[0].as.string);
+            why = whybuf;
+        }
+        if (why) {
+            crypto_ssh_free(a, 5);
+            crypto_ssh_raise(name, why);
+            return 1;
+        }
+        /* OpenSSL's HKDF (RFC 5869), through EVP_KDF, so a FIPS provider
+         * covers it -- composing it from HMAC in gBASIC would not be. */
+        EVP_KDF *kdf = EVP_KDF_fetch(NULL, "HKDF", NULL);
+        EVP_KDF_CTX *kctx = kdf ? EVP_KDF_CTX_new(kdf) : NULL;
+        size_t n = (size_t)length;
+        unsigned char *okm = malloc(n);
+        if (!okm) abort();
+        OSSL_PARAM params[5];
+        size_t pi = 0;
+        params[pi++] = OSSL_PARAM_construct_utf8_string(OSSL_KDF_PARAM_DIGEST, (char *)digest, 0);
+        params[pi++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_KEY, (void *)a[1].as.string,
+                                                         string_length(a[1].as.string));
+        params[pi++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_SALT, (void *)a[2].as.string,
+                                                         string_length(a[2].as.string));
+        params[pi++] = OSSL_PARAM_construct_octet_string(OSSL_KDF_PARAM_INFO, (void *)a[3].as.string,
+                                                         string_length(a[3].as.string));
+        params[pi] = OSSL_PARAM_construct_end();
+        int ok = kctx && EVP_KDF_derive(kctx, okm, n, params) == 1;
+        EVP_KDF_CTX_free(kctx);
+        EVP_KDF_free(kdf);
+        crypto_ssh_free(a, 5);
+        if (ok) {
+            *out = crypto_ssh_bytes(okm, n);
+        } else {
+            ERR_clear_error();
+            crypto_ssh_raise(name, "OpenSSL refused the derivation");
+        }
+        OPENSSL_cleanse(okm, n);
+        free(okm);
+        return 1;
+    }
+
+    /* THE STATE IS A VALUE (see crypto_hash_state): `s = hash_update(s, data)`. */
+    if (strcmp(name, "hash_start") == 0) {
+        if (!crypto_ssh_args(expr, name, 1, 1, a)) return 1;
+        int alg = crypto_hash_alg_named(&a[0]);
+        value_free(a[0]);
+        if (!alg) {
+            crypto_ssh_raise(name, "expects the hash as \"sha256\", \"sha384\" or \"sha512\"");
+            return 1;
+        }
+        *out = crypto_hash_new(alg);
+        return 1;
+    }
+
+    if (strcmp(name, "hash_update") == 0 || strcmp(name, "hash_finish") == 0) {
+        int updating = strcmp(name, "hash_update") == 0;
+        size_t argc = updating ? 2 : 1;
+        if (!crypto_ssh_args(expr, name, argc, argc, a)) return 1;
+        if (updating && a[1].kind != VALUE_STRING) {
+            crypto_ssh_free(a, argc);
+            crypto_ssh_raise(name, "expects the data as bytes");
+            return 1;
+        }
+        const unsigned char *data = updating ? (const unsigned char *)a[1].as.string
+                                             : NULL;
+        size_t n = updating ? string_length(a[1].as.string) : 0;
+        int ok = crypto_hash_step(&a[0], data, n, out);
+        crypto_ssh_free(a, argc);
+        if (!ok) {
+            crypto_ssh_raise(name, "expects a hash state from hash_start or hash_update");
+        }
         return 1;
     }
 

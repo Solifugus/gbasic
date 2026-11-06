@@ -56,11 +56,13 @@ int gbasic_builtin_function(const char *name) {
 #if HAVE_LIBCRYPTO
         "sha256",
         "sha512",
+        "sha384",
         "sha1",
         "md5",
         "hmac_sha256",
         "hmac_sha1",
         "hmac_sha512",
+        "hmac_sha384",
         /* THREE THE REGISTRY HAD NEVER HELD, which is the DOGFOOD 46 direction
          * of the same defect: the dispatch knows all three and `has_builtin`
          * answered FALSE for them, so a probing program took its fallback path
@@ -97,6 +99,19 @@ int gbasic_builtin_function(const char *name) {
         "rsa_to_pem",
         "aes_ctr",
         "bcrypt_pbkdf",
+        "chacha20",
+        "poly1305",
+        "ec_keypair",
+        "ec_public",
+        "ecdsa_sign",
+        "ecdsa_verify",
+        "ecdh_shared",
+        "dh_keypair",
+        "dh_shared",
+        "hkdf",
+        "hash_start",
+        "hash_update",
+        "hash_finish",
 #endif
         "exit",
         "now",

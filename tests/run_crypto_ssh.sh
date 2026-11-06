@@ -1,11 +1,17 @@
 #!/bin/bash
 # THE PRIMITIVES SSH NEEDS (docs/crypto_design.md §9): X25519, RSA over the six
-# components SSH carries, and AES-CTR with the counter handed back. Asked for by
-# Transward (an SSH/SFTP client and server written in gBASIC).
+# components SSH carries, AES-CTR with the counter handed back, bcrypt_pbkdf,
+# and (tests/crypto_ssh_needed_test.bas) ChaCha20 and Poly1305 as raw parts,
+# ECDSA/ECDH on the NIST curves, classic DH, HKDF, incremental hashing and
+# sha384. Asked for by Transward (an SSH/SFTP client and server in gBASIC).
 #
 # EVERY OPERATION IS OpenSSL's, so the oracles are chosen so that agreeing with
 # them is not agreeing with ourselves:
-#   - published vectors (RFC 7748, NIST SP 800-38A) are in the fixture;
+#   - published vectors (RFC 7748, NIST SP 800-38A, RFC 8439, RFC 5869,
+#     FIPS 180-2, RFC 4231) are in the fixtures;
+#   - ChaCha20, Poly1305 and HKDF are ALSO written in Python from the RFCs in
+#     the oracle, DH is Python's pow over groups computed from RFC 3526's
+#     formula, so those share no code with OpenSSL;
 #   - Python's `cryptography` makes keys and PEM files gBASIC must read, and
 #     signatures gBASIC must reproduce BYTE FOR BYTE (PKCS#1 v1.5 is
 #     deterministic), then USES what gBASIC made: an exchange with its public
@@ -60,6 +66,23 @@ elif [ "${checks:-0}" -lt 60 ]; then
 else
     pass "$checks checks, 0 mismatches"
 fi
+# THE NEEDED ITEMS (2.5-2.9), their own fixture over the same py.json
+DIR="$work" timeout -k 5 120 ./gbasic tests/crypto_ssh_needed_test.bas >"$work/need.out" 2>"$work/need.err"
+nrc=$?
+nchecks=$(sed -n 's/^checks: //p' "$work/need.out")
+nbad=$(sed -n 's/^mismatches: //p' "$work/need.out")
+if [ "$nrc" != 0 ]; then
+    tail -3 "$work/need.out"; head -2 "$work/need.err"
+    fail "the Needed fixture exited $nrc"
+elif [ "${nbad:-1}" != 0 ]; then
+    grep '^MISMATCH' "$work/need.out" | head -5
+    fail "$nbad mismatches in ChaCha20/Poly1305/EC/DH/HKDF/hashing"
+elif [ "${nchecks:-0}" -lt 90 ]; then
+    fail "only ${nchecks:-0} Needed checks ran -- the fixture stopped early"
+else
+    pass "$nchecks checks of ChaCha20, Poly1305, ECDSA/ECDH, DH, HKDF and hashing, 0 mismatches"
+fi
+[ "$nrc" = 0 ] || rc=$nrc
 kdf=$(sed -n 's/^kdf vectors: //p' "$work/sem.out")
 if python3 -c 'import bcrypt' 2>/dev/null; then
     if [ "${kdf:-0}" -ge 5 ]; then
@@ -165,6 +188,16 @@ else
     else
         grep -E "Invalid|uninitialised|definitely lost" "$work/vg.err" | head -4
         fail "valgrind objected"
+    fi
+    if DIR="$work/vg" timeout -k 5 600 valgrind $VG_FLAGS ${VG_EXTRA:-} ./gbasic tests/crypto_ssh_needed_test.bas >"$work/vg2.out" 2>"$work/vg2.err"; then
+        if grep -q '^mismatches: 0$' "$work/vg2.out"; then
+            pass "the Needed fixture: clean under valgrind, and still passes"
+        else
+            fail "under valgrind the Needed fixture did not pass"
+        fi
+    else
+        grep -E "Invalid|uninitialised|definitely lost" "$work/vg2.err" | head -4
+        fail "valgrind objected to the Needed fixture"
     fi
 fi
 

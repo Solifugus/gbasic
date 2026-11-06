@@ -184,7 +184,7 @@ X.509 / certificate handling, TLS termination (libcurl already covers client
 TLS), and key-derivation beyond the existing `password_hash` (PBKDF2/scrypt/Argon2
 could be added later). RSA came in with §9. Revisit per demand.
 
-## 9. Phase 6 — SSH's primitives — **X25519, RSA, AES-CTR, bcrypt_pbkdf DONE (2026-11-05)**
+## 9. Phase 6 — SSH's primitives — **DONE (2026-11-05)**: Transward's Blocking and Needed crypto
 
 Asked for by Transward, which is writing an SSH/SFTP client and server in
 gBASIC on the net library (`transward/docs/gbasic-requests-for-revision.md`
@@ -205,6 +205,18 @@ modules, and its suite is `tests/run_crypto_ssh.sh`.
 | `rsa_to_pem(key)` | | PKCS#8 or SubjectPublicKeyInfo |
 | `aes_ctr(key, counter, data)` | `aes128-ctr`/`aes256-ctr` | `{ data, counter }` |
 | `bcrypt_pbkdf(pass, salt, rounds, length)` | `openssh-key-v1` kdf | bytes |
+| `chacha20(key, iv, data)` | `chacha20-poly1305@openssh.com` | bytes |
+| `poly1305(key, message)` | | 16-byte tag |
+| `ec_keypair(curve)` | `ecdsa-sha2-nistp256`/`384`/`521`, `ecdh-sha2-*` | `{ curve, public, private }` |
+| `ec_public(curve, private)` | | `{ curve, public }` |
+| `ecdsa_sign(key, msg)` | | `{ r, s }` |
+| `ecdsa_verify(key, msg, sig)` | | boolean |
+| `ecdh_shared(key, peer_point)` | | the x coordinate, the curve's size |
+| `dh_keypair(p, g)` | `diffie-hellman-group14/16/18-*` | `{ private, public }` |
+| `dh_shared(p, private, peer)` | | bytes; a peer value ≤ 1 or ≥ p−1 **raises** |
+| `hkdf(hash, ikm, salt, info, length)` | (TLS 1.3, not SSH) | bytes |
+| `hash_start(alg)`, `hash_update(state, data)`, `hash_finish(state)` | the exchange hash | a state; the digest |
+| `sha384(s)`, `hmac_sha384(key, msg)` | `nistp384`, `hmac-sha2-384` | bytes |
 
 **`bcrypt_pbkdf` is the one exception to "bindings, not implementations"**, and it
 is adopted rather than written: OpenSSL has no bcrypt_pbkdf, so
@@ -257,8 +269,70 @@ no pairwise check, SHA-1 signing, public parts only, counter carry dropped,
 and a partial block not consumed (that one was green until a check was added).
 The seventh is the zero check above.
 
-**Not yet:** the Needed items (ChaCha20-Poly1305, ECDSA/ECDH, classic DH, incremental hashing,
-HKDF).
+### The Needed items (2.5–2.9)
+
+**ChaCha20 and Poly1305 are the parts, not the AEAD.**
+`chacha20-poly1305@openssh.com` is not RFC 8439's construction: OpenSSH
+encrypts the packet length under a second key and takes a one-time Poly1305
+key from block 0, so a program needs the raw cipher and the raw MAC. The
+fixture builds that packet from the two builtins, and the oracle opens it.
+`chacha20`'s 16-byte IV is the cipher's state words 12 to 15: the block counter
+and then the nonce, little-endian. **The counter is 64 bits.** Measured, OpenSSL
+carries the low counter word into the next, which is the original layout
+OpenSSH uses (a 64-bit counter, then the 64-bit sequence number). It is not
+RFC 8439's 32-bit counter, and the fixture starts the counter two blocks from
+wrapping to show which of the two it is.
+
+**An EC key is a record**, `{ curve, public, private }`. `curve` is `"p256"`,
+`"p384"` or `"p521"`, `public` is the SEC1 uncompressed point SSH carries, and
+`private` is the scalar, padded to the curve's size. **The hash is the curve's**
+(SHA-256, SHA-384, SHA-512, RFC 5656 §6.2.1) and takes no argument, since an
+argument would only be a way to make a signature no SSH peer checks. A
+signature is `{ r, s }`, because SSH sends them as two mpints rather than as
+DER. **A peer point is checked to lie on the curve**: a point off it is the
+invalid-curve attack. Measured, OpenSSL 3.5's import already refuses such a
+point, so the module's own public check is a backstop, and its perturbation is
+green for that reason. A record whose scalar is not its point's is refused,
+and that check is load-bearing (red).
+
+**Classic DH takes the group as bytes.** SSH's groups are 2048 to 8192 bits and
+gBASIC's numbers are doubles, which is the whole reason this is a binding. The
+prime is at least 2048 bits. The private exponent is uniform in [2, p−2], and
+the power is computed in constant time. **A peer value ≤ 1 or ≥ p−1 raises**
+(RFC 4253 §8), since 1 and p−1 confine the secret to a subgroup of order two
+at most.
+
+**An incremental hash's state is a value, not a handle.**
+`s = hash_update(s, chunk)` answers a new state, so a state copies, crosses to
+an actor and needs no closing. Two continuations of one state are independent,
+and finishing a state does not consume it. The state is OpenSSL's own SHA-2
+context behind a tag. That is the deprecated low-level API, and it is the price
+of a state that can be copied, since EVP's contexts cannot be serialized. **A
+state is checked before it is used**, because it is bytes a program could alter:
+its block position indexes OpenSSL's buffer. A perturbation that dropped that
+check **segfaulted** on the fixture's forged state. A state belongs to the
+machine that made it, and is not for storage or for another byte order.
+
+**HKDF is OpenSSL's** (EVP_KDF), so a FIPS provider would cover it, which a
+composition of `hmac_sha*` in gBASIC would not. Its length is refused past 255
+times the chosen hash's size, by name.
+
+**Evidence** (`tests/crypto_ssh_needed_test.bas`, 92 checks, plus the peer
+stage). The published vectors are RFC 8439 §2.5.2 and §2.6.2, RFC 5869 A.1,
+FIPS 180-2's sha384("abc") and RFC 4231 case 1. **ChaCha20, Poly1305 and HKDF are
+also written in Python from the RFCs** in `tests/crypto_ssh_oracle.py`, and held
+to those vectors before they are trusted, so they share no code with OpenSSL.
+**DH is checked against Python's `pow`**, over groups 14, 16 and 18 that the
+oracle **computes from RFC 3526's formula** rather than pastes, each confirmed to
+be a safe prime. The curves are checked against Python's `cryptography`, in both
+directions: Python verifies gBASIC's signatures and agrees secrets with its keys.
+Hashing is checked against hashlib, with chunks across every block boundary.
+Valgrind runs too. Six of seven perturbations are red: no pairwise check, a DH
+peer of p−1 accepted, a peer of 1 accepted, the state's position unchecked (a
+segfault), p384 hashed with SHA-256, and HKDF's salt and info swapped. The
+seventh is the curve check above.
+
+**Later** (Transward's own list): ML-KEM (2.10) and a FIPS provider (2.11).
 
 ---
 

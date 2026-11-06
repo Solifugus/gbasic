@@ -33535,6 +33535,7 @@ static Value eval_call(AstExpr *expr) {
     /* ----- Cryptography: hashing + HMAC (libcrypto) ----- */
     if (strcmp(expr->as.call.name, "sha256") == 0 ||
         strcmp(expr->as.call.name, "sha512") == 0 ||
+        strcmp(expr->as.call.name, "sha384") == 0 ||
         strcmp(expr->as.call.name, "sha1") == 0 ||
         strcmp(expr->as.call.name, "md5") == 0) {
         Value s;
@@ -33542,6 +33543,7 @@ static Value eval_call(AstExpr *expr) {
 #if HAVE_LIBCRYPTO
         const EVP_MD *md = EVP_sha256();
         if (strcmp(expr->as.call.name, "sha512") == 0) md = EVP_sha512();
+        else if (strcmp(expr->as.call.name, "sha384") == 0) md = EVP_sha384();
         else if (strcmp(expr->as.call.name, "sha1") == 0) md = EVP_sha1();
         else if (strcmp(expr->as.call.name, "md5") == 0) md = EVP_md5();
         Value r = crypto_digest(md, (const unsigned char *)s.as.string, string_length(s.as.string));
@@ -33556,7 +33558,8 @@ static Value eval_call(AstExpr *expr) {
     }
     if (strcmp(expr->as.call.name, "hmac_sha1") == 0 ||
         strcmp(expr->as.call.name, "hmac_sha256") == 0 ||
-        strcmp(expr->as.call.name, "hmac_sha512") == 0) {
+        strcmp(expr->as.call.name, "hmac_sha512") == 0 ||
+        strcmp(expr->as.call.name, "hmac_sha384") == 0) {
         Value key, msg;
         if (!crypto_two_strings(expr, expr->as.call.name, &key, &msg)) return value_null();
 #if HAVE_LIBCRYPTO
@@ -33565,6 +33568,7 @@ static Value eval_call(AstExpr *expr) {
          * parameter and compute SHA1. Do not reach for it for anything new. */
         const EVP_MD *md = EVP_sha256();
         if (strcmp(expr->as.call.name, "hmac_sha512") == 0) md = EVP_sha512();
+        else if (strcmp(expr->as.call.name, "hmac_sha384") == 0) md = EVP_sha384();
         else if (strcmp(expr->as.call.name, "hmac_sha1") == 0) md = EVP_sha1();
         Value r = crypto_hmac(md, (const unsigned char *)key.as.string, string_length(key.as.string),
                               (const unsigned char *)msg.as.string, string_length(msg.as.string));

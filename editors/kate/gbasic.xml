@@ -109,6 +109,7 @@
       <item>bytes_equal</item>
       <item>bytes_xor</item>
       <item>ceil</item>
+      <item>chacha20</item>
       <item>chars</item>
       <item>chmod</item>
       <item>chr</item>
@@ -126,7 +127,14 @@
       <item>delete</item>
       <item>demonitor</item>
       <item>deserialize</item>
+      <item>dh_keypair</item>
+      <item>dh_shared</item>
       <item>directory_name</item>
+      <item>ec_keypair</item>
+      <item>ec_public</item>
+      <item>ecdh_shared</item>
+      <item>ecdsa_sign</item>
+      <item>ecdsa_verify</item>
       <item>ed25519_keypair</item>
       <item>ed25519_sign</item>
       <item>ed25519_verify</item>
@@ -156,10 +164,15 @@
       <item>from_zone</item>
       <item>has</item>
       <item>has_builtin</item>
+      <item>hash_finish</item>
+      <item>hash_start</item>
+      <item>hash_update</item>
       <item>hex_decode</item>
       <item>hex_encode</item>
+      <item>hkdf</item>
       <item>hmac_sha1</item>
       <item>hmac_sha256</item>
+      <item>hmac_sha384</item>
       <item>hmac_sha512</item>
       <item>input</item>
       <item>insert</item>
@@ -220,6 +233,7 @@
       <item>percentile</item>
       <item>permissions</item>
       <item>platform</item>
+      <item>poly1305</item>
       <item>pow</item>
       <item>prepend</item>
       <item>present</item>
@@ -268,6 +282,7 @@
       <item>set_mtime</item>
       <item>sha1</item>
       <item>sha256</item>
+      <item>sha384</item>
       <item>sha512</item>
       <item>shl</item>
       <item>shr</item>

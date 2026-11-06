@@ -16,7 +16,7 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
-### SSH's cryptography: X25519, RSA, AES-CTR
+### SSH's cryptography
 
 - **`x25519_keypair`, `x25519_public`, `x25519_shared`** for
   `curve25519-sha256`. A peer key giving an all-zero secret raises.
@@ -33,8 +33,22 @@ reader sees.
   notices, which `NOTICE` now carries. These are the first files in the tree
   not under Apache-2.0, and both licences are permissive. A gBASIC program
   opens keys `ssh-keygen -a N` encrypted (`tests/crypto_ssh_keyfile_test.bas`).
-- Asked for by Transward's SSH work. Checked against RFC 7748 and NIST
-  SP 800-38A vectors, Python's `cryptography` both ways (signatures equal
+- **`chacha20` and `poly1305`**, the raw parts of
+  `chacha20-poly1305@openssh.com` (not RFC 8439's AEAD); the counter carries
+  as OpenSSH's 64-bit one.
+- **ECDSA and ECDH on P-256, P-384 and P-521**: `ec_keypair`, `ec_public`,
+  `ecdsa_sign` (answers `{ r, s }`, with the curve's own hash),
+  `ecdsa_verify` and `ecdh_shared`. A point off the curve raises.
+- **Classic Diffie-Hellman**, `dh_keypair(p, g)` and `dh_shared(p, x, peer)`,
+  for groups 14, 16 and 18. A peer value ≤ 1 or ≥ p − 1 raises.
+- **`hkdf(hash, ikm, salt, info, length)`**, and **`sha384`/`hmac_sha384`**.
+- **Incremental hashing**: `hash_start`, `hash_update`, `hash_finish`. The
+  state is a value (`s = hash_update(s, chunk)`), so it can be copied, and a
+  forged one is refused.
+- Asked for by Transward's SSH work. Checked against RFC 7748, NIST
+  SP 800-38A, RFC 8439, RFC 5869, FIPS 180-2 and RFC 4231 vectors; ChaCha20,
+  Poly1305 and HKDF written independently in Python from the RFCs; DH against
+  Python's `pow`; Python's `cryptography` both ways (signatures equal
   byte for byte), `ssh-keygen` and `openssl dgst`
   (`docs/crypto_design.md` §9, `tests/run_crypto_ssh.sh`).
 

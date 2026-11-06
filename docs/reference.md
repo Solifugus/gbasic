@@ -5967,12 +5967,13 @@ Hashing and HMAC:
   cost, which is what both backends write). `password_hash` takes no options, so this is how a deployment states
   its KDF posture rather than assuming it. It takes as long as a hash — a
   diagnostic, not a per-request call.
-- `sha256(s)`, `sha512(s)`, `sha1(s)` — message digests.
+- `sha256(s)`, `sha384(s)`, `sha512(s)`, `sha1(s)` — message digests.
 - `md5(s)` — 16 raw bytes. Provided for **compatibility** — reading a checksum
   someone else produced, or a legacy format that specifies it. MD5 is broken
   for collision resistance, so never use it for signatures, password storage or
   deduplicating untrusted input; reach for `sha256`.
-- `hmac_sha256(key, message)`, `hmac_sha512(key, message)` — keyed MACs.
+- `hmac_sha256(key, message)`, `hmac_sha384(key, message)`,
+  `hmac_sha512(key, message)` — keyed MACs.
 - `hmac_sha1(key, message)` — **exists for TOTP and for nothing else worth
   doing.** RFC 6238 permits SHA256 and SHA512, and authenticator apps in
   practice ignore the algorithm parameter and compute SHA1 anyway, so
@@ -6059,6 +6060,33 @@ For SSH and other protocols that carry their own key formats (since 0.11.0,
   `length` bytes, 1 to 1024. For an `aes256-ctr` key file ask for 48, the
   32-byte key followed by the 16-byte counter. This is OpenSSH's own code (see
   LICENSING.md).
+- `chacha20(key, iv, data)` — the raw ChaCha20 stream: `key` 32 bytes, `iv`
+  16 bytes (the block counter, then the nonce, little-endian; the counter
+  carries as a 64-bit one, OpenSSH's layout). Encrypting and decrypting are
+  the same call. These are the parts of `chacha20-poly1305@openssh.com`, which
+  is **not** RFC 8439's AEAD.
+- `poly1305(key, message)` — the 16-byte one-time tag; `key` is 32 bytes and
+  must never be used twice.
+- EC keys are records `{ curve, public, private }`: `curve` is `"p256"`,
+  `"p384"` or `"p521"`, `public` the uncompressed point (`04 || X || Y`),
+  `private` the scalar, big-endian, padded to the curve's size.
+- `ec_keypair(curve)`; `ec_public(curve, private)` — `{ curve, public }`.
+- `ecdsa_sign(key, message)` — `{ r, s }`, hashed with the curve's own hash
+  (SHA-256, SHA-384, SHA-512), as SSH fixes it.
+- `ecdsa_verify(key, message, { r, s })` — `true` / `false`.
+- `ecdh_shared(key, peer_point)` — the shared secret, the curve's size. A point
+  not on the curve **raises**.
+- `dh_keypair(p, g)` — `{ private, public }` for classic Diffie-Hellman over
+  the group `p` (at least 2048 bits) and `g`, as big-endian bytes.
+- `dh_shared(p, private, peer)` — the shared secret. A peer value of 1 or less,
+  or of p − 1 or more, **raises** (RFC 4253 §8).
+- `hkdf(hash, ikm, salt, info, length)` — RFC 5869; `hash` is `"sha256"`,
+  `"sha384"` or `"sha512"`, `length` at most 255 times its size.
+- `hash_start(alg)`, `hash_update(state, data)`, `hash_finish(state)` — a
+  digest built in pieces (`alg` as for `hkdf`). **The state is a value**:
+  `s = hash_update(s, chunk)`. It can be copied and continued two ways, and
+  finishing does not consume it. A state belongs to the machine that made it;
+  do not store it.
 
 Bad argument types, wrong key/nonce sizes, and failed authentication raise
 structured errors — these builtins pre-validate rather than degrade. So do
