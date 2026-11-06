@@ -38,6 +38,8 @@ cases=(
     negative_index_nothing
     negative_block_head_sub
     negative_builtin_as_value
+    negative_args_outside_main
+    negative_money_modifier
     negative_block_head_foo
     negative_index_unknown
     negative_add_array

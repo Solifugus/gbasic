@@ -70,6 +70,16 @@ reader sees.
   chunked-encryption pattern Transward asked for
   (`tests/read_at_chunks_test.bas`).
 
+### Three messages that name the fix
+
+- `args` read outside `program main(args)` still raises "undefined variable:
+  args", and now says that a program's arguments are that block's parameter.
+- `{money}"12.50"` still raises "assign modifier not found: money", and now
+  says a money value is made by its currency, `{USD}"12.50"`.
+- `serialize(wb)` and `send(pid, wb)` on a workbook raised "serialize:
+  unsupported value"; they now say a workbook is a file parsed in this process
+  and to send its path or the values read from it.
+
 ### One file loaded by two spellings is one library
 
 - **A library file is recognised as one file however its path is spelled.**

@@ -1,0 +1,1 @@
+runtime error at tests/negative_money_modifier.bas:3:9: assign modifier not found: money -- a money value is made by its currency, as in {USD}"12.50" or x {EUR}= 3

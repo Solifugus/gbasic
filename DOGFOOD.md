@@ -13239,6 +13239,9 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   open item. Both are documented behaviour, so there is no ledger row to
   probe. A candidate for Matthew's "fumbles are findings": `{money}` could
   name `{USD}` in its refusal.
+- **Status: FIXED 2026-11-05**: the refusal now reads "assign modifier not
+  found: money -- a money value is made by its currency, as in {USD}"12.50" or
+  x {EUR}= 3" (`tests/negative_money_modifier.err`).
 
 ## 2026-11-05 — CC — while: writing `program_file()` (book gap G30)
 - **Type:** language-surprise
@@ -13270,3 +13273,7 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   Not an open item: documented behaviour, so there is no ledger row to probe. A
   candidate for Matthew's "fumbles are findings": an undefined `args` outside a
   program block could name `program main(args)` in its refusal.
+- **Status: FIXED 2026-11-05** for `args`: the message keeps "undefined
+  variable: args" and adds that a program's arguments are the parameter of
+  `program main(args)` (`tests/negative_args_outside_main.err`). `argv` is
+  left as it was; no one here wrote it. The `random_bytes` limit is unchanged.

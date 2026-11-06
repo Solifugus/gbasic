@@ -5734,6 +5734,13 @@ static Value env_get(const char *name) {
             snprintf(message, sizeof(message),
                      "'%s' is a built-in function, not a variable; call it, as in %s(...)",
                      name, name);
+        } else if (strcmp(name, "args") == 0) {
+            /* Two fixtures for Transward wrote a top-level `args[1]` and got
+             * the bare line below (DOGFOOD). The name is not magic, so this
+             * only says where it comes from. */
+            snprintf(message, sizeof(message),
+                     "undefined variable: args -- a program's arguments are the parameter of "
+                     "`program main(args)`; read them inside that block and pass them on");
         } else {
             snprintf(message, sizeof(message), "undefined variable: %s", name);
         }
@@ -15655,6 +15662,13 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
     case VALUE_CSV_SOURCE:
         runtime_error_raise("serialize: a csv source cannot be serialized; send the "
                             "records it reads", 1003, "actor");
+        return 0;
+    case VALUE_WORKBOOK:
+        /* Fell through to "unsupported value" until 2026-11-05, the one kind
+         * this switch did not name (the compiler said so with -Wswitch). */
+        runtime_error_raise("serialize: a workbook cannot be serialized -- it is a file "
+                            "parsed in this process; send its path (after xlsx.save) or "
+                            "the values read from it", 1003, "actor");
         return 0;
     case VALUE_PROCESS:
         /* A process handle owns pipe fds and a wait(2) relationship that only the
@@ -33790,10 +33804,10 @@ static Value eval_call(AstExpr *expr) {
     /* ----- Cryptography: AES-GCM + Ed25519 (libcrypto) ----- */
     if (strcmp(expr->as.call.name, "aes_gcm_encrypt") == 0 ||
         strcmp(expr->as.call.name, "aes_gcm_decrypt") == 0) {
-        int encrypt = strcmp(expr->as.call.name, "aes_gcm_encrypt") == 0;
         Value a[4];
         if (!crypto_n_strings(expr, expr->as.call.name, 4, a)) return value_null();
 #if HAVE_LIBCRYPTO
+        int encrypt = strcmp(expr->as.call.name, "aes_gcm_encrypt") == 0;
         const unsigned char *key = (const unsigned char *)a[0].as.string;
         const unsigned char *nonce = (const unsigned char *)a[1].as.string;
         const unsigned char *data = (const unsigned char *)a[2].as.string;
@@ -38552,6 +38566,12 @@ static void modifier_raise_assign_not_found_at(AstModifierUse use,
                      "assign modifier not found: %s -- library '%s' exports it, and this "
                      "file did not load it; add `load %s`",
                      label, owner, owner);
+        } else if (!use.library && modifier_is(use.name, "money")) {
+            /* money's modifier is its CURRENCY, since a money value has one;
+             * `{money}` is what a reader of `{date}` and `{number}` guesses */
+            snprintf(message, sizeof(message),
+                     "assign modifier not found: money -- a money value is made by its "
+                     "currency, as in {USD}\"12.50\" or x {EUR}= 3");
         } else {
             snprintf(message, sizeof(message), "assign modifier not found: %s", label);
         }

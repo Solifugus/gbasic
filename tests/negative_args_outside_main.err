@@ -1,0 +1,1 @@
+runtime error at tests/negative_args_outside_main.bas:3:1: undefined variable: args -- a program's arguments are the parameter of `program main(args)`; read them inside that block and pass them on

@@ -7609,7 +7609,8 @@ deserialize(serialize({when: now(), cost: cost}))   ' exact copy, types intact
 `name (…)` prefix is reserved for PBI field policies, so `cost(USD): 9.99` is not a
 money field — see *Objects (Policy-Based Inheritance)*.)
 
-Live database connections cannot be serialized (a structured error is raised), and
+Live database connections and open workbooks cannot be serialized (a structured
+error is raised; for a workbook, send its path or the values read from it), and
 corrupt or truncated input to `deserialize` raises a structured error rather than
 returning a partial value. A record's PBI policies are not preserved — a
 deserialized snapshot is plain `copy` — which is the same degradation a value

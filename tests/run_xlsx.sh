@@ -1389,6 +1389,23 @@ else
     status=1
 fi
 
+# A workbook is a handle on a file parsed in this process, so serialize and
+# send refuse it, naming it and what to send instead. It was the one value kind
+# serialize's switch did not name, and said only "unsupported value".
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  s = serialize(wb)\nend program\n' "$FIXTURE" >"$tmp/neg6.bas"
+printf 'program main(args)\n  wb = xlsx.open("%s")\n  send(self(), wb)\nend program\n' "$FIXTURE" >"$tmp/neg7.bas"
+for n in neg6 neg7; do
+    if timeout 60 ./gbasic "$tmp/$n.bas" >/dev/null 2>"$err" </dev/null; then
+        printf 'FAIL negative %-18s (a workbook was serialized)\n' "$n workbook"
+        status=1
+    elif grep -qF "serialize: a workbook cannot be serialized -- it is a file parsed in this process; send its path (after xlsx.save) or the values read from it" "$err"; then
+        printf 'PASS negative %-18s refused, naming the workbook and what to send\n' "$n workbook"
+    else
+        printf 'FAIL negative %-18s wrong message: %s\n' "$n workbook" "$(cat "$err")"
+        status=1
+    fi
+done
+
 # --- Tier 4: valgrind ----------------------------------------------------------
 if vg_available; then
     if vg_run ./gbasic examples/xlsx_read_test.bas >"$out" 2>"$err" </dev/null; then

@@ -85,22 +85,24 @@ VM_FORCE_DESTROY=1 scripts/vm/boot-s390x-from-disk.sh
 ### Debian Guest Bootstrap
 
 Inside the installed Debian s390x guest, install the build dependencies. If you
-are logged in as root, omit `sudo`.
+are logged in as root, omit `sudo`. The first line is what the build requires
+(PCRE2 is the regex engine and has been required since 2026-11-03); the second
+is the optional modules, each detected by `pkg-config` and turned into a clean
+runtime error when absent.
 
 ```bash
 sudo apt update
-sudo apt install git build-essential bison pkg-config libsqlite3-dev libpq-dev libcurl4-openssl-dev libcrypt-dev
+sudo apt install git build-essential bison pkg-config libpcre2-dev
+sudo apt install libsqlite3-dev libpq-dev libcurl4-openssl-dev libcrypt-dev \
+    libssl-dev libxml2-dev zlib1g-dev unixodbc-dev libldap-dev
 ```
 
 `libcrypt-dev` provides `crypt.h` and `-lcrypt` on Debian. The package may be
 named differently on other distributions.
 
-GUI support is optional. A headless Debian guest builds with `HAVE_GTK=0`
-automatically. Install GTK only if you want to test GUI support:
-
-```bash
-sudo apt install libgtk-3-dev
-```
+The GUI is Qt 6 and is optional (GTK was removed on 2026-10-23, so `HAVE_GTK`
+no longer exists). A headless guest builds without it automatically; install
+`qt6-base-dev` only to test the `qt` module, which needs a display.
 
 Clone and test:
 
@@ -109,15 +111,17 @@ mkdir -p ~/development
 cd ~/development
 git clone https://github.com/Solifugus/gbasic.git
 cd gbasic
-git checkout site-password-auth
 make
-./tests/run_examples.sh
-./tests/run_negative.sh
+./tests/run_all.sh
 ```
 
-This workflow has been validated on a Debian 13 s390x QEMU guest. On a headless
-guest, the build may print unused GUI stub warnings when GTK is unavailable;
-those warnings are not test failures.
+When this page was written (43304f6, 2026-06-22) it recorded the workflow as
+run on a Debian 13 s390x QEMU guest, with the GTK-era build, a since-merged
+branch, and only the `run_examples.sh` and `run_negative.sh` suites. The current tree, the dependency list above and the
+full gate have NOT been run on s390x since; that is the next thing to do on the
+guest. s390x is big-endian, which is what makes it worth running: serialize v3
+and the G-SQL key encoding are pinned little-endian and checked by
+`run_serialize.sh` and `run_gsql_key.sh`.
 
 Codex is not expected to run inside the s390x guest as a normal supported
 setup. Use Codex on the host, push fixes to GitHub, pull them in the guest, and
