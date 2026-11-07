@@ -143,12 +143,14 @@ x = mcp.disconnect(fs)
 | `mcp.call(h, name, args)` | one `tools/call` → a tool-result part |
 | `mcp.disconnect(h)` | end the session; for stdio, close stdin and reap the child |
 
-A spec is `{ transport, command, args, url, expect, headers, client }`;
+A spec is `{ transport, command, args, env, url, expect, headers, client }`;
 unknown fields are refused **by name**, the rule `webserver.listen` already
 follows. `headers` (http only) is a record of string values sent with every
 request: a bearer token goes here, never in a command line, where any user on
 the machine can read it. `client` is the name given to the server at
-`initialize` (default `gbasic`).
+`initialize` (default `gbasic`). `env` (stdio only) is merged over this
+process's environment for the child, as `process.start` merges it (`nothing`
+unsets a name): how a parent hands a child a token without a command line.
 
 **Over HTTP the client speaks Streamable HTTP** (2026-11-06, Transward §7.5):
 `initialize` asks for the newest version this library speaks, sends

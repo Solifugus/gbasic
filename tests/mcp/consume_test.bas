@@ -144,5 +144,18 @@ if error then
     error.clear()
 end if
 
+' ---- env reaches a stdio child (Transward) ----------------------------------
+child_env = {}
+child_env["MCP_CHILD_TOKEN"] = "tok-from-the-parent"
+ce = mcp.connect({ transport: "stdio", command: "./gbasic", env: child_env,
+                   args: ["--line-buffered", "tests/mcp/env_server.bas"] })
+check("env in the spec reaches the child", mcp.call(ce, "token", {}).content, "tok-from-the-parent")
+x = mcp.disconnect(ce)
+cn = mcp.connect({ transport: "stdio", command: "./gbasic",
+                   args: ["--line-buffered", "tests/mcp/env_server.bas"] })
+' env() of a variable that is not set is unknown, rendered as text by the tool
+check("and without it the child has only its own", mcp.call(cn, "token", {}).content, "unknown")
+x = mcp.disconnect(cn)
+
 print "checks: " + string(tally.checks)
 print "mismatches: " + string(tally.mismatches)

@@ -1034,7 +1034,7 @@ library mcp
         if not is_record(spec) then
             error "mcp: connect expects a spec record"
         end if
-        allowed = ["transport", "command", "args", "url", "expect", "headers", "client"]
+        allowed = ["transport", "command", "args", "url", "expect", "headers", "client", "env"]
         for each k in keys(spec)
             if not contains(allowed, k) then
                 error "mcp: connect: no spec field '" + k + "'; it takes " + join(allowed, ", ")
@@ -1055,6 +1055,15 @@ library mcp
             if not has(spec, "command") then
                 error "mcp: a stdio server needs a command to launch"
             end if
+            ' ENV, merged over this process's, as process.start merges it: how a
+            ' parent hands its child a token without a command line, where
+            ' anyone on the machine can read it (Transward). process.start
+            ' checks the names and values.
+            if has(spec, "env") then
+                if not is_record(spec.env) then
+                    error "mcp: env must be a record of variable names and string values"
+                end if
+            end if
             if not is_string(spec.command) then
                 error "mcp: the command must be a string"
             end if
@@ -1066,6 +1075,9 @@ library mcp
             end if
             if not is_string(spec.url) then
                 error "mcp: the url must be a string"
+            end if
+            if has(spec, "env") then
+                error "mcp: env is for the stdio transport, a child process; an http server has its own"
             end if
             ' HEADERS COME FROM THE SPEC, so a bearer token never has to be in
             ' a command line, where any user on the machine can read it
@@ -1233,7 +1245,11 @@ library mcp
             ' `stdin: "pipe"` is the whole reason process.write exists: a stdio
             ' transport is a conversation, and a child you can only listen to
             ' cannot hold one.
-            h.child = process.start({ command: spec.command, args: a, stdin: "pipe" })
+            launch = { command: spec.command, args: a, stdin: "pipe" }
+            if has(spec, "env") then
+                launch.env = spec.env
+            end if
+            h.child = process.start(launch)
         else
             h.url = spec.url
         end if

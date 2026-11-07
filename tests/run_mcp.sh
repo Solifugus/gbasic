@@ -180,8 +180,8 @@ mcp_url_env=()
 if env "${mcp_url_env[@]}" timeout -k 5 180 ./gbasic tests/mcp/consume_test.bas \
         >"$work/c.out" 2>"$work/c.err"; then
     cchecks="$(sed -n 's/^checks: //p' "$work/c.out")"
-    want=17
-    [ -n "$consume_url" ] && want=20
+    want=19
+    [ -n "$consume_url" ] && want=22
     if ! grep -q '^mismatches: 0$' "$work/c.out"; then
         grep '^MISMATCH' "$work/c.out" || true
         fail "the consume fixture disagreed with itself"

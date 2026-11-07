@@ -104,6 +104,8 @@ reader sees.
 - A tool's record result is sent as `structuredContent` as well as text, and
   a tool may declare `output`, published as its `outputSchema` and checked
   against every result (Transward §7.7).
+- `mcp.connect` takes `env` for a stdio server, merged over this process's,
+  so a token reaches the child without a command line.
 
 ### Reading files whose size says 0
 
