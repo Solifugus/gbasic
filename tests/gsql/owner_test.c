@@ -458,6 +458,88 @@ static int owner_main(const char *db, const char *fd, const char *mode) {
     return gsql_owner_run(db, ns && *ns == '1' ? NULL : &SERVICE, &o);
 }
 
+/* The busygone tier's owner: the real owner runs in a child writing its one
+ * line to this process, which relays it. In GSQL_TEST_RELAY_DIR: a "busy" is
+ * held back until the test has made the winner go (files busy and go); with
+ * GSQL_TEST_RELAY_PROBE, a "ready" is relayed only after a connect and close
+ * on the new owner's socket, as another owner's busy check makes, with its
+ * pid written to the file pid; with GSQL_TEST_RELAY_LIES=N, the first N starts
+ * say busy and start no owner at all (counted in the file lies). */
+static int owner_relay_main(const char *db, const char *fd, const char *mode) {
+    const char *dir = getenv("GSQL_TEST_RELAY_DIR");
+    const char *lies = getenv("GSQL_TEST_RELAY_LIES");
+    const char *probe = getenv("GSQL_TEST_RELAY_PROBE");
+    char path[700];
+    if (!dir) {
+        return 1;
+    }
+    if (lies && *lies) {
+        snprintf(path, sizeof path, "%s/lies", dir);
+        FILE *f = fopen(path, "r");
+        int told = 0;
+        if (f) {
+            if (fscanf(f, "%d", &told) != 1) {
+                told = 0;
+            }
+            fclose(f);
+        }
+        if (told < atoi(lies)) {
+            f = fopen(path, "w");
+            if (f) {
+                fprintf(f, "%d\n", told + 1);
+                fclose(f);
+            }
+            return write(atoi(fd), "busy\n", 5) == 5 ? 0 : 1;
+        }
+    }
+    int p[2];
+    if (pipe(p) != 0) {
+        return 1;
+    }
+    pid_t kid = fork();
+    if (kid == 0) {
+        close(p[0]);
+        char f[16];
+        snprintf(f, sizeof f, "%d", p[1]);
+        close(atoi(fd));
+        _exit(owner_main(db, f, mode));
+    }
+    close(p[1]);
+    char line[800];
+    ssize_t n = read(p[0], line, sizeof line);
+    if (n <= 0) {
+        return 1;
+    }
+    if (probe && *probe && n >= 6 && !memcmp(line, "ready ", 6)) {
+        char sock[4200];
+        uint64_t d, i;
+        GsqlError err;
+        if (gsql_socket_path(db, sock, sizeof sock, &d, &i, &err) == GSQL_OK) {
+            int s = gsql_socket_connect(sock);
+            if (s >= 0) {
+                close(s);
+            }
+        }
+        sleep_ms(100);
+        snprintf(path, sizeof path, "%s/pid", dir);
+        FILE *f = fopen(path, "w");
+        if (f) {
+            fprintf(f, "%ld\n", atol(line + 6));
+            fclose(f);
+        }
+    }
+    if (n >= 4 && !memcmp(line, "busy", 4)) {
+        char busy[700], go[700];
+        snprintf(busy, sizeof busy, "%s/busy", dir);
+        snprintf(go, sizeof go, "%s/go", dir);
+        close(open(busy, O_CREAT | O_WRONLY, 0600));
+        for (int t = 0; t < 2000 && access(go, F_OK) != 0; t++) {
+            sleep_ms(10);
+        }
+    }
+    return write(atoi(fd), line, (size_t)n) == n ? 0 : 1;
+}
+
 /* An owner is nobody's child (gsql_owner_lifetime_design.md §2), so it
  * cannot be waited for: whether pid is gone within ms, read from /proc (a
  * zombie counts as gone). */
@@ -484,6 +566,7 @@ static int gone_within(pid_t pid, int ms) {
 /* ==== the client side's helpers ========================================== */
 
 static const char *const OWNER_ARGV[] = { "/proc/self/exe", "owner", NULL };
+static const char *const RELAY_ARGV[] = { "/proc/self/exe", "owner-relay", NULL };
 
 static GsqlClient *open_db(const char *db, int create) {
     GsqlClientOptions o;
@@ -2526,10 +2609,223 @@ static int window_main(const char *dir) {
        client was served at 80 s, because a new owner gives up on the lock
        after 10 s and the client waits out its own 10 s before starting
        another. So the handoff costs up to 10 s more than the stop, but only
-       for a stop longer than 10 s. */
+       for a stop longer than 10 s. That was before G20-15's fix (the
+       busygone tier), after which a client starts again at once rather
+       than waiting out its 10 s; the 4 s case was not re-measured. */
     EXPECT(gone >= 0 && ms < gone + 2000, "a client connecting into the handoff window was served after %.0f ms, "
            "more than 2 s after the stopping owner was gone (%.0f ms)", ms, gone);
     gsql_client_close(b);
+    return finish();
+}
+
+/* ==== churn ============================================================== *
+ *
+ * gdash's G20-15, reproduced 2026-11-07: at linger 0 an owner goes with its
+ * last client in milliseconds. A client whose own owner said "busy" -- the
+ * winner's socket answered -- waited 10 s to connect to a winner that had
+ * already gone: lock free, no socket, no owner, for the client's whole wait.
+ * Here clients open, ping and close at once, all together, so owners come
+ * and go under them; no open may take more than CHURN_BOUND_MS. */
+#define CHURN_BOUND_MS 2000.0
+static int churn_main(const char *dir, int n, int rounds) {
+    char db[600];
+    snprintf(db, sizeof db, "%s/churn", dir);
+    setenv("GSQL_TEST_LINGER_MS", "4294967295", 1);   /* no linger */
+    GsqlClient *a = open_db(db, 1);
+    if (!a) {
+        return finish();
+    }
+    gsql_client_close(a);
+    int rep[2];
+    if (pipe(rep) != 0) {
+        mismatch("pipe: %s", strerror(errno));
+        return finish();
+    }
+    pid_t *kids = calloc((size_t)n, sizeof *kids);
+    for (int i = 0; i < n; i++) {
+        kids[i] = fork();
+        if (kids[i] == 0) {
+            close(rep[0]);
+            /* {opens, served, slow, slowest ms} */
+            double line[4] = { 0, 0, 0, 0 };
+            for (int r = 0; r < rounds; r++) {
+                double t0 = now_us();
+                GsqlClientOptions o;
+                memset(&o, 0, sizeof o);
+                o.owner_argv = OWNER_ARGV;
+                GsqlClient *c = NULL;
+                GsqlError err;
+                int rc = gsql_client_open(db, &o, &c, &err);
+                double ms = (now_us() - t0) / 1000.0;
+                line[0]++;
+                if (rc == GSQL_OK && !strcmp(call(c, GSQL_M_PING, NULL), "PONG")) {
+                    line[1]++;
+                } else if (rc != GSQL_OK) {
+                    fprintf(stderr, "churn client: %s\n", err.message);
+                }
+                line[2] += ms > CHURN_BOUND_MS;
+                if (ms > line[3]) {
+                    line[3] = ms;
+                }
+                gsql_client_close(c);
+            }
+            if (write(rep[1], line, sizeof line) != (ssize_t)sizeof line) {
+                _exit(3);
+            }
+            _exit(0);
+        }
+    }
+    close(rep[1]);
+    double opens = 0, served = 0, slow = 0, slowest = 0;
+    for (int i = 0; i < n; i++) {
+        double line[4];
+        if (read(rep[0], line, sizeof line) != (ssize_t)sizeof line) {
+            mismatch("a churning client reported nothing");
+            continue;
+        }
+        opens += line[0];
+        served += line[1];
+        slow += line[2];
+        if (line[3] > slowest) {
+            slowest = line[3];
+        }
+    }
+    close(rep[0]);
+    for (int i = 0; i < n; i++) {
+        waitpid(kids[i], NULL, 0);
+    }
+    free(kids);
+    printf("churn: %.0f opens by %d clients at linger 0, the slowest %.0f ms\n", opens, n, slowest);
+    EXPECT(opens == (double)n * rounds && served == opens, "of %.0f opens %.0f were served", opens, served);
+    EXPECT(slow == 0, "%.0f of %.0f opens took more than %.0f ms (the slowest %.0f ms): a client waited for an owner "
+           "that had gone", slow, opens, CHURN_BOUND_MS, slowest);
+    return finish();
+}
+
+/* ==== busy, then gone ===================================================== *
+ *
+ * G20-15's sequence made to happen every time. Owner W holds the lock but
+ * has not bound (its start's sync slowed); client B arrives then, finds no
+ * socket, and starts an owner, which finds W's socket answering and says
+ * busy. That answer is held back (owner_relay_main) while W's only client
+ * leaves and W, at linger 0, goes. B then has "busy" and no owner: it must
+ * start again at once. It waited out 10 s for W instead. */
+static int busygone_main(const char *dir) {
+    char db[600], relay[600], go[700], busy[700];
+    snprintf(db, sizeof db, "%s/bg", dir);
+    snprintf(relay, sizeof relay, "%s/relay", dir);
+    snprintf(go, sizeof go, "%s/go", relay);
+    snprintf(busy, sizeof busy, "%s/busy", relay);
+    mkdir(relay, 0700);
+    setenv("GSQL_TEST_RELAY_DIR", relay, 1);
+    setenv("GSQL_TEST_LINGER_MS", "4294967295", 1);   /* no linger */
+    GsqlClient *a = open_db(db, 1);
+    if (!a) {
+        return finish();
+    }
+    gsql_client_close(a);
+    int rep[2];
+    if (pipe(rep) != 0) {
+        mismatch("pipe: %s", strerror(errno));
+        return finish();
+    }
+    setenv("GSQL_TEST_SYNC_DELAY_US", "800000", 1);   /* W's start: lock held, not yet bound */
+    pid_t b = fork();
+    if (b == 0) {
+        close(rep[0]);
+        unsetenv("GSQL_TEST_SYNC_DELAY_US");
+        sleep_ms(200);   /* into W's start */
+        GsqlClientOptions o;
+        memset(&o, 0, sizeof o);
+        o.owner_argv = RELAY_ARGV;
+        GsqlClient *c = NULL;
+        GsqlError err;
+        double line[2] = { 0, 0 };
+        if (gsql_client_open(db, &o, &c, &err) == GSQL_OK) {
+            line[0] = !strcmp(call(c, GSQL_M_PING, NULL), "PONG");
+        } else {
+            fprintf(stderr, "busygone client: %s\n", err.message);
+        }
+        line[1] = now_us();
+        gsql_client_close(c);
+        _exit(write(rep[1], line, sizeof line) == (ssize_t)sizeof line ? 0 : 3);
+    }
+    close(rep[1]);
+    a = open_db(db, 0);   /* starts W, slowly */
+    unsetenv("GSQL_TEST_SYNC_DELAY_US");
+    pid_t w = a ? gsql_client_owner_pid(a) : 0;
+    for (int t = 0; t < 1000 && access(busy, F_OK) != 0; t++) {
+        sleep_ms(10);
+    }
+    int said_busy = access(busy, F_OK) == 0;
+    EXPECT(said_busy, "B's owner never said busy, so the sequence under test did not happen");
+    gsql_client_close(a);
+    EXPECT(w > 0 && gone_within(w, 10000), "the winner did not go after its only client left");
+    double t0 = now_us();
+    close(open(go, O_CREAT | O_WRONLY, 0600));
+    double line[2] = { 0, 0 };
+    if (read(rep[0], line, sizeof line) != (ssize_t)sizeof line) {
+        mismatch("client B reported nothing");
+    }
+    close(rep[0]);
+    waitpid(b, NULL, 0);
+    double ms = (line[1] - t0) / 1000.0;
+    printf("busygone: told busy by an owner whose winner had gone, the client was served %.0f ms later\n", ms);
+    EXPECT(line[0] == 1, "the client told busy after the winner went was not served");
+    EXPECT(ms < 2000, "the client told busy after the winner went was served %.0f ms later: it waited for an owner "
+           "that had gone", ms);
+
+    /* PROBED: a connect and close reaching a new owner before its starter
+       is not a client. It ended the owner's startup grace, and at linger 0
+       the owner went before the client that started it could connect. */
+    char pdb[600], pidf[700];
+    snprintf(pdb, sizeof pdb, "%s/probed", dir);
+    snprintf(pidf, sizeof pidf, "%s/pid", relay);
+    setenv("GSQL_TEST_RELAY_PROBE", "1", 1);
+    GsqlClientOptions o;
+    memset(&o, 0, sizeof o);
+    o.owner_argv = RELAY_ARGV;
+    o.create = 1;
+    GsqlClient *c = NULL;
+    GsqlError err;
+    int rc = gsql_client_open(pdb, &o, &c, &err);
+    unsetenv("GSQL_TEST_RELAY_PROBE");
+    long started = 0;
+    FILE *f = fopen(pidf, "r");
+    if (f) {
+        if (fscanf(f, "%ld", &started) != 1) {
+            started = 0;
+        }
+        fclose(f);
+    }
+    EXPECT(rc == GSQL_OK && started > 0, "the probed owner's client was not served: %s", err.message);
+    EXPECT(rc != GSQL_OK || (long)gsql_client_owner_pid(c) == started, "a probe ended the owner it reached before its "
+           "starter connected: owner %ld started, owner %ld served", started,
+           rc == GSQL_OK ? (long)gsql_client_owner_pid(c) : 0L);
+    if (rc == GSQL_OK) {
+        gsql_client_close(c);
+    }
+
+    /* LIES: six starts in a row each lose to an owner that is gone by the
+       time the client looks, which owners at linger 0 can do. The client
+       must keep trying for its wait, not give up after a count. */
+    char ldb[600];
+    snprintf(ldb, sizeof ldb, "%s/lies", dir);
+    a = open_db(ldb, 1);
+    w = a ? gsql_client_owner_pid(a) : 0;
+    gsql_client_close(a);
+    /* that owner gone first, or the client would simply connect to it */
+    EXPECT(w > 0 && gone_within(w, 10000), "the lies database's first owner did not go");
+    setenv("GSQL_TEST_RELAY_LIES", "6", 1);
+    memset(&o, 0, sizeof o);
+    o.owner_argv = RELAY_ARGV;
+    c = NULL;
+    rc = gsql_client_open(ldb, &o, &c, &err);
+    unsetenv("GSQL_TEST_RELAY_LIES");
+    EXPECT(rc == GSQL_OK, "a client whose six starts each lost gave up: %s", err.message);
+    if (rc == GSQL_OK) {
+        gsql_client_close(c);
+    }
     return finish();
 }
 
@@ -2831,6 +3127,9 @@ int main(int argc, char **argv) {
     if (argc >= 5 && !strcmp(argv[1], "owner")) {
         return owner_main(argv[2], argv[3], argv[4]);
     }
+    if (argc >= 5 && !strcmp(argv[1], "owner-relay")) {
+        return owner_relay_main(argv[2], argv[3], argv[4]);
+    }
     if (argc >= 2 && !strcmp(argv[1], "wire")) {
         return wire_main();
     }
@@ -2867,10 +3166,16 @@ int main(int argc, char **argv) {
     if (argc >= 3 && !strcmp(argv[1], "window")) {
         return window_main(argv[2]);
     }
+    if (argc >= 3 && !strcmp(argv[1], "busygone")) {
+        return busygone_main(argv[2]);
+    }
+    if (argc >= 5 && !strcmp(argv[1], "churn")) {
+        return churn_main(argv[2], atoi(argv[3]), atoi(argv[4]));
+    }
     if (argc >= 4 && !strcmp(argv[1], "cost")) {
         return cost_main(argv[2], atol(argv[3]));
     }
     fprintf(stderr, "usage: owner_test owner DB FD MODE | wire | protocol DIR | noservice DIR | timeouts DIR | stall DIR "
-                    "| race DIR N [ROUNDS] | paths DIR | handoff DIR | lifetime DIR | cost DIR ITERS\n");
+                    "| race DIR N [ROUNDS] | paths DIR | handoff DIR | lifetime DIR | busygone DIR | churn DIR N ROUNDS | cost DIR ITERS\n");
     return 2;
 }

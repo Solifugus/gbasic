@@ -16,6 +16,15 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### G-SQL: an open no longer stalls 10 s at linger 0 (gdash's G20-15)
+
+- **A client told `busy` by an owner it started, whose winner then left, starts
+  again at once.** It used to wait out its 10 s for a socket that was gone.
+- **A connect and close is not an owner's first client.** Another owner's
+  check reached a new owner before its starter and, at linger 0, stopped it.
+- **A client keeps trying for its wait (10 s), not for five tries,** since
+  each try can now be lost in milliseconds.
+
 ### Client certificates on the webserver (a security fix)
 
 - **`webserver.listen` honours `tls.client_ca` and `tls.require_client_cert`**,

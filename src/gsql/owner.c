@@ -331,7 +331,10 @@ typedef struct {
     char sock[4200];
     uint64_t alone_since;   /* when the last connection went; 0 while any is
                                open (gsql_owner_lifetime_design.md §2) */
-    int served;             /* a connection has ever been accepted */
+    int served;             /* a client has ever said HELLO: not a connect alone,
+                               since another owner's socket_answers probe
+                               connects and closes, and at linger 0 it ended the
+                               startup grace before the starter arrived (G20-15) */
     int fenced;             /* another machine took the database (gsql_lease_design.md §5) */
     char fenced_by[200];
     Pend *group;            /* commits made this round, not yet synced */
@@ -1166,6 +1169,7 @@ static int do_hello(Owner *o, Conn *c, Req *r) {
         return DONE_REQ;
     }
     c->hello = 1;
+    o->served = 1;
     GsqlBuf b = {0};
     v3_w_record(&b, 6);
     v3_w_name(&b, "major");
@@ -1539,7 +1543,6 @@ static void accept_all(Owner *o) {
             o->conns = g;
         }
         o->conns[o->nconns++] = c;
-        o->served = 1;
     }
 }
 

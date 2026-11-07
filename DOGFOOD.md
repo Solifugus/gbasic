@@ -13437,3 +13437,25 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
     it: every other case passed with the line removed.
   - `tests/run_web_tls.sh` mtls tiers: require, ask, a stranger's
     certificate, wss, resumption, the refusals.
+
+## 2026-11-07 — CC — while: checking Transward's report that the TLS fix had not taken
+
+- **What:** a binary built from the source tree, run with `GBASIC_PATH`
+  unset, loads `stdlib/*.bas` from the INSTALLED copy
+  (`/usr/local/share/gbasic/stdlib`), which can be an older release's. It says
+  nothing about it. Half of a9c71e56's security fix is in `stdlib/web.bas`
+  (`_tls_options` passing `web.configure`'s cert/key on), so Transward's run of
+  the fixed binary still served plain HTTP to a program that asked for TLS. Its
+  serve announced https all the same. Measured with Transward's repro on
+  `./gbasic` 0.10.0+6d4aecc3: with `GBASIC_PATH=stdlib`, https answers and http
+  does not; unset, https fails and http answers "ok http". The fallback is
+  documented (CLAUDE.md, "searched as a fallback when GBASIC_PATH is unset").
+  The surprise is that a binary and a library from different builds mix in
+  silence, so a fix split across C and stdlib can be half there.
+- **Workaround:** set `GBASIC_PATH` to the tree's `stdlib` when running a
+  source-tree binary, or `make install` after a fix that touches stdlib.
+- **Status: OPEN**, for Matthew to rule on. One option is for the binary to warn
+  when the library it loads comes from a different build than it was built
+  with. Another is for a source-tree binary to prefer its own tree's `stdlib`.
+  Transward also asked for `web.serve`'s answer to say whether TLS is on, so a
+  program can refuse to start without it.
