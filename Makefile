@@ -457,7 +457,7 @@ src/gbasic_win32.res.o: src/gbasic_win32.rc src/gbasic.manifest
 gbasic-lsp: $(LSP_OBJS) libgbasic.a
 	$(CC) $(LSP_CFLAGS) -o $@ $(LSP_OBJS) libgbasic.a $(LDLIBS)
 
-src/lsp/main.o: src/lsp/main.c src/lsp/rpc.h src/lsp/handlers.h third_party/cjson/cJSON.h
+src/lsp/main.o: src/lsp/main.c src/lsp/rpc.h src/lsp/handlers.h third_party/cjson/cJSON.h include/platform.h
 	$(CC) $(LSP_CFLAGS) -c $< -o $@
 
 src/lsp/rpc.o: src/lsp/rpc.c src/lsp/rpc.h third_party/cjson/cJSON.h
@@ -563,7 +563,7 @@ src/ast.o: src/ast.c include/ast.h .buildswitch-stamp
 src/gsql/%.o: src/gsql/%.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/serialize_tags.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/crypto_ssh.c src/vendor/bcrypt_pbkdf.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/qt.c src/modules/gsql.c src/modules/csv.c src/modules/net.c src/modules/zip.c include/gb_csv.h include/gb_number_text.h include/gsql_sql.h $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gsql_owner.h include/gsql_table.h include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h .stdlibdir-stamp .buildswitch-stamp
+src/eval.o: src/eval.c src/modules/crypto_ssh.c src/vendor/bcrypt_pbkdf.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/qt.c src/modules/gsql.c src/modules/csv.c src/modules/net.c src/modules/zip.c include/gb_csv.h include/gb_number_text.h include/gsql_sql.h $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gsql_owner.h include/gsql_table.h include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h include/window_check.h src/currency_table.h third_party/yescrypt/yescrypt.h .stdlibdir-stamp .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # THE QT BACKEND: moc, then C++. The generated unit is `#include`d by the .cpp
@@ -603,7 +603,7 @@ src/window_check.o: src/window_check.c include/window_check.h .buildswitch-stamp
 src/csv_reader.o: src/csv_reader.c include/gb_csv.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/frontend.o: src/frontend.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gbasic.h include/diagnostics.h include/ast.h include/window_check.h .buildswitch-stamp
+src/frontend.o: src/frontend.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gbasic.h include/diagnostics.h include/ast.h include/window_check.h include/lexer.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/actor.o: src/actor.c include/actor.h include/platform.h .buildswitch-stamp
