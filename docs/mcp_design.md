@@ -277,7 +277,7 @@ end function
 ```
 
 `opts` adds `origins` (the browser origins allowed, `[]` for none),
-`session_secret` (at least 32 bytes, the same in every worker) and
+`session_secret` (at least 32 bytes, counted as bytes, the same in every worker) and
 `session_seconds` (default 86400). They are checked on every call.
 
 - **Origin, on every request.** One a browser sends from an origin not listed

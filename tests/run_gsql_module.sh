@@ -30,6 +30,9 @@
 #               past 1024 parameters
 #   columns     gsql.columns: a query's columns and kinds from its plan, run
 #               nothing (a 1/0 query is described), refused for no rows
+#   close       gsql.close(db, { wait }): true once the owner has exited (the
+#               database can then be deleted), false while another connection
+#               or the linger keeps it
 #   privatetmp  a service with a private /tmp, a second one, and an
 #               administrator's shell reach one owner (the socket is in the
 #               database directory); skips without bwrap
@@ -800,6 +803,15 @@ verdict columns "$work/cols.out" $? 12
 if [ -s "$work/cols.err" ]; then
     sed 's/^/       /' "$work/cols.err" | head -5
     fail "columns: the fixture wrote to stderr"
+fi
+
+printf 'TIER close: gsql.close with wait answers whether the owner stopped\n'
+mkdir -p "$work/close"
+GSQL_DIR="$work/close" timeout -k 5 120 ./gbasic tests/gsql/close_test.bas >"$work/close.out" 2>"$work/close.err"
+verdict close "$work/close.out" $? 10
+if [ -s "$work/close.err" ]; then
+    sed 's/^/       /' "$work/close.err" | head -5
+    fail "close: the fixture wrote to stderr"
 fi
 
 printf 'TIER privatetmp: processes with a /tmp each, as systemd'"'"'s PrivateTmp gives, reach one owner\n'

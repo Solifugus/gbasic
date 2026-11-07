@@ -55,7 +55,7 @@ if timeout -k 5 120 ./gbasic tests/mcp_test.bas >"$work/p.out" 2>"$work/p.err"; 
     if ! grep -q '^mismatches: 0$' "$work/p.out"; then
         grep '^MISMATCH' "$work/p.out" || true
         fail "the fixture disagreed with itself"
-    elif [ -z "$checks" ] || [ "$checks" -lt 108 ]; then
+    elif [ -z "$checks" ] || [ "$checks" -lt 110 ]; then
         fail "only ${checks:-0} checks ran"
     else
         pass "$checks checks"

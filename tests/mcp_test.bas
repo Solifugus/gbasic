@@ -376,6 +376,13 @@ check("no origins", http_opts_error({ name: "s", version: "1", session_secret: "
       "mcp.handle_http: opts needs origins, the browser origins allowed to call (use [] to allow none)")
 check("a short secret", http_opts_error({ name: "s", version: "1", origins: [], session_secret: "short" }),
       "mcp.handle_http: session_secret must be a string of at least 32 bytes")
+' the length is in BYTES: 16 two-byte characters are 32 bytes and 16
+' codepoints, which a `len` check refused (Transward, 2026-11-06)
+wide = repeat("\u{e9}", 16)
+check("a 32-byte secret of 16 characters is accepted",
+      http_opts_error({ name: "s", version: "1", origins: [], session_secret: wide }), "")
+check("and 31 bytes are refused", http_opts_error({ name: "s", version: "1", origins: [],
+      session_secret: repeat("a", 31) }), "mcp.handle_http: session_secret must be a string of at least 32 bytes")
 
 ' ---- THE CEILING: the mapping is the leak surface --------------------------
 on error goto next

@@ -13347,3 +13347,15 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   yet probed by run_limitations.sh: the next thing to do is read until end of
   file instead of trusting `st_size`, and decide whether a pid builtin is
   wanted.
+
+## 2026-11-06 — CC — while: Transward M21 serving MCP over HTTP (reported by the Transward session)
+- **Type:** bug
+- **Severity:** medium
+- **What:** `mcp.handle_http` refused random 32-byte session secrets about one
+  start in three, as "session_secret must be a string of at least 32 bytes".
+  The check was `len(opts.session_secret) < 32`, and `len` counts codepoints:
+  random bytes often hold sequences that read as multi-byte characters. The
+  message said bytes and the code counted characters. Mine, from 759334f.
+- **Workaround:** Transward signed with the base64 text of its key.
+- **Status: FIXED 2026-11-06**: `byte_count`, with a check that 16 two-byte
+  characters (32 bytes) are accepted and 31 ASCII bytes refused.

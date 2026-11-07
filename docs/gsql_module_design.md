@@ -26,6 +26,7 @@ db.close()
 | `db.exec(sql [, parameters])` | `{ command, rows_affected }`, the shape `sqlite`, `pg` and `odbc` answer; `rows_affected` is `nothing` for a statement with no count, such as `CREATE` |
 | `db.insert(table, rows)` | `{ command: "INSERT", rows_affected }`; rows are records, all or nothing (§8) |
 | `db.columns(sql [, parameters])` | `[{ name, kind }]`, the result columns from the plan, nothing run (§9) |
+| `db.close({ wait })` | whether the owner had stopped within `wait` (§10) |
 | `gsql.begin(db [, "read" or "write"])` | `true`. `"write"` is the default |
 | `db.commit()`, `db.rollback()` | `true` |
 | `db.close()` | `true`. A closed connection is refused by every verb, `close` included |
@@ -254,4 +255,28 @@ refuses it, an INSERT refused and not run, a missing column refused as the
 query would be, and both inside a read transaction. Perturbed, each red: the
 describe flag ignored by the SQL layer, and the owner counting a described
 INSERT as a write (refused READ_ONLY in a read transaction).
+
+## 10. `gsql.close(db, { wait })`: knowing the owner has stopped (2026-11-06)
+
+Asked for by gdash (its A4): after a million-row load with `linger: 0` the
+program exited and its database directory could not be removed for a moment,
+because the owner was still writing a sorted file. A program deleting a
+database, or a test asserting its scratch directory is clean, has to wait for
+that, and gdash was matching `--gsql-owner ... <path>` in the process table.
+
+`close` already knows which process the owner is: the client's handshake
+carries its pid. With `wait`, the close then polls that pid, every 20 ms, until
+it is gone or the time is spent, and answers whether it is gone. The owner is
+nobody's child, so `kill(pid, 0)` answers for it and there is no zombie to
+reap. **It does not guess** whether the owner will stop: an owner another
+connection uses, or one within its linger, simply has not stopped when the
+time runs out, and the answer says so.
+
+Tested by `run_gsql_module.sh`'s close tier (`tests/gsql/close_test.bas`, 10
+checks): `linger: 0` waited for and the directory removed at once, a second
+connection keeping the owner (false after a second, true at its own close),
+the default linger not waited for, close without `wait` unchanged, and three
+refusals that leave the connection open. Perturbed, each red: no waiting
+(which is gdash's report: the owner is still running when `close` returns),
+and an owner always reported gone.
 

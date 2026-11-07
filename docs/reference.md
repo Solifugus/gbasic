@@ -2743,6 +2743,13 @@ The module provides:
 - A database in a folder that does not exist is refused naming the folder:
   G-SQL creates the database, not the folders above it.
 - `connection.close()` (`gsql.close`)
+- `connection.close({ wait })` (`gsql.close`) *(after 0.10.0)* — closes, then
+  waits up to `wait` (seconds, or a duration such as `10 seconds`, at most
+  3600) for the database's owner process to exit, and answers **whether it
+  did**. `true` means nothing is writing the database any more, so it can be
+  deleted or its directory checked. `false` is an answer, not an error: another
+  connection still uses the owner, or it is within its `linger`, or it is
+  still finishing its last write.
 - `connection.max_recursion` — an **attribute**, set and read like a field: the rounds a `WITH RECURSIVE` query may run on this connection before it is refused, 1 000 000 unless set. `bank.max_recursion = 5000000` holds for every later statement on the connection, through its `sql` blocks and SQL strings alike; `unknown` sets it back. It takes a whole number of one or more, and a connection has no other attribute (`docs/gsql_recursive_design.md` §3)
 - `connection.backup(dir)` (`gsql.backup`) — a consistent copy as of now, made while the
   database stays in use (`docs/gsql_backup_design.md`). It answers

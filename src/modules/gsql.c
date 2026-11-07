@@ -2154,10 +2154,65 @@ static Value gsql_eval_simple(AstExpr *expr, const char *verb, unsigned type) {
     return value_bool(1);
 }
 
+/* Whether process `pid` is gone. The owner is nobody's child (it is started
+ * through an intermediate that exits, gsql_owner_lifetime_design.md §2), so
+ * there is no zombie to reap and kill(pid, 0) answers for it. */
+static int gsql_owner_gone(pid_t pid) {
+#ifndef _WIN32
+    return pid <= 0 || (kill(pid, 0) != 0 && errno == ESRCH);
+#else
+    (void)pid;
+    return 1;
+#endif
+}
+
+/* gsql.close(db [, { wait }]). With `wait` (seconds, or a duration), the
+ * close then waits up to that long for the connection's owner process to
+ * exit, and answers WHETHER IT DID (gdash's A4): a program deleting a
+ * database, or a test checking its scratch directory, must know the owner has
+ * stopped writing. The owner stops only when nobody else is using it and its
+ * linger has passed, so `false` is an answer, not an error: someone else
+ * holds it, or it is lingering, or it is still finishing its last write. */
 static Value gsql_eval_close(AstExpr *expr) {
-    if (expr->as.call.args.count != 1) {
-        gsql_module_refuse("gsql.close expects one connection");
+    size_t argc = expr->as.call.args.count;
+    if (argc < 1 || argc > 2) {
+        gsql_module_refuse("gsql.close expects one connection, and optionally { wait: seconds }");
         return value_null();
+    }
+    double wait_s = -1;
+    if (argc == 2) {
+        Value o = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(o);
+            return value_null();
+        }
+        const char *bad = NULL;
+        if (o.kind != VALUE_RECORD) {
+            bad = "gsql.close: the options are a record, { wait: seconds }";
+        }
+        for (size_t i = 0; !bad && i < o.as.record.count; i++) {
+            RecordField *f = &o.as.record.fields[i];
+            if (strcmp(f->name, "wait") != 0) {
+                bad = "gsql.close has one option, `wait`";
+                continue;
+            }
+            Value *w = f->value;
+            if (w && w->kind == VALUE_NUMBER) {
+                wait_s = w->as.num.value;
+            } else if (w && w->kind == VALUE_DURATION) {
+                long long months = 0, seconds = 0;
+                duration_totals(w->as.duration, &months, &seconds);
+                wait_s = months ? -1 : (double)seconds;
+            }
+            if (!(wait_s >= 0 && wait_s <= 3600)) {
+                bad = "gsql.close: `wait` is how long to wait for the owner to stop, from 0 to 3600 seconds";
+            }
+        }
+        value_free(o);
+        if (bad) {
+            gsql_module_refuse(bad);
+            return value_null();
+        }
     }
     Value v = eval_expr(expr->as.call.args.items[0]);
     if (error_action_pending()) {
@@ -2175,8 +2230,18 @@ static Value gsql_eval_close(AstExpr *expr) {
     if (!c) {
         return value_null();
     }
+    pid_t owner = c->client ? gsql_client_owner_pid(c->client) : 0;
     gsql_connection_shut(c);
-    return value_bool(1);
+    if (wait_s < 0) {
+        return value_bool(1);
+    }
+    double waited = 0;
+    while (!gsql_owner_gone(owner) && waited < wait_s) {
+        struct timespec ts = { 0, 20 * 1000000L };
+        nanosleep(&ts, NULL);
+        waited += 0.02;
+    }
+    return value_bool(gsql_owner_gone(owner));
 }
 
 /* gsql.backup(connection, dir): a consistent copy as of now, made while the

@@ -643,7 +643,10 @@ library mcp
         if not is_string(opts.session_secret) then
             error "mcp.handle_http: session_secret must be a string of at least 32 bytes"
         end if
-        if len(opts.session_secret) < 32 then
+        ' BYTES, not codepoints: 32 random bytes often hold sequences that
+        ' read as multi-byte characters, and `len` counted those as fewer, so
+        ' about one random key in three was refused (Transward, 2026-11-06)
+        if byte_count(opts.session_secret) < 32 then
             error "mcp.handle_http: session_secret must be a string of at least 32 bytes"
         end if
         if has(opts, "session_seconds") then

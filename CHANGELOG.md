@@ -99,6 +99,14 @@ reader sees.
 - **`mcp.handle(ts, opts, line, caller)`** runs the call under a principal
   verified for this request, passed through untouched (§7.3).
 
+### Knowing a G-SQL owner has stopped
+
+- **`db.close({ wait })`** waits up to `wait` for the database's owner process
+  to exit and answers whether it did, so a program can delete a database it
+  has just closed (gdash's A4).
+- `mcp.handle_http` counted `session_secret` in codepoints, so about one random
+  32-byte key in three was refused as shorter than 32 bytes. It counts bytes.
+
 ### A G-SQL query described without running it
 
 - **`db.columns(sql [, parameters])`** (`gsql.columns`): the result columns,
