@@ -2743,6 +2743,14 @@ The module provides:
 - A database in a folder that does not exist is refused naming the folder:
   G-SQL creates the database, not the folders above it.
 - `connection.close()` (`gsql.close`)
+- `gsql.wait_for_owner(path, seconds)` *(after 0.10.0)* — waits up to `seconds`
+  (or a duration, at most 3600) for no owner to hold the database at `path`,
+  and answers whether none does: the same question as `close({ wait })`, asked
+  by any program, for an owner whose starters have exited (a test cleaning up
+  after server workers and CLI calls). It reads the store's lock, which an owner
+  releases after its final write, so `true` means nothing is writing. On this
+  machine only: an owner on another machine sharing the storage is not seen. A
+  path with no database answers `true`.
 - `connection.close({ wait })` (`gsql.close`) *(after 0.10.0)* — closes, then
   waits up to `wait` (seconds, or a duration such as `10 seconds`, at most
   3600) for the database's owner process to exit, and answers **whether it

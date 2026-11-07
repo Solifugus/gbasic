@@ -808,7 +808,7 @@ fi
 printf 'TIER close: gsql.close with wait answers whether the owner stopped\n'
 mkdir -p "$work/close"
 GSQL_DIR="$work/close" timeout -k 5 120 ./gbasic tests/gsql/close_test.bas >"$work/close.out" 2>"$work/close.err"
-verdict close "$work/close.out" $? 10
+verdict close "$work/close.out" $? 16
 if [ -s "$work/close.err" ]; then
     sed 's/^/       /' "$work/close.err" | head -5
     fail "close: the fixture wrote to stderr"

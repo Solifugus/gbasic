@@ -131,7 +131,7 @@ static const struct {
 } functions[] = {
     { "coalesce", 1, 64 }, { "nullif", 2, 2 }, { "lower", 1, 1 }, { "upper", 1, 1 },
     { "length", 1, 1 }, { "char_length", 1, 1 }, { "abs", 1, 1 }, { "round", 1, 2 },
-    { "trim", 1, 1 }, { "mod", 2, 2 }, { NULL, 0, 0 }
+    { "trim", 1, 1 }, { "mod", 2, 2 }, { "substring", 2, 3 }, { "extract", 2, 2 }, { NULL, 0, 0 }
 };
 
 static int bind(B *b, SqlExpr *e, int cols_allowed, const char *where);
@@ -750,7 +750,7 @@ static int bind(B *b, SqlExpr *e, int cols_allowed, const char *where) {
         if (!known) {
             return bfail(b, e->pos, GSQL_NOT_FOUND,
                          "`%s` is not a G-SQL function: the functions are coalesce, nullif, lower, upper, length, "
-                         "char_length, abs, round, trim and mod", e->name);
+                         "char_length, abs, round, trim, mod, substring and extract", e->name);
         }
         break;
     }
@@ -1978,7 +1978,50 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         }
         p->order[k] = oe;
     }
+    /* GROUP BY a POSITION or an OUTPUT ALIAS (gdash A5, Matthew's ruling),
+     * as ORDER BY already took them: a bare whole number names a select-list
+     * column, and a single name that is no column of the query's tables names
+     * an alias. A name that is both stays the COLUMN, as PostgreSQL has it, so
+     * no query that worked changes meaning. Before this, GROUP BY 1 grouped by
+     * the constant 1 and the refusal blamed the select list. */
     for (size_t k = 0; k < s->ngroup; k++) {
+        SqlExpr *ge = s->group[k];
+        SqlExpr *out = NULL;
+        if (ge->kind == SX_LIT && ge->lit[0] == SER_NUMBER && ge->lit[1] == 1) {
+            uint64_t v = 0;
+            for (int i = 0; i < 8; i++) {
+                v |= (uint64_t)ge->lit[2 + i] << (8 * i);
+            }
+            if (v < 1 || v > p->nout) {
+                return bfail(b, ge->pos, GSQL_SYNTAX, "GROUP BY %llu names no column: the select list has %zu",
+                             (unsigned long long)v, p->nout);
+            }
+            out = p->out[v - 1];
+        } else if (ge->kind == SX_NAME && ge->nparts == 1) {
+            long tab = -1, col = -1;
+            size_t first = 0;
+            int found = lookup(b, ge, "GROUP BY", 0, &tab, &col, &first);
+            if (found < 0) {
+                return 0;
+            }
+            for (size_t o = 0; !found && o < s->nitems && !out; o++) {
+                if (s->items[o].alias && strcmp(s->items[o].alias, ge->parts[0]) == 0) {
+                    size_t at = 0;
+                    for (size_t q = 0; q < o; q++) {
+                        at += s->items[q].e ? 1 : star_width(b, &s->items[q]);
+                    }
+                    out = p->out[at];
+                }
+            }
+        }
+        if (out) {
+            if (out->kind == SX_AGG || out->kind == SX_WIN) {
+                return bfail(b, ge->pos, GSQL_SYNTAX, "GROUP BY names %s, an aggregate or window column; a group is "
+                             "made from values, not from what is computed over it", out->name);
+            }
+            s->group[k] = out;   /* bound already, as the select list's */
+            continue;
+        }
         if (!bind(b, s->group[k], 1, "GROUP BY")) {
             return 0;
         }

@@ -280,3 +280,17 @@ refusals that leave the connection open. Perturbed, each red: no waiting
 (which is gdash's report: the owner is still running when `close` returns),
 and an owner always reported gone.
 
+**`gsql.wait_for_owner(path, seconds)`** (2026-11-07) asks the same question
+of a database by its path, for a program that never held the connection: gdash's
+test cleanup waits for owners that server workers, refresh children and CLI
+calls started and have since left. It probes the store's lock, not the socket:
+an owner removes its socket first and releases the lock last, after its final
+write, so only the lock says that nothing is writing. The probe is a shared,
+non-blocking `flock`, released at once; an owner starting in that moment finds
+the lock busy and retries, which it does for a racing owner anyway. `flock` is
+local, so an owner on another machine sharing the storage is not seen; the
+lease is that case's answer. Tested in the close tier: held while a connection
+is open, free once it closes, a lingering owner not free at once but free within
+ten seconds, a path with no database, a refusal; red with the probe answering
+"free" always.
+

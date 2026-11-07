@@ -35,6 +35,9 @@
 | `x [NOT] LIKE p` | `%` any run, `_` one character, no escape character yet |
 | `CASE WHEN … THEN … [ELSE …] END` | the first branch whose condition is **true**; unknown is not true |
 | `COALESCE`, `NULLIF` | standard |
+| `substring(x, start [, length])` | characters counted from 1, as SQL counts them; past the end is empty; a start before 1, a negative length or a fractional number is refused (not given PostgreSQL's arithmetic for them); text only. One name, the comma form only (Matthew, 2026-11-07, gdash A5) |
+| `extract(part FROM value)` | the standard's one spelling; the part is `year`, `quarter`, `month`, `week` (ISO 8601: week 1 holds the year's first Thursday), `day`, `hour`, `minute` or `second`; a part the value does not hold (`hour` of a date) is `NULL`, as gBASIC's field is unknown; any other spelling is refused, naming the right one (2026-11-07, gdash A5) |
+| `GROUP BY 1`, `GROUP BY alias` | a bare whole number names a select-list column and a name that is no column of the query's tables names an output alias, as `ORDER BY` already took them; a name that is both stays the **column**, PostgreSQL's rule, so a query that worked keeps its meaning; a position naming an aggregate is refused. Before 2026-11-07 `GROUP BY 1` grouped by the constant 1 and the refusal blamed the select list (gdash A5) |
 | `WHERE` | keeps a row whose condition is **true**, so unknown drops it; a condition that is not a boolean is refused, naming its kind |
 
 **Deviations from PostgreSQL, from gBASIC's semantics, each deliberate (§4.0's rule):**

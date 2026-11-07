@@ -971,7 +971,7 @@ static GsqlHv *eval_call(X *x, SqlExpr *e) {
         return a;
     }
     /* the strict functions: NULL in, NULL out, as SQL's are */
-    GsqlHv *args[2] = { NULL, NULL };
+    GsqlHv *args[3] = { NULL, NULL, NULL };
     int any_null = 0;
     for (size_t k = 0; k < e->na; k++) {
         args[k] = eval(x, e->a[k]);
@@ -994,7 +994,24 @@ static GsqlHv *eval_call(X *x, SqlExpr *e) {
         int want_text = strcmp(fn, "lower") == 0 || strcmp(fn, "upper") == 0 || strcmp(fn, "len") == 0 ||
                         strcmp(fn, "trim") == 0;
         int k0 = kind_of(x, args[0]);
-        if (want_text && k0 != SER_STRING) {
+        if (strcmp(fn, "extract") == 0) {
+            /* the part, a text literal the parser made, and the value; the
+               host reads the part as gBASIC's field and refuses a value that
+               has none */
+            v = placed(x, x->h->call(x->h->ctx, fn, args, e->na, x->err), e);
+        } else if (strcmp(fn, "substring") == 0) {
+            /* substring(text, start [, length]), counting characters from 1
+               as SQL does (gdash's A5; Matthew's ruling: this one name, the
+               comma form). A start before 1 or a negative length is refused
+               rather than given PostgreSQL's arithmetic for it. */
+            if (k0 != SER_STRING) {
+                xfail(x->err, GSQL_EXPRESSION, e->pos, "substring works on text, and was given %s", tag_word(k0));
+                v = NULL;
+            } else {
+                /* the host checks the start and length, holding the values */
+                v = placed(x, x->h->call(x->h->ctx, fn, args, e->na, x->err), e);
+            }
+        } else if (want_text && k0 != SER_STRING) {
             xfail(x->err, GSQL_EXPRESSION, e->pos, "%s works on text, and was given %s", e->name, tag_word(k0));
             v = NULL;
         } else if (!want_text && !arithmetic_ok(x, args[0], args[1], SQL_OP_ADD, e)) {

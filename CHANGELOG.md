@@ -99,6 +99,17 @@ reader sees.
 - **`mcp.handle(ts, opts, line, caller)`** runs the call under a principal
   verified for this request, passed through untouched (§7.3).
 
+### G-SQL: substring, extract, GROUP BY by position or alias, and waiting for an owner by path
+
+- **`substring(x, start [, length])`**, counting characters from 1 (gdash A5).
+- **`extract(part FROM value)`** for `year`, `quarter`, `month`, `week` (ISO
+  8601), `day`, `hour`, `minute` and `second` (gdash A5).
+- **`GROUP BY 1`** and **`GROUP BY alias`**, as `ORDER BY` took them; a name
+  that is also a column stays the column. `GROUP BY 1` used to group by the
+  constant 1 and blame the select list.
+- **`gsql.wait_for_owner(path, seconds)`** answers whether no owner holds a
+  database, for a program that never held its connection.
+
 ### MCP structured results
 
 - A tool's record result is sent as `structuredContent` as well as text, and

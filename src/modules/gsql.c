@@ -145,13 +145,13 @@ static GsqlHv *gsql_apply(const char *source, const Value *const *args, size_t n
     if (!expr) {
         return NULL;
     }
-    static const char *const names[] = { "sql_a", "sql_b" };
+    static const char *const names[] = { "sql_a", "sql_b", "sql_c" };
     Env frame;
     memset(&frame, 0, sizeof frame);
     frame.parent = &global_env;
     Env *saved = current_env;
     current_env = &frame;
-    for (size_t k = 0; k < nargs && k < 2; k++) {
+    for (size_t k = 0; k < nargs && k < 3; k++) {
         env_set(names[k], value_copy(*args[k]));
     }
     int line = current_line, column = current_column;
@@ -306,8 +306,101 @@ static GsqlHv *gsql_h_field(void *ctx, const GsqlHv *rec, const char *name, Gsql
     return gsql_hv(f ? value_copy(*f->value) : value_unknown());
 }
 
+/* substring(text, start [, length]) as gBASIC's mid, which counts from 0
+ * and clamps at the end: SQL counts characters from 1. A start before 1 or a
+ * negative or fractional number is refused (gdash's A5). */
+static GsqlHv *gsql_h_substring(GsqlHv *const *args, size_t n, GsqlError *err) {
+    for (size_t k = 1; k < n; k++) {
+        const Value *v = &args[k]->v;
+        double d = v->kind == VALUE_NUMBER ? v->as.num.value : -1;
+        if (v->kind != VALUE_NUMBER || d != floor(d) || d < (k == 1 ? 1 : 0)) {
+            gsql_host_fail(err, GSQL_EXPRESSION, k == 1
+                           ? "substring's start is a whole number from 1, counting the first character as 1"
+                           : "substring's length is a whole number from 0");
+            return NULL;
+        }
+    }
+    const Value *vs[3] = { &args[0]->v, &args[1]->v, n > 2 ? &args[2]->v : NULL };
+    return gsql_apply(n > 2 ? "mid(sql_a, sql_b - 1, sql_c)" : "mid(sql_a, sql_b - 1, len(sql_a))", vs, n, err);
+}
+
+/* One of a datetime's fields as a number, or -1 when it has none (finer than
+ * the value's precision, gBASIC's `unknown`). */
+static long gsql_dt_field(const Value *v, const char *field, GsqlError *err) {
+    char source[48];
+    snprintf(source, sizeof source, "sql_a.%s", field);
+    const Value *vs[1] = { v };
+    GsqlHv *r = gsql_apply(source, vs, 1, err);
+    if (!r) {
+        return -2;
+    }
+    long out = r->v.kind == VALUE_NUMBER ? (long)r->v.as.num.value : -1;
+    value_free(r->v);
+    free(r);
+    return out;
+}
+
+/* ISO 8601's weeks in a year: 53 when it begins on a Thursday, or is a leap
+ * year beginning on a Wednesday. */
+static int gsql_iso_weeks(long y) {
+    long p = (y + y / 4 - y / 100 + y / 400) % 7;
+    long q = ((y - 1) + (y - 1) / 4 - (y - 1) / 100 + (y - 1) / 400) % 7;
+    return p == 4 || q == 3 ? 53 : 52;
+}
+
+/* extract(part FROM value), gdash's A5: gBASIC's own field for year, month,
+ * day, hour, minute and second; quarter from the month; week as ISO 8601
+ * counts it (week 1 holds the year's first Thursday). A part the value does
+ * not hold is NULL, as gBASIC's field is unknown. */
+static GsqlHv *gsql_h_extract(GsqlHv *const *args, size_t n, GsqlError *err) {
+    if (n != 2 || args[0]->v.kind != VALUE_STRING) {
+        gsql_host_fail(err, GSQL_MISUSE, "extract reached the host without its part");
+        return NULL;
+    }
+    const char *part = args[0]->v.as.string;
+    const Value *v = &args[1]->v;
+    if (v->kind != VALUE_DATETIME) {
+        char msg[200];
+        snprintf(msg, sizeof msg, "extract reads a date, a time or a datetime, and was given %s",
+                 value_kind_name(v->kind));
+        gsql_host_fail(err, GSQL_EXPRESSION, "%s", msg);
+        return NULL;
+    }
+    long r;
+    if (strcmp(part, "quarter") == 0) {
+        long m = gsql_dt_field(v, "month", err);
+        r = m < 0 ? m : (m - 1) / 3 + 1;
+    } else if (strcmp(part, "week") == 0) {
+        long y = gsql_dt_field(v, "year", err);
+        long doy = y < 0 ? y : gsql_dt_field(v, "day_of_year", err);
+        long wd = doy < 0 ? doy : gsql_dt_field(v, "weekday", err);
+        if (wd < 0) {
+            r = wd;
+        } else {
+            r = (doy - wd + 10) / 7;
+            if (r < 1) {
+                r = gsql_iso_weeks(y - 1);
+            } else if (r > gsql_iso_weeks(y)) {
+                r = 1;
+            }
+        }
+    } else {
+        r = gsql_dt_field(v, part, err);
+    }
+    if (r == -2) {
+        return NULL;
+    }
+    return gsql_hv(r < 0 ? value_unknown() : value_number_exact(r));
+}
+
 static GsqlHv *gsql_h_call(void *ctx, const char *name, GsqlHv *const *args, size_t n, GsqlError *err) {
     (void)ctx;
+    if (strcmp(name, "substring") == 0) {
+        return gsql_h_substring(args, n, err);
+    }
+    if (strcmp(name, "extract") == 0) {
+        return gsql_h_extract(args, n, err);
+    }
     char source[64];
     if (n == 1) {
         snprintf(source, sizeof source, "%s(sql_a)", name);
@@ -1818,6 +1911,89 @@ static Value gsql_eval_exec(AstExpr *expr) {
     return result;
 }
 
+/* --- wait_for_owner: has anyone's owner stopped writing a database? -----------
+ *
+ * gsql.wait_for_owner(path, seconds) waits up to `seconds` for no owner to
+ * hold the database at `path`, and answers whether none does. It is
+ * close({ wait })'s question asked by any program, for a database whose
+ * owner was started by processes that have since exited (gdash's test
+ * cleanup: server workers, refresh children, CLI calls).
+ *
+ * THE LOCK, NOT THE SOCKET. An owner removes its socket first and releases
+ * the store's lock last, after its final write (gsql_owner_design.md §3), so
+ * the socket going says only that it stopped taking connections. The probe
+ * is a shared, non-blocking flock on the lock file, released at once: it
+ * fails while an owner holds its exclusive one. An owner starting in that
+ * moment finds the lock busy and retries, which it does anyway for a racing
+ * owner. ON THIS MACHINE ONLY: flock is local, so an owner on another
+ * machine sharing the storage is not seen (the lease is its answer). A path
+ * with no lock file has no owner, and answers true. */
+static int gsql_owner_holds(const char *db) {
+#ifndef _WIN32
+    size_t n = strlen(db);
+    char *lock = malloc(n + sizeof "/db.lock");
+    if (!lock) {
+        abort();
+    }
+    memcpy(lock, db, n);
+    memcpy(lock + n, "/db.lock", sizeof "/db.lock");
+    int fd = open(lock, O_RDONLY | O_CLOEXEC);
+    free(lock);
+    if (fd < 0) {
+        return 0;
+    }
+    int held = flock(fd, LOCK_SH | LOCK_NB) != 0 && errno == EWOULDBLOCK;
+    if (!held) {
+        flock(fd, LOCK_UN);
+    }
+    close(fd);
+    return held;
+#else
+    (void)db;
+    return 0;
+#endif
+}
+
+static Value gsql_eval_wait_for_owner(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) {
+        gsql_module_refuse("gsql.wait_for_owner expects a database path and the seconds to wait");
+        return value_null();
+    }
+    char *path = gsql_text_arg(expr, 0, "wait_for_owner", "the database path");
+    if (!path) {
+        return value_null();
+    }
+    Value w = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(w);
+        free(path);
+        return value_null();
+    }
+    double wait_s = -1;
+    if (w.kind == VALUE_NUMBER) {
+        wait_s = w.as.num.value;
+    } else if (w.kind == VALUE_DURATION) {
+        long long months = 0, seconds = 0;
+        duration_totals(w.as.duration, &months, &seconds);
+        wait_s = months ? -1 : (double)seconds;
+    }
+    value_free(w);
+    if (!(wait_s >= 0 && wait_s <= 3600)) {
+        free(path);
+        gsql_module_refuse("gsql.wait_for_owner: the wait is from 0 to 3600 seconds");
+        return value_null();
+    }
+    double waited = 0;
+    while (gsql_owner_holds(path) && waited < wait_s) {
+        struct timespec ts = { 0, 20 * 1000000L };
+        nanosleep(&ts, NULL);
+        waited += 0.02;
+    }
+    int stopped = !gsql_owner_holds(path);
+    free(path);
+    return value_bool(stopped);
+}
+
 /* --- columns: a query described, not run (gdash's A2) --------------------------
  *
  * gsql.columns(db, sql [, parameters]) answers [{ name, kind }], the result
@@ -2748,6 +2924,7 @@ static Value gsql_eval_call(AstExpr *expr) {
     if (strcmp(fn, "exec") == 0) return gsql_eval_exec(expr);
     if (strcmp(fn, "insert") == 0) return gsql_eval_insert(expr);
     if (strcmp(fn, "columns") == 0) return gsql_eval_columns(expr);
+    if (strcmp(fn, "wait_for_owner") == 0) return gsql_eval_wait_for_owner(expr);
     if (strcmp(fn, "on") == 0) return gsql_eval_on(expr);
     if (strcmp(fn, "begin") == 0) return gsql_eval_simple(expr, "begin", GSQL_M_BEGIN);
     if (strcmp(fn, "commit") == 0) return gsql_eval_simple(expr, "commit", GSQL_M_COMMIT);

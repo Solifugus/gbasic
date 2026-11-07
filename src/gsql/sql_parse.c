@@ -1105,6 +1105,41 @@ static SqlExpr *primary(P *p) {
             SqlExpr *e = node(p, SX_CALL, pos);
             e->name = first;
             EList l = {0};
+            /* EXTRACT(part FROM value), the standard's one spelling, as a
+               call whose first argument is the part's name (gdash A5,
+               Matthew's ruling): any other form is refused, so there is one
+               way to write it */
+            if (strcmp(first, "extract") == 0) {
+                static const char *const parts[] = { "year", "quarter", "month", "week", "day",
+                                                     "hour", "minute", "second", NULL };
+                int known = 0;
+                if (p->tok.kind == T_IDENT) {
+                    for (int k = 0; parts[k]; k++) {
+                        known |= strcmp(p->tok.text, parts[k]) == 0;
+                    }
+                }
+                if (!known) {
+                    fail_at(p, p->tok.pos, GSQL_SYNTAX, "extract is written extract(part FROM value), the part one of "
+                            "year, quarter, month, week, day, hour, minute or second");
+                    return NULL;
+                }
+                GsqlBuf b = {0};
+                v3_w_text(&b, p->tok.text);
+                SqlExpr *part = lit_bytes(p, p->tok.pos, &b);
+                gsql_buf_free(&b);
+                next(p);
+                if (!accept_kw(p, "from")) {
+                    fail_at(p, p->tok.pos, GSQL_SYNTAX, "extract is written extract(part FROM value)");
+                    return NULL;
+                }
+                elist_push(p, &l, part);
+                elist_push(p, &l, expr(p));
+                if (p->failed || !expect_sym(p, ")")) {
+                    return NULL;
+                }
+                take(e, &l);
+                return e;
+            }
             /* count(*) and an aggregate's DISTINCT; the binder decides whether
                the name is an aggregate at all */
             if (at_sym(p, "*")) {
@@ -3383,6 +3418,17 @@ static void print_expr_tb(GsqlBuf *o, const SqlExpr *e, const PrintCtx *pc) {
     case SX_AGG:
     case SX_WIN:
     case SX_GROUPING:
+        if (e->kind == SX_CALL && strcmp(e->name, "extract") == 0 && e->na == 2 && e->a[0]->kind == SX_LIT) {
+            /* the part is a name, not a string: printed as it was written */
+            char *part = v3_read_text(e->a[0]->lit, e->a[0]->litlen);
+            puts_(o, "extract(");
+            puts_(o, part ? part : "?");
+            free(part);
+            puts_(o, " FROM ");
+            print_expr_tb(o, e->a[1], pc);
+            v3_put(o, ")", 1);
+            return;
+        }
         puts_(o, e->name);
         v3_put(o, "(", 1);
         if (e->star) {

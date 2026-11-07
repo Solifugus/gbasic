@@ -57,6 +57,28 @@ stmt("SELECT coalesce(NULL, NULL, 3, 4), coalesce(NULL), nullif(1, 1), nullif(1,
 stmt("SELECT lower('AbC'), upper('abc'), length('héllo'), char_length(''), trim('  a b  '), abs(-3), abs(-2.5), mod(7, 3)",
      "= 'abc', 'ABC', 5, 0, 'a b', 3, 2.5, 1")
 stmt("SELECT lower(NULL), length(NULL), abs(NULL), round(NULL)", "= NULL, NULL, NULL, NULL")
+# substring(text, start [, length]): characters counted from 1, as SQL counts
+# them; past the end is empty; NULL in is NULL out (gdash A5, 2026-11-07)
+stmt("SELECT substring('héllo', 1, 2), substring('héllo', 2), substring('héllo', 4, 10), substring('héllo', 9, 2), substring('abc', 1, 0), substring(NULL, 1, 2)",
+     "= 'hé', 'éllo', 'lo', '', '', NULL")
+stmt("SELECT substring('abc', 0, 2)", ("EXPRESSION", "substring", "substring's start is a whole number from 1, counting the first character as 1"))
+stmt("SELECT substring('abc', 1.5)", ("EXPRESSION", "substring", "substring's start is a whole number from 1, counting the first character as 1"))
+stmt("SELECT substring('abc', 1, -1)", ("EXPRESSION", "substring", "substring's length is a whole number from 0"))
+stmt("SELECT substring(5, 1, 2)", ("EXPRESSION", "substring", "substring works on text, and was given a number"))
+stmt("SELECT substring('abc')", ("SYNTAX", "substring", "substring takes 2 to 3 arguments, and was given 1"))
+# extract(part FROM value): gBASIC's fields; quarter from the month; week as
+# ISO 8601 counts it, the expected weeks computed HERE by Python's datetime,
+# which shares no code with G-SQL's (gdash A5, 2026-11-07)
+import datetime as _dt
+stmt("SELECT extract(year FROM CAST('2026-03-15 09:30:45' AS datetime)), extract(quarter FROM CAST('2026-03-15' AS date)), extract(month FROM CAST('2026-11-07' AS date)), extract(day FROM CAST('2026-03-15' AS date)), extract(hour FROM CAST('2026-03-15 09:30:45' AS datetime)), extract(minute FROM CAST('2026-03-15 09:30:45' AS datetime)), extract(second FROM CAST('2026-03-15 09:30:45' AS datetime))",
+     "= 2026, 1, 11, 15, 9, 30, 45")
+_weeks = ["2026-03-15", "2021-01-01", "2020-12-31", "2026-12-31", "2027-01-01", "2024-12-30", "2015-12-31", "2026-01-04", "2026-01-05"]
+stmt("SELECT " + ", ".join("extract(week FROM CAST('%s' AS date))" % d for d in _weeks),
+     "= " + ", ".join(str(_dt.date.fromisoformat(d).isocalendar()[1]) for d in _weeks))
+stmt("SELECT extract(hour FROM CAST('2026-03-15' AS date)), extract(year FROM NULL)", "= NULL, NULL")
+stmt("SELECT extract(year FROM 5)", ("EXPRESSION", "extract", "extract reads a date, a time or a datetime, and was given number"))
+stmt("SELECT extract(century FROM CAST('2026-03-15' AS date))", ("SYNTAX", "century", "extract is written extract(part FROM value), the part one of year, quarter, month, week, day, hour, minute or second"))
+stmt("SELECT extract('year', 1)", ("SYNTAX", "'year'", "extract is written extract(part FROM value), the part one of year, quarter, month, week, day, hour, minute or second"))
 stmt("SELECT -5, - -5, -(2 - 7), -NULL", "= -5, 5, 5, NULL")
 stmt("SELECT 1 WHERE 1 = 2", "= (none)")
 stmt("SELECT 1 WHERE NULL", "= (none)")
@@ -270,6 +292,15 @@ stmt("SELECT g FROM s GROUP BY g ORDER BY n", ("SYNTAX", "n", "ORDER BY reads co
 stmt("SELECT g FROM s GROUP BY g HAVING n > 1", ("SYNTAX", "n", "HAVING reads column `n`"))
 stmt("SELECT id FROM s WHERE count(*) > 1", ("SYNTAX", "count", "WHERE cannot use an aggregate"))
 stmt("SELECT count(*) FROM s GROUP BY count(*)", ("SYNTAX", "count", "GROUP BY cannot use an aggregate", 2))
+# GROUP BY a position or an output alias, as ORDER BY takes them (gdash A5,
+# 2026-11-07); a name that is also a column stays the column, as PostgreSQL
+# has it, so a query that worked keeps its meaning
+stmt("SELECT g, count(*) FROM s GROUP BY 1", "= 'a', 2 | 'b', 2 | NULL, 2")
+stmt("SELECT lower(g) AS lg, count(*) FROM s GROUP BY lg", "= 'a', 2 | 'b', 2 | NULL, 2")
+stmt("SELECT lower(g) AS lg, count(*) AS c FROM s GROUP BY 1 HAVING count(*) > 1 ORDER BY lg", "= 'a', 2 | 'b', 2 | NULL, 2")
+stmt("SELECT g AS n, count(*) FROM s GROUP BY n", ("SYNTAX", "g", "the select list reads column `g`, which is neither grouped by nor inside an aggregate"))
+stmt("SELECT g, count(*) FROM s GROUP BY 2", ("SYNTAX", "2", "GROUP BY names count, an aggregate or window column"))
+stmt("SELECT g, count(*) FROM s GROUP BY 3", ("SYNTAX", "3", "GROUP BY 3 names no column: the select list has 2"))
 stmt("SELECT sum(sum(n)) FROM s", ("SYNTAX", "sum", "an aggregate cannot hold another aggregate", 2))
 stmt("SELECT sum(g) FROM s", ("EXPRESSION", "sum", "+ adds numbers and money, and one side is text"))
 stmt("SELECT min(g), max(g) FROM s", "= 'a', 'b'")

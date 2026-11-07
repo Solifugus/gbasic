@@ -50,6 +50,27 @@ check("a lingering owner, not waited for", gsql.close(db3, { wait: 0 }), false)
 db4 = gsql.connect(dir + "/d", { create: true, linger: 0 })
 check("close without wait", gsql.close(db4), true)
 
+' ---- wait_for_owner: the same question from any program ---------------
+' (gdash: its owners were started by processes that have since exited)
+function wait_error(p, w)
+    on error goto next
+    x = gsql.wait_for_owner(p, w)
+    m = error.message
+    error.clear()
+    return m
+end function
+dbw = gsql.connect(dir + "/w", { create: true, linger: 0 })
+dbw.exec("create table t (k number)")
+check("while a connection is open, an owner holds it", gsql.wait_for_owner(dir + "/w", 0), false)
+x = gsql.close(dbw)
+check("once it closes, the owner stops", gsql.wait_for_owner(dir + "/w", 10), true)
+dbl = gsql.connect(dir + "/l", { create: true })
+x = gsql.close(dbl)
+check("a lingering owner is not stopped at once", gsql.wait_for_owner(dir + "/l", 0), false)
+check("and is, once its 3-second linger has passed", gsql.wait_for_owner(dir + "/l", 10 seconds), true)
+check("a path with no database has no owner", gsql.wait_for_owner(dir + "/never", 0), true)
+check("a wait out of range", wait_error(dir + "/w", -1), "gsql.wait_for_owner: the wait is from 0 to 3600 seconds")
+
 db5 = gsql.connect(dir + "/e", { create: true, linger: 0 })
 check("an option it does not have", refusal(db5, { wiat: 1 }), "gsql.close has one option, `wait`")
 check("a wait out of range", refusal(db5, { wait: -1 }),
