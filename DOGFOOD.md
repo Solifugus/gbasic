@@ -13277,3 +13277,45 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   variable: args" and adds that a program's arguments are the parameter of
   `program main(args)` (`tests/negative_args_outside_main.err`). `argv` is
   left as it was; no one here wrote it. The `random_bytes` limit is unchanged.
+
+## 2026-11-06 — CC — while: Transward M21, loading `mcp` beside an application library named `tools`
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** Transward's tool layer was `library tools` (src/tools.bas). Adding
+  `load mcp` was refused at load: "the name 'tools' already refers to library
+  'tools' from .../transward/src/tools.bas, and cannot also refer to library
+  'tools' from /usr/local/share/gbasic/stdlib/tools.bas". `stdlib/mcp.bas`
+  loads `tools` itself, and that load binds the name for the whole program. The
+  message is good; the surprise is that an application cannot know which names
+  a stdlib library claims internally, so a future stdlib release that adds a
+  load can break an application that changed nothing.
+- **Workaround:** renamed Transward's library to `ops` (src/ops.bas), with a
+  comment naming this entry. Requested: a library's own loads private to it, or
+  at least a list of the names each stdlib library claims
+  (transward/docs/gbasic-requests-for-revision.md §7.6).
+
+## 2026-11-06 — CC — while: Transward M21, planning to publish 33 tools over MCP
+- **Type:** missing-feature
+- **Severity:** high
+- **What:** `stdlib/mcp.bas` covers `initialize`, `tools/list` and `tools/call`
+  over stdio, and a client. Publishing Transward needs more, found by reading
+  the library rather than by a failure:
+  (1) no `resources/*` or `prompts/*`, and only the `tools` capability is
+  advertised;
+  (2) `tools.dispatch` calls `fn(prepared)` as a plain call, and function values
+  are not closures, so one dispatcher function cannot serve many entries: 33
+  tools would need 33 wrappers that differ only in a name. Calling it as
+  `e.fn(prepared)` would give the function `this` (the entry);
+  (3) a principal per request (over HTTP each request has its own bearer
+  token) has no documented route: `opts.principal` plus a `max_groups`
+  ceiling fits a static mapping;
+  (4) no Streamable HTTP server transport: sessions (`Mcp-Session-Id`), `202`
+  for notifications, `Origin` validation (required by the spec against DNS
+  rebinding), and `initialize` always answers protocolVersion `2024-11-05`;
+  (5) the HTTP client sends no headers, so it cannot reach a server that needs
+  `Authorization: Bearer`, and every call uses request id 3.
+- **Workaround:** none taken. Writing Transward's own JSON-RPC server beside the
+  stdlib's would be the wrong fix, so the MCP publishing half of Transward M21
+  waits. The full request, with the shapes that would fit, is in
+  transward/docs/gbasic-requests-for-revision.md §7 (7.1–7.5 blocking, 7.6–7.8
+  needed). Ledger rows left to the gBASIC session to add.
