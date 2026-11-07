@@ -43,7 +43,9 @@ reader sees.
   (`'2026-01-15T00:00'`) loses nothing and is stored, as a date is.
 - **`CAST('2026-01-15T10:00' AS DATE)` still takes the date,** so taking it
   is now written down where it happens.
-- A comparison is unchanged: `where d = '2026-01-15'` reads the text as a date.
+- **A comparison with such text is refused too** (`EXPRESSION`): `where d =
+  '2026-01-15T10:00'` was true of the 15th. `where d = '2026-01-15'` and
+  midnight text still compare as the date.
 
 ### G-SQL: an open no longer stalls 10 s at linger 0 (gdash's G20-15)
 

@@ -672,13 +672,21 @@ static GsqlHv *text_read_as(X *x, const GsqlHv *text, int kind, const char *cur,
     }
     GsqlError why;
     memset(&why, 0, sizeof why);
-    GsqlHv *c = x->h->cast(x->h->ctx, src, kind, cur, &why);
+    /* read as STORING reads it, so a date compared with text that has a time of
+       day is refused, not compared as that day (gdash A7's ruling carried to
+       comparisons, Matthew 2026-11-07): `d = '2026-01-15T10:00'` was true */
+    GsqlHv *c = x->h->assign(x->h->ctx, src, kind, cur, &why);
     if (!c) {
         size_t m = 0;
         char *shown = text_of(x, src, &m);
-        xfail(err, GSQL_EXPRESSION, pos, "%s compares %s with text that does not read as %s: '%.80s' (%.200s)",
-              sql_op_text(op), col_kind_word(kind), kind == GSQL_COL_MONEY ? "money" : col_kind_word(kind),
-              shown ? shown : "", why.message);
+        if (why.code == GSQL_TYPE) {
+            xfail(err, GSQL_EXPRESSION, pos, "%s compares %s with text that %.200s: '%.80s'", sql_op_text(op),
+                  col_kind_word(kind), why.message, shown ? shown : "");
+        } else {
+            xfail(err, GSQL_EXPRESSION, pos, "%s compares %s with text that does not read as %s: '%.80s' (%.200s)",
+                  sql_op_text(op), col_kind_word(kind), kind == GSQL_COL_MONEY ? "money" : col_kind_word(kind),
+                  shown ? shown : "", why.message);
+        }
         free(shown);
     }
     rel(x, src);
@@ -1270,6 +1278,7 @@ static int eval_into(X *x, SqlExpr *e, GsqlBuf *out) {
  * 2026-11-07): CAST takes the date of '2026-01-15T10:00', storing does not,
  * since the time would be lost in silence. So storing goes through the host's
  * `assign`, which is CAST but for that; midnight loses nothing and is stored.
+ * A comparison reads text the same way (text_read_as), so it refuses too.
  *
  * AN INTEGER COLUMN TAKES TEXT THAT IS EXACTLY AN INTEGER (Matthew's ruling
  * 2026-11-02, gbasic-books volume 3 Q1): every field `csv.records` reads is

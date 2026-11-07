@@ -95,9 +95,38 @@ check("a DEFAULT with a time of day is refused", outcome(error, 0), "refused TYP
 db.exec("create table dflt (k integer primary key, d date default '2026-01-01T00:00')")
 db.exec("insert into dflt (k) values (1)")
 check("a DEFAULT at midnight is the date", db.query("select d from dflt")[0].d, {date}"2026-01-01")
-' a comparison is not storing: it reads text as the column's kind, as before
-' (rows 7, 8 and 100 hold the 15th)
-check("a comparison still reads the text as a date", len(db.query("select k from t where d = '2026-01-15'")), 3)
+' a comparison reads text as storing does (Matthew, 2026-11-07): a date is
+' compared with a date, and text with a time of day is refused rather than
+' compared as that day. Rows 7, 8 and 100 hold the 15th; the index makes the
+' seek path answer too, and a seek that cannot convert leaves it to the scan.
+db.exec("create index td on t (d)")
+check("a comparison reads date text as a date", len(db.query("select k from t where d = '2026-01-15'")), 3)
+check("and midnight text as that date", len(db.query("select k from t where d = '2026-01-15T00:00'")), 3)
+function compared(db, cond)
+    on error goto next
+    r = db.query("select k from t where " + cond)
+    e = error
+    if e then
+        m = e.message
+        at = find(m, "with text that ")
+        if is_unknown(at) or at = nothing then
+            return "refused " + e.details.code
+        end if
+        rest = mid(m, at + 15, len(m) - at - 15)
+        cut = find(rest, "; CAST")
+        if not (is_unknown(cut) or cut = nothing) then
+            rest = mid(rest, 0, cut)
+        end if
+        return "refused " + e.details.code + " " + rest
+    end if
+    return "rows " + string(count(r))
+end function
+check("= with a time of day is refused", compared(db, "d = '2026-01-15T10:00'"), "refused EXPRESSION has a time of day (10:00:00), which a date would lose")
+check("with the text on the left", compared(db, "'2026-01-15 10:00' = d"), "refused EXPRESSION has a time of day (10:00:00), which a date would lose")
+check("< is refused", compared(db, "d < '2026-01-16T09:30'"), "refused EXPRESSION has a time of day (09:30:00), which a date would lose")
+check("BETWEEN is refused", compared(db, "d between '2026-01-15T10:00' and '2026-01-16'"), "refused EXPRESSION has a time of day (10:00:00), which a date would lose")
+check("IN is refused", compared(db, "d in ('2026-01-15T10:00')"), "refused EXPRESSION has a time of day (10:00:00), which a date would lose")
+check("and a CAST still compares as the date", compared(db, "d = cast('2026-01-15T10:00' as date)"), "rows 3")
 db.close()
 
 database dates( file: "dates.gsql" )

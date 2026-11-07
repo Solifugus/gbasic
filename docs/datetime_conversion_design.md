@@ -46,7 +46,7 @@ Each refusal names what the value lacks (``a time of day has no date to take``),
 
 `CAST(text AS DATE)` reads the text as a datetime, then takes its date. So `CAST('2026-01-05 10:30' AS DATE)` is `2026-01-05`. That is PostgreSQL's answer and what a `DATE` column can hold, where `{date}` alone would keep the minutes and the column would refuse them. `AS TIME` and `AS DATETIME` read text as their modifiers already do.
 
-**Storing is not casting** (gdash A7, Matthew's ruling 2026-11-07). Text stored into a `DATE` column, without a `CAST`, is read as `{date}` reads it, and refused (`TYPE`) when it has a time of day other than midnight: `'2026-01-15T10:00'` would lose its time in silence. Midnight text loses nothing and is stored. Until then storing went through `CAST`'s conversion and took the date. It is the host's `assign` (`src/modules/gsql.c`), called by `store_convert`; tested by `tests/gsql/date_text_test.bas` in `run_gsql_module.sh`.
+**Storing is not casting** (gdash A7, Matthew's ruling 2026-11-07). Text stored into a `DATE` column, without a `CAST`, is read as `{date}` reads it, and refused (`TYPE`) when it has a time of day other than midnight: `'2026-01-15T10:00'` would lose its time in silence. Midnight text loses nothing and is stored. Until then storing went through `CAST`'s conversion and took the date. **A comparison reads text the same way** (the same day, Matthew): `d = '2026-01-15T10:00'` was true of the 15th and is refused now (`EXPRESSION`, as a comparison's other text refusals are), in `=`, `<`, `BETWEEN`, `IN`, either side; midnight text compares as its date. It is the host's `assign` (`src/modules/gsql.c`), called by `store_convert`; tested by `tests/gsql/date_text_test.bas` in `run_gsql_module.sh`.
 
 ## 4. How it is tested
 
