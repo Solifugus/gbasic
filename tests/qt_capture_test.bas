@@ -72,16 +72,31 @@ program main()
         print "NODISPLAY"
         return
     end if
-    g = { checks: 0, bad: 0, n: 0, steady: [] }
+    g = { checks: 0, bad: 0, n: 0, unfocused: 0, steady: [] }
     out = env("OUT")
 
     ' THE STEADY-STATE TIER'S TIMER, at the top of `main` where a `watch` is
     ' allowed. Each tick captures the focused editor while Qt's loop is
     ' running, which is when its caret blinks.
+    '
+    ' A tick counts only once the editor HAS focus. `setFocus` on a window
+    ' that is not active yet only records the wish; the focus, and the caret
+    ' with it, arrive when the platform activates the window, through this
+    ' same loop. Under valgrind in the parallel gate that came after the first
+    ' tick, so capture 1 had no caret and 2-12 did: one picture out of twelve
+    ' differed, and it was never the blink (2026-11-06, 3 of 3 under load).
     beat = timer.every(0.13)
     watch(timer.ticks)
         while count(timer.ticks) > 0
             ev = take_first(timer.ticks)
+            if not qt.read(app, "ed", "focus") then
+                g.unfocused = g.unfocused + 1
+                if g.unfocused >= 200 then
+                    timer.cancel(beat)
+                    qt.stop()
+                end if
+                continue
+            end if
             g.n = g.n + 1
             p = join_path(out, "steady" + string(g.n) + ".png")
             qt.capture(app, p, { part: "ed" })
@@ -194,6 +209,7 @@ program main()
     print "-- A FOCUSED EDITOR WHILE QT'S LOOP RUNS"
     qt.invoke(app, "ed", "setFocus")
     qt.run()
+    check("the editor took focus within 200 ticks", g.unfocused < 200, true)
     check("twelve captures were taken", count(g.steady), 12)
     check("and the caret's blink is not in any of them: one picture", count(unique(g.steady)), 1)
 

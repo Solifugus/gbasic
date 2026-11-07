@@ -10,7 +10,9 @@
 # shares no code with Qt's PNG writer, and checks colours the fixture set with
 # a stylesheet; and the steady tier is twelve captures of a focused editor
 # while Qt's loop runs, where the caret blinks -- before the fix they came out
-# as two different pictures.
+# as two different pictures. The editor's focus arrives through that loop, so
+# a capture counts only once it has arrived; under valgrind in the parallel
+# gate the first one used to come before it, without a caret.
 . "$(dirname "$0")/portable.sh"
 set -uo pipefail
 cd "$(dirname "$0")/.."
