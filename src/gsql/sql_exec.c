@@ -27,6 +27,14 @@ struct GsqlSql {
     GsqlHost h;
     int force_scan;
     unsigned long seeks, scans;
+    /* the statement svc_writes parsed, kept for the svc_run that follows it,
+       so one request is parsed once: it was parsed twice, a third of the
+       owner's time for a one-row INSERT (2026-11-06). Taken by svc_run only
+       when the text is the same; the parse depends on nothing else. */
+    char *kept_text;
+    size_t kept_len;
+    SqlParsed kept;
+    int has_kept;
     /* prepared statements: their texts, by id (1-based) */
     char **prepared;
     size_t *prepared_len;
@@ -74,6 +82,7 @@ static int xfail(GsqlError *err, int code, uint32_t pos, const char *fmt, ...) {
     err->code = code;
     err->position = pos;
     err->table[0] = err->column[0] = err->constraint[0] = '\0';
+    err->row = 0;
     va_list ap;
     va_start(ap, fmt);
     vsnprintf(err->message, sizeof err->message, fmt, ap);
@@ -109,6 +118,13 @@ typedef struct X {
     /* parameters: one v3 record (by name) or array (by position), or none */
     const unsigned char *params;
     size_t paramslen;
+    /* the parameters read once, on first use: each $n or :name was found by
+       reading the whole array again, which made a statement with n of them
+       cost n^2, and an array past 1024 items read as no parameters at all
+       (both found by A3's bulk prototype, 2026-11-06). A context made from
+       another shares its index and does not own it. */
+    struct ParamIndex *pidx;
+    int pidx_owned;
     /* each scan's current row (docs/gsql_join_design.md): one for a
        single-table statement, one per table of a join */
     struct XScan *sx;
@@ -336,7 +352,14 @@ static void x_init(X *x, GsqlSql *q, const GsEngine *e, GsTxn *t, SqlPlan *p, Gs
     }
 }
 
+static void param_index_free(struct ParamIndex *pi);
+
 static void x_free(X *x) {
+    if (x->pidx_owned) {
+        param_index_free(x->pidx);
+    }
+    x->pidx = NULL;
+    x->pidx_owned = 0;
     row_clear(x);
     for (size_t k = 0; k < x->nsx; k++) {
         free(x->sx[k].cols);
@@ -383,6 +406,57 @@ static void remember(X *x, SqlExpr *e) {
     x->cached[x->ncached++] = e;
 }
 
+typedef struct ParamIndex {
+    int kind;            /* SER_ARRAY or SER_RECORD; 0 for neither */
+    long n;              /* -1: the parameters do not decode */
+    GsBytes *items;
+    V3Field *fields;
+} ParamIndex;
+
+static void param_index_free(ParamIndex *pi) {
+    if (pi) {
+        free(pi->items);
+        free(pi->fields);
+        free(pi);
+    }
+}
+
+static ParamIndex *param_index(X *x) {
+    if (x->pidx) {
+        return x->pidx;
+    }
+    ParamIndex *pi = calloc(1, sizeof *pi);
+    if (!pi) {
+        abort();
+    }
+    pi->kind = x->params[0] == SER_ARRAY || x->params[0] == SER_RECORD ? x->params[0] : 0;
+    pi->n = -1;
+    if (pi->kind) {
+        V3In in = { x->params, x->paramslen, 1, 1 };
+        uint64_t count = v3_in_uleb(&in);
+        /* every item is at least one byte, so a count past the bytes is a lie */
+        if (in.ok && count <= x->paramslen) {
+            size_t cap = count ? (size_t)count : 1;
+            if (pi->kind == SER_ARRAY) {
+                pi->items = malloc(cap * sizeof *pi->items);
+                if (!pi->items) {
+                    abort();
+                }
+                pi->n = v3_array_items(x->params, x->paramslen, pi->items, (long)count);
+            } else {
+                pi->fields = malloc(cap * sizeof *pi->fields);
+                if (!pi->fields) {
+                    abort();
+                }
+                pi->n = v3_record_fields(x->params, x->paramslen, pi->fields, (long)count);
+            }
+        }
+    }
+    x->pidx = pi;
+    x->pidx_owned = 1;
+    return pi;
+}
+
 /* a parameter's bytes, or NULL with err filled */
 static int param_bytes(X *x, const SqlExpr *e, const unsigned char **v, size_t *n) {
     if (!x->params || x->paramslen == 0) {
@@ -394,9 +468,8 @@ static int param_bytes(X *x, const SqlExpr *e, const unsigned char **v, size_t *
                          "the statement names its parameter :%s, so its parameters must be a record, not %s", e->name,
                          tag_word(x->params[0]));
         }
-        V3Field f[1024];
-        long nf = v3_record_fields(x->params, x->paramslen, f, 1024);
-        const V3Field *hit = nf >= 0 ? v3_field_named(f, nf, e->name) : NULL;
+        ParamIndex *pi = param_index(x);
+        const V3Field *hit = pi->n >= 0 ? v3_field_named(pi->fields, pi->n, e->name) : NULL;
         if (!hit) {
             goto missing;
         }
@@ -409,13 +482,12 @@ static int param_bytes(X *x, const SqlExpr *e, const unsigned char **v, size_t *
                      "the statement numbers its parameter $%u, so its parameters must be an array, not %s", e->index,
                      tag_word(x->params[0]));
     }
-    GsBytes items[1024];
-    long ni = v3_array_items(x->params, x->paramslen, items, 1024);
-    if (ni < (long)e->index) {
+    ParamIndex *pi = param_index(x);
+    if (pi->n < (long)e->index) {
         goto missing;
     }
-    *v = items[e->index - 1].p;
-    *n = items[e->index - 1].n;
+    *v = pi->items[e->index - 1].p;
+    *n = pi->items[e->index - 1].n;
     return GSQL_OK;
 missing:
     if (e->name) {
@@ -1352,7 +1424,7 @@ static int bound_key(Iter *it, SqlExpr *e, size_t j, GsqlKey *key) {
     int text_kind = c.kind == GSQL_COL_INTEGER || c.kind == GSQL_COL_NUMBER || c.kind == GSQL_COL_MONEY ||
                     c.kind == GSQL_COL_DATE || c.kind == GSQL_COL_TIME || c.kind == GSQL_COL_DATETIME;
     if ((tag == SER_STRING && text_kind) || (tag == SER_NUMBER && c.kind == GSQL_COL_MONEY && c.currency[0])) {
-        GsqlError scratch = { GSQL_OK, "", 0, 0, "", "", "" };
+        GsqlError scratch = { GSQL_OK, "", 0, 0, "", "", "", 0 };
         GsqlHv *v = x->h->load(x->h->ctx, b.bytes, b.length, &scratch);
         GsqlHv *conv = NULL;
         if (v && tag == SER_STRING) {
@@ -1370,7 +1442,7 @@ static int bound_key(Iter *it, SqlExpr *e, size_t j, GsqlKey *key) {
         }
         rel(x, conv);
     }
-    GsqlError ignored = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError ignored = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     int fits = b.bytes[0] != SER_NULL && gsql_value_fits(&c, b.bytes, b.length, &ignored) == GSQL_OK;
     if (fits) {
         fits = gsql_key_append(key, b.bytes, b.length, NULL, flags_for(it->sc, j)) == GSQL_KEY_OK;
@@ -5029,7 +5101,7 @@ typedef struct {
 static int collect_fk(void *ctx, const char *name) {
     FkList *l = ctx;
     GsqlBuf b = {0};
-    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     if (gsql_fkey_get(l->x->e, l->x->t, name, &b, &e) == GSQL_OK) {
         FkRec *g = realloc(l->v, sizeof *g * (l->n + 1));
         if (!g) {
@@ -5055,7 +5127,7 @@ static void fk_list_free(FkList *l) {
 static int fk_all(X *x, FkList *l) {
     memset(l, 0, sizeof *l);
     l->x = x;
-    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     int rc = gsql_fkey_list(x->e, x->t, collect_fk, l, &e);
     if (rc != GSQL_OK) {
         *x->err = e;
@@ -5069,7 +5141,7 @@ static int fk_all(X *x, FkList *l) {
 static int fk_bind(X *x, const FkRec *k, GsqlTable *child, GsqlTable **parent, unsigned *cpos, unsigned *ppos,
                    char *why, size_t cap) {
     *parent = NULL;
-    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     for (size_t i = 0; i < k->ncols; i++) {
         long c = gsql_table_find(child, k->cols[i]);
         if (c < 0) {
@@ -5138,7 +5210,7 @@ static int fk_parent_has(X *x, GsqlTable *parent, const unsigned *ppos, const Gs
         in[ppos[i]].n = vals[i].n;
     }
     GsqlBuf key = {0}, row = {0};
-    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     int r = -1;
     if (gsql_row_key(parent, in, &key, &e) == GSQL_OK) {
         int rc = gsql_row_get(x->e, x->t, parent, (GsBytes){ key.bytes, key.length }, &row, &e);
@@ -5255,7 +5327,7 @@ static int fk_check_parent(X *x, const FkList *fks, GsqlTable *parent, const GsB
             continue;
         }
         GsqlTable *child = NULL, *bound = NULL;
-        GsqlError e = { GSQL_OK, "", 0, 0, "", "", "" };
+        GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
         if (gsql_table_open(x->e, x->t, k->table, &child, &e) != GSQL_OK) {
             continue;
         }
@@ -5391,7 +5463,7 @@ typedef struct {
 static int collect_ck(void *ctx, const char *name) {
     CkList *l = ctx;
     GsqlBuf b = {0};
-    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     if (gsql_fkey_get(l->x->e, l->x->t, name, &b, &e) == GSQL_OK) {
         CkRec *g = realloc(l->v, sizeof *g * (l->n + 1));
         if (!g) {
@@ -5417,7 +5489,7 @@ static void ck_list_free(CkList *l) {
 static int ck_all(X *x, CkList *l) {
     memset(l, 0, sizeof *l);
     l->x = x;
-    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     int rc = gsql_fkey_list(x->e, x->t, collect_ck, l, &e);
     if (rc != GSQL_OK) {
         *x->err = e;
@@ -5480,7 +5552,7 @@ static int row_plan(X *x, const char *what, const char *table, const char *text,
         }
     }
     snprintf(cp->query + used, qn - used, "\"");
-    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     if (sql_parse(cp->query, strlen(cp->query), &cp->parsed, &e) != GSQL_OK) {
         snprintf(why, cap, "%s", e.message);
         return 0;
@@ -5509,10 +5581,11 @@ static int ck_plan(X *x, const char *table, const char *text, CkPlan *cp, char *
 /* The check against one row: 1 passes, 0 refused (err filled), -1 failed. */
 static int ck_row(X *x, CkPlan *cp, const GsBytes *row) {
     X cx;
-    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     x_init(&cx, x->q, x->e, x->t, &cp->plan, &e);
     cx.params = x->params;
     cx.paramslen = x->paramslen;
+    cx.pidx = x->pidx;
     cx.sx[0].direct = row;
     cx.sx[0].have_row = 1;
     GsqlHv *v = eval(&cx, cp->plan.out[0]);
@@ -5870,10 +5943,11 @@ static int gen_scope(X *x, GsqlTable *tb, GenSer *s, const GsBytes *row) {
         return GSQL_OK;
     }
     X cx;
-    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     x_init(&cx, x->q, x->e, x->t, &s->plan.plan, &e);
     cx.params = x->params;
     cx.paramslen = x->paramslen;
+    cx.pidx = x->pidx;
     cx.sx[0].direct = row;
     cx.sx[0].have_row = 1;
     GsqlKey key;
@@ -6388,10 +6462,6 @@ static int run_insert(X *x, GsqlResult *out) {
     }
     for (size_t r = 0; r < nrows && rc == GSQL_OK; r++) {
         memset(vals, 0, sizeof(GsqlIn) * ncols);
-        /* a value its column's conversion refused: which row is said, as for a
-           refusal at the insert (it was not, for text that is no date or
-           amount, until integer text made the gap common) */
-        int at_store = 0;
         if (s->ins_q) {
             rc = rs_get(x, &qrows, r, &qrow);
             if (rc == GSQL_OK &&
@@ -6403,7 +6473,6 @@ static int run_insert(X *x, GsqlResult *out) {
                 bufs[k].length = 0;
                 v3_put(&bufs[k], items[k].p, items[k].n);
                 rc = store_convert(x, tc->kind, tc->currency, s->table, tc->name, &bufs[k]);
-                at_store = rc != GSQL_OK;
                 vals[p->targets[k]].present = 1;
                 vals[p->targets[k]].p = bufs[k].bytes;
                 vals[p->targets[k]].n = bufs[k].length;
@@ -6418,7 +6487,6 @@ static int run_insert(X *x, GsqlResult *out) {
             if (rc == GSQL_OK) {
                 const GsqlColumn *tc = gsql_table_col(p->tb, p->targets[k]);
                 rc = store_convert(x, tc->kind, tc->currency, s->table, tc->name, &bufs[k]);
-                at_store = rc != GSQL_OK;
             }
             vals[p->targets[k]].present = 1;
             vals[p->targets[k]].p = bufs[k].bytes;
@@ -6428,7 +6496,6 @@ static int run_insert(X *x, GsqlResult *out) {
             omitted[c] = !vals[c].present;
         }
         /* a random value a key already holds is drawn again (§3) */
-        int at_insert = 0;
         for (int attempt = 1; rc == GSQL_OK; attempt++) {
             for (size_t c = 0; c < ncols; c++) {
                 if (omitted[c]) {
@@ -6444,7 +6511,6 @@ static int run_insert(X *x, GsqlResult *out) {
             }
             if (rc == GSQL_OK) {
                 rc = gsql_row_insert(x->e, x->t, p->tb, vals, NULL, x->err);
-                at_insert = rc != GSQL_OK;
             }
             if (rc != GSQL_DUPLICATE || !gen_redraws(p->tb, &gs, omitted, x->err->dup)) {
                 break;
@@ -6475,13 +6541,18 @@ static int run_insert(X *x, GsqlResult *out) {
         if (rc == GSQL_OK) {
             rc = gen_commit(x, p->tb, &gs);
         }
-        if (rc != GSQL_OK && (at_insert || at_store)) {
-            if (nrows > 1) {
-                char m[sizeof x->err->message];
-                snprintf(m, sizeof m, "row %zu of %s: %.400s", r + 1, s->ins_q ? "the query" : "VALUES",
-                         x->err->message);
-                snprintf(x->err->message, sizeof x->err->message, "%s", m);
-            }
+        /* any refusal of this row says which it was: a conversion, the
+           insert, and since 2026-11-06 a CHECK, NOT NULL or foreign key too,
+           which said nothing of the row; and the row is carried as a number,
+           for gsql.insert to name the caller's own (A3) */
+        if (rc != GSQL_OK && nrows > 1) {
+            char m[sizeof x->err->message];
+            snprintf(m, sizeof m, "row %zu of %s: %.400s", r + 1, s->ins_q ? "the query" : "VALUES",
+                     x->err->message);
+            snprintf(x->err->message, sizeof x->err->message, "%s", m);
+        }
+        if (rc != GSQL_OK) {
+            x->err->row = (uint64_t)r + 1;
         }
         if (rc == GSQL_OK) {
             done++;
@@ -6740,7 +6811,7 @@ static int collect_view(void *ctx, const char *name) {
 /* Every view, planned again after a schema change in the same transaction. */
 static int recheck_views(X *x) {
     struct { char **v; size_t n; } names = { NULL, 0 };
-    GsqlError lerr = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError lerr = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     int rc = gsql_view_list(x->e, x->t, collect_view, &names, &lerr);
     for (size_t k = 0; k < names.n && rc == GSQL_OK; k++) {
         GsqlBuf rec = {0};
@@ -6752,7 +6823,7 @@ static int recheck_views(X *x) {
         SqlParsed vp;
         SqlPlan plan;
         memset(&plan, 0, sizeof plan);
-        GsqlError verr = { GSQL_OK, "", 0, 0, "", "", "" };
+        GsqlError verr = { GSQL_OK, "", 0, 0, "", "", "", 0 };
         int nowok = sql_parse(old.text, strlen(old.text), &vp, &verr) == GSQL_OK;
         int planned = nowok && sql_plan(x->e, x->t, vp.stmt, &vp.arena, old.text, 0, &plan, &verr) == GSQL_OK;
         nowok = planned;
@@ -6830,7 +6901,7 @@ static int fk_create(X *x, const char *table, const SqlFkey *d) {
         }
     }
     GsqlBuf b = {0};
-    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     int got = gsql_fkey_get(x->e, x->t, gen, &b, &e);
     gsql_buf_free(&b);
     if (got == GSQL_OK) {
@@ -6925,7 +6996,7 @@ static int recheck_fkeys(X *x) {
     for (size_t i = 0; i < fks.n && rc == GSQL_OK; i++) {
         FkRec *k = &fks.v[i];
         GsqlTable *child = NULL, *parent = NULL;
-        GsqlError e = { GSQL_OK, "", 0, 0, "", "", "" };
+        GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
         if (gsql_table_open(x->e, x->t, k->table, &child, &e) != GSQL_OK) {
             continue;   /* its own table went: dropping it dropped the key */
         }
@@ -7029,7 +7100,7 @@ static int ck_create(X *x, const char *table, const SqlCheck *d) {
         snprintf(gen, sizeof gen, "%s_check", table);
     }
     GsqlBuf b = {0};
-    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     int got = gsql_fkey_get(x->e, x->t, gen, &b, &e);
     gsql_buf_free(&b);
     if (got == GSQL_OK) {
@@ -7231,7 +7302,7 @@ static int run_schema_change(X *x, GsqlResult *out) {
                 rc = scope_plan(x, s->table, &cols[k], (long)k, &cp, s->coldefs[k].gen_pos);
                 ck_plan_free(&cp);
                 if (rc != GSQL_OK) {
-                    GsqlError undo = { GSQL_OK, "", 0, 0, "", "", "" };
+                    GsqlError undo = { GSQL_OK, "", 0, 0, "", "", "", 0 };
                     GsqlError keep = *err;
                     if (gsql_table_drop(x->e, x->t, s->table, &undo) != GSQL_OK) {
                         out->failed_part_way = 1;
@@ -7256,7 +7327,7 @@ static int run_schema_change(X *x, GsqlResult *out) {
                     /* a declaration refused: the table, its indexes and the
                        keys already made go again, so nothing stays written
                        and an explicit transaction carries on */
-                    GsqlError undo = { GSQL_OK, "", 0, 0, "", "", "" };
+                    GsqlError undo = { GSQL_OK, "", 0, 0, "", "", "", 0 };
                     GsqlError keep = *err;
                     if (fk_follow(x, s->table, NULL) != GSQL_OK || ck_follow(x, s->table, NULL) != GSQL_OK ||
                         gsql_table_drop(x->e, x->t, s->table, &undo) != GSQL_OK) {
@@ -7512,6 +7583,14 @@ static int statement_text(GsqlSql *q, const GsqlStatement *st, char **text, size
     return xfail(err, GSQL_PROTOCOL, 0, "a statement is SQL text or a prepared statement's id");
 }
 
+static void kept_drop(GsqlSql *q) {
+    if (q->has_kept) {
+        sql_parsed_free(&q->kept);
+        free(q->kept_text);
+        q->has_kept = 0;
+    }
+}
+
 static int svc_writes(void *ctx, const GsqlStatement *st, GsqlError *err) {
     GsqlSql *q = ctx;
     char *text;
@@ -7521,13 +7600,17 @@ static int svc_writes(void *ctx, const GsqlStatement *st, GsqlError *err) {
     }
     SqlParsed p;
     int rc = sql_parse(text, len, &p, err);
-    free(text);
     if (rc != GSQL_OK) {
+        free(text);
         return -1;
     }
     /* a backup reads: it copies a snapshot, and other writers go on */
     int w = p.stmt->kind != SQ_SELECT && p.stmt->kind != SQ_BACKUP && p.stmt->kind != SQ_DUMP && !p.stmt->explain;
-    sql_parsed_free(&p);
+    kept_drop(q);
+    q->kept = p;
+    q->kept_text = text;
+    q->kept_len = len;
+    q->has_kept = 1;
     return w;
 }
 
@@ -8083,6 +8166,7 @@ static SqlCursor *sub_open(X *x, SqlPlan *p, X *outer) {
     x_init(&k->x, x->q, x->e, x->t, &k->plan, &k->err);
     k->x.params = x->params;
     k->x.paramslen = x->paramslen;
+    k->x.pidx = x->pidx;
     k->x.rec_limit = x->rec_limit;
     k->x.outer = outer;
     k->limit = UINT64_MAX;
@@ -9296,7 +9380,11 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
     c->q = q;
     size_t len;
     int rc = statement_text(q, st, &c->text, &len, err);
-    if (rc == GSQL_OK) {
+    if (rc == GSQL_OK && q->has_kept && q->kept_len == len && memcmp(q->kept_text, c->text, len) == 0) {
+        c->parsed = q->kept;
+        q->has_kept = 0;
+        free(q->kept_text);
+    } else if (rc == GSQL_OK) {
         rc = sql_parse(c->text, len, &c->parsed, err);
     }
     if (rc == GSQL_OK) {
@@ -9586,6 +9674,7 @@ void gsql_sql_free(GsqlSql *q) {
     }
     free(q->wmsg);
     free(q->wcode);
+    kept_drop(q);
     free(q);
 }
 

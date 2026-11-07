@@ -24,6 +24,7 @@ db.close()
 | `gsql.connect(path [, { create: true }])` | a `gsql_connection`. Without `create`, a database that is not there is refused, saying how to make one |
 | `db.query(sql [, parameters])` | an array of records, one per row, fields in select-list order |
 | `db.exec(sql [, parameters])` | `{ command, rows_affected }`, the shape `sqlite`, `pg` and `odbc` answer; `rows_affected` is `nothing` for a statement with no count, such as `CREATE` |
+| `db.insert(table, rows)` | `{ command: "INSERT", rows_affected }`; rows are records, all or nothing (§8) |
 | `gsql.begin(db [, "read" or "write"])` | `true`. `"write"` is the default |
 | `db.commit()`, `db.rollback()` | `true` |
 | `db.close()` | `true`. A closed connection is refused by every verb, `close` included |
@@ -152,3 +153,75 @@ Everything decidable without a database is checked in the load-time pass (`src/f
 - **valgrind** over the blocks fixture.
 
 Each perturbation is recorded in the commit that shipped the tier.
+
+## 8. `gsql.insert`: many rows in one call (2026-11-06)
+
+Asked for by gdash (its A3): a dashboard refresh inserts a whole dataset, one
+`INSERT` a row, and at a million rows that took 48 seconds on its build.
+Matthew ruled the shape: `db.insert(table, rows)` with rows as **records**
+keyed by column name (as a frame's rows are, and a misordered positional row
+would be a silent wrong column), and **all or nothing**.
+
+**How it works.** The client builds one statement per chunk, `insert into
+"t" ("a", "b") values ($1, $2), ($3, DEFAULT), ...`, from the union of the
+rows' names in the order first given. A name is quoted, a `"` in it doubled,
+so a reserved word or a space works. `DEFAULT` stands for a column a row
+leaves out. A chunk holds at most 4096 parameters or about 4 MiB of values,
+well under the 16 MiB frame. The chunks run inside a `begin`, which is a
+transaction, or a savepoint when the caller is in one, and the first refusal
+rolls back and is raised. Reusing `INSERT` means every conversion, default,
+generated column, CHECK and foreign key is the one `INSERT` already has.
+
+**Naming the caller's row.** The SQL layer now carries the refused row of a
+multi-row `INSERT` as a number in its error (`GsqlError.row`, sent as `row` in
+the owner's ERROR), set for every refusal of a row. Before, only a conversion
+or the insert itself said "row N of VALUES" (a CHECK, NOT NULL or foreign key
+said nothing of the row). `gsql.insert` turns that into the caller's own
+index: chunk start plus row minus one, in the message as `rows[N]` and in
+`error.details.index`. `gsql.exec` keeps the owner's message, which now says
+the row for every kind of refusal in a multi-row `INSERT`.
+
+**What measuring it first found** (the profile is callgrind's, of the owner
+process, since perf is not permitted here):
+
+- **A statement's parameters were read once per reference.** `param_bytes`
+  read the whole parameter array into a stack buffer for each `$n`, so a
+  statement with n parameters cost n squared: 100,000 rows took 1.9 seconds
+  at 10 rows a statement and 4.0 at 100. And the buffer held 1024 items: past
+  that, the read failed and EVERY parameter was reported missing ("no value
+  was given for the parameter $1"), for a statement that gave them all. The
+  parameters are now indexed once per execution context and shared with the
+  contexts made from it (a CHECK's, a subquery's); 1000 rows a statement then
+  took 1.39 seconds.
+- **Every statement was parsed twice**, once by `svc_writes` to decide whether
+  it writes and again by `svc_run`. The first parse is now kept for the second
+  when the text is the same, and the reserved-word lookup, a linear `strcmp`
+  over 56 words for every name the parser met, is a binary search (the order
+  it needs is checked by `run_gsql_sql.sh`'s reserved tier). Together, the
+  owner's instructions for 3,000 one-row inserts went from 542 to 423 million.
+- **Not done:** the table's schema is still decoded from the catalog for every
+  statement, 22% of the owner's time for a one-row insert after the above. A
+  cache must respect each transaction's snapshot and the ALTER paths that
+  modify a table they opened; `gsql.insert` pays it once a chunk. And the
+  currency of a money value is found by a linear search over 178 currencies
+  (`currency_find_alpha`), about 5% of a chunked insert.
+
+**Measured on this machine, 2026-11-06**, building the rows in gBASIC first:
+100,000 rows took 0.54 seconds past building them with `gsql.insert`, and
+2.8 seconds with one `exec` a row; a million took 5.2 seconds past building
+them (2.6), and the client's memory did not grow with the insert. These are
+one run each, not a gate; nothing asserts them.
+
+**Tested** by `run_gsql_module.sh`'s insert tier (`tests/gsql/insert_test.bas`,
+28 checks, and under valgrind): defaults, conversion, the answer's shape, each
+refusal's row and code, 5001 rows across several statements with the
+duplicate in the last undoing the 5000 before it, the savepoint inside a
+caller's transaction, quoted names, the method form, and an `exec` with 1500
+parameters. Perturbed, each red alone: parameters capped at 1024 again, the
+rollback on refusal removed, the chunk offset dropped from the index, and the
+row set only for statements of several rows.
+
+**`dbframe.to_gsql` was not changed.** It reports each refused row and undoes
+it alone, which is the other answer to Matthew's question; moving it onto
+`gsql.insert` would change what it promises.
+

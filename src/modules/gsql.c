@@ -522,6 +522,11 @@ static void gsql_module_raise_about(const char *verb, const char *code, const ch
             record_set(&details, about[k], value_copy(*f));
         }
     }
+    /* gsql.insert's: which of the caller's rows, as its own index */
+    Value *index = reply ? gsql_field(reply, "index") : NULL;
+    if (index && index->kind == VALUE_NUMBER) {
+        record_set(&details, "index", value_copy(*index));
+    }
     error_set_state_full(text, GSQL_ERROR_CODE, "gsql", details, value_null(), 0, 0);
     error_generation++;
     raise_in_flight = 1;
@@ -675,8 +680,19 @@ static int gsql_connection_attr_set(GsqlConnectionValue *c, const char *name, Va
  * raise, the owner's own ERROR included. */
 static void gsql_cursor_close_quiet(GsqlConnectionValue *c, Value cursor);
 
+/* As gsql_request, but an ERROR from the owner is handed back in *refused,
+ * not raised, so a caller can say it in its own terms (gsql.insert names the
+ * caller's row). Everything else still raises. */
+static int gsql_request_ex(GsqlConnectionValue *c, unsigned type, Value body, const char *verb, const char *sql,
+                           Value *reply, unsigned *reply_type, Value *refused);
+
 static int gsql_request(GsqlConnectionValue *c, unsigned type, Value body, const char *verb, const char *sql,
                         Value *reply, unsigned *reply_type) {
+    return gsql_request_ex(c, type, body, verb, sql, reply, reply_type, NULL);
+}
+
+static int gsql_request_ex(GsqlConnectionValue *c, unsigned type, Value body, const char *verb, const char *sql,
+                           Value *reply, unsigned *reply_type, Value *refused) {
     *reply = value_null();
     if (type == GSQL_M_QUERY && c->max_recursion) {
         /* the connection's max_recursion, on each statement it runs
@@ -711,6 +727,10 @@ static int gsql_request(GsqlConnectionValue *c, unsigned type, Value body, const
     if (!r.ok || r.pos != f.length || v.kind != VALUE_RECORD) {
         value_free(v);
         gsql_module_raise(verb, "PROTOCOL", "the owner answered with a body this client cannot read", 0, sql);
+        return 0;
+    }
+    if (f.type == GSQL_M_ERROR && refused) {
+        *refused = v;
         return 0;
     }
     if (f.type == GSQL_M_ERROR) {
@@ -1798,6 +1818,256 @@ static Value gsql_eval_exec(AstExpr *expr) {
     return result;
 }
 
+/* --- insert: many rows in one call (gdash's A3) ---------------------------------
+ *
+ * gsql.insert(db, table, rows): rows are records keyed by column name, as a
+ * frame's rows are. One statement per chunk, `insert into "t" ("a", "b")
+ * values ($1, $2), ($3, DEFAULT), ...`, so each value is converted through
+ * its column's kind and checked exactly as INSERT does it, and a column a row
+ * leaves out takes its default. ALL OR NOTHING: the chunks run in a
+ * transaction, or in a savepoint inside the caller's (a nested begin), and a
+ * refused row undoes the whole call, naming the caller's own row.
+ *
+ * Measured before it was written: one row per statement costs about 36 us a
+ * row, and 1000 per statement about 14 -- once a statement's parameters were
+ * read once, not once per reference (they had been n^2, and past 1024 none). */
+
+static void gsql_simple_quiet(GsqlConnectionValue *c, unsigned type);
+
+#define GSQL_INSERT_PARAMS 4096          /* parameters in one statement */
+#define GSQL_INSERT_BYTES (4u << 20)     /* about this much data in one */
+
+static void gsql_insert_put(char **text, size_t *len, size_t *cap, const char *piece) {
+    size_t n = strlen(piece);
+    if (*len + n + 1 >= *cap) {
+        *cap = (*len + n + 1) * 2;
+        *text = realloc(*text, *cap);
+        if (!*text) {
+            abort();
+        }
+    }
+    memcpy(*text + *len, piece, n + 1);
+    *len += n;
+}
+
+/* a name as a quoted identifier, any `"` in it doubled */
+static void gsql_insert_quote(char **text, size_t *len, size_t *cap, const char *name) {
+    gsql_insert_put(text, len, cap, "\"");
+    for (const char *p = name; *p; p++) {
+        char one[3] = { *p, *p == '"' ? '"' : 0, 0 };
+        gsql_insert_put(text, len, cap, one);
+    }
+    gsql_insert_put(text, len, cap, "\"");
+}
+
+/* about how many bytes a value takes on the wire, to keep a chunk well under
+   the 16 MiB frame */
+static size_t gsql_insert_size(const Value *v) {
+    if (v->kind == VALUE_STRING) {
+        return string_length(v->as.string) + 16;
+    }
+    if (v->kind == VALUE_ARRAY || v->kind == VALUE_RECORD) {
+        return 4096;   /* a column of a compound kind: counted generously */
+    }
+    return 16;
+}
+
+/* The owner refused a chunk whose first row is the caller's rows[first]:
+   raised naming the caller's row, when the refusal was of one. */
+static void gsql_insert_refused(Value *refused, size_t first) {
+    Value *code = gsql_field(refused, "code");
+    Value *message = gsql_field(refused, "message");
+    Value *row = gsql_field(refused, "row");
+    const char *text = message && message->kind == VALUE_STRING ? message->as.string : "(no message)";
+    char said[700];
+    snprintf(said, sizeof said, "%s", text);
+    if (row && row->kind == VALUE_NUMBER && row->as.num.value >= 1) {
+        size_t index = first + (size_t)row->as.num.value - 1;
+        /* the statement's own "row N of VALUES: " is about a statement the
+           caller never wrote */
+        const char *of = strncmp(text, "row ", 4) == 0 ? strstr(text, " of VALUES: ") : NULL;
+        snprintf(said, sizeof said, "rows[%zu]: %s", index, of ? of + strlen(" of VALUES: ") : text);
+        record_set(refused, "index", value_number_exact((int64_t)index));
+    }
+    gsql_module_raise_about("insert", code && code->kind == VALUE_STRING ? code->as.string : "?", said, 0, NULL,
+                            refused);
+}
+
+static void gsql_insert_free_args(char **cols, Value *rows, char *table) {
+    free(cols);
+    value_free(*rows);
+    free(table);
+}
+
+static Value gsql_eval_insert(AstExpr *expr) {
+    if (expr->as.call.args.count != 3) {
+        gsql_module_refuse("gsql.insert expects a connection, a table's name and the rows, an array of records");
+        return value_null();
+    }
+    GsqlConnectionValue *c = gsql_connection_arg(expr, "insert");
+    if (!c) {
+        return value_null();
+    }
+    char *table = gsql_text_arg(expr, 1, "insert", "the table's name");
+    if (!table) {
+        return value_null();
+    }
+    Value rows = eval_expr(expr->as.call.args.items[2]);
+    if (error_action_pending()) {
+        value_free(rows);
+        free(table);
+        return value_null();
+    }
+    char msg[400];
+    msg[0] = 0;
+    if (rows.kind != VALUE_ARRAY) {
+        snprintf(msg, sizeof msg, "gsql.insert expects the rows as an array of records, not %s",
+                 value_kind_name(rows.kind));
+        gsql_insert_free_args(NULL, &rows, table);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    size_t nrows = rows.as.array.store->count;
+    Value *items = rows.as.array.store->items;
+    /* the columns: every name any row gives, in the order first given */
+    char **cols = NULL;
+    size_t ncols = 0;
+    for (size_t r = 0; r < nrows && !msg[0]; r++) {
+        if (items[r].kind != VALUE_RECORD) {
+            snprintf(msg, sizeof msg, "gsql.insert: rows[%zu] is %s, not a record of column values", r,
+                     value_kind_name(items[r].kind));
+            break;
+        }
+        if (items[r].as.record.count == 0) {
+            snprintf(msg, sizeof msg, "gsql.insert: rows[%zu] is an empty record, so it names no column", r);
+            break;
+        }
+        RecordField *fields = items[r].as.record.fields;
+        for (size_t i = 0; i < items[r].as.record.count; i++) {
+            size_t k = 0;
+            while (k < ncols && strcmp(cols[k], fields[i].name) != 0) {
+                k++;
+            }
+            if (k == ncols) {
+                if (ncols == GSQL_INSERT_PARAMS) {
+                    snprintf(msg, sizeof msg, "gsql.insert: the rows name more than %d columns", GSQL_INSERT_PARAMS);
+                    break;
+                }
+                cols = realloc(cols, sizeof *cols * (ncols + 1));
+                if (!cols) {
+                    abort();
+                }
+                cols[ncols++] = fields[i].name;
+            }
+        }
+    }
+    if (msg[0]) {
+        gsql_insert_free_args(cols, &rows, table);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    Value result = value_record(NULL, 0);
+    record_set(&result, "command", value_string("INSERT"));
+    if (nrows == 0) {
+        record_set(&result, "rows_affected", value_number_exact(0));
+        gsql_insert_free_args(cols, &rows, table);
+        return result;
+    }
+    /* the head every chunk shares */
+    size_t hcap = 256, hlen = 0;
+    char *head = malloc(hcap);
+    if (!head) {
+        abort();
+    }
+    head[0] = 0;
+    gsql_insert_put(&head, &hlen, &hcap, "insert into ");
+    gsql_insert_quote(&head, &hlen, &hcap, table);
+    gsql_insert_put(&head, &hlen, &hcap, " (");
+    for (size_t k = 0; k < ncols; k++) {
+        if (k) {
+            gsql_insert_put(&head, &hlen, &hcap, ", ");
+        }
+        gsql_insert_quote(&head, &hlen, &hcap, cols[k]);
+    }
+    gsql_insert_put(&head, &hlen, &hcap, ") values ");
+
+    /* a transaction of its own, or a savepoint in the caller's */
+    Value reply;
+    unsigned type;
+    Value begin = value_record(NULL, 0);
+    record_set(&begin, "mode", value_string("write"));
+    int ok = gsql_request(c, GSQL_M_BEGIN, begin, "insert", NULL, &reply, &type);
+    value_free(reply);
+    int64_t affected = 0;
+    size_t r = 0;
+    while (ok && r < nrows) {
+        size_t first = r, params = 0, bytes = 0;
+        size_t cap = hlen + 64, len = 0;
+        char *text = malloc(cap);
+        if (!text) {
+            abort();
+        }
+        text[0] = 0;
+        gsql_insert_put(&text, &len, &cap, head);
+        Value values = value_array(NULL, 0);
+        /* at least one row, then rows while both limits hold */
+        while (r < nrows && (r == first || (params + ncols <= GSQL_INSERT_PARAMS && bytes < GSQL_INSERT_BYTES))) {
+            gsql_insert_put(&text, &len, &cap, r == first ? "(" : ", (");
+            for (size_t k = 0; k < ncols; k++) {
+                if (k) {
+                    gsql_insert_put(&text, &len, &cap, ", ");
+                }
+                RecordField *f = record_find(&items[r], cols[k]);
+                if (!f || !f->value) {
+                    gsql_insert_put(&text, &len, &cap, "DEFAULT");
+                    continue;
+                }
+                char mark[24];
+                snprintf(mark, sizeof mark, "$%zu", ++params);
+                gsql_insert_put(&text, &len, &cap, mark);
+                bytes += gsql_insert_size(f->value);
+                Value grown = append_to_array_ref(&values, value_copy(*f->value), 0);
+                value_free(grown);
+            }
+            gsql_insert_put(&text, &len, &cap, ")");
+            r++;
+        }
+        Value body = value_record(NULL, 0);
+        record_set(&body, "statement", value_string(text));
+        record_set(&body, "parameters", values);
+        record_set(&body, "batch", value_number_exact(GSQL_MODULE_BATCH));
+        free(text);
+        Value refused = value_null();
+        ok = gsql_request_ex(c, GSQL_M_QUERY, body, "insert", NULL, &reply, &type, &refused);
+        if (!ok) {
+            /* the savepoint or the transaction undone, then the refusal said */
+            gsql_simple_quiet(c, GSQL_M_ROLLBACK);
+            if (refused.kind == VALUE_RECORD) {
+                gsql_insert_refused(&refused, first);
+            }
+            value_free(refused);
+            break;
+        }
+        Value *n = gsql_field(&reply, "rows");
+        if (n && n->kind == VALUE_NUMBER) {
+            affected += (int64_t)n->as.num.value;
+        }
+        value_free(reply);
+    }
+    if (ok) {
+        ok = gsql_request(c, GSQL_M_COMMIT, value_record(NULL, 0), "insert", NULL, &reply, &type);
+        value_free(reply);
+    }
+    free(head);
+    gsql_insert_free_args(cols, &rows, table);
+    if (!ok) {
+        value_free(result);
+        return value_null();
+    }
+    record_set(&result, "rows_affected", value_number_exact(affected));
+    return result;
+}
+
 /* --- transactions and close --------------------------------------------------- */
 
 static Value gsql_eval_simple(AstExpr *expr, const char *verb, unsigned type) {
@@ -2368,6 +2638,7 @@ static Value gsql_eval_call(AstExpr *expr) {
     if (strcmp(fn, "connect") == 0) return gsql_eval_connect(expr);
     if (strcmp(fn, "query") == 0) return gsql_eval_query(expr);
     if (strcmp(fn, "exec") == 0) return gsql_eval_exec(expr);
+    if (strcmp(fn, "insert") == 0) return gsql_eval_insert(expr);
     if (strcmp(fn, "on") == 0) return gsql_eval_on(expr);
     if (strcmp(fn, "begin") == 0) return gsql_eval_simple(expr, "begin", GSQL_M_BEGIN);
     if (strcmp(fn, "commit") == 0) return gsql_eval_simple(expr, "commit", GSQL_M_COMMIT);

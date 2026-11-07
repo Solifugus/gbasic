@@ -53,6 +53,10 @@ typedef struct {
     char table[128];
     char column[128];
     char constraint[128];
+    /* Which row of a multi-row INSERT was refused, from 1; 0 unsaid. What
+     * lets gsql.insert name the caller's own row (gdash's A3). Cleared with
+     * the names above. */
+    uint64_t row;
 } GsqlError;
 
 /* Name what a refusal is about; any of the three may be NULL. */

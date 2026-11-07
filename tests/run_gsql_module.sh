@@ -24,6 +24,10 @@
 #   lifetime    an owner outlives the program that started it while another
 #               program uses it, then stops after its linger; linger: 0; the
 #               option's refusals; no program's output held open
+#   insert      gsql.insert: rows as records, defaults for what a row leaves
+#               out, all or nothing over several statements, a savepoint in
+#               the caller's transaction, the caller's row named; and an exec
+#               past 1024 parameters
 #   privatetmp  a service with a private /tmp, a second one, and an
 #               administrator's shell reach one owner (the socket is in the
 #               database directory); skips without bwrap
@@ -778,6 +782,15 @@ else
     fail "unclosed: $err"
 fi
 
+printf 'TIER insert: gsql.insert, many rows in one call, all or nothing, naming the caller'"'"'s row\n'
+mkdir -p "$work/ins"
+GSQL_DIR="$work/ins" timeout -k 5 120 ./gbasic tests/gsql/insert_test.bas >"$work/ins.out" 2>"$work/ins.err"
+verdict insert "$work/ins.out" $? 27
+if [ -s "$work/ins.err" ]; then
+    sed 's/^/       /' "$work/ins.err" | head -5
+    fail "insert: the fixture wrote to stderr"
+fi
+
 printf 'TIER privatetmp: processes with a /tmp each, as systemd'"'"'s PrivateTmp gives, reach one owner\n'
 # gdash's A1. Its server and its scheduler are two units with PrivateTmp=true
 # and no XDG_RUNTIME_DIR, and an administrator runs the CLI from a shell that
@@ -873,6 +886,18 @@ if vg_available; then
     else
         tail -3 "$work/vgb.out"
         fail "valgrind: the blocks fixture did not pass under valgrind (exit $vgst)"
+    fi
+    mkdir -p "$work/vgins"
+    GSQL_DIR="$work/vgins" vg_run ./gbasic tests/gsql/insert_test.bas >"$work/vgins.out" 2>"$work/vgins.err"
+    vgst=$?
+    if [ "$vgst" = 0 ] && tail -1 "$work/vgins.out" | grep -q ' 0 mismatches$'; then
+        pass "valgrind: gsql.insert, clean over $(tail -1 "$work/vgins.out" | sed 's/^ok //')"
+    elif [ "$vgst" = "$VG_EXIT" ]; then
+        grep -m8 'Invalid\|definitely lost\|uninitialised' "$work/vgins.err"
+        fail "valgrind objected to gsql.insert"
+    else
+        tail -3 "$work/vgins.out"
+        fail "valgrind: the insert fixture did not pass under valgrind (exit $vgst)"
     fi
 else
     printf '  SKIP valgrind (unavailable)\n'

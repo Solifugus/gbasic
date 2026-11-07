@@ -357,7 +357,7 @@ static void send_error_about(Conn *c, uint32_t id, int code, const char *message
     const char *names[3] = { "table", "column", "constraint" };
     const char *vals[3] = { about ? about->table : "", about ? about->column : "",
                             about ? about->constraint : "" };
-    unsigned n = 2 + (position ? 1 : 0);
+    unsigned n = 2 + (position ? 1 : 0) + (about && about->row ? 1 : 0);
     for (int k = 0; k < 3; k++) {
         n += vals[k][0] ? 1 : 0;
     }
@@ -376,6 +376,10 @@ static void send_error_about(Conn *c, uint32_t id, int code, const char *message
             v3_w_name(&b, names[k]);
             v3_w_text(&b, vals[k]);
         }
+    }
+    if (about && about->row) {
+        v3_w_name(&b, "row");
+        v3_w_int(&b, about->row);
     }
     out_frame(c, GSQL_M_ERROR, id, &b);
     gsql_buf_free(&b);
@@ -711,7 +715,7 @@ static int do_query(Owner *o, Conn *c, Req *r) {
     uint64_t rounds = 0;
     s.max_recursion = field_u64(f, nf, "max_recursion", &rounds) ? rounds : 0;
 
-    GsqlError err = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError err = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     int w = o->svc->writes(o->svc->ctx, &s, &err);
     /* a read may be answered `working`, and is then advanced a slice a turn,
        so a long one does not hold up every other connection */
@@ -866,7 +870,7 @@ static int do_fetch(Owner *o, Conn *c, Req *r) {
     GsqlResult res;
     memset(&res, 0, sizeof res);
     res.cursor = k->svc;
-    GsqlError err = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError err = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     int rc = o->svc->fetch(o->svc->ctx, k->svc, count == 0 ? 1 : (count > UINT32_MAX ? UINT32_MAX : (uint32_t)count),
                            &res, &err);
     if (rc != GSQL_OK) {
@@ -1270,7 +1274,7 @@ static int handle(Owner *o, Conn *c, Req *r) {
         s.statement_length = x->vlen;
         s.batch = 1;
         GsqlBuf d = {0};
-        GsqlError err = { GSQL_OK, "", 0, 0, "", "", "" };
+        GsqlError err = { GSQL_OK, "", 0, 0, "", "", "", 0 };
         int rc = o->svc->prepare(o->svc->ctx, &s, &d, &err);
         if (rc) {
             send_error_about(c, r->id, rc, err.message, err.position, &err);
@@ -1328,7 +1332,7 @@ static int process(Owner *o, Conn *c) {
 static int work_step(Owner *o, Conn *c) {
     GsqlResult res;
     memset(&res, 0, sizeof res);
-    GsqlError err = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError err = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     int rc = o->svc->resume(o->svc->ctx, c->work, 0, &res, &err);
     if (rc == GSQL_OK && res.working) {
         c->work = res.cursor;

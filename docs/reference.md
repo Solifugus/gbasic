@@ -2678,6 +2678,15 @@ The module provides:
 - `gsql.connect(path[, { create: true, linger: seconds }])` — without `create`, a database that is not there is refused. `linger` is how long an owner this connection **starts** waits after its last connection closes before it stops, from 0 to 86400; 0 stops it at the last close. It is the starter's choice: when an owner is already running, a `linger` given here is ignored. A `database` block takes `linger:` too
 - `connection.query(sql[, parameters])` (`gsql.query`) — an array of records, fields in select-list order
 - `connection.exec(sql[, parameters])` (`gsql.exec`) — runs anything and answers `{ command, rows_affected }`, as `sqlite`, `pg` and `odbc` answer, plus **`rows`, every row, when the statement returns rows**; `rows_affected` is `nothing` for a statement with no count. `gsql.query` is the shortcut for the rows alone, and `for each` streams a large result
+- `connection.insert(table, rows)` (`gsql.insert`) *(after 0.10.0)* — many rows
+  in one call. `rows` is an array of records keyed by column name, as a frame's
+  rows are; a column a row leaves out takes its default, and each value is
+  converted and checked exactly as `INSERT` does it. It answers
+  `{ command: "INSERT", rows_affected }`. **All or nothing**: one refused row
+  undoes the whole call, and the error names the caller's row,
+  `gsql.insert: rows[1234]: ...`, with `error.details.index` 1234. Inside a
+  transaction the call is a savepoint, so only the call is undone. A row that
+  is not a record, or names no column, is refused before anything is sent.
 - `connection.begin(["read" | "write"])` (`gsql.begin`) — `"write"` by default
 - `connection.commit()` (`gsql.commit`), `connection.rollback()` (`gsql.rollback`)
 - **A `begin` inside a transaction nests** *(2026-11-05)*: in a write

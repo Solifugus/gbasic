@@ -70,6 +70,18 @@ reader sees.
   chunked-encryption pattern Transward asked for
   (`tests/read_at_chunks_test.bas`).
 
+### Many rows into G-SQL in one call
+
+- **`db.insert(table, rows)`** (`gsql.insert`): rows are records keyed by
+  column name; a column a row leaves out takes its default; all or nothing,
+  with the refused row named as the caller's, `rows[1234]`, and in
+  `error.details.index`. Inside a transaction it is a savepoint (gdash's A3).
+- A statement with more than 1024 parameters was refused as if it had none
+  ("no value was given for the parameter $1"). It runs now, and a statement's
+  parameters are read once rather than once per reference.
+- A multi-row `INSERT` refused by a CHECK, NOT NULL or foreign key now says
+  which row, as a conversion or a duplicate key already did.
+
 ### Money text padded with zeros
 
 - Money text with zeros past what the currency stores is accepted:

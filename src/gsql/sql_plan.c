@@ -1224,7 +1224,7 @@ static int open_view(B *b, SqlScan *sc, const char *name, const GsqlBuf *rec, ui
     if (!sc->vparse) {
         abort();
     }
-    GsqlError inner = { GSQL_OK, "", 0, 0, "", "", "" };
+    GsqlError inner = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     int ok = view_enter(b, name, pos);
     if (ok) {
         int rc = sql_parse(text, strlen(text), sc->vparse, &inner);

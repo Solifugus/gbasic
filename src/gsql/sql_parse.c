@@ -440,13 +440,21 @@ static const char *const reserved[] = {
     "where", "with", NULL
 };
 
+/* A binary search: the list is in strcmp order (run_gsql_sql.sh checks it),
+ * and a linear scan of it was 13% of the owner's time for a one-row INSERT,
+ * since every name the parser meets is looked up here (2026-11-06). */
+static int reserved_cmp(const void *a, const void *b) {
+    return strcmp(*(const char *const *)a, *(const char *const *)b);
+}
+
 static int is_reserved(const char *s) {
-    for (int k = 0; reserved[k]; k++) {
-        if (strcmp(reserved[k], s) == 0) {
-            return 1;
+    static size_t n;
+    if (!n) {
+        while (reserved[n]) {
+            n++;
         }
     }
-    return 0;
+    return bsearch(&s, reserved, n, sizeof reserved[0], reserved_cmp) != NULL;
 }
 
 static int at_kw(P *p, const char *kw) {

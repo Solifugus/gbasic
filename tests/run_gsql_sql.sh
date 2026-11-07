@@ -123,6 +123,19 @@ if ! grep -q 'gb_gsql_owner_main' <(nm -C ./gbasic 2>/dev/null); then
     fail "./gbasic has no gb_gsql_owner_main: G-SQL is not linked into the binary"
 fi
 
+printf 'TIER reserved: the reserved words are in strcmp order, which is_reserved'"'"'s binary search needs\n'
+# A word out of order would be reported as not reserved, silently, by some
+# searches and not others, so this reads the list from the source.
+reserved_list=$(awk '/^static const char \*const reserved\[\] = \{/{on=1; next} on && /NULL/{on=0} on' src/gsql/sql_parse.c |
+                grep -o '"[a-z_]*"' | tr -d '"')
+if [ "$(printf '%s\n' "$reserved_list" | wc -l)" -lt 50 ]; then
+    fail "reserved: the list was not found in src/gsql/sql_parse.c ($(printf '%s\n' "$reserved_list" | wc -l) words)"
+elif ! printf '%s\n' "$reserved_list" | LC_ALL=C sort -c 2>"$work/reserved.err"; then
+    fail "reserved: out of order: $(cat "$work/reserved.err")"
+else
+    pass "reserved: $(printf '%s\n' "$reserved_list" | wc -l) words, in order"
+fi
+
 printf 'TIER parse: the corpus prints back canonically; refusals name their position\n'
 bounded 60 "$work/parse_test" tests/gsql/sql_parse_cases.txt >"$work/parse.out" 2>&1
 verdict parse "$work/parse.out" $?
