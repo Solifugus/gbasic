@@ -13293,6 +13293,9 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   comment naming this entry. Requested: a library's own loads private to it, or
   at least a list of the names each stdlib library claims
   (transward/docs/gbasic-requests-for-revision.md §7.6).
+- **Status: FIXED 2026-11-07**: a library's own loads are its own
+  (docs/library_private_loads_design.md). An application's `library tools`
+  now loads beside stdlib's mcp; run_alias.sh's private tier runs that case.
 
 ## 2026-11-06 — CC — while: Transward M21, planning to publish 33 tools over MCP
 - **Type:** missing-feature
@@ -13361,3 +13364,38 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Workaround:** Transward signed with the base64 text of its key.
 - **Status: FIXED 2026-11-06**: `byte_count`, with a check that 16 two-byte
   characters (32 bytes) are accepted and 31 ASCII bytes refused.
+
+## 2026-11-07 — CC — while: Transward M25, measuring the native SSH engine against OpenSSH (reported by the Transward session, added by the gBASIC session)
+- **Type:** missing-feature
+- **Severity:** medium
+- **What:** the native SSH engine moves 35 MiB/s up and 31 down on loopback
+  against OpenSSH's 128 and 174, and is CPU-bound (12 s of user time for
+  2 x 3 x 64 MiB). Finding why took an afternoon of `monotonic()` deltas
+  threaded through `sftp._upload` and `transport._send`, then removed. No
+  primitive is slow (`aes_gcm_encrypt` of 64 MiB takes 0.02 s, a socket round
+  trip 12 us); the time is spread over the layers between them, about 0.1-0.2
+  ms per layer per packet, and hand timers could not say which statements.
+- **Workaround:** hand instrumentation.
+- **Would help:** `gbasic --profile FILE`: time per function, self and
+  inclusive, and per line for the hottest, with builtins attributed apart from
+  the interpreter, working in a child the program spawns (`spawn`, or
+  `process.start` of gbasic), since Transward's transfers run in a runner actor.
+  Full text in transward/docs/gbasic-requests-for-revision.md §8.1.
+
+## 2026-11-07 — CC — while: Transward M25, a disconnect on a connection already gone (reported by the Transward session, added by the gBASIC session)
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** `transport.disconnect` runs on the way out of a failure, under
+  `on error goto next`, checking nothing because nothing it did mattered. Its
+  `net.write` on a dead connection raised; unclaimed, the raise was raised
+  again at the function's return (as documented); the caller's own
+  `on error goto next` then held two raises and the second escaped, so a server
+  that dropped the handshake became a runner error (70) instead of a network
+  failure (10). The deferral is right for code that means to look, and a trap
+  for best-effort cleanup.
+- **Workaround:** `if error then` after every statement, and `error.clear()`
+  before returning.
+- **Would help:** an expression form that yields `nothing` on failure
+  (`x = try conn.write(b)`), or a statement such as `on error ignore` that
+  discards raises in the frame instead of deferring them. A language decision
+  for Matthew. Full text in transward/docs/gbasic-requests-for-revision.md §8.2.

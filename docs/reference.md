@@ -2211,11 +2211,25 @@ reach its own functions, and the libraries *it* loads keep their own names — a
 alias is the importing file's word for one library, not a renaming that reaches
 into what that library loads.
 
-**Effective library names are a flat namespace, and a collision is refused.**
-An alias may not be the name of another loaded library, another alias, or a
-built-in module (`sqlite`, `pg`, `gi`, …), and a built-in module may not be
-aliased — those qualifiers are recognized by name before user functions are
-resolved, so an alias could never reach one.
+**A library's own loads are its own** *(after 0.10.0)*. A name a `load` gives
+belongs to the file that wrote it, the program or the library whose block holds
+the `load`. Inside `stdlib/mcp.bas`, `tools.dispatch` means the `tools` mcp
+loaded; in a program with its own `library tools`, `tools.x` means the
+program's. So a library can load whatever it needs without claiming the name
+for everyone, and a stdlib release that adds a load cannot break an
+application. A name a file did not load still reaches what the program-wide
+name is, as it always has, so a library still reaches a library its caller
+loaded. Messages, traces and `library_collisions()` show a library's name as
+written; when two libraries answer to one written name, the second is shown
+with its file, `util (vendor/util.bas)`. Before this, mcp's own `load tools`
+refused an application's `library tools` (Transward §7.6;
+docs/library_private_loads_design.md).
+
+**Within one file, a name answers for one library, and a collision is
+refused.** An alias may not be the name of another library or alias this file
+loaded, or a built-in module (`sqlite`, `pg`, `gi`, …), and a built-in module
+may not be aliased: those qualifiers are recognized by name before user
+functions are resolved, so an alias could never reach one.
 
 The case that alias exists for is **two libraries whose own declared name is the
 same**. Before aliasing they could not coexist: the second import failed with

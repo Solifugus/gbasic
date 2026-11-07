@@ -290,6 +290,58 @@ else
 fi
 fi   # build_has actors
 
+printf "TIER private: a library's own loads are its own\n"
+# docs/library_private_loads_design.md (Transward §7.6, 2026-11-07). alpha,
+# beta and the program each load a different library declared `util`, and
+# each util.who() reaches its own; a function value keeps its library; a trace
+# and library_collisions() show names as written. Before this, alpha's own
+# `load util` was refused because the program had claimed the name.
+if ./gbasic tests/private_loads/main.bas >"$scratch/pl.out" 2>"$scratch/pl.err" &&
+   grep -q '^mismatches: 0$' "$scratch/pl.out" &&
+   [ "$(sed -n 's/^checks: //p' "$scratch/pl.out")" -ge 9 ]; then
+    pass "three libraries declared util, each reached by its own loader ($(sed -n 's/^checks: //p' "$scratch/pl.out") checks)"
+else
+    fail "three libraries declared util, each reached by its own loader"
+    grep MISMATCH "$scratch/pl.out" | head -5; head -3 "$scratch/pl.err"
+fi
+if ./gbasic tests/private_loads/twice.bas >"$scratch/tw.out" 2>"$scratch/tw.err"; then
+    fail "one file claiming one name for two libraries is still refused"
+elif grep -qF "the name 'util' already refers to library 'util' from tests/private_loads/alpha_util.bas" "$scratch/tw.err" &&
+     [ ! -s "$scratch/tw.out" ]; then
+    pass "one file claiming one name for two libraries is still refused, and nothing ran"
+else
+    fail "one file claiming one name for two libraries: $(head -1 "$scratch/tw.err")"
+fi
+# Transward's own case, which needs stdlib's mcp (and so webclient)
+printf 'load webclient\nprint "ok"\n' >"$scratch/wc.bas"
+if [ "$(./gbasic "$scratch/wc.bas" 2>/dev/null)" = ok ]; then
+    # written here, not kept in the tree: a `library tools` anywhere under
+    # tests/ is found by every test that does `load tools`, which then warns
+    # (2103) that it was not used -- measured, three suites
+    mkdir -p "$scratch/withmcp"
+    printf 'library tools\n    function hello()\n        return "the application'"'"'s tools"\n    end function\nend library\n' \
+        >"$scratch/withmcp/tools.bas"
+    cat >"$scratch/withmcp/main.bas" <<'MCPEOF'
+load tools
+load mcp
+function served(args)
+    return "served"
+end function
+print(tools.hello())
+ts = { name: "t", entries: [ { name: "served", describe: "s", params: [], reads: [], mutates: [], fn: served } ] }
+r = decode(mcp.handle(ts, { name: "x", version: "1" }, "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tools/list\"}"))
+print(r.result.tools[0].name)
+MCPEOF
+    got="$(cd "$scratch/withmcp" && GBASIC_PATH="$OLDPWD/stdlib" "$OLDPWD/gbasic" main.bas 2>/dev/null | tr '\n' '|')"
+    if [ "$got" = "the application's tools|served|" ]; then
+        pass "an application's own library tools beside stdlib's mcp, which loads stdlib's tools"
+    else
+        fail "an application's own tools beside mcp: got '$got'"
+    fi
+else
+    printf '  SKIP an application tools beside mcp (no webclient in this build -- NOT measured)\n'
+fi
+
 printf 'TIER valgrind\n'
 # The import registry allocates three strings per effective name and the alias
 # threads a new AST field through the parser -- both are per-parse leaks that no
@@ -302,6 +354,13 @@ if vg_available; then
     else
         fail "no definite leak or invalid access"
         tail -20 "$scratch/vg"
+    fi
+    vg_run ./gbasic tests/private_loads/main.bas >/dev/null 2>"$scratch/vg3"
+    if [ "$?" != "$VG_EXIT" ]; then
+        pass "  nor over three libraries declared util, each private"
+    else
+        fail "  nor over three libraries declared util, each private"
+        tail -20 "$scratch/vg3"
     fi
     # And on the refusal path, which allocates a message and unwinds mid-import.
     vg_run ./gbasic tests/negative_alias_same_declared_name.bas >/dev/null 2>"$scratch/vg2"

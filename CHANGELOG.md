@@ -99,6 +99,14 @@ reader sees.
 - **`mcp.handle(ts, opts, line, caller)`** runs the call under a principal
   verified for this request, passed through untouched (§7.3).
 
+### A library's own loads are its own
+
+- A name a `load` gives belongs to the file that wrote it, so a library can
+  load what it needs without claiming the name for the whole program.
+  `stdlib/mcp.bas`'s own `load tools` refused an application's
+  `library tools`; both now coexist, each file reaching its own (Transward
+  §7.6). One file loading two libraries under one name is still refused.
+
 ### G-SQL: substring, extract, GROUP BY by position or alias, and waiting for an owner by path
 
 - **`substring(x, start [, length])`**, counting characters from 1 (gdash A5).

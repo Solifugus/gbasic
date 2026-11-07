@@ -1116,6 +1116,10 @@ static Value webserver_eval_call(AstExpr *expr);
 static int webserver_run_event_loop(void);
 static void webserver_clear(void);
 static FunctionDef *function_resolve(const char *library, const char *name);
+/* private loads (docs/library_private_loads_design.md): a written qualifier's
+   identity in the calling scope, and an identity as a user reads it */
+static const char *library_identity_of(const char *written);
+static const char *library_shown(const char *identity, char *buf, size_t size);
 static void method_ensure_internal_name(AstStmt *stmt);
 static void register_method_bodies_in(AstStmtList list);
 static void register_hoistable_declarations(AstStmtList program);
@@ -3785,7 +3789,8 @@ static Value error_capture_trace(void) {
         *fields[1].value = value_string(frame->path ? frame->path : "");
         /* EMPTY MEANS THE ROOT PROGRAM, not "unknown" -- the two were the same
          * string before `path` was fixed, and they are different claims. */
-        *fields[2].value = value_string(frame->library ? frame->library : "");
+        char shown[300];
+        *fields[2].value = value_string(frame->library ? library_shown(frame->library, shown, sizeof shown) : "");
         *fields[3].value = value_number(frame->line);
         *fields[4].value = value_number(frame->column);
         items[i] = value_record(fields, 5);
@@ -8285,7 +8290,7 @@ static ModifierDef *modifier_resolve(AstModifierUse use, const char *context, co
             }
             if (strcmp(modifier->context, context) == 0 &&
                 (!use.library ||
-                 (modifier->library && strcmp(modifier->library, use.library) == 0)) &&
+                 (modifier->library && strcmp(modifier->library, library_identity_of(use.library)) == 0)) &&
                 modifier_phrase_matches(use.name, modifier->name, &candidate_args)) {
                 size_t len = strlen(modifier->name);
                 if (!best || len > best_len) {
@@ -8308,11 +8313,12 @@ static ModifierDef *modifier_resolve(AstModifierUse use, const char *context, co
                     strcmp(other->name, best->name) == 0 &&
                     other->library && best->library &&
                     strcmp(other->library, best->library) != 0) {
+                    char shown_a[300], shown_b[300];
                     warn_fmt(2102, "override",
                             "modifier '%s' from library '%s' overrides modifier from library '%s'",
                             best->name,
-                            best->library,
-                            other->library);
+                            library_shown(best->library, shown_a, sizeof shown_a),
+                            library_shown(other->library, shown_b, sizeof shown_b));
                     best->warned = 1;
                     break;
                 }
@@ -8343,10 +8349,11 @@ static void modifier_register_def(AstStmt *stmt, int imported, const char *libra
         if (imported && existing->imported) {
             existing = NULL;
         } else if (!imported && existing->imported && existing->library) {
+            char shown[300];
             warn_fmt_at(2102, "override", stmt->line, stmt->column,
                     "local modifier '%s' overrides modifier from library '%s'",
                     stmt->as.modifier.name,
-                    existing->library);
+                    library_shown(existing->library, shown, sizeof shown));
         }
     }
 
@@ -9072,8 +9079,19 @@ static void sql_register(AstStmt *stmt);
  * alias against alias, alias against a real name, and (new, and the case that
  * used to fail obscurely) real name against real name. Every collision is one
  * check with one message that names both sources and spells the fix. */
+/* A LIBRARY'S OWN LOADS ARE ITS OWN (docs/library_private_loads_design.md,
+ * Transward §7.6, 2026-11-07). A name is claimed IN THE SCOPE of the file
+ * that loaded it -- the root program, or the library whose block holds the
+ * `load` -- and stands for an IDENTITY, the string functions, modifiers and
+ * frames register under. The identity is the written name whenever that is
+ * free program-wide, which every program that ran before this has; only a
+ * second library claiming a name another scope already gave a different
+ * library gets a hidden one, `name#2`, which a user never sees. A qualified
+ * call resolves its written name through the CALLING library's scope first. */
 typedef struct {
-    char *effective;   /* the name qualification uses */
+    char *scope;       /* the importing library's identity; NULL for the root program */
+    char *written;     /* the name qualification uses in that scope */
+    char *identity;    /* what it stands for: registration's key */
     char *path;        /* the source file it was imported from */
     char *declared;    /* the name on the library block itself */
 } LibraryName;
@@ -9265,38 +9283,138 @@ int eval_module_needs_load(const char *name) {
     return 0;
 }
 
-/* Claim `effective` for the library `declared` in `path`. Returns 1 when the
- * name is free or already held by this same library, 0 (having raised) when it
- * answers for a different one. */
-static int library_name_claim(const char *effective, const char *path, const char *declared) {
+static int library_scope_is(const char *a, const char *b) {
+    if (!a || !a[0]) {
+        return !b || !b[0];
+    }
+    return b && strcmp(a, b) == 0;
+}
+
+static int library_identity_taken(const char *identity) {
+    for (size_t i = 0; i < library_name_count; i++) {
+        if (strcmp(library_names[i].identity, identity) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* Claim `written` for the library `declared` in `path`, in the scope of the
+ * library now loading (current_importer_library; NULL for the root program).
+ * Returns the identity it stands for, or NULL having raised when this scope
+ * already gave the name to a different library. */
+static const char *library_name_claim_as(const char *written, const char *path, const char *declared, int commit,
+                                         char *peeked, size_t peeked_size);
+
+static const char *library_name_claim(const char *written, const char *path, const char *declared) {
+    return library_name_claim_as(written, path, declared, 1, NULL, 0);
+}
+
+/* The identity a claim WOULD give, nothing recorded and nothing raised:
+ * what the already-imported and cycle checks ask about before the file is
+ * read. Into `buf`. */
+static const char *library_name_peek(const char *written, const char *path, const char *declared, char *buf,
+                                     size_t size) {
+    return library_name_claim_as(written, path, declared, 0, buf, size);
+}
+
+static const char *library_name_claim_as(const char *written, const char *path, const char *declared, int commit,
+                                         char *peeked, size_t peeked_size) {
+    const char *scope = current_importer_library && current_importer_library[0] ? current_importer_library : NULL;
     for (size_t i = 0; i < library_name_count; i++) {
         LibraryName *held = &library_names[i];
-        if (strcmp(held->effective, effective) != 0) {
+        if (!library_scope_is(held->scope, scope) || strcmp(held->written, written) != 0) {
             continue;
         }
         if (strcmp(held->declared, declared) == 0 && same_file_path(held->path, path)) {
-            return 1;
+            return held->identity;
+        }
+        if (!commit) {
+            return written;   /* the claim will refuse; the checks need only a name */
         }
         char message[640];
         snprintf(message, sizeof(message),
                  "the name '%s' already refers to library '%s' from %s, and cannot"
                  " also refer to library '%s' from %s -- load one of them under"
                  " another name, as in `load %s from \"...\" as my_%s`",
-                 effective, held->declared, held->path, declared, path,
+                 written, held->declared, held->path, declared, path,
                  declared, declared);
         runtime_error_raise(message, 1003, "use");
-        return 0;
+        return NULL;
+    }
+    /* the same library under the same name in another scope is one import,
+       registered once */
+    const char *identity = NULL;
+    for (size_t i = 0; i < library_name_count && !identity; i++) {
+        LibraryName *held = &library_names[i];
+        if (strcmp(held->written, written) == 0 && strcmp(held->declared, declared) == 0 &&
+            same_file_path(held->path, path)) {
+            identity = held->identity;
+        }
+    }
+    char hidden[200];
+    if (!identity && !library_identity_taken(written)) {
+        identity = written;
+    }
+    for (int k = 2; !identity; k++) {
+        snprintf(hidden, sizeof hidden, "%s#%d", written, k);
+        if (!library_identity_taken(hidden)) {
+            identity = hidden;
+        }
+    }
+    if (!commit) {
+        snprintf(peeked, peeked_size, "%s", identity);
+        return peeked;
     }
     LibraryName *next = realloc(library_names, sizeof(LibraryName) * (library_name_count + 1));
     if (!next) {
         abort();
     }
     library_names = next;
-    library_names[library_name_count].effective = copy_string(effective);
-    library_names[library_name_count].path = copy_string(path);
-    library_names[library_name_count].declared = copy_string(declared);
-    library_name_count++;
-    return 1;
+    LibraryName *entry = &library_names[library_name_count++];
+    entry->scope = scope ? copy_string(scope) : NULL;
+    entry->written = copy_string(written);
+    entry->identity = copy_string(identity);
+    entry->path = copy_string(path);
+    entry->declared = copy_string(declared);
+    return entry->identity;
+}
+
+/* The identity a WRITTEN qualifier means in the calling scope: the running
+ * library's own load of that name, else the program-wide name as it always
+ * was (a library still reaches a library its caller loaded). */
+static const char *library_identity_of(const char *written) {
+    if (!written) {
+        return NULL;
+    }
+    const char *scope = current_function_library && current_function_library[0] ? current_function_library : NULL;
+    for (size_t i = 0; i < library_name_count; i++) {
+        if (library_scope_is(library_names[i].scope, scope) && strcmp(library_names[i].written, written) == 0) {
+            return library_names[i].identity;
+        }
+    }
+    return written;
+}
+
+/* An identity as a user should read it: the written name, never `#2`. A
+ * hidden identity is shown with the file it came from, since two libraries
+ * then answer to one written name. Into `buf`. */
+static const char *library_shown(const char *identity, char *buf, size_t size) {
+    if (!identity) {
+        return NULL;
+    }
+    const char *hash = strchr(identity, '#');
+    if (!hash) {
+        return identity;
+    }
+    const char *path = NULL;
+    for (size_t i = 0; i < library_name_count && !path; i++) {
+        if (strcmp(library_names[i].identity, identity) == 0) {
+            path = library_names[i].path;
+        }
+    }
+    snprintf(buf, size, "%.*s (%s)", (int)(hash - identity), identity, path ? path : "?");
+    return buf;
 }
 
 /* `toolkit.describe()` after `load toolkit ... as ta` is the mistake this
@@ -9311,11 +9429,11 @@ static int library_alias_hint(const char *written, char *buf, size_t size) {
     for (size_t i = 0; i < library_name_count; i++) {
         LibraryName *held = &library_names[i];
         if (strcmp(held->declared, written) != 0 ||
-            strcmp(held->effective, written) == 0) {
+            strcmp(held->written, written) == 0) {
             continue;
         }
         int wrote = snprintf(names + used, sizeof(names) - used, "%s'%s'",
-                             used ? " and " : "", held->effective);
+                             used ? " and " : "", held->written);
         if (wrote < 0 || (size_t)wrote >= sizeof(names) - used) {
             break;
         }
@@ -9333,7 +9451,9 @@ static int library_alias_hint(const char *written, char *buf, size_t size) {
 
 static void library_names_clear(void) {
     for (size_t i = 0; i < library_name_count; i++) {
-        free(library_names[i].effective);
+        free(library_names[i].scope);
+        free(library_names[i].written);
+        free(library_names[i].identity);
         free(library_names[i].path);
         free(library_names[i].declared);
     }
@@ -9517,18 +9637,22 @@ static void library_import(const char *name, const char *path, const char *alias
     if (path) {
         const char *base = current_import_path ? current_import_path : root_source_path;
         resolved = resolve_use_path(base, path);
-        if (use_pair_contains(used_pairs, used_pair_count, resolved, effective)) {
+        char peek[200];
+        const char *ident = library_name_peek(effective, resolved, name, peek, sizeof peek);
+        if (use_pair_contains(used_pairs, used_pair_count, resolved, ident)) {
+            /* imported already; this scope's name for it is still recorded */
+            (void)library_name_claim(effective, resolved, name);
             free(resolved);
             return;
         }
-        if (use_pair_contains(use_stack, use_stack_count, resolved, effective)) {
+        if (use_pair_contains(use_stack, use_stack_count, resolved, ident)) {
             char message[512];
             snprintf(message, sizeof(message), "circular use detected for %s from %s", effective, resolved);
             runtime_error_raise(message, 1003, "use");
             free(resolved);
             return;
         }
-        use_pair_add(&use_stack, &use_stack_count, resolved, effective);
+        use_pair_add(&use_stack, &use_stack_count, resolved, ident);
         LoadedFile *loaded = loaded_file_get(resolved);
         if (!loaded) {
             use_pair_pop(use_stack, &use_stack_count);
@@ -9544,11 +9668,13 @@ static void library_import(const char *name, const char *path, const char *alias
             free(resolved);
             return;
         }
-        if (!library_name_claim(effective, resolved, name)) {
+        const char *claimed = library_name_claim(effective, resolved, name);
+        if (!claimed) {
             use_pair_pop(use_stack, &use_stack_count);
             free(resolved);
             return;
         }
+        char *identity = copy_string(claimed);
         previous_import_path = current_import_path;
         int previous_is_authors_own = current_import_is_authors_own;
         current_import_path = resolved;
@@ -9567,13 +9693,14 @@ static void library_import(const char *name, const char *path, const char *alias
          * from 0 and still warns. That was still wrong: 93 files in this tree
          * load the REAL stdlib by explicit relative path, and they would all
          * have been treated as the author's own. The file decides. */
-        library_import_from_block(library, effective);
+        library_import_from_block(library, identity);
         current_import_path = previous_import_path;
         current_import_is_authors_own = previous_is_authors_own;
         use_pair_pop(use_stack, &use_stack_count);
         if (!error_action_pending()) {
-            use_pair_add(&used_pairs, &used_pair_count, resolved, effective);
+            use_pair_add(&used_pairs, &used_pair_count, resolved, identity);
         }
+        free(identity);
         free(resolved);
         return;
     }
@@ -9581,25 +9708,31 @@ static void library_import(const char *name, const char *path, const char *alias
     library = library_find(name);
     if (library) {
         const char *source_path = root_source_path ? root_source_path : "<current>";
-        if (use_pair_contains(used_pairs, used_pair_count, source_path, effective)) {
+        char peek[200];
+        const char *ident = library_name_peek(effective, source_path, name, peek, sizeof peek);
+        if (use_pair_contains(used_pairs, used_pair_count, source_path, ident)) {
+            (void)library_name_claim(effective, source_path, name);
             return;
         }
-        if (use_pair_contains(use_stack, use_stack_count, source_path, effective)) {
+        if (use_pair_contains(use_stack, use_stack_count, source_path, ident)) {
             char message[512];
             snprintf(message, sizeof(message), "circular use detected for %s from %s", effective, source_path);
             runtime_error_raise(message, 1003, "use");
             return;
         }
-        if (!library_name_claim(effective, source_path, name)) {
+        const char *claimed = library_name_claim(effective, source_path, name);
+        if (!claimed) {
             return;
         }
+        char *identity = copy_string(claimed);
 
-        use_pair_add(&use_stack, &use_stack_count, source_path, effective);
-        library_import_from_block(library, effective);
+        use_pair_add(&use_stack, &use_stack_count, source_path, identity);
+        library_import_from_block(library, identity);
         use_pair_pop(use_stack, &use_stack_count);
         if (!error_action_pending()) {
-            use_pair_add(&used_pairs, &used_pair_count, source_path, effective);
+            use_pair_add(&used_pairs, &used_pair_count, source_path, identity);
         }
+        free(identity);
         return;
     }
 
@@ -9714,21 +9847,26 @@ static void library_import(const char *name, const char *path, const char *alias
         return;
     }
 
-    if (use_pair_contains(used_pairs, used_pair_count, matches[0].path, effective)) {
+    char peek[200];
+    const char *ident = library_name_peek(effective, matches[0].path, name, peek, sizeof peek);
+    if (use_pair_contains(used_pairs, used_pair_count, matches[0].path, ident)) {
+        (void)library_name_claim(effective, matches[0].path, name);
         library_matches_clear(matches, match_count);
         return;
     }
-    if (use_pair_contains(use_stack, use_stack_count, matches[0].path, effective)) {
+    if (use_pair_contains(use_stack, use_stack_count, matches[0].path, ident)) {
         char message[512];
         snprintf(message, sizeof(message), "circular use detected for %s from %s", effective, matches[0].path);
         runtime_error_raise(message, 1003, "use");
         library_matches_clear(matches, match_count);
         return;
     }
-    if (!library_name_claim(effective, matches[0].path, name)) {
+    const char *claimed = library_name_claim(effective, matches[0].path, name);
+    if (!claimed) {
         library_matches_clear(matches, match_count);
         return;
     }
+    char *identity = copy_string(claimed);
 
     /* NAME BOTH SIDES. This used to say only which match was IGNORED, so the
      * one line a reader gets on stderr named the stdlib path beside the word
@@ -9748,18 +9886,19 @@ static void library_import(const char *name, const char *path, const char *alias
                 matches[i].path);
     }
 
-    use_pair_add(&use_stack, &use_stack_count, matches[0].path, effective);
+    use_pair_add(&use_stack, &use_stack_count, matches[0].path, identity);
     previous_import_path = current_import_path;
     int previous_is_authors_own = current_import_is_authors_own;
     current_import_path = matches[0].path;
     current_import_is_authors_own = library_is_authors_own(matches[0].path);
-    library_import_from_block(matches[0].library, effective);
+    library_import_from_block(matches[0].library, identity);
     current_import_path = previous_import_path;
     current_import_is_authors_own = previous_is_authors_own;
     use_pair_pop(use_stack, &use_stack_count);
     if (!error_action_pending()) {
-        use_pair_add(&used_pairs, &used_pair_count, matches[0].path, effective);
+        use_pair_add(&used_pairs, &used_pair_count, matches[0].path, identity);
     }
+    free(identity);
     library_matches_clear(matches, match_count);
 }
 
@@ -32258,7 +32397,9 @@ static Value eval_call(AstExpr *expr) {
 #endif
         }
 
-        FunctionDef *function = function_resolve(expr->as.call.library, expr->as.call.name);
+        /* the written qualifier means what the CALLING library loaded under
+           that name, else the program-wide one (private loads) */
+        FunctionDef *function = function_resolve(library_identity_of(expr->as.call.library), expr->as.call.name);
         if (function) {
             return eval_user_function(expr, function);
         }
@@ -32659,7 +32800,8 @@ static Value eval_call(AstExpr *expr) {
                 if (!seen) {
                     libs = realloc(libs, sizeof(Value) * (lib_count + 1));
                     if (!libs) abort();
-                    libs[lib_count++] = value_string(b->library);
+                    char shown[300];
+                    libs[lib_count++] = value_string(library_shown(b->library, shown, sizeof shown));
                 }
             }
             if (lib_count > 1) {
@@ -40476,7 +40618,7 @@ static Value eval_expr(AstExpr *expr) {
          * library `beat`, so this adds a fallback and shadows nothing. */
         if (expr->as.field.object->kind == AST_EXPR_IDENT &&
             !env_lookup_exists(expr->as.field.object->as.ident)) {
-            const char *lib = expr->as.field.object->as.ident;
+            const char *lib = library_identity_of(expr->as.field.object->as.ident);
             /* `store.make`: a block the library declared, reached from outside */
             Env *frame = library_frame_find(lib);
             Symbol *block = frame ? env_find_in_frame(frame, expr->as.field.field) : NULL;
@@ -43653,7 +43795,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
          *     function that returns it is exempt BY VALUE. */
         if (value.kind != VALUE_NULL &&
             stmt->as.expr_stmt->kind == AST_EXPR_CALL &&
-            function_resolve(stmt->as.expr_stmt->as.call.library,
+            function_resolve(library_identity_of(stmt->as.expr_stmt->as.call.library),
                              stmt->as.expr_stmt->as.call.name)) {
             char message[320];
             snprintf(message, sizeof(message),
