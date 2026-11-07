@@ -13319,3 +13319,31 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   waits. The full request, with the shapes that would fit, is in
   transward/docs/gbasic-requests-for-revision.md §7 (7.1–7.5 blocking, 7.6–7.8
   needed). Ledger rows left to the gBASIC session to add.
+
+## 2026-11-06 — CC — while: Transward M22, an SSH transport as a record with methods (reported by the Transward session, added by the gBASIC session)
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** a helper given the record as an argument (`helper(this, p)`)
+  mutated a copy, so its log lines and sequence-number updates vanished with
+  no warning. Strict kex resets sequence numbers after NEWKEYS, which hid the
+  bug in the first test; without strict kex the connection would have broken.
+  Method calls through `this` work, and survive a raise.
+- **Workaround:** every state-touching helper became a method.
+- **Would help:** a warning when a function assigns to a field of a record
+  parameter it never returns. Smaller, all well-worded at runtime: `%` (use
+  `mod`), `max(a, b)` (takes an array), `+` on arrays (use `concat`), `new`
+  reserved.
+
+## 2026-11-06 — CC — while: testing MCP's Streamable HTTP across two workers (Transward §7.4)
+- **Type:** bug
+- **Severity:** medium
+- **What:** `read("/proc/self/stat")` answers `""`. procfs (and sysfs)
+  report a size of 0 for files that do have content, and `read` appears to
+  trust the size. So no program can read a `/proc` or `/sys` file: a pid, a
+  load average, a cgroup limit. Found wanting the worker's own pid, for which
+  there is also no builtin.
+- **Workaround:** `process.run({ command: "sh", args: ["-c", "echo $PPID"] })`
+  in `tests/mcp/streamable_server.bas`. Not fixed in this increment, and not
+  yet probed by run_limitations.sh: the next thing to do is read until end of
+  file instead of trusting `st_size`, and decide whether a pid builtin is
+  wanted.

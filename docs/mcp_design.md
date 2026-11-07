@@ -136,8 +136,23 @@ x = mcp.disconnect(fs)
 | `mcp.call(h, name, args)` | one `tools/call` → a tool-result part |
 | `mcp.disconnect(h)` | end the session; for stdio, close stdin and reap the child |
 
-A spec is `{ transport, command, args, url, expect }`; unknown fields are
-refused **by name**, the rule `webserver.listen` already follows.
+A spec is `{ transport, command, args, url, expect, headers, client }`;
+unknown fields are refused **by name**, the rule `webserver.listen` already
+follows. `headers` (http only) is a record of string values sent with every
+request: a bearer token goes here, never in a command line, where any user on
+the machine can read it. `client` is the name given to the server at
+`initialize` (default `gbasic`).
+
+**Over HTTP the client speaks Streamable HTTP** (2026-11-06, Transward §7.5):
+`initialize` asks for the newest version this library speaks, sends
+`notifications/initialized` after it, keeps the `Mcp-Session-Id` the server
+issued and the version agreed, and sends both on every later request with
+`Accept: application/json, text/event-stream`. A reply that comes back as an
+event stream is read for its response. A 404 inside a session says the server
+no longer knows it, and connecting again is the remedy. **Request ids are
+random**, not increasing: the handle is a value, so a counter in it could not
+advance across calls, and JSON-RPC needs ids unique within a session, which a
+random one is (Matthew's ruling).
 
 **The declaration is checked against the server at connect time.** `expect`
 names the tools the caller relies on, and connecting to a server that does not
@@ -230,4 +245,79 @@ principal reaching a resource, the not-found and raising cases, both prompt
 shapes, argument refusals, and seven declaration refusals. Perturbed, each red
 alone: a part allowed to span `/`, a resource run without the caller's
 principal, required arguments unchecked, the capability never advertised.
+
+## 8. Streamable HTTP (2026-11-06, Transward §7.4)
+
+`mcp.handle_http(srv, opts, req [, caller])` takes the request record a
+`server` route receives and answers the response record it returns, so the
+transport is written once, here, rather than by every application:
+
+```basic
+server rpc( port: 8080 )
+    post "/mcp"( req )
+        return answer(req)
+    end post
+    get "/mcp"( req )
+        return answer(req)
+    end get
+    delete "/mcp"( req )
+        return answer(req)
+    end delete
+end server
+
+function answer(req)
+    ' the application authenticates the request, and says who it is for
+    caller = verify_bearer(req)
+    if caller = nothing then
+        return { status: 401, body: "" }
+    end if
+    s = mcp.session_of(OPTS, req)       ' { client, version }, or nothing
+    return mcp.handle_http(SRV, OPTS, req, caller)
+end function
+```
+
+`opts` adds `origins` (the browser origins allowed, `[]` for none),
+`session_secret` (at least 32 bytes, the same in every worker) and
+`session_seconds` (default 86400). They are checked on every call.
+
+- **Origin, on every request.** One a browser sends from an origin not listed
+  is refused 403; that is what stops a page on another site reaching the server
+  through the user's browser (DNS rebinding), and it matters most when MCP
+  shares a listener with a web UI, as Transward's does. A request with no
+  Origin is not a browser's and is served.
+- **One message per POST.** A request is answered `application/json`; a
+  notification or a client's response is answered 202 with no body; a batch is
+  refused 400. GET is 405 (`Allow: POST`): there is no server-to-client stream.
+- **Sessions are signed, not stored.** `initialize` issues `Mcp-Session-Id`:
+  the client's name, the agreed version and an expiry, base64url-encoded and
+  signed with HMAC-SHA256 under `session_secret`. Every later request must
+  carry it: 400 without, 404 for one that is forged, signed with another
+  secret, or expired, which tells the client to initialize again. **Why not a
+  table:** a `server` block with `workers: N` is N processes, so a table in
+  memory would issue a session in one worker and refuse it in the next. The
+  run_mcp tier runs two workers and counts the distinct workers that served one
+  session (two, after 2 to 45 calls in 18 runs here). **The cost:** a session
+  cannot be ended before it expires, so DELETE is 405, which the specification
+  allows ("the server does not allow clients to terminate sessions"). A
+  session id is a bearer of nothing but the client's name and version; the
+  application's own authentication still decides every request.
+- **Versions.** `initialize` answers the client's requested version when this
+  library speaks it (2025-06-18, 2025-03-26, 2024-11-05), else the newest; the
+  stdio transport does the same, through `mcp.handle`. An
+  `MCP-Protocol-Version` header naming a version not spoken is 400.
+- **`mcp.session_of(opts, req)`** gives the application what a session says,
+  `{ client, version }`, or `nothing`; Transward records the client's name in
+  its audit.
+- **What it needs:** `hmac_sha256` and `bytes_equal`, which are libcrypto's.
+  `mcp` does not load `crypto`, so a build without libcrypto still loads `mcp`
+  for stdio, and `handle_http` raises there.
+
+Tested by tests/mcp_test.bas with request records and no socket (initialize,
+a session used, missing, forged, from another secret, expired, a notification
+and a response, an origin refused and allowed, GET, DELETE, a batch, a version
+not spoken, the caller over HTTP, two option refusals), and by run_mcp.sh's
+streamable tier over a real server block with two workers, curl and the
+gBASIC client. Perturbed, each red alone: the signature unchecked, the origin
+unchecked, the expiry ignored, the client's session id not sent, the spec's
+headers not sent.
 

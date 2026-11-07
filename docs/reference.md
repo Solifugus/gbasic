@@ -9018,7 +9018,7 @@ tier each move all three together.
 
 **A library can `load` perfectly and still not work**, which is the half the
 table above misses and the worse half, because the failure is deferred to the
-call. These 5 call a **builtin** whose availability moves with the build, so
+call. These 6 call a **builtin** whose availability moves with the build, so
 nothing in their `load` lines gives them away:
 
 <!--LIBNEEDS:calls-->
@@ -9027,6 +9027,7 @@ nothing in their `load` lines gives them away:
 | `crypto` | libcrypto |
 | `gpdf` | zlib |
 | `intake` | libcrypto |
+| `mcp` | libcrypto |
 | `otp` | libcrypto |
 | `websocket` | libcrypto |
 <!--LIBNEEDS:end-->

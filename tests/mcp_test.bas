@@ -81,7 +81,11 @@ end function
 
 ' ---- initialize ------------------------------------------------------------
 i = reply(ts, plain, { jsonrpc: "2.0", id: 1, method: "initialize" })
-check("initialize answers with the protocol version", i.result.protocolVersion, "2024-11-05")
+check("initialize with no version asked answers the newest", i.result.protocolVersion, "2025-06-18")
+iv = reply(ts, plain, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "2024-11-05" } })
+check("and the client's own when it is one spoken here", iv.result.protocolVersion, "2024-11-05")
+iu = reply(ts, plain, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: "1999-01-01" } })
+check("else the newest, for the client to decide about", iu.result.protocolVersion, "2025-06-18")
 check("and declares a tools capability", has(i.result.capabilities, "tools"), true)
 check("and names the server", i.result.serverInfo.name, "bank-mcp")
 check("echoing the request id", i.id, 1)
@@ -291,6 +295,87 @@ check("a misspelt field", decl_error({ prompts: [ { name: "p", fn: diagnose, arg
 check("no fn", decl_error({ prompts: [ { name: "p" } ] }), "mcp: prompt 'p' needs fn, the function that answers it")
 check("an unknown section", decl_error({ resource: [] }),
       "mcp: the declaration has no field 'resource'; it takes resources, templates, prompts")
+
+' ---- Streamable HTTP, with no network (Transward §7.4) ----------------------
+' mcp.handle_http takes the request record a `server` route gets and answers
+' the response record it returns, so the transport's rules are checked here
+' without a socket; run_mcp.sh's HTTP tiers then drive it for real.
+hopts = { name: "bank-mcp", version: "1.0.0", origins: ["https://app.example"],
+          session_secret: "0123456789abcdef0123456789abcdef" }
+function hreq(method, body, headers)
+    return { method: method, path: "/mcp", headers: headers, body: body, query: {} }
+end function
+init_body = json_encode({ jsonrpc: "2.0", id: 1, method: "initialize",
+                          params: { protocolVersion: "2025-03-26", capabilities: {}, clientInfo: { name: "claude-desktop", version: "1" } } })
+h1 = mcp.handle_http(srv, hopts, hreq("POST", init_body, {}))
+check("initialize over HTTP is answered 200", h1.status, 200)
+check("as JSON", h1.headers["Content-Type"], "application/json")
+check("with the version the client asked for", decode(h1.body).result.protocolVersion, "2025-03-26")
+check("and a session id", has(h1.headers, "Mcp-Session-Id"), true)
+sid = h1.headers["Mcp-Session-Id"]
+with_sid = {}
+with_sid["mcp-session-id"] = sid
+h2 = mcp.handle_http(srv, hopts, hreq("POST", json_encode({ jsonrpc: "2.0", id: 2, method: "tools/list" }), with_sid))
+check("a request in the session is answered", count(decode(h2.body).result.tools), 6)
+sess = mcp.session_of(hopts, hreq("POST", "", with_sid))
+check("the session says who the client is", sess.client, "claude-desktop")
+check("and its version", sess.version, "2025-03-26")
+h3 = mcp.handle_http(srv, hopts, hreq("POST", json_encode({ jsonrpc: "2.0", id: 3, method: "tools/list" }), {}))
+check("without the session id: 400", h3.status, 400)
+forged = {}
+forged["mcp-session-id"] = sid + "x"
+h4 = mcp.handle_http(srv, hopts, hreq("POST", json_encode({ jsonrpc: "2.0", id: 4, method: "tools/list" }), forged))
+check("a forged one: 404, so the client initializes again", h4.status, 404)
+check("and session_of answers nothing for it", mcp.session_of(hopts, hreq("POST", "", forged)), nothing)
+other = { name: "bank-mcp", version: "1.0.0", origins: [], session_secret: "another secret of thirty-two bytes!" }
+check("a session signed with another secret is no session", mcp.session_of(other, hreq("POST", "", with_sid)), nothing)
+short = { name: "bank-mcp", version: "1.0.0", origins: [], session_secret: "0123456789abcdef0123456789abcdef", session_seconds: 1 }
+hs = mcp.handle_http(srv, short, hreq("POST", init_body, {}))
+expiring = {}
+expiring["mcp-session-id"] = hs.headers["Mcp-Session-Id"]
+check("a session is good until it expires", mcp.session_of(short, hreq("POST", "", expiring)).client, "claude-desktop")
+sleep(2.1)
+check("and none after", mcp.session_of(short, hreq("POST", "", expiring)), nothing)
+note = mcp.handle_http(srv, hopts, hreq("POST", json_encode({ jsonrpc: "2.0", method: "notifications/initialized" }), with_sid))
+check("a notification: 202", note.status, 202)
+check("with no body", note.body, "")
+resp_msg = mcp.handle_http(srv, hopts, hreq("POST", json_encode({ jsonrpc: "2.0", id: 9, result: {} }), with_sid))
+check("a client's response: 202", resp_msg.status, 202)
+bad_origin = {}
+bad_origin["origin"] = "https://evil.example"
+bad_origin["mcp-session-id"] = sid
+ho = mcp.handle_http(srv, hopts, hreq("POST", json_encode({ jsonrpc: "2.0", id: 5, method: "tools/list" }), bad_origin))
+check("a browser origin not allowed: 403", ho.status, 403)
+hi = mcp.handle_http(srv, hopts, hreq("POST", init_body, bad_origin))
+check("even for initialize", hi.status, 403)
+good_origin = {}
+good_origin["origin"] = "https://app.example"
+good_origin["mcp-session-id"] = sid
+check("an allowed origin is served", mcp.handle_http(srv, hopts, hreq("POST", json_encode({ jsonrpc: "2.0", id: 6, method: "tools/list" }), good_origin)).status, 200)
+hg = mcp.handle_http(srv, hopts, hreq("GET", "", with_sid))
+check("GET: 405, there is no server stream", hg.status, 405)
+check("saying what is allowed", hg.headers["Allow"], "POST")
+check("DELETE: 405, a signed session cannot be ended early", mcp.handle_http(srv, hopts, hreq("DELETE", "", with_sid)).status, 405)
+hb = mcp.handle_http(srv, hopts, hreq("POST", "[" + init_body + "]", {}))
+check("a batch: 400", hb.status, 400)
+check("saying so", decode(hb.body).error.message, "a batch is not supported; send one message per request")
+badv = {}
+badv["mcp-session-id"] = sid
+badv["mcp-protocol-version"] = "1999-01-01"
+check("a protocol version not spoken: 400", mcp.handle_http(srv, hopts, hreq("POST", json_encode({ jsonrpc: "2.0", id: 7, method: "tools/list" }), badv)).status, 400)
+hc = mcp.handle_http(srv, hopts, hreq("POST", json_encode({ jsonrpc: "2.0", id: 8, method: "tools/call", params: { name: "caller_echo", arguments: {} } }), with_sid), { user: "dee" })
+check("the caller reaches the tool over HTTP too", decode(hc.body).result.content[0].text, string({ user: "dee" }))
+function http_opts_error(o)
+    on error goto next
+    x = mcp.handle_http(srv, o, hreq("POST", init_body, {}))
+    m = error.message
+    error.clear()
+    return m
+end function
+check("no origins", http_opts_error({ name: "s", version: "1", session_secret: "0123456789abcdef0123456789abcdef" }),
+      "mcp.handle_http: opts needs origins, the browser origins allowed to call (use [] to allow none)")
+check("a short secret", http_opts_error({ name: "s", version: "1", origins: [], session_secret: "short" }),
+      "mcp.handle_http: session_secret must be a string of at least 32 bytes")
 
 ' ---- THE CEILING: the mapping is the leak surface --------------------------
 on error goto next

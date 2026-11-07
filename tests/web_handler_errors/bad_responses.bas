@@ -20,6 +20,12 @@ server bad( port: 0 )
         return { body: "fine" }
     end get
 
+    ' a well-formed response with the status asked for, for the status-line
+    ' check: its reason phrase is RFC 9110's, not "OK" for every status
+    get "/status"( req )
+        return { status: number(req.query.c), body: "" }
+    end get
+
     ' -- the body ----------------------------------------------------------
     get "/body-type"( req )
         return { body: 42 }

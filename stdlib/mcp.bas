@@ -54,7 +54,8 @@ library mcp
         if not is_record(opts) then
             error "mcp: expects an options record with name and version"
         end if
-        allowed = ["name", "version", "principal", "max_groups"]
+        ' origins and the session_* are handle_http's, checked there
+        allowed = ["name", "version", "principal", "max_groups", "origins", "session_secret", "session_seconds"]
         for each k in keys(opts)
             if not contains(allowed, k) then
                 error "mcp: no option '" + k + "'; it takes " + join(allowed, ", ")
@@ -591,6 +592,224 @@ library mcp
         return _ok(id, res)
     end function
 
+    ' ================= Streamable HTTP (Transward §7.4) =======================
+    '
+    ' mcp.handle_http(srv, opts, req [, caller]) -> a response record, for a
+    ' `server` block route (`post`, `get` and `delete` on the one path all
+    ' reach it). The transport is the protocol's work, so it is written once
+    ' here rather than by every application:
+    '
+    '   - ORIGIN, checked on every request: one a browser sends from an origin
+    '     not in `opts.origins` is refused 403, which is what stops a page on
+    '     another site reaching the server through the user's browser (DNS
+    '     rebinding). A request with no Origin is not a browser's.
+    '   - POST of ONE message. A notification or a response is answered 202
+    '     with no body; a request is answered application/json. A batch is
+    '     refused. GET is 405: there is no server-to-client stream.
+    '   - SESSIONS ARE SIGNED, NOT STORED. `initialize` issues Mcp-Session-Id,
+    '     which carries the client's name, the protocol version and an expiry,
+    '     signed with `opts.session_secret`; later requests must send it, 400
+    '     without, 404 for one that is forged or expired (the client then
+    '     initializes again). A table would live in one worker's memory, and a
+    '     server block with `workers` would issue a session in one and refuse
+    '     it in the next. The cost: a session cannot be ended early, so DELETE
+    '     is 405, which the specification allows.
+    '   - MCP-Protocol-Version, when sent, must be one this library speaks
+    '     (400 otherwise).
+    '
+    ' mcp.session_of(opts, req) -> { client, version } from a valid session,
+    ' or nothing: what an application records about who is calling.
+
+    function _versions()
+        return ["2025-06-18", "2025-03-26", "2024-11-05"]
+    end function
+
+    function _http_options(opts)
+        check_options(opts)
+        if not has(opts, "origins") then
+            error "mcp.handle_http: opts needs origins, the browser origins allowed to call (use [] to allow none)"
+        end if
+        if not is_array(opts.origins) then
+            error "mcp.handle_http: origins must be an array of origins such as \"https://transward.example\""
+        end if
+        for each o in opts.origins
+            if not is_string(o) then
+                error "mcp.handle_http: every origin must be a string"
+            end if
+        end for
+        if not has(opts, "session_secret") then
+            error "mcp.handle_http: opts needs session_secret, the key sessions are signed with, the same in every worker"
+        end if
+        if not is_string(opts.session_secret) then
+            error "mcp.handle_http: session_secret must be a string of at least 32 bytes"
+        end if
+        if len(opts.session_secret) < 32 then
+            error "mcp.handle_http: session_secret must be a string of at least 32 bytes"
+        end if
+        if has(opts, "session_seconds") then
+            if not is_number(opts.session_seconds) then
+                error "mcp.handle_http: session_seconds must be a number of seconds"
+            end if
+            if opts.session_seconds <= 0 then
+                error "mcp.handle_http: session_seconds must be a number of seconds"
+            end if
+        end if
+        return nothing
+    end function
+
+    function _header(req, name)
+        if not is_record(req.headers) then
+            return nothing
+        end if
+        if not has(req.headers, name) then
+            return nothing
+        end if
+        return req.headers[name]
+    end function
+
+    function _respond(status, body)
+        h = {}
+        if body != "" then
+            h["Content-Type"] = "application/json"
+        end if
+        return { status: status, headers: h, body: body }
+    end function
+
+    function _session_issue(opts, client, version)
+        seconds = 86400
+        if has(opts, "session_seconds") then
+            seconds = opts.session_seconds
+        end if
+        claims = { c: client, v: version, e: epoch() + seconds, n: hex_encode(random_bytes(8)) }
+        payload = base64url_encode(json_encode(claims))
+        return payload + "." + base64url_encode(hmac_sha256(opts.session_secret, payload))
+    end function
+
+    ' The session's claims, or nothing for one that is forged, malformed or
+    ' expired. Anything may arrive in a header, so nothing here raises.
+    function _session_check(opts, sid)
+        if not is_string(sid) then
+            return nothing
+        end if
+        parts = split(sid, ".")
+        if count(parts) != 2 then
+            return nothing
+        end if
+        expected = base64url_encode(hmac_sha256(opts.session_secret, parts[0]))
+        if not bytes_equal(expected, parts[1]) then
+            return nothing
+        end if
+        on error goto next
+        claims = try_decode(base64url_decode(parts[0]))
+        if error then
+            error.clear()
+            return nothing
+        end if
+        on error stop
+        if not claims.ok then
+            return nothing
+        end if
+        c = claims.value
+        if not is_record(c) then
+            return nothing
+        end if
+        if not has(c, "e") then
+            return nothing
+        end if
+        if not is_number(c.e) then
+            return nothing
+        end if
+        if c.e <= epoch() then
+            return nothing
+        end if
+        return c
+    end function
+
+    function session_of(opts, req)
+        _http_options(opts)
+        c = _session_check(opts, _header(req, "mcp-session-id"))
+        if c = nothing then
+            return nothing
+        end if
+        return { client: c.c, version: c.v }
+    end function
+
+    function handle_http(srv, opts, req, caller = nothing)
+        _http_options(opts)
+        origin = _header(req, "origin")
+        if origin != nothing then
+            if not contains(opts.origins, origin) then
+                return _respond(403, _err(nothing, -32600, "the origin " + string(origin) + " is not allowed to call this server"))
+            end if
+        end if
+        if req.method != "POST" then
+            r = _respond(405, "")
+            r.headers["Allow"] = "POST"
+            return r
+        end if
+        parsed = try_decode(req.body)
+        if not parsed.ok then
+            return _respond(400, _err(nothing, -32700, "parse error: " + parsed.message))
+        end if
+        msg = parsed.value
+        if is_array(msg) then
+            return _respond(400, _err(nothing, -32600, "a batch is not supported; send one message per request"))
+        end if
+        if not is_record(msg) then
+            return _respond(400, _err(nothing, -32600, "a message must be an object"))
+        end if
+        is_request = has(msg, "method") and has(msg, "id")
+        if has(msg, "method") then
+            if msg.method = "initialize" then
+                if not is_request then
+                    return _respond(400, _err(nothing, -32600, "initialize is a request, with an id"))
+                end if
+                reply = handle(srv, opts, req.body, caller)
+                answer = decode(reply)
+                if not has(answer, "result") then
+                    return _respond(200, reply)
+                end if
+                client = ""
+                if has(msg, "params") then
+                    if is_record(msg.params) then
+                        if has(msg.params, "clientInfo") then
+                            if is_record(msg.params.clientInfo) then
+                                if has(msg.params.clientInfo, "name") then
+                                    client = string(msg.params.clientInfo.name)
+                                end if
+                            end if
+                        end if
+                    end if
+                end if
+                r = _respond(200, reply)
+                r.headers["Mcp-Session-Id"] = _session_issue(opts, client, answer.result.protocolVersion)
+                return r
+            end if
+        end if
+        sid = _header(req, "mcp-session-id")
+        if sid = nothing then
+            return _respond(400, _err(nothing, -32600, "Mcp-Session-Id is required after initialize"))
+        end if
+        if _session_check(opts, sid) = nothing then
+            ' 404 tells the client to initialize again
+            return _respond(404, _err(nothing, -32001, "no such session; initialize again"))
+        end if
+        pv = _header(req, "mcp-protocol-version")
+        if pv != nothing then
+            if not contains(_versions(), pv) then
+                return _respond(400, _err(nothing, -32600, "MCP-Protocol-Version " + string(pv) + " is not one this server speaks (" + join(_versions(), ", ") + ")"))
+            end if
+        end if
+        if not is_request then
+            ' a notification, or a client's response: run, never answered
+            if has(msg, "method") then
+                ignored = handle(srv, opts, req.body, caller)
+            end if
+            return _respond(202, "")
+        end if
+        return _respond(200, handle(srv, opts, req.body, caller))
+    end function
+
     ' mcp.handle(ts, opts, line [, caller]) -> the reply line, or "" for a
     ' notification.
     '
@@ -647,8 +866,21 @@ library mcp
             info = {}
             info["name"] = opts.name
             info["version"] = opts.version
+            ' THE CLIENT'S VERSION WHEN THIS LIBRARY SPEAKS IT, else the newest
+            ' it does, which the specification has the client decide about
+            ' (Transward §7.4). Before 2026-11-06 this was always 2024-11-05.
+            version = _versions()[0]
+            if has(req, "params") then
+                if is_record(req.params) then
+                    if has(req.params, "protocolVersion") then
+                        if contains(_versions(), req.params.protocolVersion) then
+                            version = req.params.protocolVersion
+                        end if
+                    end if
+                end if
+            end if
             res = {}
-            res["protocolVersion"] = "2024-11-05"
+            res["protocolVersion"] = version
             res["capabilities"] = caps
             res["serverInfo"] = info
             return _ok(id, res)
@@ -790,7 +1022,7 @@ library mcp
         if not is_record(spec) then
             error "mcp: connect expects a spec record"
         end if
-        allowed = ["transport", "command", "args", "url", "expect"]
+        allowed = ["transport", "command", "args", "url", "expect", "headers", "client"]
         for each k in keys(spec)
             if not contains(allowed, k) then
                 error "mcp: connect: no spec field '" + k + "'; it takes " + join(allowed, ", ")
@@ -799,7 +1031,15 @@ library mcp
         if not has(spec, "transport") then
             error "mcp: connect needs a transport: \"stdio\" or \"http\""
         end if
+        if has(spec, "client") then
+            if not is_string(spec.client) then
+                error "mcp: client is the name this client gives the server, a string"
+            end if
+        end if
         if spec.transport = "stdio" then
+            if has(spec, "headers") then
+                error "mcp: headers are for the http transport; a stdio server is a child process"
+            end if
             if not has(spec, "command") then
                 error "mcp: a stdio server needs a command to launch"
             end if
@@ -814,6 +1054,19 @@ library mcp
             end if
             if not is_string(spec.url) then
                 error "mcp: the url must be a string"
+            end if
+            ' HEADERS COME FROM THE SPEC, so a bearer token never has to be in
+            ' a command line, where any user on the machine can read it
+            ' (Transward §7.5)
+            if has(spec, "headers") then
+                if not is_record(spec.headers) then
+                    error "mcp: headers must be a record of header names and string values"
+                end if
+                for each k in keys(spec.headers)
+                    if not is_string(spec.headers[k]) then
+                        error "mcp: the header " + k + " must be a string"
+                    end if
+                end for
             end if
             return nothing
         end if
@@ -850,7 +1103,71 @@ library mcp
         error "mcp: the server did not answer within " + string(seconds) + " seconds"
     end function
 
-    function _rpc(h, method, params, id)
+    ' A REQUEST ID per call. The handle is a value, so a counter in it would
+    ' not advance across calls; ids need only be unique within the session,
+    ' which a random one is (Matthew, 2026-11-06). It was always 3.
+    function _new_id()
+        return random_int(1, 2147483647)
+    end function
+
+    ' The HTTP request, with the spec's headers, the session's id and the
+    ' version agreed at initialize (Streamable HTTP, Transward §7.5).
+    function _http_post(h, line)
+        hd = {}
+        for each k in keys(h.headers)
+            hd[k] = h.headers[k]
+        end for
+        hd["Content-Type"] = "application/json"
+        hd["Accept"] = "application/json, text/event-stream"
+        if h.session != "" then
+            hd["Mcp-Session-Id"] = h.session
+        end if
+        if h.version != "" then
+            hd["MCP-Protocol-Version"] = h.version
+        end if
+        return webclient.request({ method: "POST", url: h.url, headers: hd, body: line })
+    end function
+
+    ' A JSON-RPC response from a reply that is application/json or, as the
+    ' specification also allows, an event stream: the first event whose data
+    ' is the response.
+    function _http_body(resp)
+        ctype = ""
+        if has(resp.headers, "content-type") then
+            ctype = resp.headers["content-type"]
+        end if
+        if not starts_with(ctype, "text/event-stream") then
+            return resp.body
+        end if
+        data = ""
+        for each ln in split(replace(resp.body, "\r", ""), "\n")
+            if starts_with(ln, "data:") then
+                data = data + trim(mid(ln, 5, len(ln) - 5))
+            else if ln = "" and data != "" then
+                return data
+            end if
+        end for
+        return data
+    end function
+
+    ' A notification: sent, and no reply is waited for (HTTP answers 202).
+    function _notify(h, method)
+        req = {}
+        req["jsonrpc"] = "2.0"
+        req["method"] = method
+        line = json_encode(req)
+        if h.transport = "stdio" then
+            sent = process.write(h.child, line + "\n")
+            return nothing
+        end if
+        resp = _http_post(h, line)
+        if resp.status != 202 and resp.status != 200 then
+            error "mcp: the server answered HTTP " + string(resp.status) + " to " + method
+        end if
+        return nothing
+    end function
+
+    function _rpc_reply(h, method, params, id)
         req = {}
         req["jsonrpc"] = "2.0"
         req["id"] = id
@@ -865,24 +1182,37 @@ library mcp
                 error "mcp: could not write to the server (it has closed its input)"
             end if
             raw = _read_line(h.child, 10)
+            resp = nothing
         else
-            resp = webclient.post(h.url, line)
+            resp = _http_post(h, line)
+            if resp.status = 404 and h.session != "" then
+                error "mcp: the server no longer knows this session (HTTP 404); connect again"
+            end if
             if resp.status != 200 then
                 error "mcp: the server answered HTTP " + string(resp.status)
             end if
-            raw = resp.body
+            raw = _http_body(resp)
         end if
         parsed = try_decode(raw)
         if not parsed.ok then
             error "mcp: the server's reply was not JSON: " + parsed.message
         end if
-        return parsed.value
+        return { value: parsed.value, response: resp }
+    end function
+
+    function _rpc(h, method, params, id)
+        return _rpc_reply(h, method, params, id).value
     end function
 
     ' mcp.connect(spec) -> handle
     function connect(spec)
         _spec_fields(spec)
-        h = { transport: spec.transport, child: unknown, url: unknown, tools: [] }
+        headers = {}
+        if has(spec, "headers") then
+            headers = spec.headers
+        end if
+        h = { transport: spec.transport, child: unknown, url: unknown, tools: [], headers: headers,
+              session: "", version: "" }
         if spec.transport = "stdio" then
             a = []
             if has(spec, "args") then
@@ -896,15 +1226,39 @@ library mcp
             h.url = spec.url
         end if
 
-        init = _rpc(h, "initialize", {}, 1)
+        ' initialize as the specification has it: the version asked for, this
+        ' client's name, and the `initialized` notification after
+        info = {}
+        info["name"] = "gbasic"
+        if has(spec, "client") then
+            info["name"] = spec.client
+        end if
+        info["version"] = "1"
+        ip = {}
+        ip["protocolVersion"] = _versions()[0]
+        ip["capabilities"] = {}
+        ip["clientInfo"] = info
+        got = _rpc_reply(h, "initialize", ip, _new_id())
+        init = got.value
         if not is_record(init) then
             error "mcp: the server did not answer initialize"
         end if
         if has(init, "error") then
             error "mcp: the server refused initialize: " + string(init["error"].message)
         end if
+        if h.transport = "http" then
+            if has(got.response.headers, "mcp-session-id") then
+                h.session = got.response.headers["mcp-session-id"]
+            end if
+            if is_record(init.result) then
+                if has(init.result, "protocolVersion") then
+                    h.version = string(init.result.protocolVersion)
+                end if
+            end if
+        end if
+        _notify(h, "notifications/initialized")
 
-        listed = _rpc(h, "tools/list", {}, 2)
+        listed = _rpc(h, "tools/list", {}, _new_id())
         if has(listed, "error") then
             error "mcp: the server refused tools/list: " + string(listed["error"].message)
         end if
@@ -954,7 +1308,7 @@ library mcp
         if is_record(args) then
             p["arguments"] = args
         end if
-        reply = _rpc(h, "tools/call", p, 3)
+        reply = _rpc(h, "tools/call", p, _new_id())
         r = {}
         r["type"] = "tool_result"
         r["name"] = name

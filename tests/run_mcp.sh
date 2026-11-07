@@ -55,7 +55,7 @@ if timeout -k 5 120 ./gbasic tests/mcp_test.bas >"$work/p.out" 2>"$work/p.err"; 
     if ! grep -q '^mismatches: 0$' "$work/p.out"; then
         grep '^MISMATCH' "$work/p.out" || true
         fail "the fixture disagreed with itself"
-    elif [ -z "$checks" ] || [ "$checks" -lt 78 ]; then
+    elif [ -z "$checks" ] || [ "$checks" -lt 108 ]; then
         fail "only ${checks:-0} checks ran"
     else
         pass "$checks checks"
@@ -70,7 +70,7 @@ if ! command -v python3 >/dev/null 2>&1; then
 else
     printf 'TIER a real stdio session\n'
     if timeout -k 5 90 python3 tests/mcp/client.py --line-buffered >"$work/s.out" 2>"$work/s.err"; then
-        if grep -q '"protocolVersion": "2024-11-05"' "$work/s.out" &&
+        if grep -q '"protocolVersion": "2025-03-26"' "$work/s.out" &&
            grep -q '^tools: get_balance,whoami,boom$' "$work/s.out" &&
            grep -q '42.00 for a1' "$work/s.out" &&
            grep -q '"text": "alice"' "$work/s.out" &&
@@ -200,6 +200,62 @@ else
     fail "the consume fixture did not run to completion"
 fi
 [ -n "$chsrv" ] && { kill "$chsrv" 2>/dev/null || true; wait "$chsrv" 2>/dev/null || true; }
+
+printf 'TIER streamable HTTP: sessions across two workers, a bearer header, Origin\n'
+# Transward §7.4 and §7.5 together, over a real `server` block with
+# workers: 2. A session issued by one worker must be accepted by the other,
+# which only a signed id allows; the client sends the bearer token from its
+# spec's headers, and the session id and version it kept from initialize.
+if [ "$has_listen" = 1 ] && command -v curl >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+    sport="$(python3 -c 'import socket;s=socket.socket();s.bind(("127.0.0.1",0));print(s.getsockname()[1]);s.close()')"
+    token="t-$RANDOM-$RANDOM"
+    MCP_HTTP_PORT="$sport" MCP_TOKEN="$token" MCP_SECRET="test-secret-of-at-least-32-bytes!!" \
+        timeout -k 5 120 ./gbasic --line-buffered tests/mcp/streamable_server.bas >"$work/st.out" 2>"$work/st.err" &
+    ssrv=$!
+    surl="http://127.0.0.1:$sport/mcp"
+    up=0
+    for _ in $(seq 1 300); do
+        code="$(curl -s -m 2 -o /dev/null -w '%{http_code}' -X POST -d '{}' "$surl" 2>/dev/null || true)"
+        [ "$code" = "401" ] && { up=1; break; }
+        sleep 0.05
+    done
+    if [ "$up" != 1 ]; then
+        cat "$work/st.err"
+        fail "the streamable server never answered, so this tier tested nothing"
+    else
+        if MCP_URL="$surl" MCP_TOKEN="$token" timeout -k 5 120 ./gbasic tests/mcp/streamable_client.bas \
+                >"$work/sc.out" 2>"$work/sc.err" &&
+           grep -q '^mismatches: 0$' "$work/sc.out" &&
+           [ "$(sed -n 's/^checks: //p' "$work/sc.out")" -ge 9 ]; then
+            pass "$(sed -n 's/^checks: //p' "$work/sc.out") client checks: two workers, one session, the header sent"
+        else
+            grep MISMATCH "$work/sc.out" || true
+            cat "$work/sc.err"
+            fail "the streamable client did not pass"
+        fi
+        init='{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"protocolVersion":"2025-06-18","capabilities":{},"clientInfo":{"name":"curl","version":"1"}}}'
+        line="$(curl -s -i -m 5 -X POST -H "Authorization: Bearer $token" -H 'Origin: https://evil.example' \
+                -d "$init" "$surl" | head -1 | tr -d '\r')"
+        [ "$line" = "HTTP/1.1 403 Forbidden" ] && pass "a browser origin not allowed: $line" \
+            || fail "an origin not allowed answered '$line', not 403 Forbidden"
+        line="$(curl -s -i -m 5 -X POST -H "Authorization: Bearer $token" -H 'Origin: https://app.example' \
+                -d "$init" "$surl" | tr -d '\r' | grep -i '^mcp-session-id:' | head -1)"
+        [ -n "$line" ] && pass "an allowed origin is served, and given a session" \
+            || fail "an allowed origin got no session id"
+        sidv="${line#*: }"
+        line="$(curl -s -i -m 5 -X POST -H "Authorization: Bearer $token" -H "Mcp-Session-Id: $sidv" \
+                -d '{"jsonrpc":"2.0","method":"notifications/initialized"}' "$surl" | head -1 | tr -d '\r')"
+        [ "$line" = "HTTP/1.1 202 Accepted" ] && pass "a notification: $line" \
+            || fail "a notification answered '$line', not 202 Accepted"
+        line="$(curl -s -i -m 5 -H "Authorization: Bearer $token" "$surl" | head -1 | tr -d '\r')"
+        [ "$line" = "HTTP/1.1 405 Method Not Allowed" ] && pass "GET: $line" \
+            || fail "GET answered '$line', not 405"
+    fi
+    kill "$ssrv" 2>/dev/null || true
+    wait "$ssrv" 2>/dev/null || true
+else
+    printf '  SKIP streamable HTTP (needs a listener, curl and python3 -- NOT measured)\n'
+fi
 
 printf 'TIER valgrind\n'
 if vg_available; then

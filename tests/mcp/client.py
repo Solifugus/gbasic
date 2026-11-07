@@ -62,7 +62,8 @@ def show(label, value):
     print("%s: %s" % (label, "TIMEOUT" if value in ("TIMEOUT", "EOF") else json.dumps(value)))
 
 
-init = rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize"})
+init = rpc({"jsonrpc": "2.0", "id": 1, "method": "initialize",
+            "params": {"protocolVersion": "2025-03-26", "capabilities": {}, "clientInfo": {"name": "client.py", "version": "1"}}})
 show("initialize", init)
 listed = rpc({"jsonrpc": "2.0", "id": 2, "method": "tools/list"})
 if listed in ("TIMEOUT", "EOF"):

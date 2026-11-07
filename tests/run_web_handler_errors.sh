@@ -109,6 +109,20 @@ done
 [ "$(grep -c 'refusing an invalid response' "$err")" -ge 16 ] \
     || fail "stderr (expected one refusal line per malformed record, got: $(grep -c 'refusing an invalid response' "$err"))"
 
+# --- a handler's status goes out with ITS reason phrase. Every status but
+# --- ten went out as "OK" -- `404 OK`, `403 OK` -- until 2026-11-06, found
+# --- by measuring MCP's transport, which sends 202, 403, 404 and 405. A
+# --- status RFC 9110 does not name gets no phrase, which HTTP allows.
+for entry in "200|OK" "202|Accepted" "204|No Content" "401|Unauthorized" "403|Forbidden" \
+             "404|Not Found" "405|Method Not Allowed" "409|Conflict" "429|Too Many Requests" \
+             "502|Bad Gateway" "299|"; do
+    c="${entry%%|*}"
+    want="HTTP/1.1 $c ${entry#*|}"
+    got="$(curl -s -m 5 -i "http://127.0.0.1:$port/status?c=$c" | head -1 | tr -d '\r')"
+    [ "$got" = "$want" ] || fail "status line for $c (got '$got', want '$want')"
+done
+printf 'PASS status lines (11 statuses, each with its reason phrase)\n'
+
 kill "$srv" 2>/dev/null || true
 wait "$srv" 2>/dev/null || true
 
@@ -138,6 +152,7 @@ printf '%s' "$raw" | grep -q '500' \
 [ "$(curl -s -m 5 "http://127.0.0.1:$port/ok")" = "fine" ] \
     || fail "echo_header (a CRLF query value KILLED THE LISTENER -- remote kill switch)"
 printf 'PASS echo_header/crlf (refused, not split, still serving)\n'
+
 
 kill "$srv" 2>/dev/null || true
 wait "$srv" 2>/dev/null || true

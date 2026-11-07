@@ -70,6 +70,23 @@ reader sees.
   chunked-encryption pattern Transward asked for
   (`tests/read_at_chunks_test.bas`).
 
+### MCP over Streamable HTTP, both ends
+
+- **`mcp.handle_http(srv, opts, req [, caller])`** serves MCP from a
+  `server` route: the Origin checked against `opts.origins` (403), one message
+  per POST, 202 for a notification, GET and DELETE 405, and signed session ids
+  that every worker can check (`opts.session_secret`), so `workers: N` works.
+  **`mcp.session_of(opts, req)`** says which client a session belongs to
+  (Transward §7.4).
+- **`initialize` negotiates the version**: the client's, when spoken, else
+  2025-06-18. It answered 2024-11-05 to everyone.
+- **`mcp.connect`** takes `headers` (a bearer token, never in argv) and
+  `client`, keeps the session id and version from `initialize`, sends
+  `notifications/initialized`, and uses random request ids, not always 3
+  (§7.5).
+- **A `server` handler's status goes out with its reason phrase.** Every
+  status but ten went out as "OK": `404 OK`, `403 OK`, `202 OK`.
+
 ### MCP: resources, prompts, and a principal per request
 
 - **`mcp.server(ts, { resources, templates, prompts })`** declares resources
