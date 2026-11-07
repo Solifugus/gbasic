@@ -23,6 +23,15 @@ CFLAGS += -DGBASIC_DEFAULT_STDLIB='"$(STDLIBDIR)"'
 # perfectly ordinary and is not highlighting anything.
 SYNTAXDIR := $(DATADIR)/syntax-highlighting
 CFLAGS += -DGBASIC_DEFAULT_SYNTAX='"$(SYNTAXDIR)"'
+# THE TREE THIS BINARY WAS BUILT IN. A binary still in that directory (./gbasic
+# at the repo root) loads that tree's stdlib before an installed one, which may
+# be older: a source-tree binary run without GBASIC_PATH silently mixed a new
+# interpreter with an old web.bas, and a TLS security fix half in each did not
+# take (Matthew's ruling 2026-11-07, "prefer its own"). Copied anywhere else --
+# `make install`, a release -- the binary is not in this directory, so it never
+# applies there.
+SOURCEDIR := $(CURDIR)
+CFLAGS += -DGBASIC_SOURCE_DIR='"$(SOURCEDIR)"'
 
 # Because that path is COMPILED IN, changing PREFIX has to invalidate the objects
 # that carry it -- and make cannot see a changed -D on its own. Without this, the
@@ -483,7 +492,7 @@ src/parser.tab.c src/parser.tab.h: src/parser.y include/ast.h include/lexer.h in
 # See the PREFIX note at the top of this file. Kept here rather than up there so
 # it cannot become the default goal.
 .stdlibdir-stamp: FORCE
-	@printf '%s' '$(STDLIBDIR)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(STDLIBDIR)' > $@
+	@printf '%s\n%s' '$(STDLIBDIR)' '$(SOURCEDIR)' | cmp -s - $@ 2>/dev/null || printf '%s\n%s' '$(STDLIBDIR)' '$(SOURCEDIR)' > $@
 FORCE:
 .PHONY: FORCE
 

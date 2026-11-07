@@ -13454,8 +13454,11 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   silence, so a fix split across C and stdlib can be half there.
 - **Workaround:** set `GBASIC_PATH` to the tree's `stdlib` when running a
   source-tree binary, or `make install` after a fix that touches stdlib.
-- **Status: OPEN**, for Matthew to rule on. One option is for the binary to warn
-  when the library it loads comes from a different build than it was built
-  with. Another is for a source-tree binary to prefer its own tree's `stdlib`.
-  Transward also asked for `web.serve`'s answer to say whether TLS is on, so a
-  program can refuse to start without it.
+- **Status: FIXED 2026-11-07** (Matthew: "prefer its own"). A binary still in
+  the tree it was built in loads that tree's `stdlib` before an installed one.
+  The tree is the one the Makefile baked in (`GBASIC_SOURCE_DIR`), compared
+  with the running binary's own directory, both canonical, so a copy anywhere
+  else (an install, a release) is unaffected, and a `stdlib` merely beside a
+  binary is never read. `GBASIC_PATH` still wins. Held by
+  `tests/run_relocatable.sh`'s SOURCE TREE tier. Transward's other ask, that
+  `web.serve`'s answer say whether TLS is on, is a separate change.

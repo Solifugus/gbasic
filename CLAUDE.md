@@ -40,7 +40,10 @@ libraries (`stdlib/*.bas`); set it when running from the source tree, e.g.
 unnecessary: the install path (`$(PREFIX)/share/gbasic/stdlib`, default
 `/usr/local/share/gbasic/stdlib`) is compiled in as `GBASIC_DEFAULT_STDLIB` and
 searched as a fallback when `GBASIC_PATH` is unset or doesn't resolve a library.
-`GBASIC_PATH` still wins when set, so it remains the dev override.
+`GBASIC_PATH` still wins when set, so it remains the dev override. A binary
+still in the tree it was built in (`./gbasic` at the repo root) loads that
+tree's `stdlib` before the installed one, which may be older (2026-11-07;
+`tests/run_relocatable.sh`).
 
 ## Architecture
 

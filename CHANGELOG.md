@@ -16,6 +16,14 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### A source-tree binary loads its own stdlib
+
+- **`./gbasic` run from the tree it was built in loads that tree's `stdlib`**,
+  not an installed one, when `GBASIC_PATH` is unset. An older installed
+  `web.bas` had silently undone half of the TLS client-certificate fix for a
+  binary run this way. A copy installed or moved elsewhere is unaffected, and
+  `GBASIC_PATH` still wins.
+
 ### G-SQL: a DATE column refuses text with a time of day (gdash's A7)
 
 - **Storing `'2026-01-15T10:00'` into a `date` column is refused** (`TYPE`),

@@ -164,6 +164,41 @@ want "a spawned actor resolves it too" "shipped-with-the-binary" "$got"
 fi   # build_has actors
 
 echo
+echo "== SOURCE TREE: a binary still where it was built loads that tree's stdlib =="
+# Matthew's ruling 2026-11-07, "prefer its own". ./gbasic at the repo root has
+# no ../share, so it fell through to the installed stdlib, which may be older:
+# Transward ran a fixed interpreter against an unfixed web.bas and a TLS
+# security fix, half in each, did not take. WHICH FILE LOADED is read from a
+# runtime error raised inside `dates`, whose position names the library's own
+# path -- a check that "it loaded" passes from the installed copy too.
+printf 'load dates\nprint dates.days_between("nope", 3)\n' > "$P/e.bas"
+tree="$(cd "$PWD" && pwd -P)"
+got="$( unset GBASIC_PATH; cd "$P" && "$ORIG" e.bas 2>&1 | grep -o 'at [^ ]*dates.bas' | head -1 )"
+want "the tree's binary loads the tree's dates.bas" "at $tree/stdlib/dates.bas" "$got"
+# THE DIFFERENCE: the same bytes copied out of the tree do not, and a stdlib
+# planted beside the copy is not read either -- a directory beside a binary is
+# not trusted, only the tree the build baked in.
+mkdir -p "$work/flat/stdlib"
+cat > "$work/flat/stdlib/dates.bas" <<'LIB'
+library dates
+  function days_between(a, b)
+    return "PLANTED"
+  end function
+end library
+LIB
+got="$( unset GBASIC_PATH; cd "$P" && "$work/flat/gbasic" e.bas 2>&1 | tail -1 )"
+case "$got" in
+    *"$tree/stdlib/dates.bas"*|*PLANTED*)
+        fail "a copy out of the tree loads neither the tree's stdlib nor one beside it"
+        printf '       got: %s\n' "$got" ;;
+    *)  pass "a copy out of the tree loads neither the tree's stdlib nor one beside it" ;;
+esac
+rm -rf "$work/flat/stdlib"
+# and GBASIC_PATH still wins over the tree's own
+got="$( cd "$P" && GBASIC_PATH="$work/override" "$ORIG" p.bas 2>&1 )"
+want "GBASIC_PATH still wins over the tree's stdlib" "from-GBASIC_PATH" "$got"
+
+echo
 echo "== QUIET: the ordinary case says nothing =="
 # THE WARNING WAS FALSE, AND IT FIRED ON EVERY LOAD. `load` reports a library
 # found BELOW the loading file as "was NOT used" -- correct when a stray copy is

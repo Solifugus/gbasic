@@ -1097,3 +1097,9 @@ opt-in: examples/gbasic_site/site_postgres.bas against a REAL PostgreSQL, and th
 
 ADDED 2026-11-07 after the gate for `try` failed in run_gsql_module.sh and run_handle_methods.sh with warning 2121 ("sql 'make' is declared and never used") for blocks the fixtures did use. Adding TOKEN_TRY to include/lexer.h renumbered every token after it; src/frontend.c includes lexer.h but its Makefile rule did not list it, so `make` left src/frontend.o compiled against the old numbers, and its token scan for block uses compared the wrong types. The suites passed once a `make clean` elsewhere in the gate had rebuilt it (frontend.o's timestamp was mid-gate). The check found four more gaps (eval.o: window_check.h, currency_table.h, yescrypt.h; lsp/main.o: platform.h), all fixed. It reads each rule's prerequisites and the quoted includes of its source and of every .c the rule lists, since eval.c includes the modules. Its control removes lexer.h from frontend.o in a copy of the Makefile and requires the check to report it.
 
+
+## run_relocatable.sh
+
+`./tests/run_relocatable.sh`
+
+TIER SOURCE TREE SINCE 2026-11-07 (Matthew's ruling, "prefer its own"): `./gbasic` still in the tree it was built in loads that tree's `stdlib` when GBASIC_PATH is unset; before, it loaded the installed one, and an older installed `web.bas` undid half of a9c71e56's TLS fix for Transward. Which file loaded is read from a runtime error raised inside `dates`, whose position names the library's path. The difference: the same binary copied out of the tree loads neither the tree's stdlib nor a `stdlib` planted beside it. Two perturbations red: the lookup off, and any `stdlib` beside a binary trusted. The second was GREEN FIRST, because the probe program discarded the planted function's answer; it prints it now.

@@ -8900,12 +8900,60 @@ static const char *gb_exe_relative_share(const char *subdir, char *resolved,
     return resolved;
 }
 
+/* A BINARY STILL IN THE TREE IT WAS BUILT IN loads that tree's stdlib (Matthew's
+ * ruling 2026-11-07, "prefer its own"). ./gbasic at the repo root has no
+ * ../share, so it fell through to the installed stdlib, which may be older:
+ * Transward ran a fixed interpreter against an unfixed web.bas, and a TLS
+ * security fix that lives half in each did not take, in silence.
+ *
+ * ONE RULE, NOT A GUESS: the tree is the one the Makefile baked in
+ * (GBASIC_SOURCE_DIR), and it applies only when the running binary's own
+ * directory IS that tree, both canonical. A `stdlib` merely sitting beside some
+ * binary is never read -- that would let whoever can write beside a binary
+ * choose the code it loads. An installed or released copy is somewhere else,
+ * so it never applies there. */
+static const char *gb_source_tree_stdlib(char *resolved, size_t resolved_size) {
+    resolved[0] = '\0';
+#ifdef GBASIC_SOURCE_DIR
+    char exe[PATH_MAX];
+    if (!gb_exe_path(exe, sizeof exe)) {
+        return NULL;
+    }
+    char *slash = strrchr(exe, '/');
+    if (!slash) {
+        return NULL;
+    }
+    *slash = '\0';
+    char *here = gb_realpath(exe);
+    char *tree = gb_realpath(GBASIC_SOURCE_DIR);
+    int same = here && tree && strcmp(here, tree) == 0;
+    free(here);
+    if (!same) {
+        free(tree);
+        return NULL;
+    }
+    int written = snprintf(resolved, resolved_size, "%s/stdlib", tree);
+    free(tree);
+    struct stat st;
+    if (written < 0 || (size_t)written >= resolved_size || gb_stat(resolved, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        resolved[0] = '\0';
+        return NULL;
+    }
+    return resolved;
+#else
+    (void)resolved_size;
+    return NULL;
+#endif
+}
+
 const char *gb_exe_relative_stdlib(void) {
     static char resolved[PATH_MAX];
     static int computed = 0;
     if (!computed) {
         computed = 1;
-        gb_exe_relative_share("stdlib", resolved, sizeof resolved);
+        if (!gb_source_tree_stdlib(resolved, sizeof resolved)) {
+            gb_exe_relative_share("stdlib", resolved, sizeof resolved);
+        }
     }
     return resolved[0] ? resolved : NULL;
 }
