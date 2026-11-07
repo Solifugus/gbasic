@@ -178,6 +178,28 @@
 = INSERT INTO t SELECT * FROM u
 > insert into t values (1) returning a
 ! UNSUPPORTED 26 RETURNING
+> insert into t values (1) on conflict (a) do update set b = excluded.b returning a
+! UNSUPPORTED 71 RETURNING
+> insert into t (k, v) values (:k, :v) on conflict (k) do update set v = excluded.v, n = t.n + 1 where t.v <> excluded.v
+= INSERT INTO t (k, v) VALUES (:k, :v) ON CONFLICT (k) DO UPDATE SET v = excluded.v, n = (t.n + 1) WHERE (t.v <> excluded.v)
+> insert into t values (1, 2) on conflict do nothing
+= INSERT INTO t VALUES (1, 2) ON CONFLICT DO NOTHING
+> insert into t select * from u on conflict (a, b) do update set c = default
+= INSERT INTO t SELECT * FROM u ON CONFLICT (a, b) DO UPDATE SET c = DEFAULT
+> insert into t values (1) on conflict (a) do
+! SYNTAX 44 ON CONFLICT is followed by DO NOTHING or DO UPDATE SET
+> insert into t values (1) on conflict on constraint t_pkey do nothing
+! UNSUPPORTED 38 ON CONFLICT ON CONSTRAINT is not in this release
+> insert into t values (1) on duplicate key update a = 1
+! SYNTAX 29 ON after an INSERT's rows is ON CONFLICT
+> insert or ignore into t values (1)
+! UNSUPPORTED 8 INSERT OR IGNORE is SQLite's spelling: write INSERT INTO ... ON CONFLICT DO NOTHING
+> insert or replace into t values (1)
+! UNSUPPORTED 8 INSERT OR REPLACE is SQLite's spelling
+> select key, value from settings where key = 'a'
+= SELECT key, value FROM settings WHERE (key = 'a')
+> create table settings (key text primary key, value text)
+= CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT)
 > drop t
 ! SYNTAX 6 expected TABLE, INDEX or VIEW after DROP
 > alter table t drop column a
@@ -338,7 +360,25 @@
 > alter table t drop constraint fk
 = ALTER TABLE t DROP CONSTRAINT fk
 > create table t (a int references u on delete cascade)
-! UNSUPPORTED 36 ON DELETE and ON UPDATE actions are not in this release
+= CREATE TABLE t (a INTEGER, FOREIGN KEY (a) REFERENCES u ON DELETE CASCADE)
+> create table t (a int, foreign key (a) references u (b) on update no action on delete cascade not enforced)
+= CREATE TABLE t (a INTEGER, FOREIGN KEY (a) REFERENCES u (b) ON DELETE CASCADE NOT ENFORCED)
+> create table t (a int references u on delete no action)
+= CREATE TABLE t (a INTEGER, FOREIGN KEY (a) REFERENCES u)
+> alter table t add constraint fk foreign key (a) references u on delete cascade
+= ALTER TABLE t ADD CONSTRAINT fk FOREIGN KEY (a) REFERENCES u ON DELETE CASCADE
+> create table t (a int references u on delete cascade on delete no action)
+! SYNTAX 54 ON DELETE is written twice
+> create table t (a int references u on delete set null)
+! UNSUPPORTED 46 ON DELETE: SET NULL and SET DEFAULT are not in this release of G-SQL: CASCADE deletes the rows
+> create table t (a int references u on delete restrict)
+! UNSUPPORTED 46 ON DELETE: RESTRICT is not in this release
+> create table t (a int references u on update cascade)
+! UNSUPPORTED 46 ON UPDATE CASCADE is not in this release of G-SQL: a key still referenced cannot change
+> create table t (a int references u on delete)
+! SYNTAX 45 ON DELETE takes CASCADE or NO ACTION
+> create table t (a int references u on insert cascade)
+! SYNTAX 39 ON after REFERENCES is ON DELETE or ON UPDATE
 > create table t (a int references u match full)
 ! UNSUPPORTED 36 MATCH is not in this release
 > create table t (a int references u deferrable)

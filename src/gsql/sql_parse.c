@@ -435,7 +435,7 @@ static const char *const reserved[] = {
     "add", "all", "alter", "and", "as", "asc", "between", "by", "case", "cast", "column", "create",
     "default", "delete", "desc", "distinct", "drop", "else", "end", "except", "exists", "explain",
     "false", "fetch", "from", "group", "having", "if", "in", "index", "insert", "intersect", "into",
-    "is", "join", "key", "like", "limit", "not", "null", "offset", "on", "or", "order", "primary",
+    "is", "join", "like", "limit", "not", "null", "offset", "on", "or", "order", "primary",
     "select", "set", "table", "then", "true", "union", "unique", "unknown", "update", "values", "when",
     "where", "with", NULL
 };
@@ -662,6 +662,7 @@ static int compound(P *p, SqlStmt *root);
 static int name_list(P *p, SqlNameList *l, int allow_order);
 static SqlStmt *subquery(P *p);
 static int at_word(P *p, const char *w);
+static int accept_word(P *p, const char *w);
 static SqlStmt *query_stmt(P *p);
 static int alias_follows(P *p);
 
@@ -1542,8 +1543,43 @@ static int fkey_tail(P *p, SqlFkey *k) {
     for (;;) {
         uint32_t pos = p->tok.pos;
         if (at_kw(p, "on")) {
-            return fail_at(p, pos, GSQL_UNSUPPORTED, "ON DELETE and ON UPDATE actions are not in this release of "
-                           "G-SQL: a row still referenced cannot be deleted or have its key changed (NO ACTION)");
+            next(p);
+            int del = at_kw(p, "delete");
+            if (!del && !at_kw(p, "update")) {
+                return fail_at(p, p->tok.pos, GSQL_SYNTAX, "ON after REFERENCES is ON DELETE or ON UPDATE");
+            }
+            const char *which = del ? "DELETE" : "UPDATE";
+            if (del ? k->on_delete_pos : k->on_update_pos) {
+                return fail_at(p, pos, GSQL_SYNTAX, "ON %s is written twice", which);
+            }
+            if (del) {
+                k->on_delete_pos = pos;
+            } else {
+                k->on_update_pos = pos;
+            }
+            next(p);
+            uint32_t apos = p->tok.pos;
+            if (accept_word(p, "cascade")) {
+                if (!del) {
+                    return fail_at(p, apos, GSQL_UNSUPPORTED, "ON UPDATE CASCADE is not in this release of G-SQL: "
+                                   "a key still referenced cannot change (NO ACTION)");
+                }
+                k->cascade = 1;
+                continue;
+            }
+            if (accept_word(p, "no")) {
+                if (!accept_word(p, "action")) {
+                    return fail_at(p, p->tok.pos, GSQL_SYNTAX, "NO after ON %s is NO ACTION", which);
+                }
+                continue;
+            }
+            if (at_word(p, "restrict") || at_kw(p, "set")) {
+                const char *what = at_kw(p, "set") ? "SET NULL and SET DEFAULT are" : "RESTRICT is";
+                return fail_at(p, apos, GSQL_UNSUPPORTED, "ON %s: %s not in this release of G-SQL: %s", which, what,
+                               del ? "CASCADE deletes the rows that reference a deleted row, and NO ACTION refuses "
+                               "the delete" : "a key still referenced cannot change (NO ACTION)");
+            }
+            return fail_at(p, apos, GSQL_SYNTAX, "ON %s takes CASCADE or NO ACTION", which);
         }
         if (at_word(p, "match")) {
             return fail_at(p, pos, GSQL_UNSUPPORTED, "MATCH is not in this release of G-SQL: a foreign key with any "
@@ -1797,6 +1833,14 @@ static int alias_follows(P *p) {
 
 static int at_word(P *p, const char *w) {
     return p->tok.kind == T_IDENT && strcmp(p->tok.text, w) == 0;
+}
+
+static int accept_word(P *p, const char *w) {
+    if (at_word(p, w)) {
+        next(p);
+        return 1;
+    }
+    return 0;
 }
 
 /* The tables after the first (docs/gsql_join_design.md §1): `, t`, `CROSS
@@ -2238,7 +2282,95 @@ static SqlExpr *value_or_default(P *p) {
     return expr(p);
 }
 
+/* SET a = v [, ...]: the names into *cols, the values (NULL for DEFAULT) into *sets */
+static int set_list(P *p, SqlNameList *cols, SqlExpr ***sets) {
+    char *names[1024];
+    SqlExpr *vals[1024];
+    size_t n = 0;
+    cols->pos = p->tok.pos;
+    do {
+        if (n == 1024) {
+            return fail_at(p, p->tok.pos, GSQL_SYNTAX, "SET may assign at most 1024 columns");
+        }
+        names[n] = name(p, "a column name");
+        if (!names[n] || !expect_sym(p, "=")) {
+            return 0;
+        }
+        vals[n] = value_or_default(p);
+        if (p->failed) {
+            return 0;
+        }
+        n++;
+    } while (accept_sym(p, ","));
+    cols->cols = sql_alloc(p->arena, sizeof(char *) * n);
+    memcpy(cols->cols, names, sizeof(char *) * n);
+    cols->n = n;
+    *sets = sql_alloc(p->arena, sizeof(SqlExpr *) * n);
+    memcpy(*sets, vals, sizeof(SqlExpr *) * n);
+    return 1;
+}
+
+/* after an INSERT's rows: ON CONFLICT [(cols)] DO NOTHING | DO UPDATE SET
+ * ... [WHERE ...] (docs/gsql_upsert_design.md), and RETURNING refused */
+static int insert_tail(P *p, SqlStmt *s) {
+    if (at_kw(p, "on")) {
+        s->conflict_pos = p->tok.pos;
+        next(p);
+        if (!at_word(p, "conflict")) {
+            return fail_at(p, p->tok.pos, GSQL_SYNTAX, "ON after an INSERT's rows is ON CONFLICT");
+        }
+        next(p);
+        if (at_sym(p, "(") && !name_list(p, &s->conflict_cols, 0)) {
+            return 0;
+        }
+        if (at_kw(p, "on") || at_kw(p, "where")) {
+            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "%s is not in this release of G-SQL: name the columns "
+                           "of the primary key or of a unique index", at_kw(p, "on") ? "ON CONFLICT ON CONSTRAINT"
+                           : "a WHERE on ON CONFLICT's columns");
+        }
+        if (!at_word(p, "do")) {
+            return fail_at(p, p->tok.pos, GSQL_SYNTAX, "ON CONFLICT is followed by DO NOTHING or DO UPDATE SET");
+        }
+        next(p);
+        if (accept_word(p, "nothing")) {
+            s->on_conflict = SQL_CONFLICT_NOTHING;
+        } else if (accept_kw(p, "update")) {
+            s->on_conflict = SQL_CONFLICT_UPDATE;
+            if (!expect_kw(p, "set") || !set_list(p, &s->up_cols, &s->up_sets)) {
+                return 0;
+            }
+            if (accept_kw(p, "where")) {
+                s->up_where = expr(p);
+                if (!s->up_where) {
+                    return 0;
+                }
+            }
+        } else {
+            return fail_at(p, p->tok.pos, GSQL_SYNTAX, "ON CONFLICT is followed by DO NOTHING or DO UPDATE SET");
+        }
+    }
+    if (p->tok.kind == T_IDENT && strcmp(p->tok.text, "returning") == 0) {
+        return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "RETURNING is not in this release of G-SQL");
+    }
+    return 1;
+}
+
 static int insert_stmt(P *p, SqlStmt *s) {
+    if (at_kw(p, "or")) {
+        /* SQLite's spellings, met in schemas brought from it */
+        uint32_t pos = p->tok.pos;
+        next(p);
+        if (at_word(p, "ignore")) {
+            return fail_at(p, pos, GSQL_UNSUPPORTED, "INSERT OR IGNORE is SQLite's spelling: write INSERT INTO ... "
+                           "ON CONFLICT DO NOTHING");
+        }
+        if (at_word(p, "replace")) {
+            return fail_at(p, pos, GSQL_UNSUPPORTED, "INSERT OR REPLACE is SQLite's spelling: write INSERT INTO ... "
+                           "ON CONFLICT (the key's columns) DO UPDATE SET c = excluded.c, ..., which changes the row "
+                           "there rather than deleting it and inserting another");
+        }
+        return fail_at(p, pos, GSQL_SYNTAX, "INSERT is followed by INTO");
+    }
     if (!expect_kw(p, "into")) {
         return 0;
     }
@@ -2251,7 +2383,7 @@ static int insert_stmt(P *p, SqlStmt *s) {
     }
     if (at_kw(p, "select") || at_kw(p, "with")) {
         s->ins_q = query_stmt(p);
-        return s->ins_q != NULL;
+        return s->ins_q != NULL && insert_tail(p, s);
     }
     if (!expect_kw(p, "values")) {
         return 0;
@@ -2294,11 +2426,7 @@ static int insert_stmt(P *p, SqlStmt *s) {
     s->rows = rows;
     s->nrows = nrows;
     s->rowlen = width;
-    if (at_kw(p, "on") || (p->tok.kind == T_IDENT && strcmp(p->tok.text, "returning") == 0)) {
-        return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "%s is not in this release of G-SQL",
-                       at_kw(p, "on") ? "ON CONFLICT" : "RETURNING");
-    }
-    return 1;
+    return insert_tail(p, s);
 }
 
 static int table_and_alias(P *p, SqlStmt *s) {
@@ -2320,29 +2448,9 @@ static int update_stmt(P *p, SqlStmt *s) {
     if (!table_and_alias(p, s) || !expect_kw(p, "set")) {
         return 0;
     }
-    char *cols[1024];
-    SqlExpr *vals[1024];
-    size_t n = 0;
-    s->cols.pos = p->tok.pos;
-    do {
-        if (n == 1024) {
-            return fail_at(p, p->tok.pos, GSQL_SYNTAX, "SET may assign at most 1024 columns");
-        }
-        cols[n] = name(p, "a column name");
-        if (!cols[n] || !expect_sym(p, "=")) {
-            return 0;
-        }
-        vals[n] = value_or_default(p);
-        if (p->failed) {
-            return 0;
-        }
-        n++;
-    } while (accept_sym(p, ","));
-    s->cols.cols = sql_alloc(p->arena, sizeof(char *) * n);
-    memcpy(s->cols.cols, cols, sizeof(char *) * n);
-    s->cols.n = n;
-    s->sets = sql_alloc(p->arena, sizeof(SqlExpr *) * n);
-    memcpy(s->sets, vals, sizeof(SqlExpr *) * n);
+    if (!set_list(p, &s->cols, &s->sets)) {
+        return 0;
+    }
     if (at_kw(p, "from")) {
         return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "UPDATE ... FROM is a join, not in this release of G-SQL");
     }
@@ -3571,6 +3679,9 @@ static void print_fkey(GsqlBuf *o, const SqlFkey *k) {
         v3_put(o, " ", 1);
         print_names(o, &k->ref_cols, 0);
     }
+    if (k->cascade) {
+        puts_(o, " ON DELETE CASCADE");
+    }
     if (k->not_enforced) {
         puts_(o, " NOT ENFORCED");
     }
@@ -3768,18 +3879,39 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
         if (s->ins_q) {
             v3_put(o, " ", 1);
             sql_print_stmt(o, s->ins_q);
-            return;
-        }
-        puts_(o, " VALUES ");
-        for (size_t r = 0; r < s->nrows; r++) {
-            puts_(o, r ? ", (" : "(");
-            for (size_t c = 0; c < s->rowlen; c++) {
-                if (c) {
-                    puts_(o, ", ");
+        } else {
+            puts_(o, " VALUES ");
+            for (size_t r = 0; r < s->nrows; r++) {
+                puts_(o, r ? ", (" : "(");
+                for (size_t c = 0; c < s->rowlen; c++) {
+                    if (c) {
+                        puts_(o, ", ");
+                    }
+                    sql_print_expr(o, s->rows[r][c]);
                 }
-                sql_print_expr(o, s->rows[r][c]);
+                v3_put(o, ")", 1);
             }
-            v3_put(o, ")", 1);
+        }
+        if (s->on_conflict) {
+            puts_(o, " ON CONFLICT");
+            if (s->conflict_cols.n) {
+                v3_put(o, " ", 1);
+                print_names(o, &s->conflict_cols, 0);
+            }
+            if (s->on_conflict == SQL_CONFLICT_NOTHING) {
+                puts_(o, " DO NOTHING");
+            } else {
+                for (size_t k = 0; k < s->up_cols.n; k++) {
+                    puts_(o, k ? ", " : " DO UPDATE SET ");
+                    print_name(o, s->up_cols.cols[k]);
+                    puts_(o, " = ");
+                    sql_print_expr(o, s->up_sets[k]);
+                }
+                if (s->up_where) {
+                    puts_(o, " WHERE ");
+                    sql_print_expr(o, s->up_where);
+                }
+            }
         }
         return;
     case SQ_UPDATE:

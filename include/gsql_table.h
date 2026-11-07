@@ -224,6 +224,11 @@ int gsql_row_insert(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlIn *va
 int gsql_row_update(const GsEngine *e, GsTxn *t, GsqlTable *tb, GsBytes rowkey, const GsqlIn *vals,
                     GsqlBuf *newkey, GsqlError *err);
 int gsql_row_delete(const GsEngine *e, GsTxn *t, GsqlTable *tb, GsBytes rowkey, GsqlError *err);
+/* The key of the row an insert of `vals` collided with in constraint `dup`
+ * (GsqlError.dup: -1 the primary key, i + 1 unique index i), for INSERT ...
+ * ON CONFLICT (docs/gsql_upsert_design.md). */
+int gsql_row_conflict(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlIn *vals, int dup, GsqlBuf *rowkey,
+                      GsqlError *err);
 int gsql_row_get(const GsEngine *e, GsTxn *t, const GsqlTable *tb, GsBytes rowkey, GsqlBuf *row,
                  GsqlError *err);
 

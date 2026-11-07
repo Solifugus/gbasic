@@ -48,5 +48,20 @@ Both hand-checked dynamic statements planned.
 Three gaps are G-SQL's, in the order they block Transward: `ON DELETE
 CASCADE` (a schema cannot be created without it, or without rewriting the
 design's deletions), the upsert (`ON CONFLICT`), and `key` as a name. A fourth
-is a choice: accepting `?`. None is built; they are candidates for Matthew to
-schedule.
+is a choice: accepting `?`.
+
+**The three were built 2026-11-07**, at Matthew's request:
+
+- `ON DELETE CASCADE`: `docs/gsql_fkey_design.md` §6.
+- `INSERT ... ON CONFLICT`: `docs/gsql_upsert_design.md`.
+- `key` is no longer reserved.
+
+Each is checked against SQLite by `tests/gsql/gen_dml_diff.py`. The corpus
+check above was not re-run against them. What changes for Transward:
+
+- its migrations should now run without the two workarounds;
+- `setting_put` runs as written;
+- `INSERT OR IGNORE` and `INSERT OR REPLACE` are refused with the `ON
+  CONFLICT` spelling to use instead.
+
+`?` is still not accepted.

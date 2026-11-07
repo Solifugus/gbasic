@@ -1590,6 +1590,59 @@ out:
     return rc;
 }
 
+int gsql_row_conflict(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlIn *vals, int dup, GsqlBuf *rowkey,
+                      GsqlError *err) {
+    GsBytes *v = malloc((tb->ncols ? tb->ncols : 1) * sizeof *v);
+    if (!v) {
+        abort();
+    }
+    GsqlKey k;
+    gsql_key_init(&k);
+    Entries en = { 0 };
+    int rc = resolve(tb, vals, NULL, v, err);
+    if (rc) {
+        goto out;
+    }
+    if (dup == -1 && tb->nkey) {
+        if ((rc = primary_key(tb, v, &k, err)) != GSQL_OK) {
+            goto out;
+        }
+        GsBytes got;
+        int st = e->get(t, gsql_table_rows_tree(tb), key_bytes(&k), &got);
+        if (st == GS_OK) {
+            v3_set(rowkey, k.bytes, k.length);
+            rc = ok(err);
+        } else {
+            rc = st == GS_NOT_FOUND ? fail(err, GSQL_NOT_FOUND, "%s has no row with that key", tb->name)
+                                    : storage(err, st, "reading a row");
+        }
+        goto out;
+    }
+    if (dup < 1 || (size_t)dup > tb->nidx) {
+        rc = fail(err, GSQL_MISUSE, "%s: no constraint %d to have conflicted in", tb->name, dup);
+        goto out;
+    }
+    if ((rc = entries_build(tb, v, (GsBytes){ NULL, 0 }, &en, err))) {
+        goto out;
+    }
+    size_t i = (size_t)dup - 1;
+    GsBytes got;
+    int st = en.unique_form[i] ? e->get(t, gsql_index_tree(tb, i), key_bytes(&en.k[i]), &got) : GS_NOT_FOUND;
+    if (st == GS_OK) {
+        v3_set(rowkey, got.p, got.n);
+        rc = ok(err);
+    } else {
+        rc = st == GS_NOT_FOUND ? fail(err, GSQL_NOT_FOUND, "%s: unique index %s holds no such value", tb->name,
+                                       tb->idx[i].name)
+                                : storage(err, st, "reading a unique index");
+    }
+out:
+    entries_free(tb, &en);
+    gsql_key_free(&k);
+    free(v);
+    return rc;
+}
+
 int gsql_row_get(const GsEngine *e, GsTxn *t, const GsqlTable *tb, GsBytes rowkey, GsqlBuf *row, GsqlError *err) {
     GsBytes got;
     int st = e->get(t, gsql_table_rows_tree(tb), rowkey, &got);

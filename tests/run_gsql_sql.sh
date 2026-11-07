@@ -36,6 +36,10 @@
 #   set operations differential  DISTINCT and the set operations against
 #                SQLite and the multiset definition, in memory and spilled, and
 #                in the same order spilled (tests/gsql/gen_setop_diff.py)
+#   cascade and upsert differential  ON DELETE CASCADE chains, a table
+#                referencing itself, and INSERT ... ON CONFLICT, each statement
+#                run by SQLite first and every table read back after it
+#                (tests/gsql/gen_dml_diff.py)
 #   order cost   a join written large-first, chosen order against FROM's, as a
 #                ratio, the answers equal and the plan really reordered
 #   order        which table a join reads first, asked of EXPLAIN: smallest
@@ -379,6 +383,26 @@ if command -v python3 >/dev/null 2>&1 && python3 -c 'import sqlite3' 2>/dev/null
     done
 else
     printf '  SKIP set operations differential (no python3 with sqlite3): NOT checked\n'
+fi
+
+printf 'TIER cascade and upsert differential: ON DELETE CASCADE and ON CONFLICT, every after-state read from SQLite\n'
+# every table read back whole after each statement, so a cascade that went
+# too far or not far enough is a difference in rows, not only in a count
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import sqlite3' 2>/dev/null; then
+    for seed in 1 2 3 4 5; do
+        rm -rf "$work/ddiff"
+        mkdir -p "$work/ddiff"
+        if ! python3 tests/gsql/gen_dml_diff.py "$seed" 200 "$work/dd$seed.txt" >"$work/dgen$seed.out" 2>&1; then
+            sed 's/^/       /' "$work/dgen$seed.out"
+            fail "cascade and upsert differential seed $seed: the generator failed"
+            continue
+        fi
+        grep '^census' "$work/dgen$seed.out" | sed 's/^/       seed '"$seed"' /'
+        bounded 120 "$work/sql_test" script "$work/dd$seed.txt" "$work/ddiff/db" >"$work/dd$seed.out" 2>&1
+        verdict "cascade and upsert differential seed $seed (200 statements)" "$work/dd$seed.out" $?
+    done
+else
+    printf '  SKIP cascade and upsert differential (no python3 with sqlite3): CASCADE and ON CONFLICT were NOT checked against SQLite\n'
 fi
 
 printf 'TIER hash cost: an unindexed join hashed against its nested loop, as a ratio\n'

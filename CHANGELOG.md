@@ -16,6 +16,24 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### G-SQL: ON DELETE CASCADE, the upsert, and `key` as a name
+
+- **`REFERENCES t ON DELETE CASCADE`**: deleting a row deletes the rows that
+  reference it, to the end of the chain, a table referencing itself included.
+  A `NO ACTION` key anywhere below refuses the whole delete. `NO ACTION` is
+  now checked against what the statement leaves, so one `DELETE` may remove a
+  parent together with the rows pointing at it, which used to be refused.
+  `SET NULL`, `SET DEFAULT`, `RESTRICT` and `ON UPDATE` actions are still
+  refused by name (Transward §6).
+- **`INSERT ... ON CONFLICT (cols) DO NOTHING`** and **`DO UPDATE SET c =
+  excluded.c, ... [WHERE ...]`**, PostgreSQL's spelling. The row there is
+  read by the table's name and the proposed one as `excluded`; a bare column
+  could be either and is refused, saying what to write. One statement may not
+  change one row twice. SQLite's `INSERT OR IGNORE` and `INSERT OR REPLACE`
+  are refused with the `ON CONFLICT` form to write.
+- **`key` is no longer reserved** in G-SQL's SQL, as in PostgreSQL, so a
+  column may be called `key` unquoted.
+
 ### SSH's cryptography
 
 - **`x25519_keypair`, `x25519_public`, `x25519_shared`** for

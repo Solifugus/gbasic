@@ -232,6 +232,8 @@ typedef struct {
     char *ref;
     SqlNameList ref_cols;
     int not_enforced;
+    int cascade;             /* ON DELETE CASCADE; otherwise NO ACTION */
+    uint32_t on_delete_pos, on_update_pos;   /* where each was written, or 0 */
     uint32_t pos;
 } SqlFkey;
 
@@ -295,6 +297,8 @@ typedef struct {
 } SqlColDef;
 
 
+enum { SQL_CONFLICT_NONE = 0, SQL_CONFLICT_NOTHING, SQL_CONFLICT_UPDATE };
+
 typedef struct SqlStmt {
     SqlStmtKind kind;
     int explain;
@@ -332,6 +336,15 @@ typedef struct SqlStmt {
     size_t nrows, rowlen;
     /* UPDATE: SET cols.cols[i] = sets[i] */
     SqlExpr **sets;
+    /* INSERT ... ON CONFLICT [(conflict_cols)] DO NOTHING, or DO UPDATE SET
+       up_cols.cols[i] = up_sets[i] (NULL: DEFAULT) [WHERE up_where]
+       (docs/gsql_upsert_design.md) */
+    int on_conflict;         /* SQL_CONFLICT_* */
+    uint32_t conflict_pos;
+    SqlNameList conflict_cols;
+    SqlNameList up_cols;
+    SqlExpr **up_sets;
+    SqlExpr *up_where;
     /* CREATE TABLE / ADD COLUMN */
     SqlColDef *coldefs;
     size_t ncoldefs;
@@ -505,6 +518,18 @@ typedef struct SqlPlan {
     /* UPDATE: column positions, and INSERT's: the column each value goes to */
     unsigned *targets;
     size_t ntargets;
+    /* INSERT ... ON CONFLICT (docs/gsql_upsert_design.md): the constraint it
+       answers (-1 the primary key, i + 1 unique index i, 0 any, for DO
+       NOTHING with no columns named); DO UPDATE's values planned in `right`
+       as one SELECT over the table and `excluded` (scan up_excluded), whose
+       output up_out[k] is SET's k-th value (-1 for DEFAULT) to column
+       up_targets[k], and output up_where its WHERE (-1 for none) */
+    int conflict;
+    unsigned *up_targets;
+    long *up_out;
+    size_t nup;
+    long up_where;
+    size_t up_excluded;
     /* a recursive WITH query (docs/gsql_recursive_design.md): `left` its
        anchor, `right` its step, whose scan `rec_self` reads the query;
        UNION ALL or UNION; CYCLE's columns, by position, which add the mark

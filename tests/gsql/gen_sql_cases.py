@@ -745,6 +745,122 @@ stmt("DROP TABLE tx2", "= done 0")
 stmt("CREATE TABLE tx (id INTEGER PRIMARY KEY)", "= done 0")
 stmt("ALTER TABLE tx DROP CONSTRAINT tx_orig_fkey", ("NOT_FOUND", "ALTER", "there is no constraint tx_orig_fkey"))
 
+sec("ON DELETE CASCADE (docs/gsql_fkey_design.md §6)")
+stmt("CREATE TABLE cust (id INTEGER PRIMARY KEY, name TEXT)", "= done 0")
+stmt("INSERT INTO cust VALUES (1, 'ann'), (2, 'bob'), (3, 'cy')", "= done 3")
+stmt("CREATE TABLE ord (id INTEGER PRIMARY KEY, cust INTEGER REFERENCES cust ON DELETE CASCADE)", "= done 0")
+stmt("INSERT INTO ord VALUES (10, 1), (11, 1), (12, 2), (13, NULL), (14, 3)", "= done 5")
+stmt("CREATE TABLE line (ord INTEGER REFERENCES ord ON DELETE CASCADE, n INTEGER, PRIMARY KEY (ord, n))", "= done 0")
+stmt("INSERT INTO line VALUES (10, 1), (10, 2), (11, 1), (12, 1), (14, 1)", "= done 5")
+stmt("CREATE TABLE note (id INTEGER PRIMARY KEY, ord INTEGER REFERENCES ord)", "= done 0")
+stmt("INSERT INTO note VALUES (100, 12)", "= done 1")
+# two levels go with the row; the statement counts only its own
+stmt("DELETE FROM cust WHERE id = 1", "= done 1")
+stmt("SELECT id FROM ord ORDER BY id", "= 12 | 13 | 14")
+stmt("SELECT ord, n FROM line ORDER BY ord, n", "= 12, 1 | 14, 1")
+# a NO ACTION key below a cascade refuses the whole delete, and nothing goes
+stmt("DELETE FROM cust WHERE id = 2",
+     ("FOREIGN_KEY", None, "foreign key `note_ord_fkey`: 1 row of `note` still references a row of `ord` that this "
+      "delete of `cust` reaches by ON DELETE CASCADE"))
+stmt("SELECT count(*) FROM ord", "= 3")
+stmt("DELETE FROM note", "= done 1")
+stmt("DELETE FROM cust WHERE id = 2", "= done 1")
+stmt("SELECT id FROM ord ORDER BY id", "= 13 | 14")
+# a cascade is part of its statement, and a rollback takes it back
+c("begin write")
+stmt("DELETE FROM cust WHERE id = 3", "= done 1")
+stmt("SELECT count(*) FROM line", "= 0")
+c("rollback")
+stmt("SELECT count(*) FROM line", "= 1")
+# a tree: a row and everything under it, and a cycle walked once
+stmt("CREATE TABLE node (id INTEGER PRIMARY KEY, up INTEGER REFERENCES node ON DELETE CASCADE)", "= done 0")
+stmt("INSERT INTO node VALUES (1, NULL), (2, 1), (3, 2), (4, 3), (5, 1), (6, NULL), (7, 6)", "= done 7")
+stmt("DELETE FROM node WHERE id = 2", "= done 1")
+stmt("SELECT id FROM node ORDER BY id", "= 1 | 5 | 6 | 7")
+stmt("UPDATE node SET up = 7 WHERE id = 6", "= done 1")
+stmt("DELETE FROM node WHERE id = 6", "= done 1")
+stmt("SELECT id FROM node ORDER BY id", "= 1 | 5")
+# NOT ENFORCED is never checked, so it never cascades either
+stmt("CREATE TABLE loose (id INTEGER PRIMARY KEY, n INTEGER REFERENCES node ON DELETE CASCADE NOT ENFORCED)", "= done 0")
+stmt("INSERT INTO loose VALUES (1, 5)", "= done 1")
+stmt("DELETE FROM node WHERE id = 5", "= done 1")
+stmt("SELECT count(*) FROM loose", "= 1")
+# NO ACTION is checked against what the statement leaves: a parent and the
+# rows that reference it may go in one statement
+stmt("DELETE FROM emp", "= done 2")
+# a key changed is still NO ACTION, cascading or not
+stmt("UPDATE cust SET id = 30 WHERE id = 3", ("FOREIGN_KEY", None, "1 row of `ord` still references this row of `cust`"))
+# `key` is a name, as PostgreSQL has it
+stmt("CREATE TABLE settings (key TEXT PRIMARY KEY, value TEXT, n INTEGER DEFAULT 0)", "= done 0")
+stmt("INSERT INTO settings (key, value) VALUES ('a', 'one')", "= done 1")
+stmt("SELECT key, value FROM settings WHERE key = 'a'", "= 'a', 'one'")
+
+sec("INSERT ... ON CONFLICT (docs/gsql_upsert_design.md)")
+# the row there is read by its own names, the proposed one as `excluded`
+stmt("INSERT INTO settings (key, value) VALUES ('a', 'two'), ('b', 'uno') "
+     "ON CONFLICT (key) DO UPDATE SET value = excluded.value, n = settings.n + 1", "= done 2")
+stmt("SELECT key, value, n FROM settings ORDER BY key", "= 'a', 'two', 1 | 'b', 'uno', 0")
+stmt("INSERT INTO settings (key, value) VALUES ($1, $2) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+     "= done 1", params=("1 = 'a'", "2 = 'three'"))
+stmt("SELECT value FROM settings WHERE key = 'a'", "= 'three'")
+# a WHERE that is not true leaves the row, and it is not counted
+stmt("INSERT INTO settings (key, value) VALUES ('a', 'four') ON CONFLICT (key) DO UPDATE SET value = excluded.value "
+     "WHERE settings.n > 5", "= done 0")
+stmt("INSERT INTO settings (key, value) VALUES ('a', 'four') ON CONFLICT (key) DO UPDATE SET value = excluded.value "
+     "WHERE settings.n = 1", "= done 1")
+stmt("INSERT INTO settings (key, value) VALUES ('a', 'x') ON CONFLICT (key) DO UPDATE SET n = DEFAULT", "= done 1")
+stmt("SELECT key, value, n FROM settings ORDER BY key", "= 'a', 'four', 0 | 'b', 'uno', 0")
+# DO NOTHING: with no columns named, any conflict; a row skipped is not counted
+stmt("INSERT INTO settings (key, value) VALUES ('a', 'x'), ('c', 'tres'), ('c', 'again') ON CONFLICT DO NOTHING",
+     "= done 1")
+stmt("SELECT key, value FROM settings ORDER BY key", "= 'a', 'four' | 'b', 'uno' | 'c', 'tres'")
+# one statement may not change one row twice
+stmt("INSERT INTO settings (key, value) VALUES ('d', '1'), ('d', '2') ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+     ("DUPLICATE", "ON CONFLICT", "row 2 of VALUES: ON CONFLICT DO UPDATE would change one row of settings twice: two rows "
+      "this INSERT proposes hold one value of the primary key [part way]"))
+stmt("SELECT count(*) FROM settings WHERE key = 'd'", "= 0")
+# a bare name could be either row
+stmt("INSERT INTO settings (key, value) VALUES ('a', 'x') ON CONFLICT (key) DO UPDATE SET n = n + 1",
+     ("SYNTAX", "n + 1", "column `n` is in both settings and excluded: write settings.n or excluded.n"))
+# what ON CONFLICT may name
+stmt("INSERT INTO settings (key, value) VALUES ('a', 'x') ON CONFLICT (value) DO NOTHING",
+     ("SCHEMA", "(value)", "ON CONFLICT names columns that are not the primary key of settings nor a unique index of it"))
+stmt("INSERT INTO settings (key, value) VALUES ('a', 'x') ON CONFLICT (nope) DO NOTHING",
+     ("NOT_FOUND", "(nope)", "ON CONFLICT names `nope`, which is not a column of settings"))
+stmt("INSERT INTO settings (key, value) VALUES ('a', 'x') ON CONFLICT DO UPDATE SET value = 'y'",
+     ("SYNTAX", "ON CONFLICT", "ON CONFLICT DO UPDATE names the columns whose conflict it answers"))
+stmt("INSERT INTO settings (key, value) VALUES ('a', 'x') ON CONFLICT (key) DO UPDATE SET key = 'z'",
+     ("UNSUPPORTED", "key = 'z'", "ON CONFLICT DO UPDATE setting `key`, a column of settings's primary key, is not in "
+      "this release of G-SQL"))
+stmt("INSERT INTO settings (key, value) VALUES ('a', 'x') ON CONFLICT (key) DO UPDATE SET value = (SELECT max(value) FROM settings)",
+     ("UNSUPPORTED", "ON CONFLICT", "ON CONFLICT DO UPDATE reads only the row it updates and `excluded`"))
+stmt("INSERT INTO settings (key, value) VALUES ('a', 'x') ON CONFLICT (key) DO UPDATE SET value = 'y' WHERE 3",
+     ("EXPRESSION", "3", "ON CONFLICT DO UPDATE's WHERE is not a condition: it answers a number"))
+# a unique index, found in either order; a conflict elsewhere still refuses
+stmt("CREATE TABLE login (id INTEGER PRIMARY KEY, org TEXT, email TEXT, hits INTEGER CHECK (hits < 100), UNIQUE (org, email))",
+     "= done 0")
+stmt("INSERT INTO login VALUES (1, 'x', 'a@x', 1)", "= done 1")
+stmt("INSERT INTO login VALUES (2, 'x', 'a@x', 5) ON CONFLICT (email, org) DO UPDATE SET hits = login.hits + excluded.hits",
+     "= done 1")
+stmt("SELECT id, hits FROM login", "= 1, 6")
+stmt("INSERT INTO login VALUES (1, 'y', 'b@y', 1) ON CONFLICT (org, email) DO NOTHING",
+     ("DUPLICATE", None, "login: the primary key already holds that value"))
+# the update is checked as an UPDATE's row is
+stmt("INSERT INTO login VALUES (3, 'x', 'a@x', 1) ON CONFLICT (org, email) DO UPDATE SET hits = 500",
+     ("CHECK", None, "check `login_hits_check` refuses this row of `login`"))
+stmt("INSERT INTO login VALUES (4, 'y', 'b@y', 1)", "= done 1")
+stmt("INSERT INTO login VALUES (5, 'x', 'a@x', 1) ON CONFLICT (org, email) DO UPDATE SET org = 'y', email = 'b@y'",
+     ("DUPLICATE", None, "unique index login_org_email_key already holds that value"))
+# from a query, and its rows' serials are taken only by the rows written
+stmt("INSERT INTO login SELECT id + 10, org, email, 9 FROM login ON CONFLICT (org, email) DO UPDATE SET hits = excluded.hits",
+     "= done 2")
+stmt("SELECT id, hits FROM login ORDER BY id", "= 1, 9 | 4, 9")
+stmt("CREATE TABLE tick (k TEXT PRIMARY KEY, n INTEGER SERIAL, v TEXT)", "= done 0")
+stmt("INSERT INTO tick (k, v) VALUES ('a', '1'), ('b', '1')", "= done 2")
+stmt("INSERT INTO tick (k, v) VALUES ('a', '2') ON CONFLICT (k) DO UPDATE SET v = excluded.v", "= done 1")
+stmt("INSERT INTO tick (k, v) VALUES ('c', '1')", "= done 1")
+stmt("SELECT k, n, v FROM tick ORDER BY k", "= 'a', 1, '2' | 'b', 2, '1' | 'c', 3, '1'")
+
 sec("INSERT ... SELECT (docs/gsql_insert_select_design.md)")
 stmt("CREATE TABLE src (id INTEGER PRIMARY KEY, k INTEGER, note TEXT DEFAULT 'none')", "= done 0")
 stmt("INSERT INTO src VALUES (1, 10, 'a'), (2, 20, 'b'), (3, NULL, 'c')", "= done 3")

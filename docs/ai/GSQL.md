@@ -147,7 +147,11 @@ how to read them is `10_when_sql_says_no.bas`; a write that is safe to retry is
 ## The SQL you have
 
 Tables with primary keys, `UNIQUE`, `NOT NULL`, defaults, `CHECK`, foreign keys
-onto a primary key, `SERIAL` and `RANDOM` keys (`05_keys_serial_and_random.bas`);
+onto a primary key (`ON DELETE CASCADE` or the default `NO ACTION`), `SERIAL` and
+`RANDOM` keys (`05_keys_serial_and_random.bas`); the upsert, `INSERT ... ON
+CONFLICT (cols) DO UPDATE SET v = excluded.v` or `DO NOTHING`, where the row
+already there is read by the table's name and the proposed one as `excluded`
+(a bare column could be either, and is refused saying so);
 `ADD COLUMN`, `RENAME TO` and views (`08_views_and_changing_the_schema.bas`);
 `INNER`, `LEFT` and `CROSS` joins; aggregates with `GROUP BY` and `HAVING`;
 `DISTINCT`; `UNION`/`INTERSECT`/`EXCEPT` with `ALL`; subqueries; derived tables
@@ -173,7 +177,10 @@ them.
 ## What is not there (each refused by name, so you will see a sentence)
 
 `RIGHT JOIN` (write a `LEFT JOIN` with the tables swapped) and `FULL JOIN`;
-`ON CONFLICT` / upsert, and `RETURNING`; `CREATE TEMPORARY TABLE` (use a scratch
+`RETURNING`; SQLite's `INSERT OR IGNORE` / `INSERT OR REPLACE` (write `ON
+CONFLICT`); `ON DELETE SET NULL`, `SET DEFAULT`, `RESTRICT` and any `ON UPDATE`
+action but `NO ACTION`; an `ON CONFLICT DO UPDATE` that changes the primary key;
+`CREATE TEMPORARY TABLE` (use a scratch
 database); `stddev`, `variance` and median (fetch the rows and use the `stats`
 library); `ILIKE` (compare `lower(x)`); `NULLS FIRST`/`NULLS LAST`; named windows
 (`WINDOW w AS`, `OVER w`; write the window in each `OVER`); `SEARCH` on a

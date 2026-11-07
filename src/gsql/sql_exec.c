@@ -5011,8 +5011,11 @@ static void changes_free(Change *v, size_t n, size_t ntargets) {
 /* ---- foreign keys (docs/gsql_fkey_design.md) -------------------------------
  *
  * A foreign key is stored by its name as { format, table, columns, references,
- * ref_columns, enforced, bound }: names, never positions, so it survives ADD
- * COLUMN and a rebuilt parent. It BINDS by name to its referenced table's
+ * ref_columns, enforced, bound [, on_delete] }: names, never positions, so it
+ * survives ADD COLUMN and a rebuilt parent. `on_delete` is written only for
+ * CASCADE, so a NO ACTION key's record is what it was before CASCADE existed,
+ * and a release without CASCADE reading a cascading key refuses the delete
+ * rather than deleting more than it was asked to. It BINDS by name to its referenced table's
  * primary key; while it does not, nothing is checked, and a schema change says
  * so (2119). The checks run before a row is written, as UNIQUE's do. */
 
@@ -5021,6 +5024,7 @@ typedef struct {
     char **cols, **ref_cols;
     size_t ncols, nref;
     int enforced, bound;
+    int cascade;             /* ON DELETE CASCADE */
 } FkRec;
 
 static void fk_free(FkRec *k) {
@@ -5071,12 +5075,18 @@ static int fk_read(const char *name, const GsqlBuf *b, FkRec *k) {
     if (bd) {
         v3_read_bool(bd->v, bd->vlen, &k->bound);
     }
+    const V3Field *od = v3_field_named(f, n, "on_delete");
+    if (od) {
+        char *a = v3_read_text(od->v, od->vlen);
+        k->cascade = a && strcmp(a, "cascade") == 0;
+        free(a);
+    }
     return k->table && k->ref;
 }
 
 static void fk_write(GsqlBuf *out, const FkRec *k) {
     out->length = 0;
-    v3_w_record(out, 8);
+    v3_w_record(out, k->cascade ? 9 : 8);
     v3_w_name(out, "format");
     v3_w_int(out, 1);
     v3_w_name(out, "kind");
@@ -5099,6 +5109,10 @@ static void fk_write(GsqlBuf *out, const FkRec *k) {
     v3_w_bool(out, k->enforced);
     v3_w_name(out, "bound");
     v3_w_bool(out, k->bound);
+    if (k->cascade) {
+        v3_w_name(out, "on_delete");
+        v3_w_text(out, "cascade");
+    }
 }
 
 static int fk_put(X *x, const FkRec *k, int replace) {
@@ -5380,6 +5394,351 @@ static int fk_check_parent(X *x, const FkList *fks, GsqlTable *parent, const GsB
         }
     }
     return GSQL_OK;
+}
+
+/* ---- ON DELETE CASCADE (docs/gsql_fkey_design.md §6) ----------------------
+ *
+ * A DELETE's rows are gathered with every row a cascading foreign key takes
+ * with them, to the end of the chain, before anything is removed: a level of
+ * rows at a time, each child table walked once per level for the keys of all
+ * the rows that level found. Then each NO ACTION key is checked against what
+ * will be left: a row is still referenced only by a row that is not itself
+ * being removed, so one statement may delete a parent and the rows that point
+ * at it. Then everything gathered is deleted, and the statement's own rows
+ * are the ones counted. */
+
+typedef struct {
+    char *table;
+    GsqlTable *tb;            /* the statement's own is borrowed */
+    int borrowed;
+    GsqlBuf *keys;            /* row keys, in the order they were gathered */
+    size_t n, cap;
+    size_t followed;          /* the rows already followed to their children */
+    KeyMap map;
+} DelTable;
+
+typedef struct {
+    DelTable *v;
+    size_t n;
+} DelSet;
+
+static const GsqlBuf *del_key_of(void *ctx, size_t i) {
+    return &((DelTable *)ctx)->keys[i];
+}
+
+static void del_set_free(DelSet *ds) {
+    for (size_t i = 0; i < ds->n; i++) {
+        DelTable *d = &ds->v[i];
+        for (size_t k = 0; k < d->n; k++) {
+            gsql_buf_free(&d->keys[k]);
+        }
+        free(d->keys);
+        free(d->map.slot);
+        if (!d->borrowed && d->tb) {
+            gsql_table_close(d->tb);
+        }
+        free(d->table);
+    }
+    free(ds->v);
+    memset(ds, 0, sizeof *ds);
+}
+
+/* the set's entry for `table`, added (and opened) when it has none: its
+ * index, or -1 when there is no such table */
+static long del_table(X *x, DelSet *ds, const char *table, GsqlTable *borrow) {
+    for (size_t i = 0; i < ds->n; i++) {
+        if (strcmp(ds->v[i].table, table) == 0) {
+            return (long)i;
+        }
+    }
+    DelTable *g = realloc(ds->v, sizeof *g * (ds->n + 1));
+    if (!g) {
+        abort();
+    }
+    ds->v = g;
+    DelTable *d = &ds->v[ds->n];
+    memset(d, 0, sizeof *d);
+    d->table = dup_cstr(table);
+    if (borrow) {
+        d->tb = borrow;
+        d->borrowed = 1;
+    } else {
+        GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
+        if (gsql_table_open(x->e, x->t, table, &d->tb, &e) != GSQL_OK) {
+            free(d->table);
+            return -1;   /* not there: a key on it binds to nothing */
+        }
+    }
+    return (long)ds->n++;
+}
+
+/* 1 when `key` was added, 0 when the table already had it */
+static int del_add(DelTable *d, const unsigned char *key, size_t n) {
+    if (keymap_find(&d->map, del_key_of, d, key, n, 0)) {
+        return 0;
+    }
+    if (d->n == d->cap) {
+        d->cap = d->cap ? d->cap * 2 : 64;
+        d->keys = realloc(d->keys, sizeof(GsqlBuf) * d->cap);
+        if (!d->keys) {
+            abort();
+        }
+    }
+    memset(&d->keys[d->n], 0, sizeof(GsqlBuf));
+    v3_put(&d->keys[d->n], key, n);
+    d->n++;
+    keymap_find(&d->map, del_key_of, d, key, n, d->n);
+    return 1;
+}
+
+static int del_has(DelTable *d, const unsigned char *key, size_t n) {
+    /* keymap_find makes its table on first use, even to look: not for an empty one */
+    return d->n && keymap_find(&d->map, del_key_of, d, key, n, 0) != 0;
+}
+
+/* The referenced values of rows [from, to) of `d`, each as a key encoding
+ * in `want` (empty for a row whose values hold an absence, which nothing
+ * references), with `map` finding them. */
+typedef struct {
+    GsqlBuf *v;
+    size_t n;
+} WantKeys;
+
+static const GsqlBuf *want_key_of(void *ctx, size_t i) {
+    return &((WantKeys *)ctx)->v[i];
+}
+
+static int del_wanted(X *x, DelTable *d, size_t from, size_t to, const unsigned *ppos, size_t ncols, WantKeys *want,
+                      KeyMap *map, size_t **slot_row) {
+    want->v = calloc(to - from ? to - from : 1, sizeof(GsqlBuf));
+    *slot_row = calloc(to - from ? to - from : 1, sizeof(size_t));
+    if (!want->v || !*slot_row) {
+        abort();
+    }
+    want->n = 0;
+    GsqlBuf row = {0};
+    int rc = GSQL_OK;
+    for (size_t r = from; r < to && rc == GSQL_OK; r++) {
+        rc = gsql_row_get(x->e, x->t, d->tb, (GsBytes){ d->keys[r].bytes, d->keys[r].length }, &row, x->err);
+        GsBytes v[64];
+        int absent = 0;
+        for (size_t c = 0; rc == GSQL_OK && c < ncols; c++) {
+            rc = gsql_row_value(d->tb, row.bytes, row.length, ppos[c], &v[c], x->err);
+            absent |= rc == GSQL_OK && is_absent_bytes(&v[c]);
+        }
+        if (rc != GSQL_OK || absent) {
+            continue;
+        }
+        GsqlKey k;
+        gsql_key_init(&k);
+        if (fk_key(v, ncols, &k) && !keymap_find(map, want_key_of, want, k.bytes, k.length, 0)) {
+            memset(&want->v[want->n], 0, sizeof(GsqlBuf));
+            v3_put(&want->v[want->n], k.bytes, k.length);
+            (*slot_row)[want->n] = r;
+            want->n++;
+            keymap_find(map, want_key_of, want, k.bytes, k.length, want->n);
+        }
+        gsql_key_free(&k);
+    }
+    gsql_buf_free(&row);
+    return rc;
+}
+
+static void want_free(WantKeys *w, KeyMap *map, size_t *slot_row) {
+    for (size_t i = 0; i < w->n; i++) {
+        gsql_buf_free(&w->v[i]);
+    }
+    free(w->v);
+    free(map->slot);
+    free(slot_row);
+    memset(w, 0, sizeof *w);
+    memset(map, 0, sizeof *map);
+}
+
+/* One walk of a child's rows against the wanted keys: each matching row is
+ * handed to `each` with the wanted key's slot (1-based) and the row's key. */
+static int del_walk(X *x, GsqlTable *child, const unsigned *cpos, size_t ncols, WantKeys *want, KeyMap *map,
+                    int (*each)(void *ctx, size_t slot, const unsigned char *rowkey, size_t n), void *ctx) {
+    GsCursor *c = NULL;
+    int st = x->e->cursor_open(x->t, gsql_table_rows_tree(child), &c);
+    if (st) {
+        return xfail(x->err, GSQL_STORAGE, 0, "a cursor could not be opened: the engine answered %s",
+                     gs_status_name(st));
+    }
+    int at = 0, rc = GSQL_OK;
+    for (st = x->e->first(c, &at); !st && at && rc == GSQL_OK; st = x->e->next(c, &at)) {
+        GsBytes row, key;
+        if (x->e->value(c, &row) || x->e->key(c, &key)) {
+            break;
+        }
+        GsBytes v[64];
+        int absent = 0;
+        for (size_t i = 0; i < ncols && rc == GSQL_OK; i++) {
+            rc = gsql_row_value(child, row.p, row.n, cpos[i], &v[i], x->err);
+            absent |= rc == GSQL_OK && is_absent_bytes(&v[i]);
+        }
+        if (rc != GSQL_OK || absent) {
+            continue;
+        }
+        GsqlKey k;
+        gsql_key_init(&k);
+        size_t slot = fk_key(v, ncols, &k) ? keymap_find(map, want_key_of, want, k.bytes, k.length, 0) : 0;
+        gsql_key_free(&k);
+        if (slot) {
+            rc = each(ctx, slot, key.p, key.n);
+        }
+    }
+    x->e->cursor_close(c);
+    return rc;
+}
+
+typedef struct {
+    DelTable *child;
+} CascadeCtx;
+
+static int cascade_each(void *ctx, size_t slot, const unsigned char *rowkey, size_t n) {
+    (void)slot;
+    del_add(((CascadeCtx *)ctx)->child, rowkey, n);
+    return GSQL_OK;
+}
+
+typedef struct {
+    DelTable *child;
+    uint64_t *count;
+} StillCtx;
+
+static int still_each(void *ctx, size_t slot, const unsigned char *rowkey, size_t n) {
+    StillCtx *s = ctx;
+    if (!del_has(s->child, rowkey, n)) {
+        s->count[slot - 1]++;
+    }
+    return GSQL_OK;
+}
+
+/* Every row a DELETE of `ch` removes, gathered into `ds` (entry 0 the
+ * statement's table, its first n rows the statement's own), or the NO ACTION
+ * key that refuses it. */
+static int del_gather(X *x, GsqlTable *tb, const Change *ch, size_t n, DelSet *ds) {
+    memset(ds, 0, sizeof *ds);
+    FkList fks;
+    int rc = fk_all(x, &fks);
+    if (rc != GSQL_OK) {
+        return rc;
+    }
+    del_table(x, ds, gsql_table_name(tb), tb);
+    for (size_t k = 0; k < n; k++) {
+        del_add(&ds->v[0], ch[k].key.bytes, ch[k].key.length);
+    }
+    /* follow the cascades a level at a time, until a level finds nothing new */
+    for (int moved = 1; moved && rc == GSQL_OK;) {
+        moved = 0;
+        for (size_t i = 0; i < ds->n && rc == GSQL_OK; i++) {
+            size_t from = ds->v[i].followed, to = ds->v[i].n;
+            if (from == to) {
+                continue;
+            }
+            moved = 1;
+            for (size_t f = 0; f < fks.n && rc == GSQL_OK; f++) {
+                const FkRec *k = &fks.v[f];
+                if (!k->cascade || !k->enforced || !k->bound || strcmp(k->ref, ds->v[i].table) != 0 ||
+                    k->ncols > 64) {
+                    continue;
+                }
+                long ci = del_table(x, ds, k->table, NULL);
+                if (ci < 0) {
+                    continue;
+                }
+                GsqlTable *parent = NULL;
+                unsigned cpos[64], ppos[64];
+                char why[300];
+                if (!fk_bind(x, k, ds->v[ci].tb, &parent, cpos, ppos, why, sizeof why)) {
+                    continue;   /* not bound now: the re-check will have said so */
+                }
+                gsql_table_close(parent);
+                WantKeys want;
+                KeyMap map;
+                memset(&map, 0, sizeof map);
+                size_t *slot_row = NULL;
+                rc = del_wanted(x, &ds->v[i], from, to, ppos, k->ncols, &want, &map, &slot_row);
+                if (rc == GSQL_OK && want.n) {
+                    CascadeCtx cc = { &ds->v[ci] };
+                    rc = del_walk(x, ds->v[ci].tb, cpos, k->ncols, &want, &map, cascade_each, &cc);
+                }
+                want_free(&want, &map, slot_row);
+            }
+            ds->v[i].followed = to;
+        }
+    }
+    /* then NO ACTION, against what will be left */
+    for (size_t i = 0; i < ds->n && rc == GSQL_OK; i++) {
+        for (size_t f = 0; f < fks.n && rc == GSQL_OK; f++) {
+            const FkRec *k = &fks.v[f];
+            if (k->cascade || !k->enforced || !k->bound || strcmp(k->ref, ds->v[i].table) != 0 || k->ncols > 64) {
+                continue;
+            }
+            GsqlTable *child = NULL, *parent = NULL;
+            GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
+            if (gsql_table_open(x->e, x->t, k->table, &child, &e) != GSQL_OK) {
+                continue;
+            }
+            unsigned cpos[64], ppos[64];
+            char why[300];
+            if (!fk_bind(x, k, child, &parent, cpos, ppos, why, sizeof why)) {
+                gsql_table_close(child);
+                continue;
+            }
+            gsql_table_close(parent);
+            /* the rows of the child being removed too, when it is in the set */
+            DelTable none;
+            memset(&none, 0, sizeof none);
+            DelTable *gone = &none;
+            for (size_t j = 0; j < ds->n; j++) {
+                if (strcmp(ds->v[j].table, k->table) == 0) {
+                    gone = &ds->v[j];
+                }
+            }
+            WantKeys want;
+            KeyMap map;
+            memset(&map, 0, sizeof map);
+            size_t *slot_row = NULL;
+            rc = del_wanted(x, &ds->v[i], 0, ds->v[i].n, ppos, k->ncols, &want, &map, &slot_row);
+            uint64_t *count = calloc(want.n ? want.n : 1, sizeof(uint64_t));
+            if (!count) {
+                abort();
+            }
+            if (rc == GSQL_OK && want.n) {
+                StillCtx sc = { gone, count };
+                rc = del_walk(x, child, cpos, k->ncols, &want, &map, still_each, &sc);
+            }
+            /* the first row, in the order gathered, that is still referenced */
+            size_t first = SIZE_MAX;
+            for (size_t w = 0; rc == GSQL_OK && w < want.n; w++) {
+                if (count[w] && (first == SIZE_MAX || slot_row[w] < slot_row[first])) {
+                    first = w;
+                }
+            }
+            if (first != SIZE_MAX) {
+                uint64_t c = count[first];
+                if (i == 0 && slot_row[first] < n) {
+                    rc = xfail(x->err, GSQL_FOREIGN_KEY, 0, "foreign key `%s`: %llu row%s of `%s` still reference%s "
+                               "this row of `%s`", k->name, (unsigned long long)c, c == 1 ? "" : "s", k->table,
+                               c == 1 ? "s" : "", k->ref);
+                } else {
+                    /* a row the statement did not name, reached by a cascade */
+                    rc = xfail(x->err, GSQL_FOREIGN_KEY, 0, "foreign key `%s`: %llu row%s of `%s` still reference%s "
+                               "a row of `%s` that this delete of `%s` reaches by ON DELETE CASCADE", k->name,
+                               (unsigned long long)c, c == 1 ? "" : "s", k->table, c == 1 ? "s" : "", k->ref,
+                               ds->v[0].table);
+                }
+                gsql_error_about(x->err, k->ref, NULL, k->name);   /* the row being removed is the parent's */
+            }
+            free(count);
+            want_free(&want, &map, slot_row);
+            gsql_table_close(child);
+        }
+    }
+    fk_list_free(&fks);
+    return rc;
 }
 
 /* every value of a table's row, defaults and absences resolved */
@@ -6101,9 +6460,9 @@ static int gen_redraws(GsqlTable *tb, const GenSet *g, const int *omitted, int d
 
 #define GEN_DRAWS 32
 
-/* Every change an UPDATE or DELETE collected, checked against the foreign
- * keys before any is applied: a deleted row, or one whose key changes, must
- * not still be referenced; an updated child row must find its parent. */
+/* Every change an UPDATE collected, checked against the foreign keys before
+ * any is applied: a row whose key changes must not still be referenced, and
+ * an updated child row must find its parent. A DELETE's are del_gather's. */
 static int fk_check_changes(X *x, GsqlTable *tb, const SqlStmt *s, const Change *ch, size_t n, const SqlPlan *p) {
     FkList fks;
     int rc = fk_all(x, &fks);
@@ -6132,10 +6491,6 @@ static int fk_check_changes(X *x, GsqlTable *tb, const SqlStmt *s, const Change 
         }
         if (rc != GSQL_OK) {
             break;
-        }
-        if (s->kind == SQ_DELETE) {
-            rc = fk_check_parent(x, &fks, tb, oldv);
-            continue;
         }
         for (size_t j = 0; j < p->ntargets; j++) {
             const GsqlColumn *col = gsql_table_col(tb, p->targets[j]);
@@ -6342,13 +6697,16 @@ static int run_update_delete(GsqlSql *q, X *x, GsqlResult *out) {
         return err->code ? err->code : GSQL_EXPRESSION;
     }
     size_t ncols = gsql_table_ncols(p->tb);
-    rc = fk_check_changes(x, p->tb, s, ch, n, p);
+    DelSet ds;
+    memset(&ds, 0, sizeof ds);
+    rc = s->kind == SQ_DELETE ? del_gather(x, p->tb, ch, n, &ds) : fk_check_changes(x, p->tb, s, ch, n, p);
     Bump *bumps = NULL;
     size_t nbumps = 0;
     if (rc == GSQL_OK && s->kind == SQ_UPDATE) {
         rc = gen_check_updates(x, p->tb, p, ch, n, &bumps, &nbumps);
     }
     if (rc != GSQL_OK) {
+        del_set_free(&ds);
         bumps_free(bumps, nbumps);
         changes_free(ch, n, p->ntargets);
         return rc;
@@ -6384,6 +6742,14 @@ static int run_update_delete(GsqlSql *q, X *x, GsqlResult *out) {
             done++;
         }
     }
+    /* and what the cascades gathered, which the statement does not count */
+    for (size_t i = 0; rc == GSQL_OK && i < ds.n; i++) {
+        for (size_t k = i ? 0 : n; rc == GSQL_OK && k < ds.v[i].n; k++) {
+            rc = gsql_row_delete(x->e, x->t, ds.v[i].tb, (GsBytes){ ds.v[i].keys[k].bytes, ds.v[i].keys[k].length },
+                                 err);
+        }
+    }
+    del_set_free(&ds);
     free(vals);
     changes_free(ch, n, p->ntargets);
     if (rc == GSQL_OK) {
@@ -6433,6 +6799,178 @@ static int insert_rows(X *x, RowStore *out) {
     return rc;
 }
 
+/* ---- INSERT ... ON CONFLICT (docs/gsql_upsert_design.md) -------------------
+ *
+ * A row the INSERT proposed that collides, in the constraint ON CONFLICT
+ * names, with a row already there: DO NOTHING leaves both as they are; DO
+ * UPDATE changes the row already there as SET says, reading it by its own
+ * names and the proposed row as `excluded`, unless WHERE is not true. Either
+ * way the proposed row is not written, so its serials are not taken. The
+ * update is checked as an UPDATE's row is (CHECK, its foreign keys, unique
+ * indexes); one statement may not change one row twice, since which of two
+ * proposals should win is the statement's to say and it did not. */
+
+typedef struct {
+    GsqlBuf *v;
+    size_t n, cap;
+    KeyMap map;
+} Touched;
+
+static const GsqlBuf *touched_key_of(void *ctx, size_t i) {
+    return &((Touched *)ctx)->v[i];
+}
+
+/* 1 when `key` was added, 0 when this statement already touched that row */
+static int touched_add(Touched *t, const GsqlBuf *key) {
+    if (keymap_find(&t->map, touched_key_of, t, key->bytes, key->length, 0)) {
+        return 0;
+    }
+    if (t->n == t->cap) {
+        t->cap = t->cap ? t->cap * 2 : 16;
+        t->v = realloc(t->v, sizeof(GsqlBuf) * t->cap);
+        if (!t->v) {
+            abort();
+        }
+    }
+    memset(&t->v[t->n], 0, sizeof(GsqlBuf));
+    v3_put(&t->v[t->n], key->bytes, key->length);
+    t->n++;
+    keymap_find(&t->map, touched_key_of, t, key->bytes, key->length, t->n);
+    return 1;
+}
+
+static void touched_free(Touched *t) {
+    for (size_t i = 0; i < t->n; i++) {
+        gsql_buf_free(&t->v[i]);
+    }
+    free(t->v);
+    free(t->map.slot);
+    memset(t, 0, sizeof *t);
+}
+
+/* Whether the proposed row `vals` collides in the constraint ON CONFLICT
+ * names (any of them, for DO NOTHING naming none): *found 1 with the row
+ * there's key in *rowkey. */
+static int conflict_probe(X *x, const SqlPlan *p, const GsqlIn *vals, GsqlBuf *rowkey, int *found) {
+    *found = 0;
+    size_t nidx = gsql_table_nindexes(p->tb);
+    for (long c = p->conflict ? p->conflict : -1; c <= (long)nidx; c++) {
+        if (c == 0 || (c == -1 && !gsql_table_nkey(p->tb)) || (c > 0 && !gsql_table_index(p->tb, (size_t)c - 1)->unique)) {
+            continue;
+        }
+        GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
+        int rc = gsql_row_conflict(x->e, x->t, p->tb, vals, (int)c, rowkey, &e);
+        if (rc == GSQL_OK) {
+            *found = 1;
+            return GSQL_OK;
+        }
+        if (rc != GSQL_NOT_FOUND) {
+            *x->err = e;
+            return rc;
+        }
+        if (p->conflict) {
+            break;   /* the one it names */
+        }
+    }
+    return GSQL_OK;
+}
+
+/* DO UPDATE of the row at `rowkey`, `whole` the proposed row: *updated 1
+ * when it changed it, 0 when WHERE kept it as it was. */
+static int upsert_row(X *x, GsqlTable *tb, const GsqlBuf *rowkey, const GsBytes *whole, const FkList *fks,
+                      CkSet *cks, int *updated) {
+    SqlPlan *p = x->p;
+    *updated = 0;
+    size_t ncols = gsql_table_ncols(tb);
+    GsqlBuf row = {0};
+    GsBytes *oldv = calloc(ncols ? ncols : 1, sizeof(GsBytes)), *newv = calloc(ncols ? ncols : 1, sizeof(GsBytes));
+    GsqlIn *vals = calloc(ncols ? ncols : 1, sizeof(GsqlIn));
+    GsqlBuf *bufs = calloc(p->nup ? p->nup : 1, sizeof(GsqlBuf));
+    if (!oldv || !newv || !vals || !bufs) {
+        abort();
+    }
+    int rc = gsql_row_get(x->e, x->t, tb, (GsBytes){ rowkey->bytes, rowkey->length }, &row, x->err);
+    for (size_t c = 0; rc == GSQL_OK && c < ncols; c++) {
+        rc = gsql_row_value(tb, row.bytes, row.length, c, &oldv[c], x->err);
+        newv[c] = oldv[c];
+    }
+    X cx;
+    GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
+    int have_cx = rc == GSQL_OK && p->right;
+    if (have_cx) {
+        x_init(&cx, x->q, x->e, x->t, p->right, &e);
+        cx.params = x->params;
+        cx.paramslen = x->paramslen;
+        cx.pidx = x->pidx;
+        cx.sx[0].direct = oldv;
+        cx.sx[0].have_row = 1;
+        cx.sx[p->up_excluded].direct = whole;
+        cx.sx[p->up_excluded].have_row = 1;
+    }
+    int go = rc == GSQL_OK;
+    if (go && have_cx && p->up_where >= 0) {
+        GsqlHv *v = eval(&cx, p->right->out[p->up_where]);
+        if (!v) {
+            *x->err = e;
+            rc = e.code ? e.code : GSQL_EXPRESSION;
+            go = 0;
+        } else {
+            int t = cx.h->truth(cx.h->ctx, v);
+            if (t == -2) {
+                rc = xfail(x->err, GSQL_EXPRESSION, p->s->up_where->pos, "ON CONFLICT DO UPDATE's WHERE is not a "
+                           "condition: it answers %s", tag_word(kind_of(&cx, v)));
+            }
+            go = t == 1;
+            rel(&cx, v);
+        }
+    }
+    static const unsigned char unknown = SER_UNKNOWN;
+    for (size_t k = 0; go && rc == GSQL_OK && k < p->nup; k++) {
+        const GsqlColumn *col = gsql_table_col(tb, p->up_targets[k]);
+        GsqlIn *in = &vals[p->up_targets[k]];
+        in->present = 1;
+        if (p->up_out[k] < 0) {
+            in->p = col->def ? col->def : &unknown;
+            in->n = col->def ? col->def_len : 1;
+        } else {
+            rc = eval_into(&cx, p->right->out[p->up_out[k]], &bufs[k]);
+            if (rc != GSQL_OK) {
+                *x->err = e;
+                break;
+            }
+            rc = store_convert(x, col->kind, col->currency, gsql_table_name(tb), col->name, &bufs[k]);
+            in->p = bufs[k].bytes;
+            in->n = bufs[k].length;
+        }
+        newv[p->up_targets[k]].p = in->p;
+        newv[p->up_targets[k]].n = in->n;
+    }
+    if (go && rc == GSQL_OK) {
+        rc = ck_check_row(x, cks, tb, newv);
+    }
+    if (go && rc == GSQL_OK) {
+        rc = fk_check_child(x, fks, tb, newv);
+    }
+    if (go && rc == GSQL_OK) {
+        rc = gsql_row_update(x->e, x->t, tb, (GsBytes){ rowkey->bytes, rowkey->length }, vals, NULL, x->err);
+        *updated = rc == GSQL_OK;
+    }
+    if (have_cx) {
+        cx.sx[0].direct = NULL;
+        cx.sx[p->up_excluded].direct = NULL;
+        x_free(&cx);
+    }
+    for (size_t k = 0; k < p->nup; k++) {
+        gsql_buf_free(&bufs[k]);
+    }
+    free(bufs);
+    free(vals);
+    free(oldv);
+    free(newv);
+    gsql_buf_free(&row);
+    return rc;
+}
+
 static int run_insert(X *x, GsqlResult *out) {
     SqlPlan *p = x->p;
     SqlStmt *s = p->s;
@@ -6477,6 +7015,11 @@ static int run_insert(X *x, GsqlResult *out) {
     if (rc == GSQL_OK) {
         rc = gen_load(x, p->tb, &gs);
     }
+    /* ON CONFLICT DO UPDATE: the rows this statement wrote, by key */
+    Touched touched;
+    memset(&touched, 0, sizeof touched);
+    GsqlBuf rowkey = {0};
+    int upd = s->on_conflict == SQL_CONFLICT_UPDATE, conflicted = 0;
     for (size_t r = 0; r < nrows && rc == GSQL_OK; r++) {
         memset(vals, 0, sizeof(GsqlIn) * ncols);
         if (s->ins_q) {
@@ -6520,14 +7063,21 @@ static int run_insert(X *x, GsqlResult *out) {
                 }
             }
             rc = gen_fill(x, p->tb, &gs, vals, whole, omitted);
-            if (rc == GSQL_OK && (fks.n || cks.n)) {
+            if (rc == GSQL_OK && cks.n) {
                 rc = ck_check_row(x, &cks, p->tb, whole);
-                if (rc == GSQL_OK) {
-                    rc = fk_check_child(x, &fks, p->tb, whole);
-                }
             }
-            if (rc == GSQL_OK) {
-                rc = gsql_row_insert(x->e, x->t, p->tb, vals, NULL, x->err);
+            /* a conflict ON CONFLICT answers is looked for before the row
+               goes in, as PostgreSQL's arbiters are, so a value the row also
+               repeats elsewhere does not decide which refusal it meets */
+            conflicted = 0;
+            if (rc == GSQL_OK && s->on_conflict) {
+                rc = conflict_probe(x, p, vals, &rowkey, &conflicted);
+            }
+            if (rc == GSQL_OK && !conflicted && fks.n) {
+                rc = fk_check_child(x, &fks, p->tb, whole);
+            }
+            if (rc == GSQL_OK && !conflicted) {
+                rc = gsql_row_insert(x->e, x->t, p->tb, vals, upd ? &rowkey : NULL, x->err);
             }
             if (rc != GSQL_DUPLICATE || !gen_redraws(p->tb, &gs, omitted, x->err->dup)) {
                 break;
@@ -6555,7 +7105,28 @@ static int run_insert(X *x, GsqlResult *out) {
             }
             rc = GSQL_OK;
         }
-        if (rc == GSQL_OK) {
+        int wrote = rc == GSQL_OK && !conflicted;
+        if (rc == GSQL_OK && conflicted) {
+            /* the conflict ON CONFLICT answers: the proposed row is not written */
+            if (upd) {
+                if (!touched_add(&touched, &rowkey)) {
+                    rc = xfail(x->err, GSQL_DUPLICATE, s->conflict_pos, "ON CONFLICT DO UPDATE would change one "
+                               "row of %s twice: two rows this INSERT proposes hold one value of %s%s", s->table,
+                               p->conflict == -1 ? "the primary key" : "unique index ",
+                               p->conflict == -1 ? "" : gsql_table_index(p->tb, (size_t)p->conflict - 1)->name);
+                }
+                int updated = 0;
+                if (rc == GSQL_OK) {
+                    rc = upsert_row(x, p->tb, &rowkey, whole, &fks, &cks, &updated);
+                }
+                if (rc == GSQL_OK && updated) {
+                    done++;
+                }
+            }
+        } else if (rc == GSQL_OK && upd) {
+            touched_add(&touched, &rowkey);
+        }
+        if (rc == GSQL_OK && wrote) {
             rc = gen_commit(x, p->tb, &gs);
         }
         /* any refusal of this row says which it was: a conversion, the
@@ -6571,10 +7142,12 @@ static int run_insert(X *x, GsqlResult *out) {
         if (rc != GSQL_OK) {
             x->err->row = (uint64_t)r + 1;
         }
-        if (rc == GSQL_OK) {
+        if (rc == GSQL_OK && wrote) {
             done++;
         }
     }
+    touched_free(&touched);
+    gsql_buf_free(&rowkey);
     for (size_t k = 0; k < p->ntargets; k++) {
         gsql_buf_free(&bufs[k]);
     }
@@ -6929,6 +7502,7 @@ static int fk_create(X *x, const char *table, const SqlFkey *d) {
     k.table = dup_cstr(table);
     k.ref = dup_cstr(d->ref);
     k.enforced = !d->not_enforced;
+    k.cascade = d->cascade;
     k.ncols = d->cols.n;
     k.cols = calloc(k.ncols ? k.ncols : 1, sizeof(char *));
     if (!k.cols) {
@@ -9172,6 +9746,9 @@ static int dump_rest(X *x, Dump *d, GsqlError *err) {
         if (k->nref) {
             dput(d, " ");
             dump_names(d, k->ref_cols, k->nref);
+        }
+        if (k->cascade) {
+            dput(d, " ON DELETE CASCADE");
         }
         dput(d, k->enforced ? ";\n" : " NOT ENFORCED;\n");
     }

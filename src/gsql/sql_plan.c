@@ -2170,6 +2170,143 @@ static int plan_update_delete(B *b, const GsEngine *e, GsTxn *t, int force_scan)
     return 1;
 }
 
+/* whether columns `names` are, in any order, the columns `cols` of tb */
+static int same_columns(const GsqlTable *tb, const SqlNameList *names, const unsigned *cols, size_t n) {
+    if (names->n != n) {
+        return 0;
+    }
+    for (size_t k = 0; k < n; k++) {
+        int found = 0;
+        for (size_t j = 0; j < names->n && !found; j++) {
+            found = strcmp(gsql_table_col(tb, cols[k])->name, names->cols[j]) == 0;
+        }
+        if (!found) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* INSERT ... ON CONFLICT (docs/gsql_upsert_design.md): the constraint it
+ * answers, and DO UPDATE's SET and WHERE planned as one SELECT over the
+ * table's existing row and `excluded`, the row the INSERT proposed. */
+static int plan_conflict(B *b, const GsEngine *e, GsTxn *t) {
+    SqlPlan *p = b->p;
+    SqlStmt *s = p->s;
+    p->conflict = 0;
+    p->up_where = -1;
+    if (!s->on_conflict) {
+        return 1;
+    }
+    const char *table = gsql_table_name(p->tb);
+    if (s->conflict_cols.n) {
+        for (size_t k = 0; k < s->conflict_cols.n; k++) {
+            if (gsql_table_find(p->tb, s->conflict_cols.cols[k]) < 0) {
+                return bfail(b, s->conflict_cols.pos, GSQL_NOT_FOUND, "ON CONFLICT names `%s`, which is not a column "
+                             "of %s", s->conflict_cols.cols[k], table);
+            }
+        }
+        if (gsql_table_nkey(p->tb) &&
+            same_columns(p->tb, &s->conflict_cols, gsql_table_key_cols(p->tb), gsql_table_nkey(p->tb))) {
+            p->conflict = -1;
+        }
+        for (size_t i = 0; !p->conflict && i < gsql_table_nindexes(p->tb); i++) {
+            const GsqlIndex *ix = gsql_table_index(p->tb, i);
+            if (ix->unique && same_columns(p->tb, &s->conflict_cols, ix->cols, ix->ncols)) {
+                p->conflict = (int)i + 1;
+            }
+        }
+        if (!p->conflict) {
+            return bfail(b, s->conflict_cols.pos, GSQL_SCHEMA, "ON CONFLICT names columns that are not the primary key "
+                         "of %s nor a unique index of it: a conflict is a value one of those already holds", table);
+        }
+    } else if (s->on_conflict == SQL_CONFLICT_UPDATE) {
+        return bfail(b, s->conflict_pos, GSQL_SYNTAX, "ON CONFLICT DO UPDATE names the columns whose conflict it "
+                     "answers: ON CONFLICT (the primary key's or a unique index's columns)");
+    }
+    if (s->on_conflict != SQL_CONFLICT_UPDATE) {
+        return 1;
+    }
+    size_t n = s->up_cols.n;
+    p->nup = n;
+    p->up_targets = sql_alloc(b->arena, sizeof(unsigned) * n);
+    p->up_out = sql_alloc(b->arena, sizeof(long) * n);
+    for (size_t k = 0; k < n; k++) {
+        long c = gsql_table_find(p->tb, s->up_cols.cols[k]);
+        if (c < 0) {
+            return bfail(b, s->up_cols.pos, GSQL_NOT_FOUND, "table %s has no column `%s` to SET", table,
+                         s->up_cols.cols[k]);
+        }
+        for (size_t j = 0; j < k; j++) {
+            if (p->up_targets[j] == (unsigned)c) {
+                return bfail(b, s->up_cols.pos, GSQL_SYNTAX, "SET assigns column %s twice", s->up_cols.cols[k]);
+            }
+        }
+        for (size_t j = 0; j < gsql_table_nkey(p->tb); j++) {
+            if (gsql_table_key_cols(p->tb)[j] == (unsigned)c) {
+                return bfail(b, s->up_cols.pos, GSQL_UNSUPPORTED, "ON CONFLICT DO UPDATE setting `%s`, a column of %s's "
+                             "primary key, is not in this release of G-SQL: the row a conflict found keeps its key",
+                             s->up_cols.cols[k], table);
+            }
+        }
+        if (gsql_table_col(p->tb, (size_t)c)->gen == GSQL_GEN_SERIAL) {
+            return bfail(b, s->up_cols.pos, GSQL_UNSUPPORTED, "ON CONFLICT DO UPDATE setting serial `%s` is not in "
+                         "this release of G-SQL", s->up_cols.cols[k]);
+        }
+        p->up_targets[k] = (unsigned)c;
+    }
+    /* SELECT <each SET value>, <WHERE> FROM table, table AS excluded */
+    SqlStmt *q = sql_alloc(b->arena, sizeof(SqlStmt));
+    memset(q, 0, sizeof *q);
+    q->kind = SQ_SELECT;
+    q->pos = s->pos;
+    q->table = s->table;
+    q->joins = sql_alloc(b->arena, sizeof(SqlFrom));
+    memset(q->joins, 0, sizeof(SqlFrom));
+    q->joins[0].join = SQL_JOIN_CROSS;
+    q->joins[0].table = s->table;
+    q->joins[0].alias = "excluded";
+    q->joins[0].pos = s->conflict_pos;
+    q->njoins = 1;
+    q->items = sql_alloc(b->arena, sizeof(SqlItem) * (n + 1));
+    for (size_t k = 0; k < n; k++) {
+        p->up_out[k] = -1;
+        if (s->up_sets[k]) {
+            p->up_out[k] = (long)q->nitems;
+            memset(&q->items[q->nitems], 0, sizeof(SqlItem));
+            q->items[q->nitems].e = s->up_sets[k];
+            q->items[q->nitems].pos = s->up_sets[k]->pos;
+            q->nitems++;
+        }
+    }
+    if (s->up_where) {
+        p->up_where = (long)q->nitems;
+        memset(&q->items[q->nitems], 0, sizeof(SqlItem));
+        q->items[q->nitems].e = s->up_where;
+        q->items[q->nitems].pos = s->up_where->pos;
+        q->nitems++;
+    }
+    if (!q->nitems) {
+        return 1;   /* every SET is DEFAULT: nothing to evaluate */
+    }
+    p->right = sql_alloc(b->arena, sizeof(SqlPlan));
+    if (plan_at(e, t, q, b->arena, p->text, 1, p->right, b->err, NULL, NULL, b->nsubq, NULL, 0) != GSQL_OK) {
+        p->right = NULL;
+        return 0;
+    }
+    SqlPlan *r = p->right;
+    if (r->grouped || r->nsubs || r->nwins) {
+        return bfail(b, s->conflict_pos, GSQL_UNSUPPORTED, "ON CONFLICT DO UPDATE reads only the row it updates and "
+                     "`excluded`: an aggregate, a window function or a subquery there is not in this release of G-SQL");
+    }
+    for (size_t k = 0; k < r->nscans; k++) {
+        if (strcmp(r->scans[k].qualifier, "excluded") == 0) {
+            p->up_excluded = k;
+        }
+    }
+    return 1;
+}
+
 static int plan_insert(B *b, const GsEngine *e, GsTxn *t) {
     SqlPlan *p = b->p;
     SqlStmt *s = p->s;
@@ -2212,7 +2349,7 @@ static int plan_insert(B *b, const GsEngine *e, GsTxn *t) {
                          p->left->nout, p->left->nout == 1 ? "" : "s", p->ntargets, p->ntargets == 1 ? "" : "s",
                          s->table);
         }
-        return 1;
+        return plan_conflict(b, e, t);
     }
     if (s->rowlen != p->ntargets) {
         return bfail(b, s->pos, GSQL_SYNTAX, "INSERT has %zu value%s for %zu column%s", s->rowlen,
@@ -2225,7 +2362,7 @@ static int plan_insert(B *b, const GsEngine *e, GsTxn *t) {
             }
         }
     }
-    return 1;
+    return plan_conflict(b, e, t);
 }
 
 /* A compound SELECT (docs/gsql_setop_design.md): each side planned as the
