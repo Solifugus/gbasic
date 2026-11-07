@@ -113,17 +113,26 @@ library mcp
             e["name"] = t.name
             e["description"] = t.description
             e["inputSchema"] = t.parameters
+            if has(t, "output") then
+                e["outputSchema"] = t.output
+            end if
             append(out, e)
         end for
         return { tools: out }
     end function
 
+    ' A record result is also STRUCTURED CONTENT (MCP 2025-06-18), so a
+    ' client can use it without parsing the text; the text block stays, for
+    ' a client that predates it (Transward §7.7).
     function _call_result(part)
         block = {}
         block["type"] = "text"
         block["text"] = string(part.content)
         r = {}
         r["content"] = [ block ]
+        if is_record(part.content) and not part.is_error then
+            r["structuredContent"] = part.content
+        end if
         r["isError"] = part.is_error
         return r
     end function

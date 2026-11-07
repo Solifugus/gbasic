@@ -40,6 +40,13 @@ declaration `resources/list`, `resources/templates/list`, `resources/read`,
 `prompts/list` and `prompts/get`. Anything else is `-32601`, and a
 notification (no `id`) is answered with silence.
 
+**Structured results** (2026-11-06, Transward §7.7). A record result is
+answered as `structuredContent` beside its JSON text block, which stays for a
+client that predates it; an error result or a text result carries none. A tool
+that declares `output` (docs/tools_design.md) is published with that schema as
+its `outputSchema`, and a result that does not match it becomes an error
+result.
+
 **A tool's function is called as a method of its entry** (since 2026-11-06,
 Transward §7.2), so `this` is the entry and `this.name` says which tool is
 being served. Function values are not closures, so this is how one function

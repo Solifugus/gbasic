@@ -75,6 +75,7 @@ tool ships with no description and nothing said.
 | `tools.entry(ts, name)` | one entry, or `unknown` |
 | `tools.reads(ts, name)` / `tools.mutates(ts, name)` | the declared effects |
 | `tools.param_schema(entry)` | the JSON-Schema subset for one tool |
+| `tools.output_schema(entry)` | the same for its declared `output`, or `nothing` when it declares none |
 | `tools.schema(ts)` | the whole toolset as records — what MCP publishes |
 | `tools.as_llm_tools(ts)` | the same declaration as `llm.tool` records |
 | `tools.dispatch(ts, name, args)` | validate, run, and return a tool-result part |
@@ -84,6 +85,16 @@ tool ships with no description and nothing said.
 | `tools.send_call(pool, req)` | send to the next worker; returns the advanced pool |
 | `tools.is_result(m)` | is this inbox message a worker reply? |
 | `tools.shutdown(pool)` | tell the workers to stop |
+
+**A tool may declare `output`** *(2026-11-06, Transward §7.7)*: the fields of
+the record it returns, shaped as `params` are (`name`, `type`, `describe`,
+`required`; a `default` is refused, since it means nothing for an output).
+`tools.schema` carries it as `output`, MCP publishes it as the tool's
+`outputSchema`, and `dispatch` checks each result against it: a result that
+is not a record, lacks a required field, has a field of the wrong type or one
+not declared is an error result saying which, because a client was told the
+result has this shape. A tool is also called as a **method of its entry**, so
+`this.name` says which entry one shared function is serving (§7.2).
 
 `tools.dispatch` **never raises**. A model sends whatever it likes and a tool
 body is ordinary code that can fail; both must come back as something the model

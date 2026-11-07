@@ -125,7 +125,7 @@ library tools
         if not is_record(e) then
             error "tools: every entry must be a record"
         end if
-        _check_fields(e, ["name", "describe", "fn", "params", "reads", "mutates"],
+        _check_fields(e, ["name", "describe", "fn", "params", "reads", "mutates", "output"],
                       "a tool entry")
         if not has(e, "name") then
             error "tools: every entry needs a string name"
@@ -169,6 +169,25 @@ library tools
         end if
         _check_effects(e.reads, "reads", e.name)
         _check_effects(e.mutates, "mutates", e.name)
+        ' OUTPUT, optional: the fields of the record the tool returns, shaped
+        ' as params are, so a client can use the result without parsing text
+        ' (MCP's outputSchema, Transward §7.7). A default means nothing for
+        ' an output, so it is refused rather than ignored.
+        if has(e, "output") then
+            if not is_array(e.output) then
+                error "tools: tool '" + e.name + "' needs output as an array of fields"
+            end if
+            oseen = []
+            for each o in e.output
+                if is_record(o) then
+                    if has(o, "default") then
+                        error "tools: an output field of tool '" + e.name + "' has a default; a default is for a parameter"
+                    end if
+                end if
+                _check_param(o, e.name, oseen)
+                append(oseen, o.name)
+            end for
+        end if
         return nothing
     end function
 
@@ -248,6 +267,40 @@ library tools
         return s
     end function
 
+    ' The JSON Schema of a tool's declared output, or nothing when it
+    ' declares none: the same shape param_schema gives its parameters.
+    function output_schema(e)
+        if not has(e, "output") then
+            return nothing
+        end if
+        return param_schema({ params: e.output })
+    end function
+
+    ' A result against its tool's declared output: "" when it matches, else
+    ' why not. Checked because a client is told the result has this shape.
+    function _output_mismatch(e, v)
+        if not is_record(v) then
+            return "the tool declares an output record and answered " + type(v)
+        end if
+        declared = []
+        for each o in e.output
+            append(declared, o.name)
+            if has(v, o.name) then
+                if not _type_ok(v[o.name], o.type) then
+                    return "the tool's output field '" + o.name + "' should be a " + o.type
+                end if
+            else if o.required then
+                return "the tool's output has no '" + o.name + "', which it declares required"
+            end if
+        end for
+        for each k in keys(v)
+            if not contains(declared, k) then
+                return "the tool's output has a field '" + k + "' it does not declare"
+            end if
+        end for
+        return ""
+    end function
+
     ' The toolset as records: name, description, parameters, reads, mutates.
     ' This is what an MCP server publishes and what a provider adapter shapes.
     ' It is not reflection -- the entries ARE records, so this returns what
@@ -262,6 +315,9 @@ library tools
             r["parameters"] = param_schema(e)
             r["reads"] = e.reads
             r["mutates"] = e.mutates
+            if has(e, "output") then
+                r["output"] = output_schema(e)
+            end if
             append(out, r)
         end for
         return out
@@ -380,6 +436,12 @@ library tools
             reported = v["error"]
             if is_string(reported) then
                 return _result(name, reported, true)
+            end if
+        end if
+        if has(e, "output") then
+            why = _output_mismatch(e, v)
+            if why != "" then
+                return _result(name, why, true)
             end if
         end if
         return _result(name, v, false)

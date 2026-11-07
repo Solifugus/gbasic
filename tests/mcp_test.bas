@@ -384,6 +384,49 @@ check("a 32-byte secret of 16 characters is accepted",
 check("and 31 bytes are refused", http_opts_error({ name: "s", version: "1", origins: [],
       session_secret: repeat("a", 31) }), "mcp.handle_http: session_secret must be a string of at least 32 bytes")
 
+' ---- structured results (Transward §7.7) -----------------------------------
+function balance_rec(args)
+    return { id: args.id, cents: 4200 }
+end function
+function balance_wrong(args)
+    return { id: args.id, cents: "lots" }
+end function
+outs = [ { name: "id", type: "string", describe: "the account", required: true },
+         { name: "cents", type: "number", describe: "the balance in cents", required: true } ]
+sts = tools.define("structured", [
+    { name: "balance", describe: "A balance as a record.",
+      params: [ { name: "id", type: "string", describe: "the account id", required: true } ],
+      reads: [], mutates: [], output: outs, fn: balance_rec },
+    { name: "wrong", describe: "Answers what it does not declare.",
+      params: [ { name: "id", type: "string", describe: "the account id", required: true } ],
+      reads: [], mutates: [], output: outs, fn: balance_wrong },
+    { name: "plain", describe: "Text.", params: [], reads: [], mutates: [], fn: whoami }
+])
+sl = reply(sts, plain, { jsonrpc: "2.0", id: 60, method: "tools/list" })
+check("a declared output is published as outputSchema", sl.result.tools[0].outputSchema.required, ["id", "cents"])
+check("typed as its params are", sl.result.tools[0].outputSchema.properties.cents.type, "number")
+check("a tool with no output declares none", has(sl.result.tools[2], "outputSchema"), false)
+sc = reply(sts, plain, { jsonrpc: "2.0", id: 61, method: "tools/call", params: { name: "balance", arguments: { id: "a1" } } })
+check("a record result is structured content", sc.result.structuredContent, { id: "a1", cents: 4200 })
+check("beside its text, for an older client", decode(sc.result.content[0].text), { id: "a1", cents: 4200 })
+sw = reply(sts, plain, { jsonrpc: "2.0", id: 62, method: "tools/call", params: { name: "wrong", arguments: { id: "a1" } } })
+check("a result that does not match its output is an error result", sw.result.isError, true)
+check("saying which field", sw.result.content[0].text, "the tool's output field 'cents' should be a number")
+check("and carries no structured content", has(sw.result, "structuredContent"), false)
+sp = reply(sts, plain, { jsonrpc: "2.0", id: 63, method: "tools/call", params: { name: "plain", arguments: {} } })
+check("a text result carries none either", has(sp.result, "structuredContent"), false)
+function define_error(entries)
+    on error goto next
+    x = tools.define("bad", entries)
+    m = error.message
+    error.clear()
+    return m
+end function
+check("an output field with a default is refused", define_error([
+    { name: "t", describe: "x", params: [], reads: [], mutates: [], fn: whoami,
+      output: [ { name: "a", type: "number", describe: "a", required: false, default: 1 } ] } ]),
+      "tools: an output field of tool 't' has a default; a default is for a parameter")
+
 ' ---- THE CEILING: the mapping is the leak surface --------------------------
 on error goto next
 

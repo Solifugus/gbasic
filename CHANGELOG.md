@@ -99,6 +99,12 @@ reader sees.
 - **`mcp.handle(ts, opts, line, caller)`** runs the call under a principal
   verified for this request, passed through untouched (§7.3).
 
+### MCP structured results
+
+- A tool's record result is sent as `structuredContent` as well as text, and
+  a tool may declare `output`, published as its `outputSchema` and checked
+  against every result (Transward §7.7).
+
 ### Reading files whose size says 0
 
 - `read` and `read_lines` of a file in `/proc` or `/sys` answered `""`: such a
