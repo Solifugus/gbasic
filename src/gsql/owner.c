@@ -1,6 +1,6 @@
 /* G-SQL's owner (include/gsql_owner.h, docs/gsql_owner_design.md). The
  * parts:
- *   1. small helpers: time, bodies, the runtime directory and the socket path
+ *   1. small helpers: time, bodies, where the socket lives
  *   2. connections: their queues, output and cleanup
  *   3. the writer slot and its FIFO
  *   4. cursors
@@ -75,8 +75,58 @@ static char *field_text(const V3Field *f, long n, const char *name) {
     return x ? v3_read_text(x->v, x->vlen) : NULL;
 }
 
+/* ---- where the socket lives (docs/gsql_owner_design.md §3) ----
+ *
+ * IN THE DATABASE DIRECTORY, as `db.sock`: whoever can reach the database can
+ * reach its owner, which is what two systemd units with their own /tmp, or a
+ * service and the person administering it, need (gdash's A1). Two paths to one
+ * database meet in one directory, and so at one socket. A local socket's
+ * address holds about 108 bytes, so a longer path is reached through a handle
+ * on the directory (/proc/self/fd/N/db.sock on Linux, bindat/connectat on
+ * FreeBSD); only the address is short, the file is where it says.
+ *
+ * The RUNTIME DIRECTORY is the fallback, for a filesystem that will not hold a
+ * socket file (an SMB share mounted without unix extensions refuses one). An
+ * owner that cannot bind in the database directory binds there instead, and a
+ * client tries both, the database directory first. */
+
+static const char *g_test_machine;   /* a pretend machine's own socket name */
+static int g_test_refuse_dir;        /* behave as a filesystem with no sockets */
+
+void gsql_socket_test_machine(const char *name) { g_test_machine = name && *name ? name : NULL; }
+void gsql_socket_test_refuse_dir(int on) { g_test_refuse_dir = on; }
+
 int gsql_socket_path(const char *db, char *out, size_t cap, uint64_t *device, uint64_t *inode,
                      GsqlError *err) {
+    struct stat st;
+    if (stat(db, &st) != 0) {
+        return err_set(err, errno == ENOENT ? GSQL_NOT_FOUND : GSQL_STORAGE,
+                       "the database %s cannot be found: %s", db, strerror(errno));
+    }
+    /* checked, not trusted: an owner believes every client because only this
+     * user can reach the socket (§3). The directory is made 0700; one somebody
+     * else owns, or can write in, could hold a socket that is not our owner's */
+    if (S_ISDIR(st.st_mode)) {
+        if (st.st_uid != getuid()) {
+            return err_set(err, GSQL_MISUSE, "the database directory %s belongs to another user (uid %lu), so a "
+                           "socket in it could be anybody's", db, (unsigned long)st.st_uid);
+        }
+        if (st.st_mode & 022) {
+            return err_set(err, GSQL_MISUSE, "the database directory %s can be written by other users (mode %03o), "
+                           "so a socket in it could be anybody's; chmod 700 it", db, (unsigned)(st.st_mode & 0777));
+        }
+    }
+    int len = g_test_machine ? snprintf(out, cap, "%s/db.sock.%s", db, g_test_machine)
+                             : snprintf(out, cap, "%s/db.sock", db);
+    if (len < 0 || (size_t)len >= cap) {
+        return err_set(err, GSQL_MISUSE, "the database path %s is too long", db);
+    }
+    *device = (uint64_t)st.st_dev;
+    *inode = (uint64_t)st.st_ino;
+    return GSQL_OK;
+}
+
+int gsql_socket_fallback(const char *db, int make, char *out, size_t cap, GsqlError *err) {
     struct stat st;
     if (stat(db, &st) != 0) {
         return err_set(err, errno == ENOENT ? GSQL_NOT_FOUND : GSQL_STORAGE,
@@ -89,15 +139,16 @@ int gsql_socket_path(const char *db, char *out, size_t cap, uint64_t *device, ui
     } else {
         snprintf(dir, sizeof dir, "/tmp/gbasic-%lu", (unsigned long)getuid());
     }
-    if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
+    /* made only by an owner that has to bind there: a client looking for
+       one leaves nothing behind */
+    if (make && mkdir(dir, 0700) != 0 && errno != EEXIST) {
         return err_set(err, GSQL_STORAGE, "the runtime directory %s cannot be made: %s", dir, strerror(errno));
     }
-    /* checked, not trusted: an owner believes every client because only this
-     * user can reach the socket, and a directory somebody else made is the
-     * way round that (§3) */
+    /* a directory someone else made in /tmp is the classic attack on the
+     * trust above, so this one is checked as closely */
     struct stat d;
     if (lstat(dir, &d) != 0) {
-        return err_set(err, GSQL_STORAGE, "the runtime directory %s cannot be examined: %s", dir, strerror(errno));
+        return err_set(err, errno == ENOENT ? GSQL_NOT_FOUND : GSQL_STORAGE, "the runtime directory %s cannot be examined: %s", dir, strerror(errno));
     }
     if (S_ISLNK(d.st_mode) || !S_ISDIR(d.st_mode)) {
         return err_set(err, GSQL_MISUSE, "the runtime directory %s is not a directory of its own (a symlink or a file)", dir);
@@ -110,17 +161,101 @@ int gsql_socket_path(const char *db, char *out, size_t cap, uint64_t *device, ui
         return err_set(err, GSQL_MISUSE, "the runtime directory %s is open to other users (mode %03o; it must be 0700), "
                        "so a socket in it could be anybody's", dir, (unsigned)(d.st_mode & 0777));
     }
-    int len = snprintf(out, cap, "%s/gsql-%llx-%llx.sock", dir, (unsigned long long)st.st_dev,
-                       (unsigned long long)st.st_ino);
-    struct sockaddr_un a;
-    /* room for the owner's temporary name too, which is longer */
-    if (len < 0 || (size_t)len + 24 >= sizeof a.sun_path || (size_t)len >= cap) {
-        return err_set(err, GSQL_MISUSE, "the socket path %s is longer than a local socket allows (%zu bytes); "
-                       "set XDG_RUNTIME_DIR to a shorter directory", out, sizeof a.sun_path - 1);
+    /* named from the database's identity, since a runtime directory is shared
+     * by every database this user has */
+    int len = snprintf(out, cap, "%s/gsql-%llx-%llx%s%s.sock", dir, (unsigned long long)st.st_dev,
+                       (unsigned long long)st.st_ino, g_test_machine ? "-" : "",
+                       g_test_machine ? g_test_machine : "");
+    if (len < 0 || (size_t)len >= cap) {
+        return err_set(err, GSQL_MISUSE, "the socket path %s is too long", out);
     }
-    *device = (uint64_t)st.st_dev;
-    *inode = (uint64_t)st.st_ino;
     return GSQL_OK;
+}
+
+/* A short address for `path`: the path itself when it fits, otherwise one
+ * through a handle on its directory, left open in *dirfd for the caller to
+ * close after the bind or connect. -1 with errno ENAMETOOLONG where neither
+ * works. */
+static int socket_address(const char *path, struct sockaddr_un *a, int *dirfd) {
+    memset(a, 0, sizeof *a);
+    a->sun_family = AF_UNIX;
+    *dirfd = -1;
+    size_t n = strlen(path);
+    if (n < sizeof a->sun_path) {
+        memcpy(a->sun_path, path, n + 1);
+        return 0;
+    }
+#if defined(__linux__) || defined(__FreeBSD__)
+    const char *slash = strrchr(path, '/');
+    if (!slash || strlen(slash + 1) + 32 >= sizeof a->sun_path) {
+        errno = ENAMETOOLONG;
+        return -1;
+    }
+    char *dir = malloc((size_t)(slash - path) + 2);
+    if (!dir) {
+        abort();
+    }
+    memcpy(dir, path, (size_t)(slash - path));
+    dir[slash - path] = 0;
+    if (!dir[0]) {
+        dir[0] = '/', dir[1] = 0;
+    }
+#ifdef O_PATH
+    *dirfd = open(dir, O_PATH | O_DIRECTORY | O_CLOEXEC);
+#else
+    *dirfd = open(dir, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+#endif
+    free(dir);
+    if (*dirfd < 0) {
+        return -1;
+    }
+#ifdef __linux__
+    snprintf(a->sun_path, sizeof a->sun_path, "/proc/self/fd/%d/%s", *dirfd, slash + 1);
+#else
+    snprintf(a->sun_path, sizeof a->sun_path, "%s", slash + 1);   /* relative to *dirfd: bindat/connectat */
+#endif
+    return 0;
+#else
+    errno = ENAMETOOLONG;
+    return -1;
+#endif
+}
+
+static int socket_op(int s, const char *path, int binding) {
+    struct sockaddr_un a;
+    int dirfd;
+    if (socket_address(path, &a, &dirfd) != 0) {
+        return -1;
+    }
+    int rc;
+#ifdef __FreeBSD__
+    if (dirfd >= 0) {
+        rc = binding ? bindat(dirfd, s, (struct sockaddr *)&a, sizeof a)
+                     : connectat(dirfd, s, (struct sockaddr *)&a, sizeof a);
+    } else
+#endif
+    rc = binding ? bind(s, (struct sockaddr *)&a, sizeof a) : connect(s, (struct sockaddr *)&a, sizeof a);
+    int e = errno;
+    if (dirfd >= 0) {
+        close(dirfd);
+    }
+    errno = e;
+    return rc;
+}
+
+int gsql_socket_connect(const char *path) {
+    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    if (s < 0) {
+        return -1;
+    }
+    fcntl(s, F_SETFD, FD_CLOEXEC);
+    if (socket_op(s, path, 0) != 0) {
+        int e = errno;
+        close(s);
+        errno = e;
+        return -1;
+    }
+    return s;
 }
 
 /* ==== 2. connections ===================================================== */
@@ -193,7 +328,7 @@ typedef struct {
     size_t nfifo, fifocap;
     uint64_t next_cursor;
     uint64_t device, inode;
-    char sock[200];
+    char sock[4200];
     uint64_t alone_since;   /* when the last connection went; 0 while any is
                                open (gsql_owner_lifetime_design.md §2) */
     int served;             /* a connection has ever been accepted */
@@ -1394,29 +1529,24 @@ static void accept_all(Owner *o) {
     }
 }
 
-/* Whether an owner answers on db's socket: a connect, nothing sent. */
+/* Whether an owner answers on db's socket, in either place: a connect,
+ * nothing sent. */
 static int socket_answers(const char *db) {
-    char path[200];
+    char path[4200];
     uint64_t d, i;
     GsqlError err;
-    if (gsql_socket_path(db, path, sizeof path, &d, &i, &err) != GSQL_OK) {
-        return 0;
+    int s = -1;
+    if (gsql_socket_path(db, path, sizeof path, &d, &i, &err) == GSQL_OK) {
+        s = gsql_socket_connect(path);
     }
-    struct sockaddr_un a;
-    memset(&a, 0, sizeof a);
-    a.sun_family = AF_UNIX;
-    size_t n = strlen(path);
-    if (n >= sizeof a.sun_path) {
-        return 0;
+    if (s < 0 && gsql_socket_fallback(db, 0, path, sizeof path, &err) == GSQL_OK) {
+        s = gsql_socket_connect(path);
     }
-    memcpy(a.sun_path, path, n + 1);
-    int s = socket(AF_UNIX, SOCK_STREAM | SOCK_CLOEXEC, 0);
     if (s < 0) {
         return 0;
     }
-    int ok = connect(s, (struct sockaddr *)&a, sizeof a) == 0;
     close(s);
-    return ok;
+    return 1;
 }
 
 static uint32_t idle(uint32_t v) { return v ? v : DEFAULT_IDLE_MS; }
@@ -1682,25 +1812,40 @@ static void ready_line(int fd, const char *fmt, ...) {
     }
 }
 
-static int listen_on(const char *path, char *why, size_t wcap) {
-    struct sockaddr_un a;
-    memset(&a, 0, sizeof a);
-    a.sun_family = AF_UNIX;
-    char tmp[256];
+/* Binds `path` under a temporary name, closes it to everyone else, and renames
+ * it into place. -1 with *refused set when the filesystem holds no sockets
+ * (the caller then tries the runtime directory), or with why filled. */
+static int listen_on(const char *path, int in_db_dir, int *refused, char *why, size_t wcap) {
+    *refused = 0;
+    char tmp[4300];
     int len = snprintf(tmp, sizeof tmp, "%s.%ld.tmp", path, (long)getpid());
-    if (len < 0 || (size_t)len >= sizeof a.sun_path) {
-        snprintf(why, wcap, "the socket's temporary name is longer than a local socket allows");
+    if (len < 0 || (size_t)len >= sizeof tmp) {
+        snprintf(why, wcap, "the socket's temporary name is too long");
         return -1;
     }
-    memcpy(a.sun_path, tmp, (size_t)len + 1);
     unlink(tmp);
     int s = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (s < 0 || fcntl(s, F_SETFD, FD_CLOEXEC) != 0 || nonblock(s) != 0 ||
-        bind(s, (struct sockaddr *)&a, sizeof a) != 0 || listen(s, 128) != 0) {
-        snprintf(why, wcap, "the socket %s could not be made: %s", tmp, strerror(errno));
+    if (s < 0 || fcntl(s, F_SETFD, FD_CLOEXEC) != 0 || nonblock(s) != 0) {
+        snprintf(why, wcap, "a socket could not be made: %s", strerror(errno));
         if (s >= 0) {
             close(s);
         }
+        return -1;
+    }
+    int rc = g_test_refuse_dir && in_db_dir ? (errno = EPERM, -1) : socket_op(s, tmp, 1);
+    if (rc != 0) {
+        int e = errno;
+        snprintf(why, wcap, "the socket %s could not be made: %s", tmp, strerror(e));
+        *refused = e == EPERM || e == EOPNOTSUPP || e == ENOTSUP;
+        close(s);
+        unlink(tmp);
+        return -1;
+    }
+    /* the directory's mode is the guard (§3); this is the second one, for a
+     * directory that lets others in to read */
+    if (chmod(tmp, 0600) != 0 || listen(s, 128) != 0) {
+        snprintf(why, wcap, "the socket %s could not be made: %s", tmp, strerror(errno));
+        close(s);
         unlink(tmp);
         return -1;
     }
@@ -1827,8 +1972,19 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
         fprintf(stderr, "gsql owner: %s\n", err.message);
         goto out_store;
     }
-    char why[400];
-    o.ls = listen_on(sock, why, sizeof why);
+    char why[4600];
+    int refused = 0;
+    o.ls = listen_on(sock, 1, &refused, why, sizeof why);
+    if (o.ls < 0 && refused) {
+        /* a filesystem with no sockets: the runtime directory, where every
+           client also looks */
+        if (gsql_socket_fallback(db, 1, sock, sizeof o.sock, &err) != GSQL_OK) {
+            ready_line(o.opt.ready_fd, "error %s (and %s)", why, err.message);
+            fprintf(stderr, "gsql owner: %s (and %s)\n", why, err.message);
+            goto out_store;
+        }
+        o.ls = listen_on(sock, 0, &refused, why, sizeof why);
+    }
     if (o.ls < 0) {
         ready_line(o.opt.ready_fd, "error %s", why);
         fprintf(stderr, "gsql owner: %s\n", why);

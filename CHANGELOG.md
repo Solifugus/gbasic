@@ -70,6 +70,22 @@ reader sees.
   chunked-encryption pattern Transward asked for
   (`tests/read_at_chunks_test.bas`).
 
+### A database's owner is found from the database itself
+
+- The owner's socket is now `db.sock` inside the database directory, so
+  every process that can reach a database reaches the same owner. Before, it
+  was in `$XDG_RUNTIME_DIR/gbasic` or `/tmp/gbasic-<uid>`, so two systemd
+  units with `PrivateTmp=true`, or a service and an administrator's shell,
+  each looked somewhere else; the second was refused after 10 seconds, or
+  retried for longer than 100 (gdash's A1).
+- A database path longer than a socket address (about 108 bytes) works, on
+  Linux and FreeBSD.
+- A database directory that other users can write in is refused, with
+  `chmod 700` in the message. One they may only read is allowed.
+- A filesystem that cannot hold a socket file falls back to the runtime
+  directory, which clients try second (not measured on a real one; SMB is
+  the expected case).
+
 ### Three messages that name the fix
 
 - `args` read outside `program main(args)` still raises "undefined variable:

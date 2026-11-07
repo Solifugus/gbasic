@@ -1865,6 +1865,11 @@ static NameKind name_kind(const char *name, uint64_t *num) {
     /* a test's lock local to one machine (gs_lease_lock_name), and the lease */
     if (!strncmp(name, GS_DB_BASE ".lock.", strlen(GS_DB_BASE ".lock."))) return N_LOCK;
     if (!strcmp(name, GS_DB_BASE ".lease")) return N_LOCK;
+    /* the owner's socket (gsql_owner_design.md §3), and a test's pretend
+       machine's; one still under its temporary name is an owner's that died
+       binding it, garbage like any other */
+    if (!strncmp(name, GS_DB_BASE ".sock", strlen(GS_DB_BASE ".sock")) &&
+        (strlen(name) < 4 || strcmp(name + strlen(name) - 4, ".tmp"))) return N_LOCK;
     if (sscanf(name, GS_DB_BASE ".log.%llu%n", &v, &end) == 1 && name[end] == 0) { *num = v; return N_LOG; }
     if (sscanf(name, GS_DB_BASE ".%llu.sst%n", &v, &end) == 1 && name[end] == 0) { *num = v; return N_SST; }
     if (sscanf(name, GS_DB_BASE ".%llu.blob%n", &v, &end) == 1 && name[end] == 0) { *num = v; return N_BLOB; }

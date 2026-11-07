@@ -119,7 +119,7 @@ tier noservice "an owner with no SQL layer refuses statements by name and still 
 tier timeouts "an idle writer, snapshot and cursor are ended, each beside one that is kept alive" 60
 tier stall "half a frame and an unread backlog stall nobody, and nothing is lost" 120
 tier race "24 clients find no owner at once, 20 times over, and each time exactly one owner results" 300 24 20
-tier paths "a symlink finds the same owner, a stale socket is replaced, the runtime directory is checked" 60
+tier paths "the socket is in the database directory: a symlink finds the same owner, a stale socket is replaced, a long path works, a filesystem with no sockets falls back to the checked runtime directory" 60
 tier handoff "the owner killed: the transaction fails, commits survive, nothing is retried; SIGTERM replays nothing" 60
 tier lifetime "an owner outlives the program that started it while anybody uses it, then stops after its linger" 90
 tier group "commits share syncs: eight clients at 5 ms a sync make several times one client's commits, one client waits for nothing more, and a failed sync fails every commit it covered" 120

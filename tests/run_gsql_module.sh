@@ -24,6 +24,9 @@
 #   lifetime    an owner outlives the program that started it while another
 #               program uses it, then stops after its linger; linger: 0; the
 #               option's refusals; no program's output held open
+#   privatetmp  a service with a private /tmp, a second one, and an
+#               administrator's shell reach one owner (the socket is in the
+#               database directory); skips without bwrap
 #   valgrind    the main phase again, no invalid access, no definite leak
 #   leftovers   no owner outlives the suite, read-only
 . "$(dirname "$0")/portable.sh"
@@ -773,6 +776,62 @@ if printf '%s' "$err" | grep -qF "unclosed 'sql' block opened on line 3"; then
     pass "unclosed: names line 3, in the words the prompt reads as \"give me the rest\""
 else
     fail "unclosed: $err"
+fi
+
+printf 'TIER privatetmp: processes with a /tmp each, as systemd'"'"'s PrivateTmp gives, reach one owner\n'
+# gdash's A1. Its server and its scheduler are two units with PrivateTmp=true
+# and no XDG_RUNTIME_DIR, and an administrator runs the CLI from a shell that
+# has one. The socket lived in $XDG_RUNTIME_DIR/gbasic or /tmp/gbasic-<uid>,
+# so each of the three looked somewhere else. Measured on db72b76 (the commit
+# before this tier), both checks below are refused: the second unit with "did
+# not say it was ready within 10000 ms", the shell with a socket path too long
+# for its runtime directory; and with the database in a directory not bound
+# in, the second unit was still retrying at 100 seconds, twice.
+# bwrap --tmpfs /tmp is the private /tmp, without root.
+if ! command -v bwrap >/dev/null 2>&1 ||
+   ! bwrap --dev-bind / / --tmpfs /tmp true >/dev/null 2>&1; then
+    printf '  SKIP privatetmp (no bwrap, or it cannot mount a private /tmp here -- the socket'"'"'s placement was NOT measured)\n'
+else
+    ptdir="$work/privatetmp"
+    mkdir -p "$ptdir"
+    # the database's own directory stays visible, as a unit's /var/lib does;
+    # every other part of /tmp, the runtime directory's fallback, is private
+    service() { env -u XDG_RUNTIME_DIR bwrap --dev-bind / / --tmpfs /tmp --bind "$ptdir" "$ptdir" "$@"; }
+    service ./gbasic tests/gsql/privtmp_holder.bas "$ptdir/db.gsql" "$ptdir/ready" "$ptdir/stop" \
+        >"$ptdir/holder.out" 2>&1 &
+    holder=$!
+    for _ in $(seq 100); do [ -f "$ptdir/ready" ] && break; sleep 0.1; done
+    if [ ! -f "$ptdir/ready" ]; then
+        fail "privatetmp: the holder never connected: $(cat "$ptdir/holder.out")"
+    else
+        # a second unit: its own /tmp, no runtime directory
+        out=$(service timeout -k 5 30 ./gbasic tests/gsql/privtmp_visitor.bas "$ptdir/db.gsql" 2>&1)
+        rc=$?
+        if [ "$rc" = 0 ] && [ "$out" = "rows 2" ]; then
+            pass "privatetmp: a second unit with its own /tmp reached the holder's owner (rows 2)"
+        else
+            fail "privatetmp: a second unit with its own /tmp: exit $rc, $out"
+        fi
+        # an administrator's shell: the real /tmp and a runtime directory
+        mkdir -p "$ptdir/admin-rt" && chmod 700 "$ptdir/admin-rt"
+        out=$(XDG_RUNTIME_DIR="$ptdir/admin-rt" timeout -k 5 30 ./gbasic tests/gsql/privtmp_visitor.bas \
+              "$ptdir/db.gsql" 2>&1)
+        rc=$?
+        if [ "$rc" = 0 ] && [ "$out" = "rows 2" ]; then
+            pass "privatetmp: an administrator's shell with a runtime directory reached it too (rows 2)"
+        else
+            fail "privatetmp: an administrator's shell: exit $rc, $out"
+        fi
+        if [ -n "$(ls -A "$ptdir/admin-rt")" ]; then
+            fail "privatetmp: something was made in the runtime directory: $(ls -A "$ptdir/admin-rt")"
+        fi
+    fi
+    touch "$ptdir/stop"
+    if ! timeout 30 tail --pid="$holder" -f /dev/null; then
+        kill "$holder" 2>/dev/null
+        fail "privatetmp: the holder did not stop"
+    fi
+    wait "$holder" 2>/dev/null
 fi
 
 printf 'TIER valgrind: the main phase, no invalid access, no definite leak\n'

@@ -11,7 +11,7 @@
  *   owner_test timeouts DIR       idle writers, snapshots and cursors
  *   owner_test stall DIR          a half-sent frame and an unread backlog
  *   owner_test race DIR N [R]     N clients find no owner at once, R times
- *   owner_test paths DIR          symlinks, stale sockets, runtime dirs
+ *   owner_test paths DIR          symlinks, stale sockets, where the socket lives
  *   owner_test handoff DIR        the owner killed, and SIGTERM's handoff
  *   owner_test lifetime DIR       an owner outlives its starter, then its linger
  *   owner_test group DIR          commits share syncs (gsql_group_commit_design.md)
@@ -420,7 +420,12 @@ static int owner_main(const char *db, const char *fd, const char *mode) {
     static GsLeaseOptions lo;
     static GsOptions so;
     const char *m = getenv("GSQL_TEST_MACHINE");
+    /* an owner that finds the database's filesystem holds no sockets (the
+       paths tier's fallback) */
+    const char *nd = getenv("GSQL_TEST_NO_DIR_SOCKET");
+    gsql_socket_test_refuse_dir(nd && *nd);
     if (m && *m) {
+        gsql_socket_test_machine(m);
         lo.machine = m;
         lo.lock_local = 1;
         const char *t = getenv("GSQL_TEST_LEASE");
@@ -651,22 +656,16 @@ static const char *put(GsqlClient *c, const char *k, const char *v) {
 /* ==== raw connections, for what a well-behaved client never sends ======== */
 
 static int raw_connect(const char *db) {
-    char path[200];
+    char path[4200];
     uint64_t d, i;
     GsqlError err;
     if (gsql_socket_path(db, path, sizeof path, &d, &i, &err)) {
         mismatch("socket path: %s", err.message);
         return -1;
     }
-    struct sockaddr_un a;
-    memset(&a, 0, sizeof a);
-    a.sun_family = AF_UNIX;
-    memcpy(a.sun_path, path, strlen(path) + 1);
-    int s = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (connect(s, (struct sockaddr *)&a, sizeof a)) {
+    int s = gsql_socket_connect(path);
+    if (s < 0) {
         mismatch("raw connect %s: %s", path, strerror(errno));
-        close(s);
-        return -1;
     }
     return s;
 }
@@ -1578,7 +1577,7 @@ static int exists(const char *p) {
 }
 
 static int paths_main(const char *dir) {
-    char real[600], lnk[600], sock[200];
+    char real[600], lnk[600], sock[4200];
     snprintf(real, sizeof real, "%s/real", dir);
     snprintf(lnk, sizeof lnk, "%s/link", dir);
     GsqlError err;
@@ -1623,7 +1622,7 @@ static int paths_main(const char *dir) {
     /* a socket leading to ANOTHER database's owner is refused: the WELCOME
      * names the database it holds, and the client compares */
     {
-        char other[700], osock[200];
+        char other[700], osock[4200];
         snprintf(other, sizeof other, "%s/other", dir);
         GsqlClient *x = open_db(real, 0);
         GsqlClientOptions o;
@@ -1655,6 +1654,79 @@ static int paths_main(const char *dir) {
         gsql_client_close(x);
     }
 
+    /* THE SOCKET IS IN THE DATABASE DIRECTORY (§3): whoever reaches the
+     * database reaches its owner, whatever /tmp or XDG_RUNTIME_DIR it has */
+    {
+        GsqlClient *x = open_db(real, 0);
+        struct stat st;
+        char fb[600];
+        GsqlError ignored;
+        EXPECT(gsql_socket_path(real, sock, sizeof sock, &d, &i, &err) == GSQL_OK, "socket path: %s", err.message);
+        snprintf(fb, sizeof fb, "%s", "");
+        gsql_socket_fallback(real, 1, fb, sizeof fb, &ignored);
+        EXPECT(x && lstat(sock, &st) == 0 && S_ISSOCK(st.st_mode) && (st.st_mode & 0777) == 0600,
+               "the database's socket %s is not a socket at 0600 inside it", sock);
+        EXPECT(fb[0] && !exists(fb), "a socket was also made in the runtime directory (%s)", fb);
+        gsql_client_close(x);
+    }
+    /* a directory others can write in could hold anybody's socket */
+    chmod(real, 0770);
+    int rc = gsql_socket_path(real, sock, sizeof sock, &d, &i, &err);
+    EXPECT(rc == GSQL_MISUSE && strstr(err.message, "written by other users") && strstr(err.message, "chmod 700"),
+           "a database directory at 0770 answered %s: %s", gsql_error_name(rc), err.message);
+    {
+        GsqlClientOptions o;
+        memset(&o, 0, sizeof o);
+        o.owner_argv = OWNER_ARGV;
+        GsqlClient *x = NULL;
+        rc = gsql_client_open(real, &o, &x, &err);
+        EXPECT(rc == GSQL_MISUSE && strstr(err.message, "written by other users"),
+               "a client of a database directory at 0770 answered %s: %s", gsql_error_name(rc), err.message);
+        gsql_client_close(x);
+    }
+    chmod(real, 0750);
+    EXPECT(gsql_socket_path(real, sock, sizeof sock, &d, &i, &err) == GSQL_OK,
+           "a database directory others may only read (0750) was refused: %s", err.message);
+    chmod(real, 0700);
+
+    /* a path no socket address can hold (108 bytes) is reached through a
+     * handle on its directory */
+    {
+        char deep[900];
+        snprintf(deep, sizeof deep, "%s/%0100d/%0100d", dir, 0, 1);
+        char parent[900];
+        snprintf(parent, sizeof parent, "%s/%0100d", dir, 0);
+        mkdir(parent, 0700);
+        GsqlClient *x = open_db(deep, 1);
+        GsqlClient *y = x ? open_db(deep, 0) : NULL;
+        EXPECT(strlen(deep) + 8 > 108, "the deep path is %zu bytes, short enough to measure nothing", strlen(deep));
+        EXPECT(y && gsql_client_owner_pid(y) == gsql_client_owner_pid(x) && gsql_client_started(y) == 0,
+               "a second client of a %zu-byte database path did not reach the first's owner", strlen(deep));
+        EXPECT(y && !strcmp(call(y, GSQL_M_PING, NULL), "PONG"), "over a long path: %s %s", last_word, last_message);
+        gsql_client_close(y);
+        gsql_client_close(x);
+    }
+
+    /* A FILESYSTEM WITH NO SOCKETS (an SMB share without unix extensions):
+     * the owner binds in the runtime directory and every client looks there
+     * second. The runtime directory's checks apply then. */
+    {
+        char fdb[700], fb[600];
+        snprintf(fdb, sizeof fdb, "%s/nosockets", dir);
+        setenv("GSQL_TEST_NO_DIR_SOCKET", "1", 1);
+        GsqlClient *x = open_db(fdb, 1);
+        GsqlClient *y = x ? open_db(fdb, 0) : NULL;
+        GsqlError ignored;
+        gsql_socket_path(fdb, sock, sizeof sock, &d, &i, &ignored);
+        EXPECT(gsql_socket_fallback(fdb, 0, fb, sizeof fb, &err) == GSQL_OK, "fallback path: %s", err.message);
+        EXPECT(x && !exists(sock) && exists(fb), "an owner refused a socket in the database did not bind %s instead", fb);
+        EXPECT(y && gsql_client_owner_pid(y) == gsql_client_owner_pid(x) && gsql_client_started(y) == 0,
+               "a second client did not find an owner in the runtime directory");
+        gsql_client_close(y);
+        gsql_client_close(x);
+        unsetenv("GSQL_TEST_NO_DIR_SOCKET");
+    }
+
     /* the runtime directory is checked, not trusted */
     /* beside the runtime directory in use, since that one is short enough for
      * a socket and the test directory need not be */
@@ -1668,11 +1740,11 @@ static int paths_main(const char *dir) {
     mkdir(rtg, 0755);
     chmod(rtg, 0755);
     setenv("XDG_RUNTIME_DIR", rt, 1);
-    int rc = gsql_socket_path(real, sock, sizeof sock, &d, &i, &err);
+    rc = gsql_socket_fallback(real, 0, sock, sizeof sock, &err);
     EXPECT(rc == GSQL_MISUSE && strstr(err.message, "open to other users") && strstr(err.message, rtg),
            "a runtime directory at 0755 answered %s: %s", gsql_error_name(rc), err.message);
     chmod(rtg, 0700);
-    EXPECT(gsql_socket_path(real, sock, sizeof sock, &d, &i, &err) == GSQL_OK,
+    EXPECT(gsql_socket_fallback(real, 0, sock, sizeof sock, &err) == GSQL_OK,
            "the same runtime directory at 0700 was refused: %s", err.message);
     rmdir(rtg);
     char elsewhere[800];
@@ -1681,26 +1753,30 @@ static int paths_main(const char *dir) {
     if (symlink(elsewhere, rtg) != 0) {
         mismatch("symlink: %s", strerror(errno));
     }
-    rc = gsql_socket_path(real, sock, sizeof sock, &d, &i, &err);
+    rc = gsql_socket_fallback(real, 0, sock, sizeof sock, &err);
     EXPECT(rc == GSQL_MISUSE && strstr(err.message, "symlink"), "a runtime directory that is a symlink answered %s: %s",
            gsql_error_name(rc), err.message);
     {
+        /* refused only where it is used: a database that holds its socket
+           does not care, and an owner driven to the runtime directory says
+           why it could not serve */
+        GsqlClient *x = open_db(real, 0);
+        EXPECT(x != NULL, "a bad runtime directory stopped a database that holds its own socket");
+        gsql_client_close(x);
+        char fdb[700];
+        snprintf(fdb, sizeof fdb, "%s/nosockets2", dir);
+        setenv("GSQL_TEST_NO_DIR_SOCKET", "1", 1);
         GsqlClientOptions o;
         memset(&o, 0, sizeof o);
         o.owner_argv = OWNER_ARGV;
-        GsqlClient *x = NULL;
-        rc = gsql_client_open(real, &o, &x, &err);
-        EXPECT(rc == GSQL_MISUSE && strstr(err.message, "symlink"), "a client over that runtime directory answered %s: %s",
-               gsql_error_name(rc), err.message);
+        o.create = 1;
+        rc = gsql_client_open(fdb, &o, &x, &err);
+        EXPECT(rc != GSQL_OK && strstr(err.message, "symlink"),
+               "an owner that had to use a symlinked runtime directory answered %s: %s", gsql_error_name(rc),
+               err.message);
+        gsql_client_close(rc == GSQL_OK ? x : NULL);
+        unsetenv("GSQL_TEST_NO_DIR_SOCKET");
     }
-    /* a path no local socket can hold */
-    char longrt[400];
-    snprintf(longrt, sizeof longrt, "%s/%0120d", dir, 0);
-    mkdir(longrt, 0700);
-    setenv("XDG_RUNTIME_DIR", longrt, 1);
-    rc = gsql_socket_path(real, sock, sizeof sock, &d, &i, &err);
-    EXPECT(rc == GSQL_MISUSE && strstr(err.message, "longer than a local socket allows"),
-           "a runtime directory too long for a socket answered %s: %s", gsql_error_name(rc), err.message);
     setenv("XDG_RUNTIME_DIR", keep, 1);
 
     /* an owner that cannot start says why, through the client */
@@ -2271,6 +2347,9 @@ static void be_machine(const char *dir, const char *name) {
     mkdir(rt, 0700);
     setenv("XDG_RUNTIME_DIR", rt, 1);
     setenv("GSQL_TEST_MACHINE", name, 1);
+    /* the machines share the database directory, as on NFS, and a socket
+       there would reach across them as it cannot on NFS: each its own name */
+    gsql_socket_test_machine(name);
     setenv("GSQL_TEST_LEASE", L_TIMINGS, 1);
 }
 

@@ -76,22 +76,12 @@ static int write_all(int fd, const unsigned char *p, size_t n) {
     return 0;
 }
 
-static int connect_to(const char *path) {
-    struct sockaddr_un a;
-    memset(&a, 0, sizeof a);
-    a.sun_family = AF_UNIX;
-    if (strlen(path) >= sizeof a.sun_path) {
-        return -1;
-    }
-    memcpy(a.sun_path, path, strlen(path) + 1);
-    int s = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (s < 0) {
-        return -1;
-    }
-    fcntl(s, F_SETFD, FD_CLOEXEC);
-    if (connect(s, (struct sockaddr *)&a, sizeof a) != 0) {
-        close(s);
-        return -1;
+/* The owner's socket is in the database directory, or, on a filesystem that
+ * holds none, in the runtime directory (gsql_owner.h); tried in that order. */
+static int connect_to(const char *sock, const char *fallback) {
+    int s = gsql_socket_connect(sock);
+    if (s < 0 && fallback[0]) {
+        s = gsql_socket_connect(fallback);
     }
     return s;
 }
@@ -351,7 +341,7 @@ static void drop(GsqlClient *c) {
 static int reach(GsqlClient *c, GsqlError *err) {
     GsqlError last = { GSQL_NO_OWNER, "", 0, 0, "", "", "" };
     for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
-        char sock[200];
+        char sock[4200], fallback[600];
         int rc = gsql_socket_path(c->db, sock, sizeof sock, &c->device, &c->inode, &last);
         int started = 0;
         if (rc == GSQL_NOT_FOUND) {
@@ -369,7 +359,13 @@ static int reach(GsqlClient *c, GsqlError *err) {
         if (rc != GSQL_OK) {
             return err_set(err, last.code, "%s", last.message);
         }
-        c->fd = connect_to(sock);
+        /* a runtime directory that is refused matters only to an owner that
+           had to bind there, and that owner says so through start_owner */
+        GsqlError ignored;
+        if (gsql_socket_fallback(c->db, 0, fallback, sizeof fallback, &ignored) != GSQL_OK) {
+            fallback[0] = 0;
+        }
+        c->fd = connect_to(sock, fallback);
         if (c->fd < 0 && !started) {
             int st = start_owner(c, &last);
             if (!st) {
@@ -379,13 +375,13 @@ static int reach(GsqlClient *c, GsqlError *err) {
         /* a busy owner lost to one that may not have bound its socket yet */
         uint64_t deadline = now_ms() + (c->opt.wait_ms ? c->opt.wait_ms : DEFAULT_WAIT_MS);
         while (c->fd < 0 && now_ms() < deadline) {
-            c->fd = connect_to(sock);
+            c->fd = connect_to(sock, fallback);
             if (c->fd < 0) {
                 pause_ms(2);
             }
         }
         if (c->fd < 0) {
-            snprintf(last.message, sizeof last.message, "no owner answered on %s", sock);
+            snprintf(last.message, sizeof last.message, "no owner answered on %.400s", sock);
             continue;   /* the winner may itself have died: start again */
         }
         rc = handshake(c, &last);

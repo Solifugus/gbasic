@@ -115,4 +115,4 @@ After the engine has the `flock` and before it reads the manifest or the log:
 
 **Perturbations proven red:** never watching, no fence, a renewal that ignores a foreign token, a close that leaves the lease, no fast path on the same machine, a non-exclusive create, and no check after the settle. Each is caught by the check written for it.
 
-**Not measured:** NFS, SMB and FUSE themselves, since this machine has none. The lease is tested with pretend machines (their own runtime directory, identity and local lock) on one ext4 filesystem, which reproduces local-only locking exactly and close-to-open caching not at all.
+**Not measured:** NFS, SMB and FUSE themselves, since this machine has none. The lease is tested with pretend machines (their own socket name, identity and local lock) on one ext4 filesystem, which reproduces local-only locking exactly and close-to-open caching not at all.

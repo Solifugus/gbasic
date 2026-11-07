@@ -106,12 +106,29 @@ typedef struct {
  * already reported on ready_fd and stderr. `service` may be NULL. */
 int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOptions *opt);
 
-/* The socket for `db`, an existing database, in the runtime directory: named
- * from the database's device and inode, so two paths to one database find
- * one owner. The directory is created at mode 0700 and refused unless it is
- * a directory, not a symlink, owned by this user and closed to everyone
- * else (§3). The owner and the client both ask here. */
+/* The socket for `db`, an existing database: `db.sock` inside its directory,
+ * so whoever can reach the database reaches its owner, and two paths to one
+ * database find one socket (docs/gsql_owner_design.md §3). The directory must
+ * be this user's and closed to other writers. *device and *inode get the
+ * database's identity, which the owner's WELCOME must match. The owner and
+ * the client both ask here. */
 int gsql_socket_path(const char *db, char *out, size_t cap, uint64_t *device, uint64_t *inode,
                      GsqlError *err);
+/* Where the socket is when the database's filesystem holds none (an SMB share
+ * without unix extensions): the runtime directory, $XDG_RUNTIME_DIR/gbasic or
+ * /tmp/gbasic-<uid>, named from the database's device and inode. Made 0700
+ * when `make` (the owner that must bind there), NOT_FOUND when absent
+ * otherwise, and refused unless it is a directory, not a symlink, this
+ * user's and closed to everyone else. A client tries it second. */
+int gsql_socket_fallback(const char *db, int make, char *out, size_t cap, GsqlError *err);
+/* A connected local socket for `path` of any length (a long one through a
+ * handle on its directory), or -1 with errno. */
+int gsql_socket_connect(const char *path);
+/* Tests only: a pretend machine's own socket name (the lease tier, where two
+ * machines share one directory as they would on NFS, but each must find only
+ * its own owner), and an owner that behaves as if the database's filesystem
+ * held no sockets. */
+void gsql_socket_test_machine(const char *name);
+void gsql_socket_test_refuse_dir(int on);
 
 #endif
