@@ -28,13 +28,22 @@ end post
 
 | Call | What it does |
 | --- | --- |
-| `mcp.handle(ts, opts, line)` | one JSON-RPC request → the reply, or `""` for a notification |
+| `mcp.handle(ts, opts, line [, caller])` | one JSON-RPC request → the reply, or `""` for a notification. `ts` is a toolset or a declaration from `mcp.server`; `caller` is this request's principal (§4) |
+| `mcp.server(ts, { resources, templates, prompts })` | a declaration with resources and prompts beside the tools (§7) |
 | `mcp.serve_stdio(ts, opts)` | the stdio loop |
 | `mcp.tool_list(ts)` | the `tools/list` payload |
+| `mcp.resource_list(srv)`, `mcp.template_list(srv)`, `mcp.prompt_list(srv)` | the `resources/list`, `resources/templates/list` and `prompts/list` payloads of a declaration (§7) |
 | `mcp.check_options(opts)` | validate a server's options, including the ceiling |
 
-Implemented methods: `initialize`, `tools/list`, `tools/call`. Anything else is
-`-32601`, and a notification (no `id`) is answered with silence.
+Implemented methods: `initialize`, `tools/list`, `tools/call`, and with a
+declaration `resources/list`, `resources/templates/list`, `resources/read`,
+`prompts/list` and `prompts/get`. Anything else is `-32601`, and a
+notification (no `id`) is answered with silence.
+
+**A tool's function is called as a method of its entry** (since 2026-11-06,
+Transward §7.2), so `this` is the entry and `this.name` says which tool is
+being served. Function values are not closures, so this is how one function
+serves many entries; a function that never reads `this` is called as before.
 
 ## 2. Run stdio under `--line-buffered`
 
@@ -85,6 +94,17 @@ the operator never named.
 Dispatch happens inside `with principal(opts.principal)`, so a tool asking
 `principal()` gets the configured identity rather than whatever the server
 process happens to be.
+
+**A principal per request** (2026-11-06, Transward §7.3). Over HTTP every
+request carries its own bearer token, so who a call is for is decided per
+request, not per server. `mcp.handle(ts, opts, line, caller)` runs the tool
+(and a resource or prompt) under `caller`, a record the application has
+already verified, which passes through untouched: an application's own fields
+reach `principal()` as given. It takes the place of `opts.principal` for that
+request. The `max_groups` ceiling is NOT applied to it: the ceiling bounds a
+static mapping that stands in for whoever calls, and a principal established
+from a verified token stands for one caller. A `caller` that is not a record
+is refused.
 
 ## 5. A blank line ends a stdio session
 
@@ -165,3 +185,49 @@ that would find is a disagreement about the protocol that both halves share, so
 the round trip cannot see it. That limit is real and is why the suite asserts
 the *wire* (byte-identical replies across transports, JSON-RPC shapes) rather
 than only that a call returned something.
+
+## 7. Resources and prompts (2026-11-06, Transward §7.1)
+
+`mcp.server(ts, decl)` declares what a server publishes beside its tools, and
+`mcp.handle` takes the declaration where it takes a toolset:
+
+```basic
+srv = mcp.server(ts, {
+    resources: [ { uri: "app://health", name: "health", mime: "application/json", fn: health } ],
+    templates: [ { uri: "app://runs/{run_id}/transcript", name: "transcript",
+                   mime: "text/plain", fn: transcript } ],
+    prompts:   [ { name: "diagnose", describe: "Diagnose a failed run.",
+                   arguments: [ { name: "run_id", required: true } ], fn: diagnose } ]
+})
+```
+
+- **One declaration**, as `tools.define` is for tools: the three `*/list`
+  answers derive from it and `resources/read` and `prompts/get` check against
+  it, so they cannot drift. It is checked once, when declared: closed field
+  sets, a function for every entry, no URI or prompt twice, a template with at
+  least one `{name}` part and a resource with none.
+- **A template part** matches one or more characters up to the next literal
+  text, never a `/`, and reaches the function as written (not
+  percent-decoded): `fn({ run_id: "r-17" })`. Two parts with nothing between
+  them are refused, since where one ends could not be told. A declared
+  resource wins over a template; templates are tried in declared order.
+- **A prompt's function** answers the text of one user message, or
+  `[{ role, text }]` for several (`role` is `"user"` or `"assistant"`). Its
+  arguments are strings, checked as a tool's are: a required one left out and
+  an undeclared one are refused (`-32602`).
+- **Every function** runs as a method of its entry, under the request's
+  principal, exactly as a tool does. A text answer is sent as text; anything
+  else as JSON, typed `application/json` unless the entry declares a `mime`.
+- **Errors** are JSON-RPC errors, since a resource has no `isError` result: an
+  unknown URI is MCP's `-32002`, a function that raises is `-32603` saying
+  why.
+- `initialize` advertises `resources` and `prompts` only when the declaration
+  has some.
+
+Tested by `tests/mcp_test.bas` (run_mcp.sh's protocol tier): listing,
+reading through one and two parts, a part refused across a `/`, the request's
+principal reaching a resource, the not-found and raising cases, both prompt
+shapes, argument refusals, and seven declaration refusals. Perturbed, each red
+alone: a part allowed to span `/`, a resource run without the caller's
+principal, required arguments unchecked, the capability never advertised.
+

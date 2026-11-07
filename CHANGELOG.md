@@ -70,6 +70,18 @@ reader sees.
   chunked-encryption pattern Transward asked for
   (`tests/read_at_chunks_test.bas`).
 
+### MCP: resources, prompts, and a principal per request
+
+- **`mcp.server(ts, { resources, templates, prompts })`** declares resources
+  (with URI templates such as `app://runs/{run_id}/transcript`) and prompts
+  beside a toolset; `mcp.handle` answers `resources/list`,
+  `resources/templates/list`, `resources/read`, `prompts/list` and
+  `prompts/get` from it (Transward §7.1).
+- **A tool's function is called as a method of its entry**, so `this.name`
+  lets one function serve many tools (§7.2).
+- **`mcp.handle(ts, opts, line, caller)`** runs the call under a principal
+  verified for this request, passed through untouched (§7.3).
+
 ### Many rows into G-SQL in one call
 
 - **`db.insert(table, rows)`** (`gsql.insert`): rows are records keyed by

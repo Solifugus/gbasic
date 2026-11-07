@@ -127,11 +127,492 @@ library mcp
         return r
     end function
 
-    ' mcp.handle(ts, opts, line) -> the reply line, or "" for a notification.
+    ' ================= resources and prompts (Transward §7.1) =================
+    '
+    ' mcp.server(ts, { resources, templates, prompts }) -> a server declaration,
+    ' which `mcp.handle` takes where it takes a toolset. ONE DECLARATION that
+    ' the */list answers derive from and */read, */get check against, so the
+    ' two cannot drift, as `tools.define` is for tools. Checked here, once:
+    ' a malformed entry stops the program at start, not at the first read.
+    '
+    '   resources  [{ uri, name, describe, mime, fn }]   fn({}) answers the text
+    '   templates  [{ uri, name, describe, mime, fn }]   uri holds {name} parts;
+    '              fn({ name: "..." }) gets each part of the URI it matched
+    '   prompts    [{ name, describe, arguments, fn }]   arguments are
+    '              [{ name, describe, required }]; fn(args) answers the text of
+    '              one user message, or [{ role, text }] for several
+    '
+    ' Every fn is called as a METHOD of its entry, so `this` is the entry, and
+    ' under the request's principal, as a tool is. An answer that is not text
+    ' is sent as JSON. A {name} matches one or more characters up to the next
+    ' literal part, never a `/`, and is handed over as written (not
+    ' percent-decoded).
+
+    function _fields(rec, allowed, what)
+        if not is_record(rec) then
+            error "mcp: " + what + " must be a record"
+        end if
+        for each k in keys(rec)
+            if not contains(allowed, k) then
+                error "mcp: " + what + " has no field '" + k + "'; it takes " + join(allowed, ", ")
+            end if
+        end for
+        return nothing
+    end function
+
+    function _need_text(rec, field, what)
+        if not has(rec, field) then
+            error "mcp: " + what + " needs " + field
+        end if
+        if not is_string(rec[field]) then
+            error "mcp: " + what + "'s " + field + " must be a string"
+        end if
+        if rec[field] = "" then
+            error "mcp: " + what + "'s " + field + " is empty"
+        end if
+        return nothing
+    end function
+
+    function _need_fn(rec, what)
+        if not has(rec, "fn") then
+            error "mcp: " + what + " needs fn, the function that answers it"
+        end if
+        if reflect.kind(rec.fn) != "function" then
+            error "mcp: " + what + "'s fn must be a function value"
+        end if
+        return nothing
+    end function
+
+    ' A template's parts: [{ text }] for literal text, [{ name }] for a {name}.
+    function _template_parts(uri, what)
+        parts = []
+        rest = uri
+        while rest != ""
+            lb = find(rest, "{")
+            if lb = nothing then
+                append(parts, { text: rest })
+                rest = ""
+            else
+                if lb > 0 then
+                    append(parts, { text: mid(rest, 0, lb) })
+                end if
+                after = mid(rest, lb + 1, len(rest) - lb - 1)
+                rb = find(after, "}")
+                if rb = nothing then
+                    error "mcp: " + what + " has a { with no }"
+                end if
+                name = mid(after, 0, rb)
+                if name = "" or find(name, "{") != nothing then
+                    error "mcp: " + what + " has an empty or nested {...}"
+                end if
+                if count(parts) > 0 then
+                    if has(parts[count(parts) - 1], "name") then
+                        error "mcp: " + what + " has two {...} parts with nothing between them, so where one ends cannot be told"
+                    end if
+                end if
+                append(parts, { name: name })
+                rest = mid(after, rb + 1, len(after) - rb - 1)
+            end if
+        end while
+        named = 0
+        for each p in parts
+            if has(p, "name") then named = named + 1
+        end for
+        if named = 0 then
+            error "mcp: " + what + " has no {name} part; a URI with none is a resource, not a template"
+        end if
+        return parts
+    end function
+
+    ' The template's parts matched against a URI: { ok, vars }.
+    function _template_match(parts, uri)
+        vars = {}
+        rest = uri
+        i = 0
+        while i < count(parts)
+            p = parts[i]
+            if has(p, "text") then
+                if not starts_with(rest, p.text) then
+                    return { ok: false, vars: {} }
+                end if
+                rest = mid(rest, len(p.text), len(rest) - len(p.text))
+            else
+                stop_at = len(rest)
+                if i + 1 < count(parts) then
+                    at = find(rest, parts[i + 1].text)
+                    if at = nothing then
+                        return { ok: false, vars: {} }
+                    end if
+                    stop_at = at
+                end if
+                value = mid(rest, 0, stop_at)
+                if value = "" or find(value, "/") != nothing then
+                    return { ok: false, vars: {} }
+                end if
+                vars[p.name] = value
+                rest = mid(rest, stop_at, len(rest) - stop_at)
+            end if
+            i = i + 1
+        end while
+        return { ok: rest = "", vars: vars }
+    end function
+
+    function server(ts, decl)
+        if not is_record(ts) then
+            error "mcp.server expects a toolset (tools.define) and a declaration record"
+        end if
+        if not has(ts, "entries") then
+            error "mcp.server expects a toolset (tools.define) and a declaration record"
+        end if
+        _fields(decl, ["resources", "templates", "prompts"], "the declaration")
+        out = { kind: "mcp_server", tools: ts, resources: [], templates: [], prompts: [] }
+        uris = []
+        names = []
+        for each field in ["resources", "templates"]
+            if has(decl, field) then
+                if not is_array(decl[field]) then
+                    error "mcp: " + field + " must be an array of entries"
+                end if
+                for each e in decl[field]
+                    what = "a " + mid(field, 0, len(field) - 1)
+                    _fields(e, ["uri", "name", "describe", "mime", "fn"], what)
+                    _need_text(e, "uri", what)
+                    what = what + " '" + e.uri + "'"
+                    _need_text(e, "name", what)
+                    _need_fn(e, what)
+                    if has(e, "describe") then
+                        if not is_string(e.describe) then
+                            error "mcp: " + what + "'s describe must be a string"
+                        end if
+                    end if
+                    if has(e, "mime") then
+                        if not is_string(e.mime) then
+                            error "mcp: " + what + "'s mime must be a string"
+                        end if
+                    end if
+                    if contains(uris, e.uri) then
+                        error "mcp: " + what + " is declared twice"
+                    end if
+                    append(uris, e.uri)
+                    if field = "templates" then
+                        e["parts"] = _template_parts(e.uri, what)
+                    else if find(e.uri, "{") != nothing then
+                        error "mcp: " + what + " holds a {...} part; declare it under templates"
+                    end if
+                    rows = out[field]
+                    append(rows, e)
+                    out[field] = rows
+                end for
+            end if
+        end for
+        if has(decl, "prompts") then
+            if not is_array(decl.prompts) then
+                error "mcp: prompts must be an array of entries"
+            end if
+            for each e in decl.prompts
+                _fields(e, ["name", "describe", "arguments", "fn"], "a prompt")
+                _need_text(e, "name", "a prompt")
+                what = "prompt '" + e.name + "'"
+                _need_fn(e, what)
+                if contains(names, e.name) then
+                    error "mcp: " + what + " is declared twice"
+                end if
+                append(names, e.name)
+                args = []
+                if has(e, "arguments") then
+                    args = e.arguments
+                end if
+                if not is_array(args) then
+                    error "mcp: " + what + "'s arguments must be an array"
+                end if
+                seen = []
+                for each a in args
+                    _fields(a, ["name", "describe", "required"], what + "'s argument")
+                    _need_text(a, "name", what + "'s argument")
+                    if contains(seen, a.name) then
+                        error "mcp: " + what + " declares the argument '" + a.name + "' twice"
+                    end if
+                    append(seen, a.name)
+                    if has(a, "required") then
+                        if type(a.required) != "boolean" then
+                            error "mcp: " + what + "'s argument '" + a.name + "': required must be true or false"
+                        end if
+                    end if
+                end for
+                e["arguments"] = args
+                rows = out.prompts
+                append(rows, e)
+                out.prompts = rows
+            end for
+        end if
+        return out
+    end function
+
+    ' A server declaration from what handle was given: a declaration as it
+    ' is, or a bare toolset with nothing else.
+    function _server_of(x)
+        if is_record(x) then
+            if has(x, "kind") then
+                if x.kind = "mcp_server" then
+                    return x
+                end if
+            end if
+        end if
+        return { kind: "mcp_server", tools: x, resources: [], templates: [], prompts: [] }
+    end function
+
+    ' fn of entry e, called as its method, a raise caught: { ok, value, why }
+    function _call_entry(e, arg)
+        on error goto next
+        v = e.fn(arg)
+        if error then
+            why = error.message
+            error.clear()
+            return { ok: false, value: nothing, why: why }
+        end if
+        return { ok: true, value: v, why: "" }
+    end function
+
+    ' ...under the request's principal, as a tool runs
+    function _under(opts, caller, e, arg)
+        if caller != nothing then
+            with principal(caller)
+                got = _call_entry(e, arg)
+            end with
+            return got
+        end if
+        if has(opts, "principal") then
+            with principal(opts.principal)
+                got = _call_entry(e, arg)
+            end with
+            return got
+        end if
+        return _call_entry(e, arg)
+    end function
+
+    function _as_text(v)
+        if is_string(v) then
+            return v
+        end if
+        return json_encode(v)
+    end function
+
+    function _described(out, e, key)
+        if has(e, "describe") then
+            out[key] = e.describe
+        end if
+        return out
+    end function
+
+    function resource_list(srv)
+        out = []
+        for each e in srv.resources
+            r = {}
+            r["uri"] = e.uri
+            r["name"] = e.name
+            r = _described(r, e, "description")
+            if has(e, "mime") then
+                r["mimeType"] = e.mime
+            end if
+            append(out, r)
+        end for
+        return { resources: out }
+    end function
+
+    function template_list(srv)
+        out = []
+        for each e in srv.templates
+            r = {}
+            r["uriTemplate"] = e.uri
+            r["name"] = e.name
+            r = _described(r, e, "description")
+            if has(e, "mime") then
+                r["mimeType"] = e.mime
+            end if
+            append(out, r)
+        end for
+        out_rec = {}
+        out_rec["resourceTemplates"] = out
+        return out_rec
+    end function
+
+    function prompt_list(srv)
+        out = []
+        for each e in srv.prompts
+            r = {}
+            r["name"] = e.name
+            r = _described(r, e, "description")
+            args = []
+            for each a in e.arguments
+                x = {}
+                x["name"] = a.name
+                x = _described(x, a, "description")
+                req = false
+                if has(a, "required") then
+                    req = a.required
+                end if
+                x["required"] = req
+                append(args, x)
+            end for
+            r["arguments"] = args
+            append(out, r)
+        end for
+        return { prompts: out }
+    end function
+
+    ' resources/read: a declared resource, else the first template that
+    ' matches. { reply } with a result or a JSON-RPC error already made.
+    function _read(srv, opts, caller, id, params)
+        if not is_record(params) then
+            return _err(id, -32602, "params must be an object")
+        end if
+        if not has(params, "uri") then
+            return _err(id, -32602, "resources/read needs a uri")
+        end if
+        if not is_string(params.uri) then
+            return _err(id, -32602, "resources/read needs a uri")
+        end if
+        uri = params.uri
+        hit = nothing
+        vars = {}
+        for each e in srv.resources
+            if hit = nothing and e.uri = uri then
+                hit = e
+            end if
+        end for
+        for each e in srv.templates
+            if hit = nothing then
+                m = _template_match(e.parts, uri)
+                if m.ok then
+                    hit = e
+                    vars = m.vars
+                end if
+            end if
+        end for
+        if hit = nothing then
+            ' -32002 is MCP's "resource not found"
+            return _err(id, -32002, "no resource " + uri)
+        end if
+        got = _under(opts, caller, hit, vars)
+        if not got.ok then
+            return _err(id, -32603, "the resource failed: " + got.why)
+        end if
+        c = {}
+        c["uri"] = uri
+        if has(hit, "mime") then
+            c["mimeType"] = hit.mime
+        else if not is_string(got.value) then
+            c["mimeType"] = "application/json"
+        end if
+        c["text"] = _as_text(got.value)
+        return _ok(id, { contents: [ c ] })
+    end function
+
+    ' prompts/get: its arguments checked against the declaration, as a
+    ' tool's are.
+    function _get_prompt(srv, opts, caller, id, params)
+        if not is_record(params) then
+            return _err(id, -32602, "params must be an object")
+        end if
+        if not has(params, "name") then
+            return _err(id, -32602, "prompts/get needs a prompt name")
+        end if
+        hit = nothing
+        for each e in srv.prompts
+            if hit = nothing and e.name = params.name then
+                hit = e
+            end if
+        end for
+        if hit = nothing then
+            return _err(id, -32602, "no prompt named " + string(params.name))
+        end if
+        args = {}
+        if has(params, "arguments") then
+            args = params.arguments
+        end if
+        if not is_record(args) then
+            return _err(id, -32602, "a prompt's arguments must be an object")
+        end if
+        declared = []
+        for each a in hit.arguments
+            append(declared, a.name)
+            req = false
+            if has(a, "required") then
+                req = a.required
+            end if
+            if req and not has(args, a.name) then
+                return _err(id, -32602, "prompt '" + hit.name + "' needs the argument '" + a.name + "'")
+            end if
+        end for
+        for each k in keys(args)
+            if not contains(declared, k) then
+                return _err(id, -32602, "prompt '" + hit.name + "' has no argument '" + k + "'")
+            end if
+            if not is_string(args[k]) then
+                return _err(id, -32602, "prompt '" + hit.name + "': the argument '" + k + "' must be a string")
+            end if
+        end for
+        got = _under(opts, caller, hit, args)
+        if not got.ok then
+            return _err(id, -32603, "the prompt failed: " + got.why)
+        end if
+        said = got.value
+        if is_string(said) then
+            said = [ { role: "user", text: said } ]
+        end if
+        if not is_array(said) then
+            return _err(id, -32603, "the prompt answered " + type(said) + "; it answers text, or [{ role, text }]")
+        end if
+        messages = []
+        for each m in said
+            ok_shape = is_record(m)
+            if ok_shape then
+                ok_shape = has(m, "role") and has(m, "text")
+            end if
+            if not ok_shape then
+                return _err(id, -32603, "a prompt's message is a record { role, text }")
+            end if
+            if m.role != "user" and m.role != "assistant" then
+                return _err(id, -32603, "a prompt's message role is \"user\" or \"assistant\", not " + string(m.role))
+            end if
+            block = {}
+            block["type"] = "text"
+            block["text"] = _as_text(m.text)
+            msg = {}
+            msg["role"] = m.role
+            msg["content"] = block
+            append(messages, msg)
+        end for
+        res = {}
+        if has(hit, "describe") then
+            res["description"] = hit.describe
+        end if
+        res["messages"] = messages
+        return _ok(id, res)
+    end function
+
+    ' mcp.handle(ts, opts, line [, caller]) -> the reply line, or "" for a
+    ' notification.
     '
     ' NO I/O. This is the whole protocol, so both transports are wrappers and
     ' the protocol can be tested with neither of them present.
-    function handle(ts, opts, line)
+    '
+    ' `caller` IS THIS REQUEST'S PRINCIPAL, for a transport that authenticates each
+    ' request (over HTTP every request carries its own bearer token): a record
+    ' the caller has already verified, which the tool runs under and which
+    ' passes through untouched -- an application's own fields (Transward's
+    ' kind, actor, role, via, ...) included. It takes the place of
+    ' `opts.principal` for this request. The `max_groups` ceiling stays with
+    ' `opts.principal`, the static mapping it was written for: a principal
+    ' established per request from a verified token stands for one caller, not
+    ' for everybody a configuration maps (Transward §7.3, 2026-11-06).
+    function handle(ts, opts, line, caller = nothing)
+        if caller != nothing and not is_record(caller) then
+            error "mcp.handle: the caller is a record of who this request is for, not " + type(caller)
+        end if
+        ' a server declaration (mcp.server), or a bare toolset
+        srv = _server_of(ts)
+        ts = srv.tools
         parsed = try_decode(line)
         if not parsed.ok then
             return _err(nothing, -32700, "parse error: " + parsed.message)
@@ -157,6 +638,12 @@ library mcp
             if is_notification then return ""
             caps = {}
             caps["tools"] = {}
+            if count(srv.resources) > 0 or count(srv.templates) > 0 then
+                caps["resources"] = {}
+            end if
+            if count(srv.prompts) > 0 then
+                caps["prompts"] = {}
+            end if
             info = {}
             info["name"] = opts.name
             info["version"] = opts.version
@@ -170,6 +657,31 @@ library mcp
         if req.method = "tools/list" then
             if is_notification then return ""
             return _ok(id, tool_list(ts))
+        end if
+
+        params = {}
+        if has(req, "params") then
+            params = req.params
+        end if
+        if req.method = "resources/list" then
+            if is_notification then return ""
+            return _ok(id, resource_list(srv))
+        end if
+        if req.method = "resources/templates/list" then
+            if is_notification then return ""
+            return _ok(id, template_list(srv))
+        end if
+        if req.method = "resources/read" then
+            if is_notification then return ""
+            return _read(srv, opts, caller, id, params)
+        end if
+        if req.method = "prompts/list" then
+            if is_notification then return ""
+            return _ok(id, prompt_list(srv))
+        end if
+        if req.method = "prompts/get" then
+            if is_notification then return ""
+            return _get_prompt(srv, opts, caller, id, params)
         end if
 
         if req.method = "tools/call" then
@@ -191,7 +703,11 @@ library mcp
             ' Dispatch under the mapped principal, so a tool asking
             ' `principal()` gets the identity the configuration named and not
             ' whatever the server process happens to be.
-            if has(opts, "principal") then
+            if caller != nothing then
+                with principal(caller)
+                    part = tools.dispatch(ts, params.name, args)
+                end with
+            else if has(opts, "principal") then
                 with principal(opts.principal)
                     part = tools.dispatch(ts, params.name, args)
                 end with

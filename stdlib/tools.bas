@@ -359,9 +359,15 @@ library tools
         ' The body runs under `on error`. Before PLAT-ERR this could not be
         ' written at all, which is why the older layer documents "a tool must
         ' not raise" -- a rule the language now makes unnecessary.
+        '
+        ' CALLED AS A METHOD OF ITS ENTRY, so `this` is the entry and
+        ' `this.name` says which tool is being served. Function values are not
+        ' closures, so this is how one function can serve many entries:
+        ' Transward publishes 33 tools through one dispatcher, which otherwise
+        ' needed 33 wrappers differing only in a name (its §7.2, 2026-11-06).
+        ' A function that never reads `this` is called exactly as before.
         on error goto next
-        fn = e.fn
-        v = fn(prepared)
+        v = e.fn(prepared)
         if error then
             why = error.message
             error.clear()
