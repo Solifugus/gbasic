@@ -86,6 +86,18 @@ printf 'PASS tls_plain_refused (plain HTTP to a TLS port fails fast, no hang)\n'
 kill "$srv" 2>/dev/null || true
 wait "$srv" 2>/dev/null || true
 
+# --- whether TLS is on, on the record: web.serve's answer and listen's ------
+# Transward asked for it after a stale web.bas served plain HTTP to a program
+# that asked for TLS. The flag is the listener's own state, so the plain run is
+# the control: a flag that echoed the request would be true there too only if
+# asked, and the two runs differ in exactly that.
+for mode in tls plain; do
+    want=true; [ "$mode" = plain ] && want=false
+    got="$(timeout 20 ./gbasic tests/web_tls/tls_flag.bas "$scratch" "$mode" 2>&1 | tr '\n' ' ')"
+    [ "$got" = "serve $want listen $want " ] || fail "tls_flag $mode (got '$got')"
+done
+printf 'PASS tls_flag (serve and listen answer tls: true over TLS, false without)\n'
+
 # --- the pooled shape ------------------------------------------------------
 rm -f "$scratch/stop.flag"
 plog="$scratch/pool.log"

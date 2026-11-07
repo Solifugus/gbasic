@@ -23393,6 +23393,10 @@ static Value webserver_register(int fd, const char *bound_address, int bound_por
     record_set(&record, "address", value_string(server->address));
     record_set(&record, "running", value_bool(1));
     record_set(&record, "held", value_bool(hold));
+    /* whether THIS listener terminates TLS, set true below once its context is
+       attached: read from the socket's own state, never from what the caller
+       asked for, so a program can refuse to run without it (Transward) */
+    record_set(&record, "tls", value_bool(0));
     record_set(&record, "requests", value_array(NULL, 0));
     record_set(&record, "responses", value_array(NULL, 0));
     return record;
@@ -23538,6 +23542,7 @@ static Value webserver_eval_inherited(AstExpr *expr) {
             server->sni_count = sni_count;
             SSL_CTX_set_tlsext_servername_callback(tls_default, webserver_sni_select);
             SSL_CTX_set_tlsext_servername_arg(tls_default, (void *)(uintptr_t)server->id);
+            record_set(&items[i], "tls", value_bool(1));
         }
 #endif
     }
@@ -23682,6 +23687,7 @@ static Value webserver_eval_listen(AstExpr *expr) {
         server->sni_count = sni_count;
         SSL_CTX_set_tlsext_servername_callback(tls_default, webserver_sni_select);
         SSL_CTX_set_tlsext_servername_arg(tls_default, (void *)(uintptr_t)server->id);
+        record_set(&record, "tls", value_bool(1));
     }
 #endif
     return record;

@@ -16,6 +16,12 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Whether a server is serving TLS is on its record
+
+- **`webserver.listen` and `web.serve` answer a record with `tls: true` or
+  `false`**, read from the listener's own state, so a program can refuse to
+  run without TLS rather than trust what it asked for (Transward).
+
 ### A source-tree binary loads its own stdlib
 
 - **`./gbasic` run from the tree it was built in loads that tree's `stdlib`**,

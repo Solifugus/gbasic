@@ -4266,6 +4266,14 @@ The module provides:
 operating-system-assigned ephemeral port, which is exposed through
 `server.port`.
 
+`server.tls` is `true` when this listener terminates TLS and `false` when it
+serves plain HTTP (*since 0.11.0*). It is read from the socket's own state,
+not from the options asked for, so a program that must not run without TLS
+can check it: `if not h.tls then error "refusing to serve without TLS"`.
+`web.serve`'s answer is that record, so it carries the flag too. Under
+`workers: N` the supervisor's held socket is plain (each worker terminates
+TLS), and `serve` does not return while the pool runs.
+
 `options` is a record accepting `address` (the local address to bind), `hold`,
 `timeout`, and `tls` (*all since 0.1.0-rc4*):
 

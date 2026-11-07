@@ -436,6 +436,8 @@ PLAT-WEB-2 -- the process worker pool: a supervisor that HOLDS the listener, wor
 
 `./tests/run_web_tls.sh`
 
+TIER tls_flag SINCE 2026-11-07 (Transward's ask): `webserver.listen` and `web.serve` answer `tls: true` over TLS and `false` without, from the listener's own state. The plain run is the control. Two perturbations red: the flag never set true in C, and web.bas ignoring a configured cert (the stale-stdlib shape Transward hit), where `serve` now answers false. A first perturbation that made `_tls_options` return `nothing` crashed instead, since that is not how it says no TLS.
+
 CLIENT CERTIFICATES SINCE 2026-11-07 (DOGFOOD, Transward M26). `webserver.listen` dropped `client_ca` and `require_client_cert` IN SILENCE, so a server meant to authenticate its clients served anyone. Every mtls case therefore asserts what a client WITHOUT the right certificate gets, beside the one with it: none at all, and a stranger's self-signed one. The cases run on a `server` block through `web.configure`, and that turned up a SECOND silent drop: configure's `cert` and `key` were accepted and never read, so the block served plain HTTP and every https probe timed out. A PERTURBATION WENT GREEN and that was the finding: removing the session id context passed every case, because nothing resumed a session. `openssl s_client -reconnect` showed the resumption ending in "internal error", so `mtls_resume` exists now. The misspelled-option fixture used to HANG when the check was removed, because its listener held the program open; it closes its listener now, so it fails fast. Six perturbations went red:
 - no verify;
 - no FAIL_IF_NO_PEER_CERT;
