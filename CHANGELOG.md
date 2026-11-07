@@ -70,6 +70,13 @@ reader sees.
   chunked-encryption pattern Transward asked for
   (`tests/read_at_chunks_test.bas`).
 
+### Money text padded with zeros
+
+- Money text with zeros past what the currency stores is accepted:
+  `{USD}"1100.00000000"`, the way PostgreSQL and ODBC send a `numeric(19,8)`,
+  is 1100. A nonzero digit there is still refused, as before. The same holds
+  for text stored into a G-SQL `money` column (gdash's A6).
+
 ### A database's owner is found from the database itself
 
 - The owner's socket is now `db.sock` inside the database directory, so

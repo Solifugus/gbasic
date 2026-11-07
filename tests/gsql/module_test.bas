@@ -188,6 +188,12 @@ function main_checks(dir)
     check("CAST of money to text keeps every digit", t9, "1250.7512")
     check("while string() shows the currency's places", string(gsql.query(db, "select m from conv where id = 9")[0].m), "1250.75")
     check("and a whole amount keeps its places", gsql.query(db, "select cast(m as string) as s from conv where id = 2")[0].s, "5.25")
+    ' numeric(19,8) text as PostgreSQL and ODBC send it (gdash A6): zeros past
+    ' EUR's six stored places claim nothing; a nonzero digit there is refused
+    e = attempt_exec(db, "insert into conv (id, m) values (82, '7.10000000')", nothing)
+    check("money text padded past the storage scale is stored", gsql.query(db, "select cast(m as string) as s from conv where id = 82")[0].s, "7.10")
+    e = attempt_exec(db, "insert into conv (id, m) values (83, '7.10000001')", nothing)
+    check("and a nonzero digit past it is refused", code_of(e), "TYPE")
     e = attempt_exec(db, "insert into conv (id, x) values (81, 'seven')", nothing)
     check("text that is no number into a number column is refused", code_of(e), "TYPE")
     ' a comparison reads text as the other side's kind (gdash S3, 2026-11-02),

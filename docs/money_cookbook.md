@@ -120,8 +120,9 @@ retained digits is to use them: `fuel * 10` is `34.59`, which a value rounded
 at construction could not produce.
 
 The split on excess precision is deliberate: what you **wrote** is refused,
-because you wrote something money cannot hold — past the six places, not past
-the two; what a **calculation** produced is rounded, because `price * 1.08`
+because you wrote something money cannot hold — a nonzero digit past the six
+places, not past the two (zeros there hold nothing, so a database's
+`"1100.00000000"` is accepted); what a **calculation** produced is rounded, because `price * 1.08`
 always carries seventeen digits and refusing it would make the type unusable.
 
 ---

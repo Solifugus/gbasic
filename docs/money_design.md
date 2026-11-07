@@ -174,6 +174,16 @@ the first place: representing three cents as `3.0000`. Corrected 2026-08-29
 after gdash reported it; the two construction routes now share one threshold
 and differ only in what an excess digit **means** (§11).
 
+**Past the storage scale the same reasoning holds for zeros.** Until
+2026-11-06 the threshold counted places, so `"1100.00000000"` was refused for
+its seventh and eighth digits though both are zero. PostgreSQL and ODBC pad a
+`numeric(p, s)` to `s` places, so a `numeric(19,8)` money column refused every
+row read from it, and so did a G-SQL insert of that text into `money(USD)`
+(gdash's A6, caught by its live Postgres runner). The rule is now the one the
+minor unit already follows: a digit past the storage scale is refused only
+when it is not zero. Nothing is rounded, because nothing below the scale had a
+value.
+
 **The exit has to match the entrance.** Fixing the threshold made sub-cent
 values constructible and immediately exposed the mirror gap: `string(m)`
 renders at the minor unit and `number(m)` refuses money, so an exact value

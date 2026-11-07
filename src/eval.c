@@ -5223,7 +5223,16 @@ static int money_parse_decimal(const char *text,
         mag = mag * 10ULL + d;
     }
 
-    if (keep < ndigits) {
+    /* Zeros below the scale claim nothing: "1100.00000000" is what PostgreSQL
+     * and ODBC send for numeric(19,8), and it is 1100 exactly (gdash's A6).
+     * Only a NONZERO digit there is precision money cannot hold -- the rule
+     * the minor unit already follows (design §5). With none, nothing below is
+     * rounded or refused, and the value is built below as any other. */
+    int below_nonzero = dropped_nonzero;
+    for (i = keep; !below_nonzero && i < ndigits; i++) {
+        if (digits[i] != '0') below_nonzero = 1;
+    }
+    if (keep < ndigits && below_nonzero) {
         /* Digits fall below the scale. */
         if (excess == MONEY_EXCESS_REJECT) {
             *err = MONEY_ERR_EXCESS_DIGITS;

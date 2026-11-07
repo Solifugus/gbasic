@@ -1836,6 +1836,12 @@ gives `99.99`. The cost is range — USD spans about ±$9.22 trillion, JPY about
 ±¥922 trillion, KWD about ±922 billion. Beyond that, arithmetic **raises**
 rather than wrapping.
 
+Text with more decimal places than the currency stores (six for USD) is
+refused only when a digit past them is not zero: `{USD}"1100.00000000"`, the
+way PostgreSQL and ODBC send a `numeric(19,8)`, is 1100 exactly, while
+`{USD}"1.2345678"` is refused. The same rule holds for text stored into a
+G-SQL `money` column.
+
 `string(m)` renders at the currency's minor unit, which is what you want on
 screen and lossy in a file. **`money.text(amount [, places])`** is the exit
 that keeps the guard digits:

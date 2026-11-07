@@ -143,6 +143,25 @@ w {USD}= "1.234567"
 check("exactly AT the storage scale is accepted", w * 1000000, "1234567.00")
 error.clear()
 
+' PAST the storage scale, zeros still claim nothing (gdash's A6, 2026-11-06).
+' PostgreSQL and ODBC pad numeric(19,8) to eight places, so a money column
+' read from either arrives as "1100.00000000", and every refresh was refused.
+x {USD}= "1100.00000000"
+check("zeros past the storage scale are accepted", x = {USD}"1100", true)
+error.clear()
+
+y {USD}= "1.2345670"
+check("a value at the scale with a zero after it keeps its digits", y * 1000000, "1234567.00")
+error.clear()
+
+z {USD}= "1.23456701"
+check("a nonzero digit past the zeros is still refused", error.message, "USD: money text has more decimal places than the currency can store (USD stores 6)")
+error.clear()
+
+n {USD}= "-9223372036854.77580800"
+check("the most negative value, padded, is still the most negative", money.text(n), "-9223372036854.775808")
+error.clear()
+
 on error stop
 
 print "checks: " + string(tally.checks)
