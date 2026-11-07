@@ -49,6 +49,7 @@ live list is:
 |---|---|---|
 | 1 | **`qt.run()` from inside a function silently starves every loop-delivered source.** `watcher_trigger_change` returns at once unless the GLOBAL frame is current, so a function frame left current for the whole of Qt's loop means every timer tick is appended to `timer.ticks` and never delivered — the timer's own schedule advances, so it looks like it is working, and the program HANGS with no output. Reaches timers, the actor inbox, `http` events and a webserver's requests. Workaround: call `qt.run()` from the top level of the `program` block. | 2026-10-19 entry |
 | — | ~~**A deeply nested value segfaults at teardown**~~ **DOCUMENTED AS AN ACCEPTED LIMITATION 2026-10-14**, with the numbers re-measured at a PINNED stack: ~43,000 levels at 8 MB, records and arrays alike, and 60,000 releases cleanly at 64 MB — so it is a fact about `ulimit -s`. It has a probe in `run_limitations.sh` now, with the 64 MB run as the control, so it goes red if anybody fixes it. | accepted limitations |
+| 6 | **`watch` inside a function registers nothing, and says so only with an unlocated line on stderr** (`watch may only be registered at top level for now`): no position, no warning code, not catchable, and the program carries on with a watcher that will never fire. So a library cannot set up its own watcher (Transward). Inside the `program` block, `if` included, it registers. A NAMED watcher in a function is refused properly (`1003`). Workaround: write the `watch` in the `program` block and call the library from its body. | 2026-11-07 entry |
 | 5 | ~~**`DECODE_MAX_DEPTH` is unsafe below a ~2.5 MB stack**~~ **CLOSED 2026-10-14** — the bound is DERIVED from `getrlimit(RLIMIT_STACK)` now, `min(10000, stack_KB * 2)`, so it is unchanged at the 8 MB default and drops instead of the process below ~2.5 MB. The remote demonstration re-run against the fix: HTTP 200 and the listener alive at `ulimit -s 2048`. | 2026-10-14 entry |
 
 The two were one disease seen from both ends — recursion depth bounded by
@@ -1034,7 +1035,11 @@ what proves the live probes are running anything at all.
   the caller writes the entry function and hands the handles over
   (`docs/tools_design.md` §4). A function value crosses `spawn` fine as an
   ARGUMENT and is callable in the child, which is what makes the workaround
-  work at all.
+  work at all. **And a library's OWN function, named bare from inside that
+  library** (`spawn worker(self())` in `lib1.bas`, beside `function worker`),
+  raises `spawn: no function named worker`, though an ordinary call there
+  resolves to it (Transward, 2026-11-07): the message says the function does
+  not exist when it does.
 
 - ~~A raise cannot be caught; `on error resume next` abandons the whole
   failing statement. Doctrine: pre-validate, and grow `try_*`/probe builtins
@@ -13454,11 +13459,41 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   silence, so a fix split across C and stdlib can be half there.
 - **Workaround:** set `GBASIC_PATH` to the tree's `stdlib` when running a
   source-tree binary, or `make install` after a fix that touches stdlib.
+- **Status: OPEN**, for Matthew to rule on. One option is for the binary to warn
+  when the library it loads comes from a different build than it was built
+  with. Another is for a source-tree binary to prefer its own tree's `stdlib`.
+  Transward also asked for `web.serve`'s answer to say whether TLS is on, so a
+  program can refuse to start without it.
 - **Status: FIXED 2026-11-07** (Matthew: "prefer its own"). A binary still in
   the tree it was built in loads that tree's `stdlib` before an installed one.
   The tree is the one the Makefile baked in (`GBASIC_SOURCE_DIR`), compared
   with the running binary's own directory, both canonical, so a copy anywhere
   else (an install, a release) is unaffected, and a `stdlib` merely beside a
   binary is never read. `GBASIC_PATH` still wins. Held by
-  `tests/run_relocatable.sh`'s SOURCE TREE tier. Transward's other ask, that
-  `web.serve`'s answer say whether TLS is on, is a separate change.
+  `tests/run_relocatable.sh`'s SOURCE TREE tier. Transward's other ask is
+  done too: `webserver.listen`'s and `web.serve`'s record carries `tls`, read
+  from the listener's own state (`tests/run_web_tls.sh` tls_flag).
+
+## 2026-11-07 — CC — while: weighing Transward's three DOGFOOD candidates for Matthew
+
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** measured each before filing.
+  - **`watch` in a function** (new, live list row 6): `function arm()` holding
+    `watch(timer.ticks)`, called from `program main`, prints `watch may only be
+    registered at top level for now` with no position (`src/eval.c`,
+    `watcher_register`, a bare `fprintf`), then warns `2108` that nothing
+    watches the timer, and exits 0. The same watch in the `program` block, or
+    in an `if` there, fires. The named form raises `1003`.
+  - **`spawn` of a library's own function** (added to the existing bullet): a
+    library `lib1` with `function worker` and `spawn worker(self())` raises
+    `spawn: no function named worker` at `lib1.bas:7:5`. The qualified and
+    function-value halves were already recorded (2026-09-06).
+  - **The ~104 KB actor message**: not filed. `send` refuses a larger message
+    with a message naming both sizes (120013 and 106496) and what to do, so it
+    is a stated limit, not a surprise.
+- **Workaround:** `watch` in the `program` block; the caller writes the spawn
+  entry function in its own program and hands the handles to the library.
+- **Status: OPEN** (watch), for Matthew: making it a located warning, or an
+  error as the named form is, is a language change. Both probed by
+  `tests/run_limitations.sh` (`watch_in_function`, `spawn_bare_name`).

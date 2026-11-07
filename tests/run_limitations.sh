@@ -119,6 +119,7 @@ spawn_bare_name|resolves a bare function **name**
 nul_string_literal|is refused in a string literal
 deep_value_teardown|segfaults when it is RELEASED
 qt_run_in_function|silently starves every loop-delivered source
+watch_in_function|inside a function registers nothing
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -331,11 +332,38 @@ probe_spawn_bare_name() {
         fi
         return
     fi
+    # The third half (Transward, 2026-11-07): a library naming its OWN function
+    # bare is told it does not exist.
+    mkdir -p "$WORK/sl"
+    printf 'library lib1\nfunction worker(back)\n  send(back, 1)\n  return nothing\nend function\nfunction start()\n  return spawn worker(self())\nend function\nend library\n' > "$WORK/sl/lib1.bas"
+    printf 'load lib1\nprogram main()\n  h = lib1.start()\n  print receive()\nend program\n' > "$WORK/sl/main.bas"
+    own_out=$( (cd "$WORK/sl" && timeout 20 "$OLDPWD/gbasic" main.bas 2>&1) )
     if printf '%s' "$qualified_out" | grep -q 'parse error' &&
-       printf '%s' "$value_out" | grep -q 'spawn: no function named'; then
-        ok "spawn still takes a bare function name (not a qualified one, not a value)"
+       printf '%s' "$value_out" | grep -q 'spawn: no function named' &&
+       printf '%s' "$own_out" | grep -q 'spawn: no function named worker'; then
+        ok "spawn still takes a bare function name (not a qualified one, not a value, not a library's own)"
     else
-        fixed "spawn now accepts a qualified name or a function value"
+        fixed "spawn now accepts a qualified name, a function value, or a library's own function"
+    fi
+}
+
+probe_watch_in_function() {
+    # The pair: the same watch in a FUNCTION (unlocated stderr line, never
+    # fires) and in the program block (fires). Red when the function form
+    # registers, or when its refusal becomes a located diagnostic.
+    printf 'function arm()\n  o = timer.after(0.1)\n  watch(timer.ticks)\n    while count(timer.ticks) > 0\n      ev = take_first(timer.ticks)\n      print "FIRED"\n    end while\n  end watch\n  return nothing\nend function\nprogram main()\n  arm()\nend program\n' > "$WORK/wf.bas"
+    printf 'program main()\n  o = timer.after(0.1)\n  watch(timer.ticks)\n    while count(timer.ticks) > 0\n      ev = take_first(timer.ticks)\n      print "FIRED"\n    end while\n  end watch\nend program\n' > "$WORK/wp.bas"
+    fn_out=$(timeout 20 ./gbasic "$WORK/wf.bas" 2>&1)
+    top_out=$(timeout 20 ./gbasic "$WORK/wp.bas" 2>&1)
+    if ! printf '%s' "$top_out" | grep -qx 'FIRED'; then
+        printf '%s\n' "$top_out" | sed 's/^/     /'
+        fail "watch_in_function: the CONTROL (watch in the program block) did not fire"
+    elif printf '%s' "$fn_out" | grep -qx 'watch may only be registered at top level for now' &&
+         ! printf '%s' "$fn_out" | grep -qx 'FIRED'; then
+        ok "watch inside a function still registers nothing, with an unlocated stderr line"
+    else
+        printf '%s\n' "$fn_out" | sed 's/^/     /'
+        fixed "watch inside a function now registers, or says so with a located diagnostic"
     fi
 }
 
