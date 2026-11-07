@@ -5636,7 +5636,10 @@ static const char *XLSX_WS_REL = "http://schemas.openxmlformats.org/officeDocume
  * beginning or ending with an apostrophe, and unique ignoring case. */
 static int xlsx_sheet_name_ok(XlsxWorkbook *wb, const char *name, char *why, size_t wn) {
     size_t n = strlen(name);
-    if (n == 0 || string_cp_count(name) > 31) {
+    /* The raw walker, not string_cp_count: `name` is a plain C string (a stack
+     * buffer in xlsx.new, the literal "Sheet1"), and string_cp_count reads and
+     * WRITES a string value's header in front of its pointer. */
+    if (n == 0 || string_codepoint_count(name, n) > 31) {
         snprintf(why, wn, "a sheet name is 1 to 31 characters");
         return 0;
     }
