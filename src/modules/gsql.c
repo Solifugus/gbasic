@@ -1286,7 +1286,8 @@ static int gsql_statement_returns_rows(const char *sql) {
         return 0;
     }
     SqlStmt *x = parsed.stmt;
-    int rows = x->kind == SQ_SELECT || x->explain || x->kind == SQ_BACKUP || x->kind == SQ_DUMP;
+    int rows = x->kind == SQ_SELECT || x->explain || x->kind == SQ_BACKUP || x->kind == SQ_DUMP ||
+               (x->kind == SQ_INSERT && x->nret);
     sql_parsed_free(&parsed);
     return rows;
 }
@@ -1857,9 +1858,13 @@ static Value gsql_eval_exec(AstExpr *expr) {
             value_free(run.statements);
             return value_null();
         }
+        /* INSERT ... RETURNING returns a row for each row it wrote, so
+           its rows are its count, as PostgreSQL's command tag has it */
+        Value affected = strcmp(command, "INSERT") == 0 ? value_number_exact((long long)rows.as.array.store->count)
+                                                         : value_null();
         Value result = value_record(NULL, 0);
         record_set(&result, "command", value_string(command));
-        record_set(&result, "rows_affected", value_null());
+        record_set(&result, "rows_affected", affected);
         record_set(&result, "rows", rows);
         if (run.multi) {
             Value one = value_record(NULL, 0);

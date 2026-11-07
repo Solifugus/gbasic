@@ -129,7 +129,7 @@
 > select a from t where a not = 1
 ! SYNTAX 29 expected IN, BETWEEN or LIKE after NOT
 > select a from t where a = ?
-! SYNTAX 27 `?` parameters are not supported
+= SELECT a FROM t WHERE (a = $1)
 > select `a` from t
 ! SYNTAX 8 MySQL's spelling
 > select [a] from t
@@ -177,9 +177,33 @@
 > insert into t select * from u
 = INSERT INTO t SELECT * FROM u
 > insert into t values (1) returning a
-! UNSUPPORTED 26 RETURNING
+= INSERT INTO t VALUES (1) RETURNING a
+> insert into t (b) values (2) returning *, a + 1 as next, t.b
+= INSERT INTO t (b) VALUES (2) RETURNING *, (a + 1) AS next, t.b
 > insert into t values (1) on conflict (a) do update set b = excluded.b returning a
-! UNSUPPORTED 71 RETURNING
+= INSERT INTO t VALUES (1) ON CONFLICT (a) DO UPDATE SET b = excluded.b RETURNING a
+> insert into t select * from u returning t.*
+= INSERT INTO t SELECT * FROM u RETURNING t.*
+> update t set a = 1 returning a
+! UNSUPPORTED 20 RETURNING after UPDATE is not in this release of G-SQL: INSERT ... RETURNING is
+> delete from t where a = 1 returning a
+! UNSUPPORTED 27 RETURNING after DELETE is not in this release
+> insert into t values (1) returning
+! SYNTAX 35 expected
+> select a from t where a = ? and b in (?, ?)
+= SELECT a FROM t WHERE ((a = $1) AND (b IN ($2, $3)))
+> insert into t values (?, (select max(x) from u where y = ?), ?)
+= INSERT INTO t VALUES ($1, (SELECT max(x) FROM u WHERE (y = $2)), $3)
+> select a from t where a = ? and b = $1
+! SYNTAX 37 a statement numbers its parameters one way: `?` counts them in order, so $n and :name cannot stand beside it (the first `?` is at character 27)
+> select a from t where a = :a and b = ?
+! SYNTAX 38 a statement numbers its parameters one way: `?` counts them in order, so it cannot stand beside $n or :name (at character 27)
+> select a from t where a = '?'
+= SELECT a FROM t WHERE (a = '?')
+> insert into t select 1 returning a
+= INSERT INTO t SELECT 1 RETURNING a
+> select 1 returning
+! SYNTAX 10 unexpected
 > insert into t (k, v) values (:k, :v) on conflict (k) do update set v = excluded.v, n = t.n + 1 where t.v <> excluded.v
 = INSERT INTO t (k, v) VALUES (:k, :v) ON CONFLICT (k) DO UPDATE SET v = excluded.v, n = (t.n + 1) WHERE (t.v <> excluded.v)
 > insert into t values (1, 2) on conflict do nothing

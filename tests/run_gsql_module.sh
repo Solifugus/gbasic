@@ -796,6 +796,15 @@ if [ -s "$work/ins.err" ]; then
     fail "insert: the fixture wrote to stderr"
 fi
 
+printf 'TIER returning: INSERT ... RETURNING and ? parameters through the owner, in a block and a transaction\n'
+mkdir -p "$work/ret"
+GSQL_DIR="$work/ret" timeout -k 5 120 ./gbasic tests/gsql/returning_test.bas >"$work/ret.out" 2>"$work/ret.err"
+verdict returning "$work/ret.out" $? 14
+if [ -s "$work/ret.err" ]; then
+    sed 's/^/       /' "$work/ret.err" | head -5
+    fail "returning: the fixture wrote to stderr"
+fi
+
 printf 'TIER columns: gsql.columns, a query described from its plan with nothing run\n'
 mkdir -p "$work/cols"
 GSQL_DIR="$work/cols" timeout -k 5 60 ./gbasic tests/gsql/columns_test.bas >"$work/cols.out" 2>"$work/cols.err"

@@ -345,6 +345,10 @@ typedef struct SqlStmt {
     SqlNameList up_cols;
     SqlExpr **up_sets;
     SqlExpr *up_where;
+    /* INSERT ... RETURNING (docs/gsql_returning_design.md) */
+    SqlItem *ret;
+    size_t nret;
+    uint32_t ret_pos;
     /* CREATE TABLE / ADD COLUMN */
     SqlColDef *coldefs;
     size_t ncoldefs;
@@ -530,6 +534,9 @@ typedef struct SqlPlan {
     size_t nup;
     long up_where;
     size_t up_excluded;
+    /* INSERT ... RETURNING: its list planned as SELECT ... FROM the table,
+       evaluated against each row as written; owned */
+    struct SqlPlan *ret;
     /* a recursive WITH query (docs/gsql_recursive_design.md): `left` its
        anchor, `right` its step, whose scan `rec_self` reads the query;
        UNION ALL or UNION; CYCLE's columns, by position, which add the mark

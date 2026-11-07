@@ -1179,6 +1179,69 @@ rollback
 > SELECT k, n, v FROM tick ORDER BY k
 = 'a', 1, '2' | 'b', 2, '1' | 'c', 3, '1'
 
+# ---- INSERT ... RETURNING and ? parameters (docs/gsql_returning_design.md) -
+> CREATE TABLE chan (id INTEGER SERIAL PRIMARY KEY, name TEXT NOT NULL, kind TEXT DEFAULT 'mail', tok TEXT RANDOM(8))
+= done 0
+> INSERT INTO chan (name) VALUES ('ops') RETURNING id
+% id:integer
+= 1
+> INSERT INTO chan (name, kind) VALUES ('a', 'sms'), ('b', DEFAULT) RETURNING id, name, kind, length(tok) AS n
+% id:integer, name:string, kind:string, n:any
+= 2, 'a', 'sms', 8 | 3, 'b', 'mail', 8
+> INSERT INTO chan (name) VALUES ('c') RETURNING chan.id * 10 AS tens, name
+% tens:any, name:string
+= 40, 'c'
+> SELECT count(*) FROM chan
+= 4
+> INSERT INTO chan (name, kind) VALUES (?, ?) RETURNING id, kind
+@ 1 = 'd'
+@ 2 = 'web'
+% id:integer, kind:string
+= 5, 'web'
+> SELECT name FROM chan WHERE id = ? OR name = ? ORDER BY id
+@ 1 = 2
+@ 2 = 'd'
+= 'a' | 'd'
+> SELECT name FROM chan WHERE id IN (SELECT id FROM chan WHERE kind = ?) AND id > ?
+@ 1 = 'web'
+@ 2 = 1
+= 'd'
+> INSERT INTO chan (name) SELECT name || '2' FROM chan WHERE id < 3 RETURNING id, name
+% id:integer, name:string
+= 6, 'ops2' | 7, 'a2'
+> CREATE TABLE kv (k TEXT PRIMARY KEY, v INTEGER)
+= done 0
+> INSERT INTO kv VALUES ('a', 1) RETURNING *
+% k:string, v:integer
+= 'a', 1
+> INSERT INTO kv VALUES ('a', 5), ('b', 2) ON CONFLICT (k) DO UPDATE SET v = kv.v + excluded.v RETURNING k, v
+% k:string, v:integer
+= 'a', 6 | 'b', 2
+> INSERT INTO kv VALUES ('a', 9) ON CONFLICT DO NOTHING RETURNING k
+% k:string
+= (none)
+> INSERT INTO kv VALUES ('a', 9) ON CONFLICT (k) DO UPDATE SET v = 0 WHERE kv.v > 100 RETURNING k
+% k:string
+= (none)
+> INSERT INTO kv VALUES ('c', 1), ('a', 1) RETURNING k
+! DUPLICATE 0 row 2 of VALUES: kv: the primary key already holds that value [part way]
+> SELECT count(*) FROM kv
+= 2
+> INSERT INTO kv VALUES ('z', 1) RETURNING count(*)
+! UNSUPPORTED 32 RETURNING reads only the row written: an aggregate
+> INSERT INTO kv VALUES ('z', 1) RETURNING nope
+! NOT_FOUND 42 nope
+> INSERT INTO kv VALUES ('z', 1) RETURNING excluded.k
+! NOT_FOUND 42 excluded
+> UPDATE kv SET v = 1 RETURNING k
+! UNSUPPORTED 21 RETURNING after UPDATE is not in this release
+> SELECT count(*) FROM kv WHERE k = 'z'
+= 0
+> SELECT k FROM kv WHERE k = ? AND v = $1
+! SYNTAX 38 a statement numbers its parameters one way
+> SELECT k FROM kv WHERE k = :k AND v = ?
+! SYNTAX 39 a statement numbers its parameters one way
+
 # ---- INSERT ... SELECT (docs/gsql_insert_select_design.md) -----------
 > CREATE TABLE src (id INTEGER PRIMARY KEY, k INTEGER, note TEXT DEFAULT 'none')
 = done 0

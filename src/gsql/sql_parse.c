@@ -79,6 +79,7 @@ typedef enum {
     T_NUMBER,
     T_PNAME,      /* :name */
     T_PNUM,       /* $n */
+    T_PQ,         /* ?, numbered in order of appearance */
     T_SYM         /* punctuation and operators: text holds it */
 } TokKind;
 
@@ -99,6 +100,11 @@ typedef struct {
     int failed;
     SqlStmt *stmt;       /* for parameter bookkeeping */
     int subdepth;        /* subqueries open around the current token */
+    /* where each `?` was met, in order: the k-th is $k, and a token lexed
+       again after the parser looks ahead keeps the number it had */
+    uint32_t *qpos;
+    size_t nq, capq;
+    uint32_t first_other; /* the first $n or :name, for the refusal of both */
 } P;
 
 static void advance_byte(P *p) {
@@ -138,6 +144,9 @@ static const char *tok_desc(P *p, char *buf, size_t cap) {
         return buf;
     case T_PNUM:
         snprintf(buf, cap, "the parameter $%.40s", p->tok.text);
+        return buf;
+    case T_PQ:
+        snprintf(buf, cap, "the parameter ?");
         return buf;
     case T_QIDENT:
         snprintf(buf, cap, "\"%.40s\"", p->tok.text);
@@ -416,11 +425,16 @@ static void next(P *p) {
         t->text = sql_strndup(p->arena, p->src + start, 1);
         return;
     }
+    if (c == '?') {
+        advance_byte(p);
+        t->kind = T_PQ;
+        t->len = 1;
+        t->text = "?";
+        return;
+    }
     t->kind = T_EOF;
     t->text = "";
-    if (c == '?') {
-        fail_at(p, t->pos, GSQL_SYNTAX, "`?` parameters are not supported: name one as :name, or number it as $1");
-    } else if (c == '`') {
+    if (c == '`') {
         fail_at(p, t->pos, GSQL_SYNTAX, "a backquoted name is MySQL's spelling: quote a name with \"double quotes\"");
     } else if (c == '[') {
         fail_at(p, t->pos, GSQL_SYNTAX, "a bracketed name is SQL Server's spelling: quote a name with \"double quotes\"");
@@ -436,7 +450,7 @@ static const char *const reserved[] = {
     "default", "delete", "desc", "distinct", "drop", "else", "end", "except", "exists", "explain",
     "false", "fetch", "from", "group", "having", "if", "in", "index", "insert", "intersect", "into",
     "is", "join", "like", "limit", "not", "null", "offset", "on", "or", "order", "primary",
-    "select", "set", "table", "then", "true", "union", "unique", "unknown", "update", "values", "when",
+    "returning", "select", "set", "table", "then", "true", "union", "unique", "unknown", "update", "values", "when",
     "where", "with", NULL
 };
 
@@ -614,6 +628,16 @@ static SqlExpr *concat(P *p);
 
 static void note_param(P *p, SqlExpr *e) {
     SqlStmt *s = p->stmt;
+    if (p->tok.kind != T_PQ) {
+        if (p->nq) {
+            fail_at(p, e->pos, GSQL_SYNTAX, "a statement numbers its parameters one way: `?` counts them in order, "
+                    "so $n and :name cannot stand beside it (the first `?` is at character %u)", p->qpos[0]);
+            return;
+        }
+        if (!p->first_other) {
+            p->first_other = e->pos;
+        }
+    }
     if (e->name) {
         for (size_t k = 0; k < s->nparam_names; k++) {
             if (strcmp(s->param_names[k], e->name) == 0) {
@@ -970,6 +994,38 @@ static SqlExpr *primary(P *p) {
     case T_PNAME: {
         SqlExpr *e = node(p, SX_PARAM, pos);
         e->name = p->tok.text;
+        note_param(p, e);
+        next(p);
+        return e;
+    }
+    case T_PQ: {
+        /* SQLite's, ODBC's and JDBC's spelling: the k-th `?` is $k */
+        if (p->first_other) {
+            fail_at(p, pos, GSQL_SYNTAX, "a statement numbers its parameters one way: `?` counts them in order, so "
+                    "it cannot stand beside $n or :name (at character %u)", p->first_other);
+            return NULL;
+        }
+        size_t k = 0;
+        while (k < p->nq && p->qpos[k] != pos) {
+            k++;
+        }
+        if (k == p->nq) {
+            if (p->nq == 65535) {
+                fail_at(p, pos, GSQL_SYNTAX, "a statement may have at most 65535 parameters");
+                return NULL;
+            }
+            if (p->nq == p->capq) {
+                p->capq = p->capq ? p->capq * 2 : 16;
+                uint32_t *grown = sql_alloc(p->arena, sizeof(uint32_t) * p->capq);
+                if (p->nq) {
+                    memcpy(grown, p->qpos, sizeof(uint32_t) * p->nq);
+                }
+                p->qpos = grown;
+            }
+            p->qpos[p->nq++] = pos;
+        }
+        SqlExpr *e = node(p, SX_PARAM, pos);
+        e->index = (unsigned)k + 1;
         note_param(p, e);
         next(p);
         return e;
@@ -2169,18 +2225,9 @@ static int group_by(P *p, SqlStmt *s) {
     return 1;
 }
 
-static int select_stmt(P *p, SqlStmt *s) {
-    if (accept_kw(p, "distinct")) {
-        if (at_kw(p, "on")) {
-            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "DISTINCT ON is not in this release of G-SQL");
-        }
-        s->distinct = 1;
-    } else {
-        accept_kw(p, "all");
-    }
-    if (!phase2(p)) {
-        return 0;
-    }
+/* A select list: `*`, `t.*`, or an expression with an optional alias; also
+ * INSERT's RETURNING list */
+static int item_list(P *p, SqlItem **out, size_t *nout) {
     SqlItem items[1024];
     size_t n = 0;
     do {
@@ -2231,9 +2278,27 @@ static int select_stmt(P *p, SqlStmt *s) {
     if (p->failed) {
         return 0;
     }
-    s->items = sql_alloc(p->arena, sizeof(SqlItem) * n);
-    memcpy(s->items, items, sizeof(SqlItem) * n);
-    s->nitems = n;
+    *out = sql_alloc(p->arena, sizeof(SqlItem) * n);
+    memcpy(*out, items, sizeof(SqlItem) * n);
+    *nout = n;
+    return 1;
+}
+
+static int select_stmt(P *p, SqlStmt *s) {
+    if (accept_kw(p, "distinct")) {
+        if (at_kw(p, "on")) {
+            return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "DISTINCT ON is not in this release of G-SQL");
+        }
+        s->distinct = 1;
+    } else {
+        accept_kw(p, "all");
+    }
+    if (!phase2(p)) {
+        return 0;
+    }
+    if (!item_list(p, &s->items, &s->nitems)) {
+        return 0;
+    }
     if (!phase2(p)) {
         return 0;
     }
@@ -2349,8 +2414,19 @@ static int insert_tail(P *p, SqlStmt *s) {
             return fail_at(p, p->tok.pos, GSQL_SYNTAX, "ON CONFLICT is followed by DO NOTHING or DO UPDATE SET");
         }
     }
-    if (p->tok.kind == T_IDENT && strcmp(p->tok.text, "returning") == 0) {
-        return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "RETURNING is not in this release of G-SQL");
+    if (at_word(p, "returning")) {
+        s->ret_pos = p->tok.pos;
+        next(p);
+        return item_list(p, &s->ret, &s->nret);
+    }
+    return 1;
+}
+
+/* RETURNING after UPDATE or DELETE, which INSERT has and they do not yet */
+static int no_returning(P *p, const char *what) {
+    if (at_word(p, "returning")) {
+        return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "RETURNING after %s is not in this release of G-SQL: "
+                       "INSERT ... RETURNING is", what);
     }
     return 1;
 }
@@ -2460,7 +2536,7 @@ static int update_stmt(P *p, SqlStmt *s) {
             return 0;
         }
     }
-    return 1;
+    return no_returning(p, "UPDATE");
 }
 
 static int delete_stmt(P *p, SqlStmt *s) {
@@ -2473,7 +2549,7 @@ static int delete_stmt(P *p, SqlStmt *s) {
             return 0;
         }
     }
-    return 1;
+    return no_returning(p, "DELETE");
 }
 
 /* A whole query not in parentheses: [WITH ...] SELECT ..., and any set
@@ -3755,6 +3831,23 @@ static void print_group_elems(GsqlBuf *o, const SqlStmt *s) {
     }
 }
 
+/* one item of a select list or RETURNING */
+static void print_item(GsqlBuf *o, const SqlItem *it) {
+    if (!it->e) {
+        if (it->star_table) {
+            print_name(o, it->star_table);
+            v3_put(o, ".", 1);
+        }
+        v3_put(o, "*", 1);
+        return;
+    }
+    sql_print_expr(o, it->e);
+    if (it->alias) {
+        puts_(o, " AS ");
+        print_name(o, it->alias);
+    }
+}
+
 void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
     if (s->explain) {
         puts_(o, "EXPLAIN ");
@@ -3805,23 +3898,10 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
         }
         puts_(o, s->distinct ? "SELECT DISTINCT " : "SELECT ");
         for (size_t k = 0; k < s->nitems; k++) {
-            const SqlItem *it = &s->items[k];
             if (k) {
                 puts_(o, ", ");
             }
-            if (!it->e) {
-                if (it->star_table) {
-                    print_name(o, it->star_table);
-                    v3_put(o, ".", 1);
-                }
-                v3_put(o, "*", 1);
-                continue;
-            }
-            sql_print_expr(o, it->e);
-            if (it->alias) {
-                puts_(o, " AS ");
-                print_name(o, it->alias);
-            }
+            print_item(o, &s->items[k]);
         }
         if (s->table || s->table_sub) {
             puts_(o, " FROM ");
@@ -3912,6 +3992,10 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
                     sql_print_expr(o, s->up_where);
                 }
             }
+        }
+        for (size_t k = 0; k < s->nret; k++) {
+            puts_(o, k ? ", " : " RETURNING ");
+            print_item(o, &s->ret[k]);
         }
         return;
     case SQ_UPDATE:

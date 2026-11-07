@@ -861,6 +861,47 @@ stmt("INSERT INTO tick (k, v) VALUES ('a', '2') ON CONFLICT (k) DO UPDATE SET v 
 stmt("INSERT INTO tick (k, v) VALUES ('c', '1')", "= done 1")
 stmt("SELECT k, n, v FROM tick ORDER BY k", "= 'a', 1, '2' | 'b', 2, '1' | 'c', 3, '1'")
 
+sec("INSERT ... RETURNING and ? parameters (docs/gsql_returning_design.md)")
+stmt("CREATE TABLE chan (id INTEGER SERIAL PRIMARY KEY, name TEXT NOT NULL, kind TEXT DEFAULT 'mail', tok TEXT RANDOM(8))",
+     "= done 0")
+# the id a serial gave, read back with the row as it was stored
+stmt("INSERT INTO chan (name) VALUES ('ops') RETURNING id", "% id:integer", "= 1")
+stmt("INSERT INTO chan (name, kind) VALUES ('a', 'sms'), ('b', DEFAULT) RETURNING id, name, kind, length(tok) AS n",
+     "% id:integer, name:string, kind:string, n:any", "= 2, 'a', 'sms', 8 | 3, 'b', 'mail', 8")
+stmt("INSERT INTO chan (name) VALUES ('c') RETURNING chan.id * 10 AS tens, name",
+     "% tens:any, name:string", "= 40, 'c'")
+stmt("SELECT count(*) FROM chan", "= 4")
+# ?: the k-th is $k
+stmt("INSERT INTO chan (name, kind) VALUES (?, ?) RETURNING id, kind", "% id:integer, kind:string", "= 5, 'web'",
+     params=("1 = 'd'", "2 = 'web'"))
+stmt("SELECT name FROM chan WHERE id = ? OR name = ? ORDER BY id", "= 'a' | 'd'", params=("1 = 2", "2 = 'd'"))
+stmt("SELECT name FROM chan WHERE id IN (SELECT id FROM chan WHERE kind = ?) AND id > ?", "= 'd'",
+     params=("1 = 'web'", "2 = 1"))
+# from a query, and with ON CONFLICT: a row updated is returned as it ended, one left is not
+stmt("INSERT INTO chan (name) SELECT name || '2' FROM chan WHERE id < 3 RETURNING id, name",
+     "% id:integer, name:string", "= 6, 'ops2' | 7, 'a2'")
+stmt("CREATE TABLE kv (k TEXT PRIMARY KEY, v INTEGER)", "= done 0")
+stmt("INSERT INTO kv VALUES ('a', 1) RETURNING *", "% k:string, v:integer", "= 'a', 1")
+stmt("INSERT INTO kv VALUES ('a', 5), ('b', 2) ON CONFLICT (k) DO UPDATE SET v = kv.v + excluded.v RETURNING k, v",
+     "% k:string, v:integer", "= 'a', 6 | 'b', 2")
+stmt("INSERT INTO kv VALUES ('a', 9) ON CONFLICT DO NOTHING RETURNING k", "% k:string", "= (none)")
+stmt("INSERT INTO kv VALUES ('a', 9) ON CONFLICT (k) DO UPDATE SET v = 0 WHERE kv.v > 100 RETURNING k", "% k:string",
+     "= (none)")
+# a refusal returns nothing, and a refused row part way is undone
+stmt("INSERT INTO kv VALUES ('c', 1), ('a', 1) RETURNING k",
+     ("DUPLICATE", None, "row 2 of VALUES: kv: the primary key already holds that value [part way]"))
+stmt("SELECT count(*) FROM kv", "= 2")
+# what RETURNING may say
+stmt("INSERT INTO kv VALUES ('z', 1) RETURNING count(*)",
+     ("UNSUPPORTED", "RETURNING", "RETURNING reads only the row written: an aggregate"))
+stmt("INSERT INTO kv VALUES ('z', 1) RETURNING nope", ("NOT_FOUND", "nope", "nope"))
+stmt("INSERT INTO kv VALUES ('z', 1) RETURNING excluded.k", ("NOT_FOUND", "excluded", "excluded"))
+stmt("UPDATE kv SET v = 1 RETURNING k", ("UNSUPPORTED", "RETURNING", "RETURNING after UPDATE is not in this release"))
+stmt("SELECT count(*) FROM kv WHERE k = 'z'", "= 0")
+# ? beside $n or :name is refused, wherever it comes
+stmt("SELECT k FROM kv WHERE k = ? AND v = $1", ("SYNTAX", "$1", "a statement numbers its parameters one way"))
+stmt("SELECT k FROM kv WHERE k = :k AND v = ?", ("SYNTAX", "?", "a statement numbers its parameters one way"))
+
 sec("INSERT ... SELECT (docs/gsql_insert_select_design.md)")
 stmt("CREATE TABLE src (id INTEGER PRIMARY KEY, k INTEGER, note TEXT DEFAULT 'none')", "= done 0")
 stmt("INSERT INTO src VALUES (1, 10, 'a'), (2, 20, 'b'), (3, NULL, 'c')", "= done 3")

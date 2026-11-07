@@ -151,7 +151,10 @@ onto a primary key (`ON DELETE CASCADE` or the default `NO ACTION`), `SERIAL` an
 `RANDOM` keys (`05_keys_serial_and_random.bas`); the upsert, `INSERT ... ON
 CONFLICT (cols) DO UPDATE SET v = excluded.v` or `DO NOTHING`, where the row
 already there is read by the table's name and the proposed one as `excluded`
-(a bare column could be either, and is refused saying so);
+(a bare column could be either, and is refused saying so); `INSERT ...
+RETURNING id` (or any list over the row) for the id a serial gave, from
+`db.query` or beside the count from `db.exec`; parameters as `:name`, `$1`, or
+`?` (the k-th `?` is `$k`; one kind per statement);
 `ADD COLUMN`, `RENAME TO` and views (`08_views_and_changing_the_schema.bas`);
 `INNER`, `LEFT` and `CROSS` joins; aggregates with `GROUP BY` and `HAVING`;
 `DISTINCT`; `UNION`/`INTERSECT`/`EXCEPT` with `ALL`; subqueries; derived tables
@@ -177,7 +180,7 @@ them.
 ## What is not there (each refused by name, so you will see a sentence)
 
 `RIGHT JOIN` (write a `LEFT JOIN` with the tables swapped) and `FULL JOIN`;
-`RETURNING`; SQLite's `INSERT OR IGNORE` / `INSERT OR REPLACE` (write `ON
+`RETURNING` on `UPDATE` and `DELETE`; SQLite's `INSERT OR IGNORE` / `INSERT OR REPLACE` (write `ON
 CONFLICT`); `ON DELETE SET NULL`, `SET DEFAULT`, `RESTRICT` and any `ON UPDATE`
 action but `NO ACTION`; an `ON CONFLICT DO UPDATE` that changes the primary key;
 `CREATE TEMPORARY TABLE` (use a scratch

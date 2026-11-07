@@ -64,4 +64,8 @@ check above was not re-run against them. What changes for Transward:
 - `INSERT OR IGNORE` and `INSERT OR REPLACE` are refused with the `ON
   CONFLICT` spelling to use instead.
 
-`?` is still not accepted.
+`?` is accepted since later that day, by Matthew's ruling, and `INSERT ...
+RETURNING` gives back a serial's id (`docs/gsql_returning_design.md`). Both
+came from Transward running its migrations for real against 640bc9ad: all 56
+ran, and its 20 tables relying on SQLite's implicit rowid had no way to learn
+an id.

@@ -41,7 +41,7 @@ insert into counters (k, n) values (:k, 1)
 - **Changing one row twice in one statement.** That happens when two proposed rows hold one key value, or when one collides with a row the statement itself just inserted. PostgreSQL refuses it. SQLite applies both in order, so the last proposal wins. G-SQL refuses (`DUPLICATE`), since which proposal should win is the statement's to say and it did not. `DO NOTHING` has no such question: a second proposal meets the first and is left.
 - **`DO UPDATE` setting a primary-key column or a `SERIAL` column.** Not in this release. The row a conflict found keeps its key, so no row moves and no counter's scope changes under an upsert.
 - **A subquery, an aggregate or a window function in `DO UPDATE`.** Not in this release. The `SET` values and `WHERE` read only the two rows.
-- **`RETURNING`**, as everywhere.
+- **`RETURNING`** was refused here until later the same day; it now returns each row the upsert wrote (`docs/gsql_returning_design.md`).
 
 ## 4. How it is built
 

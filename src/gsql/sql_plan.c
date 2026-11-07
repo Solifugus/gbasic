@@ -2170,6 +2170,35 @@ static int plan_update_delete(B *b, const GsEngine *e, GsTxn *t, int force_scan)
     return 1;
 }
 
+/* INSERT ... RETURNING (docs/gsql_returning_design.md): the list planned as
+ * SELECT <list> FROM the table, so its names bind, `*` expands and its
+ * columns are named and kinded as a query's are; evaluated by the executor
+ * against each row as it was written. */
+static int plan_returning(B *b, const GsEngine *e, GsTxn *t) {
+    SqlPlan *p = b->p;
+    SqlStmt *s = p->s;
+    if (!s->nret) {
+        return 1;
+    }
+    SqlStmt *q = sql_alloc(b->arena, sizeof(SqlStmt));
+    memset(q, 0, sizeof *q);
+    q->kind = SQ_SELECT;
+    q->pos = s->ret_pos;
+    q->table = s->table;
+    q->items = s->ret;
+    q->nitems = s->nret;
+    p->ret = sql_alloc(b->arena, sizeof(SqlPlan));
+    if (plan_at(e, t, q, b->arena, p->text, 1, p->ret, b->err, NULL, NULL, b->nsubq, NULL, 0) != GSQL_OK) {
+        p->ret = NULL;
+        return 0;
+    }
+    if (p->ret->grouped || p->ret->nsubs || p->ret->nwins) {
+        return bfail(b, s->ret_pos, GSQL_UNSUPPORTED, "RETURNING reads only the row written: an aggregate, a window "
+                     "function or a subquery there is not in this release of G-SQL");
+    }
+    return 1;
+}
+
 /* whether columns `names` are, in any order, the columns `cols` of tb */
 static int same_columns(const GsqlTable *tb, const SqlNameList *names, const unsigned *cols, size_t n) {
     if (names->n != n) {
@@ -2349,7 +2378,7 @@ static int plan_insert(B *b, const GsEngine *e, GsTxn *t) {
                          p->left->nout, p->left->nout == 1 ? "" : "s", p->ntargets, p->ntargets == 1 ? "" : "s",
                          s->table);
         }
-        return plan_conflict(b, e, t);
+        return plan_conflict(b, e, t) && plan_returning(b, e, t);
     }
     if (s->rowlen != p->ntargets) {
         return bfail(b, s->pos, GSQL_SYNTAX, "INSERT has %zu value%s for %zu column%s", s->rowlen,
@@ -2362,7 +2391,7 @@ static int plan_insert(B *b, const GsEngine *e, GsTxn *t) {
             }
         }
     }
-    return plan_conflict(b, e, t);
+    return plan_conflict(b, e, t) && plan_returning(b, e, t);
 }
 
 /* A compound SELECT (docs/gsql_setop_design.md): each side planned as the
@@ -2804,6 +2833,10 @@ void sql_plan_free(SqlPlan *p) {
     if (p->right) {
         sql_plan_free(p->right);
         p->right = NULL;
+    }
+    if (p->ret) {
+        sql_plan_free(p->ret);
+        p->ret = NULL;
     }
     for (size_t k = 1; k < p->nscans; k++) {
         if (p->scans[k].tb) {

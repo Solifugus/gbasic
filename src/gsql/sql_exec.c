@@ -4941,6 +4941,18 @@ static int cursor_batch(SqlCursor *c, uint32_t count, GsqlResult *out, GsqlError
     return GSQL_OK;
 }
 
+/* a plan's output columns, each { name, kind }, as a result names them */
+static void plan_columns(const SqlPlan *p, GsqlBuf *out) {
+    v3_w_array(out, p->nout);
+    for (size_t k = 0; k < p->nout; k++) {
+        v3_w_record(out, 2);
+        v3_w_name(out, "name");
+        v3_w_text(out, p->names[k]);
+        v3_w_name(out, "kind");
+        v3_w_text(out, p->kinds[k]);
+    }
+}
+
 static void columns_of(SqlCursor *c, GsqlBuf *out) {
     out->length = 0;
     if (c->dump) {
@@ -4978,14 +4990,7 @@ static void columns_of(SqlCursor *c, GsqlBuf *out) {
         v3_w_text(out, "string");
         return;
     }
-    v3_w_array(out, c->plan.nout);
-    for (size_t k = 0; k < c->plan.nout; k++) {
-        v3_w_record(out, 2);
-        v3_w_name(out, "name");
-        v3_w_text(out, c->plan.names[k]);
-        v3_w_name(out, "kind");
-        v3_w_text(out, c->plan.kinds[k]);
-    }
+    plan_columns(&c->plan, out);
 }
 
 /* ---- writes --------------------------------------------------------------- */
@@ -6971,6 +6976,44 @@ static int upsert_row(X *x, GsqlTable *tb, const GsqlBuf *rowkey, const GsBytes 
     return rc;
 }
 
+/* INSERT ... RETURNING (docs/gsql_returning_design.md): the row at `rowkey`
+ * as it was written, read back so its defaults, serials and random values
+ * are what is stored, and its RETURNING list appended to `rows` as one row. */
+static int ret_row(X *x, GsqlTable *tb, const GsqlBuf *rowkey, GsqlBuf *rows) {
+    size_t ncols = gsql_table_ncols(tb);
+    GsBytes *v = calloc(ncols ? ncols : 1, sizeof(GsBytes));
+    if (!v) {
+        abort();
+    }
+    GsqlBuf row = {0};
+    int rc = gsql_row_get(x->e, x->t, tb, (GsBytes){ rowkey->bytes, rowkey->length }, &row, x->err);
+    for (size_t c = 0; rc == GSQL_OK && c < ncols; c++) {
+        rc = gsql_row_value(tb, row.bytes, row.length, c, &v[c], x->err);
+    }
+    if (rc == GSQL_OK) {
+        X cx;
+        GsqlError e = { GSQL_OK, "", 0, 0, "", "", "", 0 };
+        x_init(&cx, x->q, x->e, x->t, x->p->ret, &e);
+        cx.params = x->params;
+        cx.paramslen = x->paramslen;
+        cx.pidx = x->pidx;
+        cx.sx[0].direct = v;
+        cx.sx[0].have_row = 1;
+        v3_w_array(rows, x->p->ret->nout);
+        for (size_t k = 0; rc == GSQL_OK && k < x->p->ret->nout; k++) {
+            rc = eval_into(&cx, x->p->ret->out[k], rows);
+        }
+        if (rc != GSQL_OK) {
+            *x->err = e;
+        }
+        cx.sx[0].direct = NULL;
+        x_free(&cx);
+    }
+    gsql_buf_free(&row);
+    free(v);
+    return rc;
+}
+
 static int run_insert(X *x, GsqlResult *out) {
     SqlPlan *p = x->p;
     SqlStmt *s = p->s;
@@ -7020,6 +7063,8 @@ static int run_insert(X *x, GsqlResult *out) {
     memset(&touched, 0, sizeof touched);
     GsqlBuf rowkey = {0};
     int upd = s->on_conflict == SQL_CONFLICT_UPDATE, conflicted = 0;
+    GsqlBuf retrows = {0};
+    uint64_t nret = 0;
     for (size_t r = 0; r < nrows && rc == GSQL_OK; r++) {
         memset(vals, 0, sizeof(GsqlIn) * ncols);
         if (s->ins_q) {
@@ -7077,7 +7122,7 @@ static int run_insert(X *x, GsqlResult *out) {
                 rc = fk_check_child(x, &fks, p->tb, whole);
             }
             if (rc == GSQL_OK && !conflicted) {
-                rc = gsql_row_insert(x->e, x->t, p->tb, vals, upd ? &rowkey : NULL, x->err);
+                rc = gsql_row_insert(x->e, x->t, p->tb, vals, upd || p->ret ? &rowkey : NULL, x->err);
             }
             if (rc != GSQL_DUPLICATE || !gen_redraws(p->tb, &gs, omitted, x->err->dup)) {
                 break;
@@ -7121,6 +7166,10 @@ static int run_insert(X *x, GsqlResult *out) {
                 }
                 if (rc == GSQL_OK && updated) {
                     done++;
+                    if (p->ret) {
+                        rc = ret_row(x, p->tb, &rowkey, &retrows);
+                        nret++;
+                    }
                 }
             }
         } else if (rc == GSQL_OK && upd) {
@@ -7128,6 +7177,10 @@ static int run_insert(X *x, GsqlResult *out) {
         }
         if (rc == GSQL_OK && wrote) {
             rc = gen_commit(x, p->tb, &gs);
+        }
+        if (rc == GSQL_OK && wrote && p->ret) {
+            rc = ret_row(x, p->tb, &rowkey, &retrows);
+            nret++;
         }
         /* any refusal of this row says which it was: a conversion, the
            insert, and since 2026-11-06 a CHECK, NOT NULL or foreign key too,
@@ -7148,6 +7201,15 @@ static int run_insert(X *x, GsqlResult *out) {
     }
     touched_free(&touched);
     gsql_buf_free(&rowkey);
+    if (rc == GSQL_OK && p->ret) {
+        /* every row at once: a write's reply carries no cursor */
+        plan_columns(p->ret, &out->columns);
+        out->has_rows = 1;
+        out->rows.length = 0;
+        v3_w_array(&out->rows, nret);
+        v3_put(&out->rows, retrows.bytes, retrows.length);
+    }
+    gsql_buf_free(&retrows);
     for (size_t k = 0; k < p->ntargets; k++) {
         gsql_buf_free(&bufs[k]);
     }

@@ -16,7 +16,7 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
-### G-SQL: ON DELETE CASCADE, the upsert, and `key` as a name
+### G-SQL: ON DELETE CASCADE, the upsert, RETURNING, `?`, and `key` as a name
 
 - **`REFERENCES t ON DELETE CASCADE`**: deleting a row deletes the rows that
   reference it, to the end of the chain, a table referencing itself included.
@@ -33,6 +33,13 @@ reader sees.
   are refused with the `ON CONFLICT` form to write.
 - **`key` is no longer reserved** in G-SQL's SQL, as in PostgreSQL, so a
   column may be called `key` unquoted.
+- **`INSERT ... RETURNING`**: a row back for each row written, as stored, so
+  a program learns the id a serial gave. `db.query` answers the rows;
+  `db.exec` answers them beside the count. `RETURNING` is now a reserved word
+  in G-SQL's SQL, as in PostgreSQL. Not yet on `UPDATE` or `DELETE`.
+- **`?` parameters**, numbered in order (the k-th `?` is `$1`...`$k`), as
+  SQLite, ODBC and JDBC write them. A statement uses one kind: `?` beside `$n`
+  or `:name` is refused.
 
 ### SSH's cryptography
 

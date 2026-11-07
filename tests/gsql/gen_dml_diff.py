@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-# ON DELETE CASCADE and INSERT ... ON CONFLICT differential
-# (docs/gsql_fkey_design.md §6, docs/gsql_upsert_design.md): a random chain of
+# ON DELETE CASCADE, INSERT ... ON CONFLICT and RETURNING differential
+# (docs/gsql_fkey_design.md §6, docs/gsql_upsert_design.md,
+# docs/gsql_returning_design.md): a random chain of
 # tables, each foreign key cascading or NO ACTION by the seed, a table
 # referencing itself, and random DELETEs and upserts. SQLite, with foreign keys
 # on, runs every statement first; its count of rows affected, or its refusal,
@@ -167,10 +168,14 @@ def upsert():
     conflict = "ON CONFLICT %s %s" % ("" if tail == "DO NOTHING" and rnd.random() < 0.3 else target, tail)
     sql = "INSERT INTO %s VALUES %s %s" % (table, ", ".join("(%s)" % ", ".join(lit(x) for x in r) for r in rows),
                                             conflict)
+    returning = rnd.random() < 0.5
+    if returning:
+        sql += rnd.choice([" RETURNING id, v", " RETURNING *", " RETURNING v * 10 + id AS w"])
     sql = sql.replace("  ", " ")
     db.execute("SAVEPOINT s")
     try:
         cur = db.execute(sql)
+        got = cur.fetchall() if returning else None
     except sqlite3.IntegrityError:
         db.execute("ROLLBACK TO s")
         db.execute("RELEASE s")
@@ -178,7 +183,13 @@ def upsert():
         return
     db.execute("RELEASE s")
     count("upsert " + ("nothing" if tail == "DO NOTHING" else "update"))
-    case(sql, "= done %d" % cur.rowcount)
+    if returning:
+        # the rows written, as they were stored: inserted, or updated as they
+        # ended; a row left by DO NOTHING or a false WHERE returns nothing
+        count("upsert returning rows" if got else "upsert returning none")
+        case(sql, "= " + (" | ".join(", ".join(lit(v) for v in r) for r in got) if got else "(none)"))
+    else:
+        case(sql, "= done %d" % cur.rowcount)
 
 
 fill()
@@ -190,9 +201,12 @@ for _ in range(nstmt):
     snapshot()
 
 open(out, "w").write("\n".join(lines) + "\n")
-floor = ["delete", "delete cascaded", "delete refused", "upsert nothing", "upsert update"]
+floor = ["delete", "delete cascaded", "delete refused", "upsert nothing", "upsert update", "upsert returning rows",
+         "upsert returning none"]
 print("census: " + ", ".join("%s %d" % (k, census.get(k, 0)) for k in sorted(census)))
-short = [k for k in floor if census.get(k, 0) < 3]
+# a RETURNING that returns nothing needs DO NOTHING, or a false WHERE, on
+# every row of one statement: rare by construction, so its floor is one
+short = [k for k in floor if census.get(k, 0) < (1 if k == "upsert returning none" else 3)]
 if short:
     print("census below its floor: " + ", ".join(short))
     sys.exit(1)
