@@ -53,6 +53,10 @@ typedef struct {
     /* the oldest warning an operator raised and nobody has taken: 1 with its
        code and message filled, 0 when there is none (docs/gsql_warning_design.md) */
     int (*warning)(void *ctx, int *code, char *message, size_t cap);
+    /* a value STORED into a column of `kind`: CAST's conversion, except that a
+       DATE column refuses text with a time of day other than midnight, where
+       CAST takes its date (docs/datetime_conversion_design.md §3, gdash A7) */
+    GsqlHv *(*assign)(void *ctx, const GsqlHv *v, int kind, const char *currency, GsqlError *err);
 } GsqlHost;
 
 /* The service the owner is given (gsql_owner.h). `host` must outlive it. */

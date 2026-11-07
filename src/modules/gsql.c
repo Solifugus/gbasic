@@ -529,9 +529,35 @@ static void gsql_h_release(void *ctx, GsqlHv *v) {
     free(v);
 }
 
+/* Storing text into a DATE column reads it as {date} does, at the precision it
+ * was written, and refuses a time of day the date would lose: the column says
+ * what it holds, and a time dropped in silence is data lost (gdash A7, Matthew's
+ * ruling 2026-11-07). Midnight loses nothing. CAST still takes the date. */
+static GsqlHv *gsql_h_assign(void *ctx, const GsqlHv *v, int kind, const char *currency, GsqlError *err) {
+    if (kind == GSQL_COL_DATE && v->v.kind == VALUE_STRING) {
+        const Value *args[1] = { &v->v };
+        GsqlHv *r = gsql_apply("{date}sql_a", args, 1, err);
+        if (!r) {
+            return NULL;
+        }
+        DateTime d = r->v.as.datetime;
+        int timed = r->v.kind == VALUE_DATETIME && !d.time_only && d.precision > PREC_DAY &&
+                    (d.hour || d.minute || d.second);
+        gsql_h_release(ctx, r);
+        if (timed) {
+            /* TYPE, where a cast that fails is EXPRESSION: store_convert words it */
+            gsql_host_fail(err, GSQL_TYPE,
+                           "has a time of day (%02d:%02d:%02d), which a date would lose; CAST(... AS DATE) "
+                           "takes its date", d.hour, d.minute, d.second);
+            return NULL;
+        }
+    }
+    return gsql_h_cast(ctx, v, kind, currency, err);
+}
+
 static const GsqlHost gsql_interpreter_host = {
     NULL, gsql_h_load, gsql_h_store, gsql_h_kind, gsql_h_truth, gsql_h_op, gsql_h_field,
-    gsql_h_call, gsql_h_cast, gsql_h_order, gsql_h_copy, gsql_h_release, gsql_h_warning
+    gsql_h_call, gsql_h_cast, gsql_h_order, gsql_h_copy, gsql_h_release, gsql_h_warning, gsql_h_assign
 };
 
 const GsqlHost *gb_gsql_host(void) {

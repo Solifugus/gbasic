@@ -1266,6 +1266,11 @@ static int eval_into(X *x, SqlExpr *e, GsqlBuf *out) {
  * decided in one place. Everywhere else stays strict -- this is called only
  * where a value is STORED.
  *
+ * A DATE COLUMN REFUSES TEXT WITH A TIME OF DAY (gdash A7, Matthew's ruling
+ * 2026-11-07): CAST takes the date of '2026-01-15T10:00', storing does not,
+ * since the time would be lost in silence. So storing goes through the host's
+ * `assign`, which is CAST but for that; midnight loses nothing and is stored.
+ *
  * AN INTEGER COLUMN TAKES TEXT THAT IS EXACTLY AN INTEGER (Matthew's ruling
  * 2026-11-02, gbasic-books volume 3 Q1): every field `csv.records` reads is
  * text, so without this every integer column in every import needed a cast.
@@ -1309,8 +1314,17 @@ static int store_convert(X *x, int kind, const char *currency, const char *table
     }
     GsqlError why;
     memset(&why, 0, sizeof why);
-    GsqlHv *c = x->h->cast(x->h->ctx, v, kind, currency, &why);
+    GsqlHv *c = x->h->assign(x->h->ctx, v, kind, currency, &why);
     rel(x, v);
+    if (!c && why.code == GSQL_TYPE) {
+        /* it read, and would lose part of itself (a date's time of day) */
+        char *t = v3_read_text(out->bytes, out->length);
+        int rc = xfail(x->err, GSQL_TYPE, 0, "%s.%s is date, and the text given, '%.80s', %s", table, col,
+                       t ? t : "", why.message);
+        gsql_error_about(x->err, table, col, NULL);
+        free(t);
+        return rc;
+    }
     if (!c) {
         const char *kw = kind == GSQL_COL_DATE ? "date" : kind == GSQL_COL_TIME ? "time"
                          : kind == GSQL_COL_DATETIME ? "datetime" : kind == GSQL_COL_INTEGER ? "integer"

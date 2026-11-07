@@ -130,6 +130,18 @@ if [ -s "$work/inttext.err" ]; then
     fail "integer text: the fixture wrote to stderr"
 fi
 
+printf 'TIER date text: text with a time of day other than midnight is refused by a DATE column, CAST still takes its date\n'
+# gdash A7, Matthew's ruling 2026-11-07; every answer by hand, each refused
+# shape beside an accepted neighbour
+mkdir -p "$work/datetext"
+(cd "$work/datetext" && timeout -k 5 120 "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/date_text_test.bas") \
+    >"$work/datetext.out" 2>"$work/datetext.err"
+verdict "date text" "$work/datetext.out" $? 24
+if [ -s "$work/datetext.err" ]; then
+    sed 's/^/       /' "$work/datetext.err" | head -5
+    fail "date text: the fixture wrote to stderr"
+fi
+
 printf 'TIER savepoints: a BEGIN inside a write transaction nests, and a statement refused part way is undone alone\n'
 # gap G8 from the gBASIC books (volume 3's gap ledger)
 mkdir -p "$work/savepoint"

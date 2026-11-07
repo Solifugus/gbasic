@@ -16,6 +16,16 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### G-SQL: a DATE column refuses text with a time of day (gdash's A7)
+
+- **Storing `'2026-01-15T10:00'` into a `date` column is refused** (`TYPE`),
+  naming the text and the time it would lose. It used to be stored as
+  2026-01-15, the time dropped in silence. Text at midnight
+  (`'2026-01-15T00:00'`) loses nothing and is stored, as a date is.
+- **`CAST('2026-01-15T10:00' AS DATE)` still takes the date,** so taking it
+  is now written down where it happens.
+- A comparison is unchanged: `where d = '2026-01-15'` reads the text as a date.
+
 ### G-SQL: an open no longer stalls 10 s at linger 0 (gdash's G20-15)
 
 - **A client told `busy` by an owner it started, whose winner then left, starts

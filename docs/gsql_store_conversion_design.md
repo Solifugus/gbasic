@@ -16,7 +16,7 @@ Matthew expected the column to do it: *"the table already knows what they are"*.
 
 | column | takes | as |
 |---|---|---|
-| `date`, `time`, `datetime` | text | gBASIC's own `{date}`, `{time}`, `{datetime}` reading of it |
+| `date`, `time`, `datetime` | text | gBASIC's own `{date}`, `{time}`, `{datetime}` reading of it; a `date` refuses text with a time of day other than midnight *(2026-11-07, gdash A7; `datetime_conversion_design.md` §3)* |
 | `money(CUR)` | text, or a number | gBASIC's own `{CUR}`, so text is exact and a number takes its shortest decimal |
 | `integer` | text that is a whole number written in digits, spaces around it trimmed *(2026-11-02, §1a)* | that integer, exact |
 | `number` | text that is a number written plainly, trimmed *(2026-11-02, §1a)* | that number; whole text is exact |
