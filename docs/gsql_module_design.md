@@ -25,6 +25,7 @@ db.close()
 | `db.query(sql [, parameters])` | an array of records, one per row, fields in select-list order |
 | `db.exec(sql [, parameters])` | `{ command, rows_affected }`, the shape `sqlite`, `pg` and `odbc` answer; `rows_affected` is `nothing` for a statement with no count, such as `CREATE` |
 | `db.insert(table, rows)` | `{ command: "INSERT", rows_affected }`; rows are records, all or nothing (§8) |
+| `db.columns(sql [, parameters])` | `[{ name, kind }]`, the result columns from the plan, nothing run (§9) |
 | `gsql.begin(db [, "read" or "write"])` | `true`. `"write"` is the default |
 | `db.commit()`, `db.rollback()` | `true` |
 | `db.close()` | `true`. A closed connection is refused by every verb, `close` included |
@@ -224,4 +225,33 @@ row set only for statements of several rows.
 **`dbframe.to_gsql` was not changed.** It reports each refused row and undoes
 it alone, which is the other answer to Matthew's question; moving it onto
 `gsql.insert` would change what it promises.
+
+## 9. `gsql.columns`: a query described, not run (2026-11-06)
+
+Asked for by gdash (its A2, carried over from the `sqlite.columns` ask of its
+design §9): a dashboard checks every encoding channel against a real result
+column before it is served, and its dataset listing needs each column's kind,
+without running the query.
+
+A QUERY carrying `describe: true` is parsed and planned, and the plan's
+columns are the answer; svc_run returns before LIMIT is evaluated, a table is
+opened for reading, or a row is touched. The owner treats such a request as a
+read whatever the statement is (it takes no writer slot and is allowed in a
+`begin("read")`), and the SQL layer refuses anything that returns no rows as
+STATE, so describing an INSERT runs nothing either. A parameter need not be
+given, since nothing is evaluated.
+
+**What a kind can say.** The planner types a column it reads (`number`,
+`string`, `money(USD)`, `date`, ...) and the aggregates it knows (`count` is
+`integer`); for most expressions, `amt * 2` or `upper(name)`, it answers
+`any`. That is the planner's knowledge today, not a choice made here, and it
+limits what a channel check can conclude from a computed column.
+
+Tested by `run_gsql_module.sh`'s columns tier (`tests/gsql/columns_test.bas`,
+12 checks): a table's columns and kinds, aliases, a parameter absent and
+given, a query that raises when run (`1 / 0`) still described while `query`
+refuses it, an INSERT refused and not run, a missing column refused as the
+query would be, and both inside a read transaction. Perturbed, each red: the
+describe flag ignored by the SQL layer, and the owner counting a described
+INSERT as a write (refused READ_ONLY in a read transaction).
 

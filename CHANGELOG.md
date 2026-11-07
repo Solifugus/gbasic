@@ -99,6 +99,12 @@ reader sees.
 - **`mcp.handle(ts, opts, line, caller)`** runs the call under a principal
   verified for this request, passed through untouched (§7.3).
 
+### A G-SQL query described without running it
+
+- **`db.columns(sql [, parameters])`** (`gsql.columns`): the result columns,
+  `[{ name, kind }]`, from the query's plan, with nothing run (gdash's A2).
+  `db.columns("select * from t")` gives a table's columns.
+
 ### Many rows into G-SQL in one call
 
 - **`db.insert(table, rows)`** (`gsql.insert`): rows are records keyed by

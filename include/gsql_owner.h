@@ -35,6 +35,10 @@ typedef struct {
        `working` (docs/gsql_slicing_design.md). 0: run answers whole. */
     int sliced;
     uint32_t slice;                   /* input rows a slice; 0: the service's own */
+    /* describe only (gsql.columns, gdash's A2): parse and plan, answer the
+       result's columns and no rows, and run nothing; a read whatever the
+       statement is */
+    int describe;
 } GsqlStatement;
 
 /* What a statement or a fetch produced. The owner clears it before each call.

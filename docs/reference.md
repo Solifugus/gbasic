@@ -2678,6 +2678,14 @@ The module provides:
 - `gsql.connect(path[, { create: true, linger: seconds }])` — without `create`, a database that is not there is refused. `linger` is how long an owner this connection **starts** waits after its last connection closes before it stops, from 0 to 86400; 0 stops it at the last close. It is the starter's choice: when an owner is already running, a `linger` given here is ignored. A `database` block takes `linger:` too
 - `connection.query(sql[, parameters])` (`gsql.query`) — an array of records, fields in select-list order
 - `connection.exec(sql[, parameters])` (`gsql.exec`) — runs anything and answers `{ command, rows_affected }`, as `sqlite`, `pg` and `odbc` answer, plus **`rows`, every row, when the statement returns rows**; `rows_affected` is `nothing` for a statement with no count. `gsql.query` is the shortcut for the rows alone, and `for each` streams a large result
+- `connection.columns(sql[, parameters])` (`gsql.columns`) *(after 0.10.0)* — a
+  query's result columns, `[{ name, kind }]` in order, from its plan: **nothing
+  runs**, no row is read and no parameter is needed, so it is cheap on a large
+  table and safe on any query (one that would fail when run, `1 / 0`, is still
+  described). `kind` is the SQL layer's word (`number`, `string`,
+  `money(USD)`, `date`, ...), `any` for an expression the planner cannot type.
+  A table's columns are `db.columns("select * from t")`. A statement that
+  returns no rows is refused as `STATE`.
 - `connection.insert(table, rows)` (`gsql.insert`) *(after 0.10.0)* — many rows
   in one call. `rows` is an array of records keyed by column name, as a frame's
   rows are; a column a row leaves out takes its default, and each value is

@@ -28,6 +28,8 @@
 #               out, all or nothing over several statements, a savepoint in
 #               the caller's transaction, the caller's row named; and an exec
 #               past 1024 parameters
+#   columns     gsql.columns: a query's columns and kinds from its plan, run
+#               nothing (a 1/0 query is described), refused for no rows
 #   privatetmp  a service with a private /tmp, a second one, and an
 #               administrator's shell reach one owner (the socket is in the
 #               database directory); skips without bwrap
@@ -789,6 +791,15 @@ verdict insert "$work/ins.out" $? 27
 if [ -s "$work/ins.err" ]; then
     sed 's/^/       /' "$work/ins.err" | head -5
     fail "insert: the fixture wrote to stderr"
+fi
+
+printf 'TIER columns: gsql.columns, a query described from its plan with nothing run\n'
+mkdir -p "$work/cols"
+GSQL_DIR="$work/cols" timeout -k 5 60 ./gbasic tests/gsql/columns_test.bas >"$work/cols.out" 2>"$work/cols.err"
+verdict columns "$work/cols.out" $? 12
+if [ -s "$work/cols.err" ]; then
+    sed 's/^/       /' "$work/cols.err" | head -5
+    fail "columns: the fixture wrote to stderr"
 fi
 
 printf 'TIER privatetmp: processes with a /tmp each, as systemd'"'"'s PrivateTmp gives, reach one owner\n'

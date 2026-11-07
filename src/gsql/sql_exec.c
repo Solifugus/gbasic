@@ -9405,6 +9405,22 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
         c->x.rec_limit = st->max_recursion;   /* the connection's max_recursion */
     }
     SqlStmt *s = c->parsed.stmt;
+    if (st->describe) {
+        /* the plan's columns, and nothing run: no row read, no LIMIT
+           evaluated, no parameter needed (gdash's A2) */
+        if (s->kind != SQ_SELECT || s->explain) {
+            rc = xfail(err, GSQL_STATE, 0, "only a query that returns rows has columns to describe; this is %s",
+                       s->explain ? "an EXPLAIN" : "a statement that returns none");
+            take_warnings(q, &c->wseen, &c->nwseen, out, 0);
+            cursor_free(c);
+            return rc;
+        }
+        columns_of(c, &out->columns);
+        out->has_rows = 1;
+        take_warnings(q, &c->wseen, &c->nwseen, out, 1);
+        cursor_free(c);
+        return GSQL_OK;
+    }
     if (s->kind == SQ_BACKUP) {
         if (backup_start(c, e, t) != GSQL_OK) {
             goto failed;

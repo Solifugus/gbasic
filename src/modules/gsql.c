@@ -1818,6 +1818,49 @@ static Value gsql_eval_exec(AstExpr *expr) {
     return result;
 }
 
+/* --- columns: a query described, not run (gdash's A2) --------------------------
+ *
+ * gsql.columns(db, sql [, parameters]) answers [{ name, kind }], the result
+ * columns a query would give, in order, from the plan: no row is read and
+ * nothing is changed, so it is safe on any statement and cheap on a large
+ * table. `kind` is the SQL layer's (the same word a column was declared
+ * with; "any" where an expression could be several). The columns of a table
+ * are `db.columns("select * from t")`. A statement that returns no rows has
+ * no columns and is refused (STATE). */
+static Value gsql_eval_columns(AstExpr *expr) {
+    size_t argc = expr->as.call.args.count;
+    if (argc < 2 || argc > 3) {
+        gsql_module_refuse("gsql.columns expects a connection, a query, and optionally its parameters");
+        return value_null();
+    }
+    GsqlConnectionValue *c = gsql_connection_arg(expr, "columns");
+    if (!c) {
+        return value_null();
+    }
+    Value text = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(text);
+        return value_null();
+    }
+    char *sql;
+    Value body;
+    if (!gsql_statement_body_of(expr, "columns", text, &sql, &body)) {
+        return value_null();
+    }
+    record_set(&body, "describe", value_bool(1));
+    Value reply;
+    unsigned type;
+    if (!gsql_request(c, GSQL_M_QUERY, body, "columns", sql, &reply, &type)) {
+        free(sql);
+        return value_null();
+    }
+    free(sql);
+    Value *cols = gsql_field(&reply, "columns");
+    Value out = cols && cols->kind == VALUE_ARRAY ? value_copy(*cols) : value_array(NULL, 0);
+    value_free(reply);
+    return out;
+}
+
 /* --- insert: many rows in one call (gdash's A3) ---------------------------------
  *
  * gsql.insert(db, table, rows): rows are records keyed by column name, as a
@@ -2639,6 +2682,7 @@ static Value gsql_eval_call(AstExpr *expr) {
     if (strcmp(fn, "query") == 0) return gsql_eval_query(expr);
     if (strcmp(fn, "exec") == 0) return gsql_eval_exec(expr);
     if (strcmp(fn, "insert") == 0) return gsql_eval_insert(expr);
+    if (strcmp(fn, "columns") == 0) return gsql_eval_columns(expr);
     if (strcmp(fn, "on") == 0) return gsql_eval_on(expr);
     if (strcmp(fn, "begin") == 0) return gsql_eval_simple(expr, "begin", GSQL_M_BEGIN);
     if (strcmp(fn, "commit") == 0) return gsql_eval_simple(expr, "commit", GSQL_M_COMMIT);

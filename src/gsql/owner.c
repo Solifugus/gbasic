@@ -714,9 +714,19 @@ static int do_query(Owner *o, Conn *c, Req *r) {
     s.batch = field_u64(f, nf, "batch", &batch) && batch > 0 ? (batch > UINT32_MAX ? UINT32_MAX : (uint32_t)batch) : 100;
     uint64_t rounds = 0;
     s.max_recursion = field_u64(f, nf, "max_recursion", &rounds) ? rounds : 0;
+    const V3Field *dx = v3_field_named(f, nf, "describe");
+    s.describe = 0;
+    if (dx && !v3_read_bool(dx->v, dx->vlen, &s.describe)) {
+        s.describe = 0;
+    }
 
     GsqlError err = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     int w = o->svc->writes(o->svc->ctx, &s, &err);
+    /* a statement only described runs nothing, so it writes nothing: it
+       takes no writer slot and is allowed in a read transaction */
+    if (s.describe && w > 0) {
+        w = 0;
+    }
     /* a read may be answered `working`, and is then advanced a slice a turn,
        so a long one does not hold up every other connection */
     s.sliced = w == 0 && o->svc->resume != NULL;
