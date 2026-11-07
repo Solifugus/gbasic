@@ -1285,21 +1285,7 @@ static NetTlsServer *net_tls_server_new(Value *opt, const char *verb) {
         SSL_CTX_set_options(ctx, SSL_OP_IGNORE_UNEXPECTED_EOF);
 #endif
         SSL_CTX_set_session_id_context(ctx, (const unsigned char *)"gbasic-net", 10);
-        if (client_ca) {
-            STACK_OF(X509_NAME) *names = SSL_load_client_CA_file(client_ca);
-            if (SSL_CTX_load_verify_locations(ctx, client_ca, NULL) != 1 || !names) {
-                if (names) {
-                    sk_X509_NAME_pop_free(names, X509_NAME_free);
-                }
-                snprintf(msg, sizeof msg, "%s: could not load client_ca '%s'", where, client_ca);
-                net_raise_reason("tls_failed", msg, net_tls_error_text(NULL));
-                ERR_clear_error();
-                net_tls_server_release(t);
-                return NULL;
-            }
-            SSL_CTX_set_client_CA_list(ctx, names);
-            SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | (require ? SSL_VERIFY_FAIL_IF_NO_PEER_CERT : 0), NULL);
-        }
+        /* client_ca and require_client_cert were applied by webserver_tls_build */
     }
     SSL_CTX_set_tlsext_servername_callback(t->dflt, net_tls_sni_select);
     SSL_CTX_set_tlsext_servername_arg(t->dflt, t);

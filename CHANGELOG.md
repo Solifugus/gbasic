@@ -16,6 +16,18 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Client certificates on the webserver (a security fix)
+
+- **`webserver.listen` honours `tls.client_ca` and `tls.require_client_cert`**,
+  which it used to drop in silence: a server meant to authenticate its
+  clients served any client, and reported a client's certificate as none.
+  Any other name in `tls` is now refused by name. An https request carries
+  `req.tls` (version, cipher, server_name, peer_certificate), and a websocket
+  upgraded from it keeps the same session. A `server` block takes both
+  options as head options or from `web.configure`.
+- **`web.configure(sv, { cert, key })` takes effect.** It was accepted and
+  then ignored, so the server served plain HTTP.
+
 ### G-SQL: ON DELETE CASCADE, the upsert, RETURNING, `?`, and `key` as a name
 
 - **`REFERENCES t ON DELETE CASCADE`**: deleting a row deletes the rows that

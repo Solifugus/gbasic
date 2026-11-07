@@ -67,13 +67,15 @@ fi
 
 printf 'TIER the two option tables agree\n'
 c_table="$(sed -n '/static const SrvOption head_options\[\] = {/,/};/p' src/frontend.c \
-  | grep -o '{"[a-z]*", *AST_EXPR_[A-Z]*}' \
-  | sed 's/{"\([a-z]*\)", *AST_EXPR_NUMBER}/\1:number/;
-         s/{"\([a-z]*\)", *AST_EXPR_STRING}/\1:string/;
-         s/{"\([a-z]*\)", *AST_EXPR_BOOL}/\1:boolean/' | sort)"
+  | grep -o '{"[a-z_]*", *AST_EXPR_[A-Z]*}' \
+  | sed 's/{"\([a-z_]*\)", *AST_EXPR_NUMBER}/\1:number/;
+         s/{"\([a-z_]*\)", *AST_EXPR_STRING}/\1:string/;
+         s/{"\([a-z_]*\)", *AST_EXPR_BOOL}/\1:boolean/' | sort)"
 b_table="$(sed -n '/function _head_options()/,/end function/p' stdlib/web.bas \
-  | grep -o 'name: *"[a-z]*", *type: *"[a-z]*"' \
-  | sed 's/name: *"\([a-z]*\)", *type: *"\([a-z]*\)"/\1:\2/' | sort)"
+  | grep -o 'name: *"[a-z_]*", *type: *"[a-z]*"' \
+  | sed 's/name: *"\([a-z_]*\)", *type: *"\([a-z]*\)"/\1:\2/' | sort)"
+# names hold underscores since client_ca and require_client_cert (2026-11-07):
+# a pattern without them dropped both from both tables, and agreed
 if [ -z "$c_table" ]; then
     fail "could not read head_options[] out of src/frontend.c -- the table moved"
 elif [ -z "$b_table" ]; then

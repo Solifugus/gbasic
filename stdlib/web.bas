@@ -659,14 +659,34 @@ library web
         out = {}
         enabled = false
         default_site = sv.sites[0]
-        if default_site.cert != "" then
-            out.cert = default_site.cert
-            out.key = default_site.key
+        cert = default_site.cert
+        key = default_site.key
+        ' web.configure's cert and key are the deployment's, and win: they
+        ' were accepted and then never read until 2026-11-07, so a server
+        ' configured with a certificate served plain HTTP
+        if has(sv.options, "cert") then
+            cert = sv.options.cert
+        end if
+        if has(sv.options, "key") then
+            key = sv.options.key
+        end if
+        if cert != "" then
+            out.cert = cert
+            out.key = key
             enabled = true
         end if
         if count(certs) > 0 then
             out.certs = certs
             enabled = true
+        end if
+        ' the client's certificate, asked of every site: one listener, one
+        ' handshake policy (passed as written, so webserver.listen's own
+        ' checks are the ones that refuse)
+        if has(sv.options, "client_ca") then
+            out.client_ca = sv.options.client_ca
+        end if
+        if has(sv.options, "require_client_cert") then
+            out.require_client_cert = sv.options.require_client_cert
         end if
         return { enabled: enabled, options: out }
     end function
@@ -784,7 +804,9 @@ library web
             { name: "workers", type: "number" },
             { name: "timeout", type: "number" },
             { name: "cert",    type: "string" },
-            { name: "key",     type: "string" }
+            { name: "key",     type: "string" },
+            { name: "client_ca", type: "string" },
+            { name: "require_client_cert", type: "boolean" }
         ]
     end function
 

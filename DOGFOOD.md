@@ -13403,3 +13403,37 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   error readable. `x = try conn.write(b)`, or `try conn.write(b)` alone, is the
   value or nothing; `if error then` reads what it caught, and it is never
   raised again at the return (docs/error_model_design.md §6).
+
+## 2026-11-07 — CC — while: Transward M26, a wss link requiring client certificates (reported by the Transward session, added by the gBASIC session)
+- **Type:** bug
+- **Severity:** high
+- **What:** `webserver.listen(port, { tls: { cert, key, client_ca, require_client_cert: true } })`
+  silently ignores `client_ca` and `require_client_cert`. A wss client that
+  presents no certificate gets its 101, and its messages are delivered. One
+  that presents a certificate shows `peer_certificate: null` in the upgraded
+  connection's `c.tls`. The same options on `net.listen` work: a client with
+  no certificate is refused with "certificate required", and one with a
+  certificate shows its subject and sha256. Confirmed from the source:
+  `webserver_tls_build` in src/eval.c reads `cert`, `key` and `certs` and never
+  refuses another name, although the reference says `webserver.listen` takes
+  "the record `net.listen` takes" and refuses an unknown option by name. The
+  silence is the danger: the author believes clients are being authenticated.
+  `stdlib/web.bas`'s `_tls_options` passes on only cert/key/certs, so a
+  `server` block cannot ask for client certificates at all.
+- **Workaround:** none in `webserver`; mutual TLS works on `net.listen` over
+  TCP or a Unix path, with length-prefixed frames rather than WebSocket.
+- **Status: FIXED 2026-11-07** (Matthew: "yes, fix the TLS bug").
+  - `webserver_tls_build`, which `net.listen` already shared, now refuses any
+    other name, and applies `client_ca` and `require_client_cert` to every
+    context, SNI's included. So `net.c`'s own copy of that setup went.
+  - An https request carries `req.tls`, with `peer_certificate`.
+  - A `server` block takes both options as head options, or from
+    `web.configure`.
+  - **A second silent drop was found on the way:** `web.configure(sv, { cert,
+    key })` was accepted and never read, so the server served plain HTTP.
+    That is fixed too.
+  - **A verifying context needs a session id context.** Without one, a
+    resumed session ended in "internal error". Only a resumption test showed
+    it: every other case passed with the line removed.
+  - `tests/run_web_tls.sh` mtls tiers: require, ask, a stranger's
+    certificate, wss, resumption, the refusals.

@@ -3,7 +3,9 @@
 # SNI selection by hostname, refusal of a bad pair at LISTEN time (not at the
 # first handshake, hours later), and the pooled shape where a plain TCP socket
 # is inherited and TLS is terminated in the worker — which is what makes
-# certificate rotation a rolling reload and nothing more.
+# certificate rotation a rolling reload and nothing more. And client
+# certificates (client_ca, require_client_cert), on a `server` block through
+# web.configure and over the websocket the webserver hands to net.
 . "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
 set -euo pipefail
 cd "$(dirname "$0")/.."
@@ -116,5 +118,112 @@ fi
 grep -q "could not use private key" "$scratch/err2" \
     || fail "negative_wrong_key (stderr: $(cat "$scratch/err2"))"
 printf 'PASS negative_wrong_key (a mismatched pair is refused at listen, not at the first handshake)\n'
+
+# --- client certificates (mutual TLS) -------------------------------------
+# webserver.listen took client_ca and require_client_cert from the record
+# net.listen takes and DROPPED THEM IN SILENCE until 2026-11-07 (DOGFOOD,
+# Transward M26): a client with no certificate was served, and one with a
+# certificate was reported as having none. So each case below asserts what a
+# client WITHOUT the right certificate gets, beside the one with it.
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$scratch/ca.key" -out "$scratch/ca.crt" \
+    -days 2 -subj "/CN=gBASIC Test CA" 2>/dev/null
+cp "$scratch/main.crt" "$scratch/server.crt"
+cp "$scratch/main.key" "$scratch/server.key"
+openssl req -newkey rsa:2048 -nodes -keyout "$scratch/client.key" -out "$scratch/client.csr" \
+    -subj "/CN=client-one" 2>/dev/null
+openssl x509 -req -in "$scratch/client.csr" -CA "$scratch/ca.crt" -CAkey "$scratch/ca.key" \
+    -CAcreateserial -out "$scratch/client.crt" -days 2 2>/dev/null
+openssl req -x509 -newkey rsa:2048 -nodes -keyout "$scratch/stranger.key" -out "$scratch/stranger.crt" \
+    -days 2 -subj "/CN=stranger" 2>/dev/null
+
+mtls_up() { # mode -> sets $mport, $msrv
+    mlog="$scratch/mtls-$1.log"
+    timeout 60 ./gbasic --line-buffered tests/web_tls/mtls_block.bas "$scratch" "$1" >"$mlog" 2>"$scratch/mtls-$1.err" &
+    msrv=$!
+    mport=""
+    for _ in $(seq 1 100); do
+        mport="$(sed -n 's/^PORT //p' "$mlog" | head -1)"; [ -n "$mport" ] && break; sleep 0.05
+    done
+    [ -n "$mport" ] || fail "mtls_$1 (no port announced: $(cat "$scratch/mtls-$1.err"))"
+}
+who() { # [cert key] -> the body, or "REFUSED"
+    if [ $# -eq 2 ]; then
+        curl -sk -m 5 --cert "$1" --key "$2" "https://127.0.0.1:$mport/who" 2>/dev/null || printf 'REFUSED'
+    else
+        curl -sk -m 5 "https://127.0.0.1:$mport/who" 2>/dev/null || printf 'REFUSED'
+    fi
+}
+
+mtls_up require
+got="$(who "$scratch/client.crt" "$scratch/client.key")"
+[ "$got" = "CN=client-one" ] || fail "mtls_require (a client the CA signed: got '$got')"
+got="$(who)"
+[ "$got" = "REFUSED" ] || fail "mtls_require (A CLIENT WITH NO CERTIFICATE WAS SERVED: '$got')"
+got="$(who "$scratch/stranger.crt" "$scratch/stranger.key")"
+[ "$got" = "REFUSED" ] || fail "mtls_require (A CERTIFICATE NO TRUSTED CA SIGNED WAS SERVED: '$got')"
+printf 'PASS mtls_require (the CA'"'"'s client served and named in req.tls; none, and a stranger, refused in the handshake)\n'
+
+# a resumed session: a verifying context needs a session id context, or
+# OpenSSL ends the resumption with "internal error" (measured: alert 80 with
+# the line that sets it removed, every other case here still passing)
+resumed="$(echo | timeout 10 openssl s_client -connect "127.0.0.1:$mport" -cert "$scratch/client.crt" \
+    -key "$scratch/client.key" -tls1_2 -reconnect 2>&1 || true)"
+case "$resumed" in
+    *"alert internal error"*) fail "mtls_resume (a resumed session was refused: internal error)" ;;
+    *Reused,*) ;;
+    *) fail "mtls_resume (no session was reused: $(printf '%s' "$resumed" | grep -m2 -E 'New|alert|error'))" ;;
+esac
+printf 'PASS mtls_resume (a client-verified session resumes)\n'
+
+# over the websocket the webserver hands to net: c.tls is the same session
+if python3 -c 'import websockets.sync.client' 2>/dev/null; then
+    ws_who() { # cert key -> what "who" answers, or REFUSED
+        python3 -I - "$mport" "$@" <<'PY' 2>/dev/null || printf 'REFUSED'
+import ssl, sys
+from websockets.sync.client import connect
+ctx = ssl.create_default_context()
+ctx.check_hostname = False
+ctx.verify_mode = ssl.CERT_NONE
+if len(sys.argv) > 3:
+    ctx.load_cert_chain(sys.argv[2], sys.argv[3])
+with connect("wss://127.0.0.1:%s/ws" % sys.argv[1], ssl=ctx, open_timeout=5) as ws:
+    ws.send("who")
+    sys.stdout.write(ws.recv(timeout=5))
+PY
+    }
+    got="$(ws_who "$scratch/client.crt" "$scratch/client.key")"
+    [ "$got" = "CN=client-one" ] || fail "mtls_wss (c.tls after the upgrade: got '$got')"
+    got="$(ws_who)"
+    [ "$got" = "REFUSED" ] || fail "mtls_wss (A WSS CLIENT WITH NO CERTIFICATE WAS UPGRADED: '$got')"
+    printf 'PASS mtls_wss (the upgraded connection'"'"'s c.tls names the client; none is refused before the 101)\n'
+else
+    printf 'SKIP mtls_wss (python3 websockets not installed): the upgraded connection'"'"'s c.tls was NOT checked\n'
+fi
+kill "$msrv" 2>/dev/null || true
+wait "$msrv" 2>/dev/null || true
+
+mtls_up ask
+got="$(who)"
+[ "$got" = "none" ] || fail "mtls_ask (no certificate, asked not required: got '$got')"
+got="$(who "$scratch/client.crt" "$scratch/client.key")"
+[ "$got" = "CN=client-one" ] || fail "mtls_ask (a client the CA signed: got '$got')"
+got="$(who "$scratch/stranger.crt" "$scratch/stranger.key")"
+[ "$got" = "REFUSED" ] || fail "mtls_ask (a certificate offered must still verify: got '$got')"
+printf 'PASS mtls_ask (client_ca alone: none is served as none, an offered certificate must verify)\n'
+kill "$msrv" 2>/dev/null || true
+wait "$msrv" 2>/dev/null || true
+
+if ./gbasic tests/web_tls/negative_tls_option.bas "$scratch" >/dev/null 2>"$scratch/err3"; then
+    fail "negative_tls_option (A MISSPELLED TLS OPTION WAS ACCEPTED)"
+fi
+grep -q "webserver tls: unknown option 'client_cert'" "$scratch/err3" \
+    || fail "negative_tls_option (stderr: $(cat "$scratch/err3"))"
+printf 'PASS negative_tls_option (a misspelled option is refused by name, not dropped)\n'
+if ./gbasic tests/web_tls/negative_require_no_ca.bas "$scratch" >/dev/null 2>"$scratch/err4"; then
+    fail "negative_require_no_ca (expected nonzero exit)"
+fi
+grep -q "require_client_cert needs client_ca" "$scratch/err4" \
+    || fail "negative_require_no_ca (stderr: $(cat "$scratch/err4"))"
+printf 'PASS negative_require_no_ca\n'
 
 printf 'run_web_tls: all cases passed\n'

@@ -21696,6 +21696,10 @@ static char *webserver_timestamp(void) {
     return copy_string(buffer);
 }
 
+#if HAVE_LIBSSL
+static Value net_tls_snapshot(SSL *ssl);   /* src/modules/net.c, included below */
+#endif
+
 static Value webserver_make_request(WebServerClient *client,
                                     const char *method,
                                     const char *path,
@@ -21724,6 +21728,14 @@ static Value webserver_make_request(WebServerClient *client,
         over_tls = client->ssl != NULL;
 #endif
         record_set(&request, "scheme", value_string(over_tls ? "https" : "http"));
+#if HAVE_LIBSSL
+        /* the handshake's facts, as net's c.tls has them: the version, the
+           cipher, the name asked for, and the client's certificate when the
+           listener asked for one (client_ca) */
+        if (over_tls) {
+            record_set(&request, "tls", net_tls_snapshot(client->ssl));
+        }
+#endif
     }
     /* Same guard as the webclient reader, for the same reason: the JSON
      * decoder's "did it reach the end" check is satisfied by an interior NUL,
@@ -23154,6 +23166,45 @@ static int webserver_tls_build(Value *tls, const char *who, char *err, size_t er
     *out_hosts = NULL;
     *out_ctxs = NULL;
     *out_count = 0;
+    /* every name refused but these, as net.listen refuses them: a misspelled
+     * security option dropped in silence is a server that believes it is
+     * authenticating its clients (DOGFOOD 2026-11-07, Transward M26) */
+    static const char *const known[] = { "cert", "key", "certs", "client_ca", "require_client_cert", NULL };
+    for (size_t i = 0; i < tls->as.record.count; i++) {
+        const char *name = tls->as.record.fields[i].name;
+        size_t k = 0;
+        while (known[k] && strcmp(known[k], name) != 0) {
+            k++;
+        }
+        if (!known[k]) {
+            snprintf(err, err_size, "%s tls: unknown option '%s' (known: cert, key, certs, client_ca, "
+                     "require_client_cert)", who, name);
+            return 0;
+        }
+    }
+    const char *client_ca = NULL;
+    RecordField *ca_f = record_find(tls, "client_ca");
+    if (ca_f) {
+        if (ca_f->value->kind != VALUE_STRING) {
+            snprintf(err, err_size, "%s tls: client_ca must be a path to the authorities' certificates", who);
+            return 0;
+        }
+        client_ca = ca_f->value->as.string;
+    }
+    int require = 0;
+    RecordField *req_f = record_find(tls, "require_client_cert");
+    if (req_f) {
+        if (req_f->value->kind != VALUE_BOOL) {
+            snprintf(err, err_size, "%s tls: require_client_cert must be true or false", who);
+            return 0;
+        }
+        require = req_f->value->as.boolean;
+    }
+    if (require && !client_ca) {
+        snprintf(err, err_size, "%s tls: require_client_cert needs client_ca, the authorities a client's certificate "
+                 "must come from", who);
+        return 0;
+    }
     const char *cert = NULL;
     const char *key = NULL;
     RecordField *cert_f = record_find(tls, "cert");
@@ -23221,6 +23272,28 @@ static int webserver_tls_build(Value *tls, const char *who, char *err, size_t er
          * Its context is shared, not rebuilt, so the two cannot diverge. */
         dflt = ctxs[0];
         SSL_CTX_up_ref(dflt);
+    }
+    /* A client's certificate, asked for on every context: SNI swaps the
+     * context in mid-handshake, and the one swapped in is the one that
+     * verifies. */
+    for (size_t i = 0; client_ca && i <= sni_total; i++) {
+        SSL_CTX *ctx = i < sni_total ? ctxs[i] : dflt;
+        if (i == sni_total && sni_total > 0 && dflt == ctxs[0]) {
+            break;   /* the default IS the first named context */
+        }
+        STACK_OF(X509_NAME) *names = SSL_load_client_CA_file(client_ca);
+        if (SSL_CTX_load_verify_locations(ctx, client_ca, NULL) != 1 || !names) {
+            if (names) {
+                sk_X509_NAME_pop_free(names, X509_NAME_free);
+            }
+            snprintf(err, err_size, "%s tls: could not load client_ca '%s'", who, client_ca);
+            SSL_CTX_free(dflt);   /* its own, or the reference taken on the first named one */
+            goto fail;
+        }
+        SSL_CTX_set_client_CA_list(ctx, names);
+        SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER | (require ? SSL_VERIFY_FAIL_IF_NO_PEER_CERT : 0), NULL);
+        /* a verifying server needs one, or a resumed session is refused */
+        SSL_CTX_set_session_id_context(ctx, (const unsigned char *)"gbasic-web", 10);
     }
 
     *out_default = dflt;

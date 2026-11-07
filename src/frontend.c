@@ -422,7 +422,8 @@ static void srv_check_server(SrvCheck *chk, const AstStmt *stmt) {
         {"port", AST_EXPR_NUMBER},   {"address", AST_EXPR_STRING},
         {"inherit", AST_EXPR_BOOL},  {"workers", AST_EXPR_NUMBER},
         {"timeout", AST_EXPR_NUMBER},{"cert", AST_EXPR_STRING},
-        {"key", AST_EXPR_STRING},
+        {"key", AST_EXPR_STRING},    {"client_ca", AST_EXPR_STRING},
+        {"require_client_cert", AST_EXPR_BOOL},
     };
     static const SrvOption site_options[] = {
         {"host", AST_EXPR_STRING}, {"cert", AST_EXPR_STRING}, {"key", AST_EXPR_STRING},

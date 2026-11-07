@@ -4300,7 +4300,25 @@ server = webserver.listen(8443, { tls: {
     certs: [ { host: "api.example.com", cert: "api.crt", key: "api.key" } ] } })
 ```
 
-Requests carry `scheme` (`"https"` on a TLS listener, else `"http"`).
+**Client certificates** take `net.listen`'s two options: `client_ca`, a file of
+the authorities a client's certificate must come from, and
+`require_client_cert: true`, which refuses a client with no certificate in the
+handshake. A certificate a client offers must verify either way. Any other name
+in `tls` is refused by name. A `server` block takes both as head options, or
+from `web.configure`. (Until 2026-11-07 `webserver.listen` dropped both, and
+any misspelling, in silence.)
+
+```basic
+server = webserver.listen(8443, { tls: { cert: "site.crt", key: "site.key",
+    client_ca: "clients-ca.crt", require_client_cert: true } })
+```
+
+Requests carry `scheme` (`"https"` on a TLS listener, else `"http"`). An
+https request also carries `tls`, the handshake's facts as `net`'s `c.tls` has
+them: `version`, `cipher`, `server_name` and `peer_certificate` (`{ subject,
+issuer, not_before, not_after, sha256 }`, or `nothing` when the client sent
+none). A websocket upgraded from it keeps the same session, so its
+`connection.tls` names the same certificate.
 Certificates are loaded when the listener is made and never re-read:
 **rotation is a rolling reload of the worker pool** — workers load their certs
 at start (`webserver.inherited({ tls: {...} })` over the supervisor's plain
