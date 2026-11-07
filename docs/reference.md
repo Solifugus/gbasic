@@ -4774,8 +4774,9 @@ routes and static fallback (a stream route answers with its opening head);
 `source_outline` shows the block, its sites and every route.
 
 Three primitives shipped with the block and are general:
-`process.self()` → `{ interpreter, script, args }` (how a program launches
-another copy of itself); `webserver.on_request(server, fn, context)` /
+`process.self()` → `{ interpreter, script, args, pid }` (how a program launches
+another copy of itself, and its own process id, *`pid` since 0.11.0*; a spawned
+actor is a process of its own and answers its own); `webserver.on_request(server, fn, context)` /
 `webserver.on_drain(server, fn, context)` (native per-request dispatch —
 `fn(context, request)`, return value delivered as the response); and
 `webserver.stopping()` (true once SIGTERM asked this process to stop

@@ -29877,7 +29877,7 @@ static int process_is_executable(const char *path) {
  * meaning the current directory. The answer is the first candidate that is a
  * regular file with execute permission. Not found is `unknown`, never an
  * error: absence is the ordinary state this function exists to report. */
-/* PLAT-WEB-5: `process.self()` -> { interpreter, script, args }.
+/* PLAT-WEB-5: `process.self()` -> { interpreter, script, args, pid }.
  *
  * The one fact a program cannot otherwise learn: how to launch ANOTHER COPY OF
  * ITSELF. web.serve's worker pool is the motivating caller (the supervisor
@@ -29912,6 +29912,9 @@ static Value process_do_self(AstExpr *expr) {
         items[i] = value_string(program_args[i]);
     }
     record_set(&result, "args", value_array(items, program_arg_count));
+    /* this process's id (Transward): a spawned actor is a process of its own
+       and answers its own */
+    record_set(&result, "pid", value_number((double)getpid()));
     return result;
 }
 

@@ -299,3 +299,21 @@ if ! printf '%s' "$busy_out" | grep -qx 'mismatches: 0'; then
 fi
 printf 'PASS wait_timeout_busy_child (%s checks: a timed wait drains a 2MB producer, and still expires)\n' \
     "$(printf '%s' "$busy_out" | sed -n 's/^checks: //p')"
+
+# process.self().pid (Transward's ask), against the KERNEL's answer: the shell
+# prints its own $$ and then execs gbasic, so the two must be one number, and a
+# spawned actor (a process of its own) must answer a different one.
+pid_out="$(bash -c 'echo "shell $$"; exec ./gbasic tests/process/self_pid.bas' 2>&1 || true)"
+shell_pid="$(printf '%s\n' "$pid_out" | sed -n 's/^shell //p')"
+self_pid="$(printf '%s\n' "$pid_out" | sed -n 's/^pid //p')"
+if [ -z "$shell_pid" ] || [ "$shell_pid" != "$self_pid" ]; then
+    printf 'FAIL self_pid (the shell exec-ed as %s, process.self().pid said %s)\n' "$shell_pid" "${self_pid:-nothing}"
+    printf '%s\n' "$pid_out" | tail -3
+    exit 1
+fi
+if ! printf '%s\n' "$pid_out" | grep -qx 'actor differs'; then
+    printf 'FAIL self_pid (a spawned actor did not answer its own pid)\n'
+    printf '%s\n' "$pid_out" | tail -3
+    exit 1
+fi
+printf 'PASS self_pid (process.self().pid is the kernel'"'"'s pid; an actor answers its own)\n'

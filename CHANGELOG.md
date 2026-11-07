@@ -16,6 +16,11 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### `process.self().pid`
+
+- **`process.self()` answers `pid`, this process's id** (Transward). A spawned
+  actor is a process of its own and answers its own.
+
 ### Whether a server is serving TLS is on its record
 
 - **`webserver.listen` and `web.serve` answer a record with `tls: true` or
