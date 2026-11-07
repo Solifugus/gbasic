@@ -1,0 +1,1 @@
+parse error at tests/negative_try_catch.bas:3:8: `catch` is not gBASIC; there is no try/catch block: write `x = try f(a)` and then `if error then`, or catch a whole function with `on error goto label`

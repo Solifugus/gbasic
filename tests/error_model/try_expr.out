@@ -1,0 +1,11 @@
+1 nothing
+2 read: boom a
+3 3
+4 nothing
+5 snapshot: boom b
+6 a success clears it: false
+7 plain cleanup returned
+8 cleanup under goto next returned
+9 label caught: boom labelled
+10 a field
+11 cleared: false

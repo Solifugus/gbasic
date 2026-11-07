@@ -308,6 +308,7 @@ static TokenType identifier_type(const char *start, int length) {
     if (keyword_equals(start, length, "and")) return TOKEN_AND;
     if (keyword_equals(start, length, "or")) return TOKEN_OR;
     if (keyword_equals(start, length, "not")) return TOKEN_NOT;
+    if (keyword_equals(start, length, "try")) return TOKEN_TRY;
     if (keyword_equals(start, length, "excluding")) return TOKEN_EXCLUDING;
     if (keyword_equals(start, length, "intersecting")) return TOKEN_INTERSECTING;
     if (keyword_equals(start, length, "in")) return TOKEN_IN;
@@ -1016,6 +1017,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_AND: return "AND";
     case TOKEN_OR: return "OR";
     case TOKEN_NOT: return "NOT";
+    case TOKEN_TRY: return "TRY";
     case TOKEN_IN: return "IN";
     case TOKEN_OP_EQ: return "OP_EQ";
     case TOKEN_OP_NE: return "OP_NE";

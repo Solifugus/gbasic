@@ -105,7 +105,7 @@ A passage leads north."
 
 ### Reserved words
 
-Keywords are matched **case-insensitively**. There are 48, and these 46 cannot
+Keywords are matched **case-insensitively**. There are 49, and these 47 cannot
 be used as a variable, parameter or function name:
 
 ```text
@@ -114,9 +114,15 @@ else      error     excluding export    false     for       function
 gosub     goto      if        in        intersecting        library   load
 modifier  new       not       nothing   on        or        print
 program   return    spawn     step      stop      then      to        true
-unknown   until     unwatch   use       watch     watchers  while     with
-without
+try       unknown   until     unwatch   use       watch     watchers  while
+with      without
 ```
+
+`try` arrived after 0.10.0 as the expression form of catching (see *Error
+handling*). It was measured first: in this tree two files used it as a name, a
+local variable in `stdlib/gpdf.bas` and a helper function in the G-SQL cookbook's
+constraints recipe, and both were renamed; no consumer project on the machine
+used it. Like every keyword it is still a record field name (`r.try`).
 
 `excluding` and `intersecting` arrived in 0.6.0 as the set operators, and the
 price was measured before it was taken: no identifier anywhere in this tree was
@@ -796,6 +802,7 @@ Error handling:
 on error stop           ' propagate (the default), restorable mid-frame
 on error goto next      ' absorb: check with `if error then`
 on error goto label     ' absorb: disarm and jump
+x = try f(a)            ' one expression: the value, or nothing; never re-raised
 error "message"
 error { message: "...", detail: x }
 ```
@@ -2387,6 +2394,27 @@ caught unless the `on error` line is visible in the same function.
 **Default — propagate.** A raise in a frame with no active handler unwinds to
 the nearest ancestor frame that has one. Reaching the top unhandled is fatal
 with a nonzero exit. `on error stop` restores this state mid-frame.
+
+**`try` — one expression that may fail** *(after 0.10.0)*. `x = try expr` is the
+value, or `nothing` when evaluating it raised. What it caught is readable by
+the next check, like a raise under `on error goto next`, and unlike one, it is
+**never raised again when the function returns**. `try` changes no `on error`
+mode, so whatever the function's policy is stays in force around it:
+
+```basic
+x = try conn.write(b)        ' the value, or nothing if it raised
+if error then
+    print to error "write failed: " + error.message
+end if
+try conn.close()             ' best-effort: nothing is owed if it fails
+```
+
+`try` binds loosest, so `try f() + 1` covers the sum. A success clears what an
+earlier `try` caught, so a check reads the latest; `error.clear()` clears it
+too. `stop` and `exit` are not raises and end the program through it. There is
+no `try … catch` block: `try` alone on a line, or `catch`, is a parse error
+naming this form. Use `on error goto next` to check several statements, and
+`on error goto label` for a whole function.
 
 **`on error goto next` — the checked-statement style.** A raise abandons the
 statement, records the error, and execution continues at the next statement in

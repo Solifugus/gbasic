@@ -329,10 +329,10 @@ library gpdf
                 cur = ""
                 for each word in split(para, " ")
                     if word != "" then
-                        try = word
-                        if cur != "" then try = cur + " " + word
-                        if text_width(font, size, try) <= width then
-                            cur = try
+                        candidate = word
+                        if cur != "" then candidate = cur + " " + word
+                        if text_width(font, size, candidate) <= width then
+                            cur = candidate
                         else
                             if cur != "" then
                                 append(lines, cur)

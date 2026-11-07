@@ -38,6 +38,7 @@ positive=(
     clear
     arg_raise
     first_raise_wins
+    try_expr
 )
 
 for name in "${positive[@]}"; do

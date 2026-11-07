@@ -513,7 +513,7 @@ end sql
 
 schema.exec()
 
-function try(statement)
+function attempt(statement)
     on error goto next
     statement.exec()
     if error then
@@ -524,13 +524,13 @@ function try(statement)
     return nothing
 end function
 
-try(good_order)
-try(no_email)               ' NOT_NULL
-try(same_email)             ' DUPLICATE
-try(zero_total)             ' CHECK
-try(no_such_customer)       ' FOREIGN_KEY: no customer 9
-try(drop_ada)               ' FOREIGN_KEY: an order points at it
-try(text_customer)          ' TYPE: text is not an integer
+attempt(good_order)
+attempt(no_email)               ' NOT_NULL
+attempt(same_email)             ' DUPLICATE
+attempt(zero_total)             ' CHECK
+attempt(no_such_customer)       ' FOREIGN_KEY: no customer 9
+attempt(drop_ada)               ' FOREIGN_KEY: an order points at it
+attempt(text_customer)          ' TYPE: text is not an integer
 print string(order_count.query()[0].n) + " order kept"
 
 shop.close()

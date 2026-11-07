@@ -705,7 +705,7 @@ typedef struct {
 %token DIM
 %token PLUS_EQ MINUS_EQ STAR_EQ SLASH_EQ
 %token EXCLUDING INTERSECTING
-%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT WITH NEW SPAWN FOR TO STEP DO UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WITHOUT WATCHERS ON NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
+%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT TRY WITH NEW SPAWN FOR TO STEP DO UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WITHOUT WATCHERS ON NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence IF_WITHOUT_ELSE
@@ -1055,6 +1055,9 @@ print_statement
 
 call_statement
     : IDENT LPAREN argument_list_opt RPAREN { $$ = ast_expr_stmt(ast_call($1, $3)); }
+    /* `try conn.write(b)` alone: best-effort work whose value nobody wants,
+       the cleanup `try` exists for. Its own first token, so no conflict. */
+    | TRY expression { $$ = ast_expr_stmt(expr_at(ast_unary(copy_const("try"), $2), @1.first_line, @1.first_column)); }
     | QUALIFIED_IDENT LPAREN argument_list_opt RPAREN {
         char *library = NULL;
         char *name = NULL;
@@ -1795,8 +1798,13 @@ inline_statement
     | continue_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     ;
 
+/* `try` BINDS LOOSEST, so `try f() + 1` covers the whole expression to its
+ * right: the value, or nothing when it raised, with the error left readable
+ * by the next `if error then` and never raised again at the return
+ * (docs/error_model_design.md, Matthew 2026-11-07, Transward §8.2). */
 expression
     : or_expression { $$ = $1; }
+    | TRY expression { $$ = expr_at(ast_unary(copy_const("try"), $2), @1.first_line, @1.first_column); }
     ;
 
 or_expression
@@ -2176,6 +2184,7 @@ dot_field_name
     | LOAD           { $$ = kw_name("load"); }
     | USE            { $$ = kw_name("use"); }
     | NOT            { $$ = kw_name("not"); }
+    | TRY            { $$ = kw_name("try"); }
     | AND            { $$ = kw_name("and"); }
     | OR             { $$ = kw_name("or"); }
     | TRUE           { $$ = kw_name("true"); }
@@ -2480,6 +2489,17 @@ static const char *syntax_error_basic_word(gb_parse_ctx *ctx) {
     while (*p == ' ' || *p == '\t') {
         p++;
     }
+    /* `try` ALONE ON A LINE is another language's block (2026-11-07): gBASIC's
+       `try` is an expression, and the reader needs to be told so, not that a
+       newline was unexpected */
+    if (strcmp(word, "try") == 0 && (*p == '\n' || *p == '\r' || *p == '\0' || *p == ':' || *p == '{')) {
+        return "`try` is an expression, not a block: write `x = try f(a)` (the value, or nothing if it raised; "
+               "`if error then` reads what it caught), or put several statements under `on error goto next`";
+    }
+    if (strcmp(word, "catch") == 0) {
+        return "`catch` is not gBASIC; there is no try/catch block: write `x = try f(a)` and then `if error then`, "
+               "or catch a whole function with `on error goto label`";
+    }
     if (*p == '(') {
         return NULL;       /* a call, not a classic-BASIC statement */
     }
@@ -2680,6 +2700,7 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_AND: return AND;
     case TOKEN_OR: return OR;
     case TOKEN_NOT: return NOT;
+    case TOKEN_TRY: return TRY;
     case TOKEN_EXCLUDING: return EXCLUDING;
     case TOKEN_INTERSECTING: return INTERSECTING;
     case TOKEN_WITH: return WITH;

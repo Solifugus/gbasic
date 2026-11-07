@@ -40,6 +40,8 @@ cases=(
     negative_builtin_as_value
     negative_args_outside_main
     negative_money_modifier
+    negative_try_block
+    negative_try_catch
     negative_block_head_foo
     negative_index_unknown
     negative_add_array

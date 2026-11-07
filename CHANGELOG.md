@@ -99,6 +99,16 @@ reader sees.
 - **`mcp.handle(ts, opts, line, caller)`** runs the call under a principal
   verified for this request, passed through untouched (§7.3).
 
+### `try`: one expression that may fail
+
+- **`x = try expr`** is the value, or `nothing` when it raised; `if error then`
+  reads what it caught, and it is never raised again at the return. It changes
+  no `on error` mode. `try conn.close()` alone is best-effort cleanup.
+- `try` is a reserved word now. Two names in this tree were renamed (a local
+  in `stdlib/gpdf.bas`, a helper in the G-SQL cookbook); a program using `try`
+  as a variable or function name must rename it.
+- `try` alone on a line and `catch` are parse errors that name this form.
+
 ### A library's own loads are its own
 
 - A name a `load` gives belongs to the file that wrote it, so a library can

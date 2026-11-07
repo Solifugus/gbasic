@@ -1,0 +1,1 @@
+parse error at tests/negative_try_block.bas:2:4: `try` is an expression, not a block: write `x = try f(a)` (the value, or nothing if it raised; `if error then` reads what it caught), or put several statements under `on error goto next`

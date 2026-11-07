@@ -770,6 +770,10 @@ typedef struct ErrorFrame {
     ErrorFrameMode mode;
     char *label;             /* owned; EFRAME_GOTO_LABEL only */
     int pending;             /* absorbed and not yet acknowledged by a check */
+    /* a raise `try` caught (2026-11-07): readable by the next check, as a
+     * pending one is, and NEVER raised again at the frame's exit -- the
+     * difference from `pending` that is the reason for `try` */
+    int tried;
     int entry_generation;    /* error_generation at frame entry; absorption
                               * restores to this, which is the single move that
                               * makes every OUTER frame's before/after check
@@ -4359,6 +4363,35 @@ static int error_frame_absorb(char **jump_label) {
     return 0;
 }
 
+/* `try expr` (Matthew, 2026-11-07; Transward §8.2): the value, or nothing
+ * when evaluating it raised. The raise is caught HERE, at the expression,
+ * whatever the frame's `on error` policy is, and that policy is left as it
+ * was: `try` changes no mode, so there is nothing to restore. What it caught
+ * stays readable -- `if error then`, `error.message`, `e = error` -- by the
+ * next check, and is never raised again when the function returns, which is
+ * the trap a best-effort cleanup under `on error goto next` fell into. A
+ * success clears what an earlier `try` caught, so a check reads the latest.
+ * `stop` and `exit` are not raises, and end the program through it. */
+static Value value_error_object(void);
+static Value eval_expr(AstExpr *expr);
+static Value eval_try(AstExpr *operand) {
+    ErrorFrame *frame = current_error_frame;
+    int generation = error_generation;
+    Value v = eval_expr(operand);
+    if (runtime_stopped) {
+        return v;
+    }
+    if (raise_in_flight) {
+        value_free(v);
+        raise_in_flight = 0;
+        error_generation = generation;
+        frame->tried = 1;
+        return value_null();
+    }
+    frame->tried = 0;
+    return v;
+}
+
 static Value value_error_object(void) {
     RecordField *fields = calloc(9, sizeof(RecordField));
     if (!fields) {
@@ -5675,10 +5708,11 @@ static Value env_get(const char *name) {
          * which is what lets the block body describe what it caught after the
          * condition consumed it. `e = error` acknowledges and snapshots in one
          * move. */
-        if (!current_error_frame->pending) {
+        if (!current_error_frame->pending && !current_error_frame->tried) {
             return value_bool(0);
         }
         current_error_frame->pending = 0;
+        current_error_frame->tried = 0;
         return value_error_object();
     }
     if (strcmp(name, "this") == 0) {
@@ -32512,6 +32546,7 @@ static Value eval_call(AstExpr *expr) {
          * rule 2 -- clearing an error you deliberately discarded must not
          * resurrect it. */
         current_error_frame->pending = 0;
+        current_error_frame->tried = 0;
         error_clear_state();
         return value_null();
     }
@@ -40868,6 +40903,9 @@ static Value eval_expr(AstExpr *expr) {
         return value;
     }
     case AST_EXPR_UNARY: {
+        if (strcmp(expr->as.unary.op, "try") == 0) {
+            return eval_try(expr->as.unary.expr);
+        }
         Value value = eval_expr(expr->as.unary.expr);
         if (strcmp(expr->as.unary.op, "not") == 0) {
             if (value.kind == VALUE_UNKNOWN) {

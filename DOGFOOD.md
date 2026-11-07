@@ -13399,3 +13399,7 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   (`x = try conn.write(b)`), or a statement such as `on error ignore` that
   discards raises in the frame instead of deferring them. A language decision
   for Matthew. Full text in transward/docs/gbasic-requests-for-revision.md §8.2.
+- **Status: FIXED 2026-11-07**: Matthew chose the expression form, keeping the
+  error readable. `x = try conn.write(b)`, or `try conn.write(b)` alone, is the
+  value or nothing; `if error then` reads what it caught, and it is never
+  raised again at the return (docs/error_model_design.md §6).

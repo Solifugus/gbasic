@@ -97,7 +97,7 @@
         {
           "comment": "Not after a dot: `r.count`, `rule.as` and `x.end` are field names.",
           "name": "keyword.control.gbasic",
-          "match": "(?<![.\\w])(intersecting|excluding|consider|continue|function|modifier|watchers|library|program|unwatch|without|export|return|break|error|gosub|print|spawn|until|watch|while|each|else|from|goto|load|next|step|stop|then|with|dim|end|for|new|use|as|do|if|in|on|to)\\b"
+          "match": "(?<![.\\w])(intersecting|excluding|consider|continue|function|modifier|watchers|library|program|unwatch|without|export|return|break|error|gosub|print|spawn|until|watch|while|each|else|from|goto|load|next|step|stop|then|with|dim|end|for|new|try|use|as|do|if|in|on|to)\\b"
         }
       ]
     },

@@ -200,6 +200,31 @@ as an audit. The `try X else Y` inline-fallback ergonomics are the one real
 loss; if wanted later, that is pure sugar over a checked statement and can be
 added without disturbing this model.
 
+**Added 2026-11-07, as that sugar** (Matthew; Transward §8.2). `x = try expr`
+is the value, or `nothing` when evaluating it raised. It is NOT the rejected
+design: there is no error value kind, and the frame model is untouched. What it
+adds is one property a checked statement cannot have. The raise is caught at
+the expression and recorded as **tried** rather than **pending**: readable by
+the next check (`if error then`, `error.message`, `e = error`), and never raised
+again at the frame's exit. That is what a best-effort cleanup needed. Written
+under `on error goto next` and not looking, Transward's disconnect left its
+`net.write` raise pending, rule 2 raised it at the return, and a dropped
+handshake became the wrong error. And `try` changes no mode, so a function
+under `on error goto label` keeps its handler around it, where switching to
+`goto next` for one call and back with `on error stop` would have lost it.
+
+The cost was measured before it was taken: `try` became the 47th reserved word,
+and two files in this tree used it as a name (a local in stdlib/gpdf.bas and a
+helper in the G-SQL cookbook), renamed; none in any consumer project here. The
+case for it was in the tree too: 89 functions began with `on error goto next`
+only to make one call that might fail. `try` binds loosest (`try f() + 1`
+covers the sum), stands alone as a statement (`try conn.write(b)`), and `try`
+alone on a line, or `catch`, is a parse error naming this form. Tested by
+tests/error_model/try_expr.bas (run_error_model.sh) and two negative goldens;
+perturbed, each red: tried recorded as pending (the cleanup's raise came back
+at its return, Transward's trap), a success not clearing an earlier catch, and
+nothing caught.
+
 ## 7. Test obligations (tests/run_error_model.sh)
 
 Positive: catch-and-return of a fallback (the previously-impossible case);

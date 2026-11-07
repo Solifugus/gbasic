@@ -55,6 +55,7 @@ typedef enum {
     TOKEN_AND,
     TOKEN_OR,
     TOKEN_NOT,
+    TOKEN_TRY,
     TOKEN_EXCLUDING,
     TOKEN_INTERSECTING,
     TOKEN_IN,
