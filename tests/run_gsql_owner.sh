@@ -124,6 +124,7 @@ tier handoff "the owner killed: the transaction fails, commits survive, nothing 
 tier lifetime "an owner outlives the program that started it while anybody uses it, then stops after its linger" 90
 tier group "commits share syncs: eight clients at 5 ms a sync make several times one client's commits, one client waits for nothing more, and a failed sync fails every commit it covered" 120
 tier lease "where the flock is local to each machine: a second machine is refused, takes a dead lease only after watching it, and an owner whose lease was taken writes nothing" 120
+tier window "a client that connects while an owner stops (its socket gone, its lock still held) is served when that owner finishes, not after a 10 s wait" 120
 
 printf 'TIER cost: the round trip against the same point read in process (-O2, no sanitizers)\n'
 mkdir -p "$work/costdir"

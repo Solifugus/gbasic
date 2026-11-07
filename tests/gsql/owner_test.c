@@ -2443,6 +2443,96 @@ static int contend(const char *dir, const char *db, int create, const char *m1, 
     return opened;
 }
 
+/* ==== the handoff window ================================================= *
+ *
+ * An owner stopping at its last close removes its socket FIRST and releases
+ * the store's lock LAST, after its final write (§3). A client arriving between
+ * the two finds no socket and starts a new owner, which waits for the lock.
+ * gdash saw a request stall more than 20 s under concurrent connects at
+ * linger 0 (its G20-15). This makes the window wide -- every sync slowed to
+ * 1.5 s -- and times a client that connects into it: it should be served about
+ * when the old owner finishes, not at a multiple of the 10 s waits. */
+static int window_main(const char *dir) {
+    char db[600];
+    snprintf(db, sizeof db, "%s/win", dir);
+    setenv("GSQL_TEST_LINGER_MS", "4294967295", 1);   /* no linger */
+    GsqlClient *a = open_db(db, 1);
+    if (!a) {
+        return finish();
+    }
+    EXPECT(!strcmp(put(a, "k", "v"), "DONE"), "the first put answered %s", last_word);
+    setenv("GSQL_TEST_SYNC_DELAY_US", "1500000", 1);   /* owners started from here on */
+    gsql_client_close(a);
+    a = open_db(db, 0);
+    EXPECT(a != NULL, "reopening at 1.5 s a sync failed");
+    if (!a) {
+        return finish();
+    }
+    EXPECT(!strcmp(put(a, "k2", "v2"), "DONE"), "the slow owner's put answered %s", last_word);
+    pid_t slow = gsql_client_owner_pid(a);
+    char sock[4200];
+    uint64_t dv, iv;
+    GsqlError serr;
+    gsql_socket_path(db, sock, sizeof sock, &dv, &iv, &serr);
+    gsql_client_close(a);        /* that owner now stops, slowly, holding the lock */
+    /* only THAT owner is slow: the one the next client starts is not, so the
+       time measured below is the handoff's and not a slow open's */
+    unsetenv("GSQL_TEST_SYNC_DELAY_US");
+    /* INTO THE WINDOW: its socket gone, its lock still held while it finishes */
+    double w0 = now_us();
+    while (exists(sock) && now_us() - w0 < 20e6) {
+        struct timespec ts = { 0, 1000000L };
+        nanosleep(&ts, NULL);
+    }
+    EXPECT(!exists(sock), "the stopping owner never removed its socket");
+    EXPECT(kill(slow, 0) == 0, "the owner had already exited when its socket went, so there was no window to test");
+    double t0 = now_us();
+    /* when the stopping owner itself is gone, watched from beside the client
+       while it waits, for the comparison */
+    int wp[2];
+    if (pipe(wp) != 0) {
+        mismatch("pipe: %s", strerror(errno));
+        return finish();
+    }
+    pid_t watcher = fork();
+    if (watcher == 0) {
+        close(wp[0]);
+        while (kill(slow, 0) == 0 && now_us() - t0 < 120e6) {
+            struct timespec ts = { 0, 5000000L };
+            nanosleep(&ts, NULL);
+        }
+        double gone = (now_us() - t0) / 1000.0;
+        if (write(wp[1], &gone, sizeof gone) != (ssize_t)sizeof gone) {
+            _exit(1);
+        }
+        _exit(0);
+    }
+    close(wp[1]);
+    GsqlClient *b = open_db(db, 0);
+    double ms = (now_us() - t0) / 1000.0;
+    double gone = -1;
+    if (read(wp[0], &gone, sizeof gone) != (ssize_t)sizeof gone) {
+        gone = -1;
+    }
+    close(wp[0]);
+    waitpid(watcher, NULL, 0);
+    printf("window: a client connecting as the owner stopped was served after %.0f ms; the stopping owner was "
+           "gone after %.0f ms\n", ms, gone);
+    EXPECT(b != NULL, "a client connecting into the handoff window was not served");
+    EXPECT(b && gsql_client_owner_pid(b) != slow, "the client was served by the stopping owner");
+    /* served when the stopping owner is gone, not a fixed wait later.
+       MEASURED 2026-11-07: at 1.5 s a sync the owner takes about 6 s to stop
+       and the client is served then; at 4 s a sync it took 72 s, and the
+       client was served at 80 s, because a new owner gives up on the lock
+       after 10 s and the client waits out its own 10 s before starting
+       another. So the handoff costs up to 10 s more than the stop, but only
+       for a stop longer than 10 s. */
+    EXPECT(gone >= 0 && ms < gone + 2000, "a client connecting into the handoff window was served after %.0f ms, "
+           "more than 2 s after the stopping owner was gone (%.0f ms)", ms, gone);
+    gsql_client_close(b);
+    return finish();
+}
+
 static int lease_main(const char *dir) {
     char db[600], lease[700], msg[600];
     int code;
@@ -2773,6 +2863,9 @@ int main(int argc, char **argv) {
     }
     if (argc >= 3 && !strcmp(argv[1], "lease")) {
         return lease_main(argv[2]);
+    }
+    if (argc >= 3 && !strcmp(argv[1], "window")) {
+        return window_main(argv[2]);
     }
     if (argc >= 4 && !strcmp(argv[1], "cost")) {
         return cost_main(argv[2], atol(argv[3]));
