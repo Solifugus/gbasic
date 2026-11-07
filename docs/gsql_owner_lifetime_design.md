@@ -66,7 +66,7 @@ gdash saw an open stall about 10 s under concurrent connects at linger 0. The wh
 
 **Tests** (`run_gsql_owner.sh`):
 
-- `busygone` makes each case happen. A test owner relays the real owner's ready line and holds a `busy` back while the winner goes. It probes a new owner before relaying `ready`. It answers `busy` six times with no owner behind it.
+- `busygone` makes each case happen. A test owner relays the real owner's ready line and holds a `busy` back while the winner goes. It probes a new owner before relaying `ready`. It answers `busy` six times with no owner behind it. Its first case starts B's open once the winner holds the lock (a non-blocking `flock` on it) and after the creating owner has gone. It first opened 200 ms in, a guess, and was red under the parallel gate (2026-11-07): the sequence did not happen, and its own check said so. Under twice-per-core CPU load it went from red 2 of 5 to red 0 of 10, and it is still red 3 of 3 with the client fix undone.
 - Reverting each fix turns its part red 3 runs in 3. The client fix is the only one that shows as 10 020 ms.
 - `churn`: eight clients open, ping and close 100 times each at linger 0, and no open may take 2 s. On the old build it failed 5 runs in 6, with the slowest open at 10 048 to 30 091 ms. On the fixed build 16,000 opens over 20 runs were all served, the slowest in 118 ms.
 - Churn alone could not hold the fixes. With the owner fix in, reverting the client fix turned it red 1 run in 6, and reverting the owner fix 0 in 6, so each fix has its own deterministic part.

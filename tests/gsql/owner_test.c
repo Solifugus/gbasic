@@ -38,6 +38,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <sys/file.h>
 #include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
@@ -467,6 +468,7 @@ static int owner_main(const char *db, const char *fd, const char *mode) {
  * say busy and start no owner at all (counted in the file lies). */
 static int owner_relay_main(const char *db, const char *fd, const char *mode) {
     const char *dir = getenv("GSQL_TEST_RELAY_DIR");
+
     const char *lies = getenv("GSQL_TEST_RELAY_LIES");
     const char *probe = getenv("GSQL_TEST_RELAY_PROBE");
     char path[700];
@@ -2723,18 +2725,40 @@ static int busygone_main(const char *dir) {
     if (!a) {
         return finish();
     }
+    pid_t first = gsql_client_owner_pid(a);
     gsql_client_close(a);
+    /* the creating owner gone first: until it is, it holds the lock B waits
+       to see W take, and B would open into its leaving */
+    EXPECT(first > 0 && gone_within(first, 10000), "the creating owner did not go after its only client left");
     int rep[2];
     if (pipe(rep) != 0) {
         mismatch("pipe: %s", strerror(errno));
         return finish();
     }
-    setenv("GSQL_TEST_SYNC_DELAY_US", "800000", 1);   /* W's start: lock held, not yet bound */
+    /* W's start: lock held, not yet bound, its syncs slow. B opens once W
+       HOLDS THE LOCK, read by a non-blocking flock on it, so B's client finds
+       no socket, starts an owner, and that owner finds the lock taken. It was
+       B opening 200 ms in, a guess: under the parallel gate W had not taken
+       the lock by then, or B ran only after W had bound and connected to it
+       directly, and nobody said busy (2026-11-07, red 2 of 5 under load). */
+    char lockpath[700];
+    snprintf(lockpath, sizeof lockpath, "%s/db.lock", db);
+    setenv("GSQL_TEST_SYNC_DELAY_US", "800000", 1);
     pid_t b = fork();
     if (b == 0) {
         close(rep[0]);
         unsetenv("GSQL_TEST_SYNC_DELAY_US");
-        sleep_ms(200);   /* into W's start */
+        for (int t = 0; t < 4000; t++) {
+            int lf = open(lockpath, O_RDONLY);
+            int held = lf >= 0 && flock(lf, LOCK_EX | LOCK_NB) != 0 && errno == EWOULDBLOCK;
+            if (lf >= 0) {
+                close(lf);   /* and with it any lock this probe took */
+            }
+            if (held) {
+                break;
+            }
+            sleep_ms(5);
+        }
         GsqlClientOptions o;
         memset(&o, 0, sizeof o);
         o.owner_argv = RELAY_ARGV;
