@@ -308,4 +308,24 @@ read_why="$(./gbasic "$fw/r.bas" 2>&1 >/dev/null | sed -n 's/.*(\(.*\))$/\1/p')"
 [ -n "$read_why" ] || { printf 'FAIL a failed read gives no reason\n'; core_fail=1; }
 [ "$core_fail" = "0" ] && printf 'ok   and a failed read says why: %s\n' "$read_why"
 chmod 700 "$fw/ro"; rm -rf "$fw"
+
+# A FILE WHOSE SIZE SAYS 0 BUT HOLDS TEXT. procfs reports st_size 0, and read
+# trusted the size, so read("/proc/self/stat") answered "" (2026-11-06). The
+# oracle is the shell's own read of a file that does not change between the
+# two: /proc/self/status's first line names the reader, and /proc/version is
+# the same for both. Skipped where there is no procfs.
+if [ -r /proc/version ] && [ "$(stat -c %s /proc/version 2>/dev/null)" = "0" ]; then
+    pf="$(mktemp -d)"
+    printf 'print trim(read("/proc/version"))\nprint read_lines("/proc/self/status")[0]\nprint len(read("/proc/self/stat")) > 0\n' > "$pf/p.bas"
+    want="$(cat /proc/version; printf 'Name:\tgbasic\ntrue')"
+    got="$(./gbasic "$pf/p.bas" 2>&1)"
+    if [ "$got" = "$want" ]; then
+        printf 'ok   a file whose size reads 0 is read to its end: /proc/version, /proc/self/status, /proc/self/stat\n'
+    else
+        printf 'FAIL reading /proc: got [%s], want [%s]\n' "$got" "$want"; core_fail=1
+    fi
+    rm -rf "$pf"
+else
+    printf 'ok   SKIP reading a size-0 file with content (no procfs here -- NOT measured)\n'
+fi
 [ "$core_fail" = "0" ] || exit 1

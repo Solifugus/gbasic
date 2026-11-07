@@ -9928,11 +9928,33 @@ static char *read_whole_file(const char *path, long *out_size) {
     }
     rewind(file);
 
-    char *text = malloc((size_t)size + 1);
+    /* THE SIZE IS A FIRST GUESS, NOT THE CONTENTS' LENGTH. procfs and sysfs
+     * report 0 for files that hold text, so `read("/proc/self/stat")`
+     * answered "" and no program could read a pid, a load average or a
+     * cgroup limit (found 2026-11-06, wanting a worker's pid; DOGFOOD). So
+     * the reported size is read and then the rest, to end of file. A file
+     * that grew since the seek is read as it now is. */
+    size_t cap = (size_t)size + 1;
+    char *text = malloc(cap);
     if (!text) {
         abort();
     }
     size_t read_count = fread(text, 1, (size_t)size, file);
+    /* ...and then what the size did not count, through a small buffer, so an
+     * ordinary file is read into exactly its size and never twice it */
+    char more[4096];
+    size_t got;
+    while (!ferror(file) && (got = fread(more, 1, sizeof more, file)) > 0) {
+        if (read_count + got + 1 > cap) {
+            cap = (read_count + got + 1) * 2;
+            text = realloc(text, cap);
+            if (!text) {
+                abort();
+            }
+        }
+        memcpy(text + read_count, more, got);
+        read_count += got;
+    }
     if (ferror(file)) {
         free(text);
         fclose(file);

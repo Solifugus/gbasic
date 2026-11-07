@@ -13343,10 +13343,12 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   load average, a cgroup limit. Found wanting the worker's own pid, for which
   there is also no builtin.
 - **Workaround:** `process.run({ command: "sh", args: ["-c", "echo $PPID"] })`
-  in `tests/mcp/streamable_server.bas`. Not fixed in this increment, and not
-  yet probed by run_limitations.sh: the next thing to do is read until end of
-  file instead of trusting `st_size`, and decide whether a pid builtin is
-  wanted.
+  in `tests/mcp/streamable_server.bas`.
+- **Status: FIXED 2026-11-07** for `read` (and `read_lines`, which share the
+  reader): the reported size is read and then the rest to end of file, through
+  a small buffer, so an ordinary file is still read into exactly its size.
+  run_core.sh compares /proc/version, /proc/self/status and /proc/self/stat
+  with the shell's reading. Whether gBASIC wants a pid builtin is not decided.
 
 ## 2026-11-06 — CC — while: Transward M21 serving MCP over HTTP (reported by the Transward session)
 - **Type:** bug

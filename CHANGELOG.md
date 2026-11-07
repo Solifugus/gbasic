@@ -99,6 +99,12 @@ reader sees.
 - **`mcp.handle(ts, opts, line, caller)`** runs the call under a principal
   verified for this request, passed through untouched (§7.3).
 
+### Reading files whose size says 0
+
+- `read` and `read_lines` of a file in `/proc` or `/sys` answered `""`: such a
+  file reports a size of 0, and the size was trusted. They read to the end of
+  the file now.
+
 ### Knowing a G-SQL owner has stopped
 
 - **`db.close({ wait })`** waits up to `wait` for the database's owner process
