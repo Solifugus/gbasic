@@ -16,6 +16,29 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Exact decimal numbers (book gap G50)
+
+- **A number written or read with a decimal point is exact**
+  (`docs/exact_decimal_design.md`, increment 1): `6331.475 - 2182.855` is
+  `4148.62`, where it was `4148.620000000001`, and `0.1 + 0.2 = 0.3` is
+  `true`. Literals, `number("…")`, `{number}`, typed locks and `decode` all
+  give one; `+ - *`, `sum`, `round`, `floor`, `ceil`, `abs`, `pow` to a whole
+  power, the picks and a `for` counter with a decimal step keep it. Division
+  and functions are the double.
+- **Answers that move, each one that was wrong:** `round(2.675, 2)` is `2.68`
+  (was `2.67`); `for x = 0 to 1 step 0.1` ends on `1` (was
+  `0.9999999999999999`); `0.1 < 0.10000000000000001` is `true`.
+- **Exact against inexact still compares as doubles**, so `sqrt(0.01) = 0.1`
+  stays `true`.
+- **`x * 1.0` no longer makes a double**, since `1.0` is exact; write `x * 1e0`.
+  A decimal never becomes the exact integer by itself, so paths that ask for an
+  integer answer for `2.0` as before. `stdlib/frame.bas` used the idiom and was
+  changed.
+- **Digits that do not fit** give the double: silently when only far fractional
+  places go (compounding), with warning 2112 at 2^53 and past it.
+- Not yet: `serialize`, G-SQL and the actor wire carry a decimal as its double.
+  New suite: `tests/run_exact_decimal.sh`.
+
 ### A watch belongs to the scope that declares it
 
 - **A `watch` in a function watches that function's own variables**, its body

@@ -453,10 +453,12 @@ library frame
     ' and must be one group. So a number the double holds without loss is
     ' signed by its double, and one it cannot hold (an exact integer past 2^53)
     ' keeps its exact form, which is what `=` decides too. A number nested
-    ' inside a record or array key is signed as it is.
+    ' inside a record or array key is signed as it is. `1e0`, not `1.0`: since
+    ' exact decimals `1.0` is exact, and `v * 1.0` would keep 2^53 + 1 exact and
+    ' sign it as 2^53 (run_serialize's frame tier, measured).
     function _sig(v)
         if type(v) = "number" then
-            if v * 1.0 = v then return serialize(v * 1.0)
+            if v * 1e0 = v then return serialize(v * 1e0)
         end if
         return serialize(v)
     end function

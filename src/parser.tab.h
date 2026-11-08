@@ -188,7 +188,7 @@ union YYSTYPE
     double number;
     /* A NUMBER LITERAL plus the exactness `yylex` determined from its digits.
      * `number` stays for anything that only needs the double. */
-    struct { double value; long long exact; int is_exact; } numlit;
+    struct { double value; long long exact; int is_exact; int scale; } numlit;
     char *text;
     AstExpr *expr;
     AstStmt *stmt;

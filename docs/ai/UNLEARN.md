@@ -299,14 +299,17 @@ the standing ones.
 - **That means floating-point error is now visible, and that is deliberate.**
 
   ```basic
-  print(0.1 + 0.2)      ' 0.30000000000000004, not 0.3
   print(1 / 3)          ' 0.3333333333333333
+  print(sqrt(2))        ' 1.4142135623730951
   ```
 
-  Binary floating point genuinely cannot hold `0.3`, and the old format hid the
+  Division and functions are binary floating point, and the old format hid the
   difference rather than removing it. If you want a tidy display, round for
-  display — `round(0.1 + 0.2, 2)` prints `0.30` — but do not expect the
-  formatter to do it for you. For money, use a **money value**, declared with a
+  display — `round(1 / 3, 2)` prints `0.33` — but do not expect the
+  formatter to do it for you. **Decimal literals and decimal text are exact**
+  (unreleased): `0.1 + 0.2` prints `0.3` and equals `0.3`, as `+`, `-` and `*`
+  of exact numbers stay exact; `1e-1 + 2e-1` is still `0.30000000000000004`.
+  And `x * 1.0` no longer makes a double: write `x * 1e0`. For money, use a **money value**, declared with a
   currency modifier, which displays at fixed currency precision:
 
   ```basic

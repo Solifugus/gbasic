@@ -157,7 +157,8 @@ for label in \
     'bigint beyond 2\^53 survives exactly' \
     'and converting it is exact now' \
     'an exact decimal survives to the last digit' \
-    'a fractional decimal still cannot convert' \
+    'and converting it is exact now too' \
+    'a decimal past an int64 of digits still cannot convert' \
     'and is byte-identical, not merely the right length' \
     'money keeps its cents through a bound parameter' \
     'pasted, the payload matches every row' \

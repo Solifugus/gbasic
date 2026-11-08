@@ -13558,3 +13558,19 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   step (what "all matches" reads as), or say in the reference that only the
   last step is collected in full. Not changed here: it is a core module's
   rule, and callers may rely on it.
+
+## 2026-11-08 — CC — while: making decimal literals exact (book gap G50)
+
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** code in this tree writes `1.0` to mean "a double": `frame.bas`
+  signs a group key with `v * 1.0`, `finance.bas` seeds a rate search with
+  `hi = 1.0`, and `numfmt_dump.bas` says in a comment that its `1.0` is
+  load-bearing. When exact decimals first made `2.0` the exact integer 2, all
+  three changed what they answered, measured: 2^53 + 1 grouped with 2^53,
+  `pow(2, 360)` warned 2112, and the awk oracle disagreed 17 times.
+- **Workaround:** resolved in the design: a decimal is never the exact
+  integer by itself (`docs/exact_decimal_design.md` §10), so `1.0` answers on
+  integer paths as it did. `x * 1.0` still no longer makes a double, so the
+  places that meant one now say `x * 1e0`; the reference and UNLEARN say so.
+  No such use was found in gdash, Transward, gbasic-books or Studio.

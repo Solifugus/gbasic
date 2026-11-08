@@ -359,6 +359,12 @@ struct Value {
             double value;
             long long exact;
             int is_exact;
+            /* AN EXACT DECIMAL when > 0 (docs/exact_decimal_design.md): the
+             * number is `exact` x 10^-scale, `is_exact` stays 0 and `value` is
+             * its nearest double. So every reader that knows only integers and
+             * doubles reads a decimal as the double it always was, and only the
+             * operators taught about decimals see more. Zero cost: the padding. */
+            int scale;
         } num;
         char *string;
         int boolean;
@@ -1790,6 +1796,157 @@ static int value_is_exact(Value v) {
     return v.kind == VALUE_NUMBER && v.as.num.is_exact;
 }
 
+/* AN EXACT DECIMAL, mantissa x 10^-scale, normalised to the smallest scale
+ * that is at least 1, so two equal decimals have one representation and a
+ * whole one (`1.5 * 2`) is still a DECIMAL: it never becomes the exact
+ * integer by itself, and so never reaches a path that asks about integers
+ * (see gb_decimal_from_text). Scale 0 in is a whole number brought to scale 1;
+ * when that does not fit it is the double it would have been. */
+static Value value_number_decimal(long long mantissa, int scale) {
+    while (scale > 1 && mantissa % 10 == 0) {
+        mantissa /= 10;
+        scale--;
+    }
+    if (scale <= 0) {
+        long long tenfold = 0;
+        if (__builtin_mul_overflow(mantissa, 10LL, &tenfold)) {
+            return value_number((double)mantissa);
+        }
+        mantissa = tenfold;
+        scale = 1;
+    }
+    Value value = {0};
+    value.kind = VALUE_NUMBER;
+    value.as.num.value = gb_decimal_to_double(mantissa, scale);
+    value.as.num.exact = mantissa;
+    value.as.num.scale = scale;
+    return value;
+}
+
+static int value_is_decimal(Value v) {
+    return v.kind == VALUE_NUMBER && !v.as.num.is_exact && v.as.num.scale > 0;
+}
+
+/* EXACT AT ALL, integer or decimal, as a mantissa and a scale (0 for an
+ * integer). The decimal operators ask this; the integer ones keep asking
+ * `value_is_exact`, which a decimal deliberately answers no to. */
+static int value_exact_parts(Value v, long long *mantissa, int *scale) {
+    if (v.kind != VALUE_NUMBER) {
+        return 0;
+    }
+    if (v.as.num.is_exact) {
+        *mantissa = v.as.num.exact;
+        *scale = 0;
+        return 1;
+    }
+    if (v.as.num.scale > 0) {
+        *mantissa = v.as.num.exact;
+        *scale = v.as.num.scale;
+        return 1;
+    }
+    return 0;
+}
+
+/* m x 10^by, or 0 on overflow. */
+static int decimal_rescale(long long m, int by, long long *out) {
+    for (int i = 0; i < by; i++) {
+        if (__builtin_mul_overflow(m, 10LL, &m)) {
+            return 0;
+        }
+    }
+    *out = m;
+    return 1;
+}
+
+/* WHEN A DECIMAL'S DIGITS DO NOT FIT, which is said only when WHOLE digits may
+ * be lost. A product past 18 places (`0.005 * 1.005^12`, any compounding)
+ * loses only far fractional digits, the ones a double always lost, so it
+ * becomes the double in silence; a warning there would fire on every
+ * compounding loop. At 2^53 and past it the double cannot hold every whole
+ * number either (`1.5 * 10^18`), which is the integer overflow case, and it
+ * says so with 2112 as integer overflow does. */
+static int decimal_loss_is_loud(double result) {
+    return !(fabs(result) < 9007199254740992.0);
+}
+
+/* `+`, `-` or `*` of two exact numbers at least one of which is a decimal.
+ * Answers 1 and the exact result, or 0 when the mantissa or the scale does not
+ * fit, and the caller degrades with 2112 as integer overflow does. */
+static int decimal_arith(char op, long long am, int as, long long bm, int bs, Value *out) {
+    long long r = 0;
+    int rs = 0;
+    if (op == '*') {
+        rs = as + bs;
+        if (__builtin_mul_overflow(am, bm, &r)) {
+            return 0;
+        }
+        /* a product's scale can pass 18 and still normalise back under it */
+        while (rs > 18 && r % 10 == 0) {
+            r /= 10;
+            rs--;
+        }
+        if (rs > 18) {
+            return 0;
+        }
+    } else {
+        rs = as > bs ? as : bs;
+        if (!decimal_rescale(am, rs - as, &am) || !decimal_rescale(bm, rs - bs, &bm)) {
+            return 0;
+        }
+        if (op == '+' ? __builtin_add_overflow(am, bm, &r)
+                      : __builtin_sub_overflow(am, bm, &r)) {
+            return 0;
+        }
+    }
+    *out = value_number_decimal(r, rs);
+    return 1;
+}
+
+/* Compare two exact numbers mathematically: the one at the smaller scale is
+ * brought up, and when that overflows its magnitude already decides. */
+static int decimal_compare(long long am, int as, long long bm, int bs) {
+    if (as == bs) {
+        return (am > bm) - (am < bm);
+    }
+    long long x = 0;
+    if (as < bs) {
+        if (!decimal_rescale(am, bs - as, &x)) {
+            return am < 0 ? -1 : 1;
+        }
+        return (x > bm) - (x < bm);
+    }
+    if (!decimal_rescale(bm, as - bs, &x)) {
+        return bm < 0 ? 1 : -1;
+    }
+    return (am > x) - (am < x);
+}
+
+/* The digits of an exact decimal, `-12.034`, which is what print, string and
+ * encode show: past 15 significant digits the shortest double may not be
+ * these digits, and these are the value. */
+static void format_decimal(char *buf, size_t bufsize, long long m, int scale) {
+    while (scale > 0 && m % 10 == 0) {     /* a whole decimal shows as `3` */
+        m /= 10;
+        scale--;
+    }
+    if (scale == 0) {
+        snprintf(buf, bufsize, "%lld", m);
+        return;
+    }
+    char digits[32];
+    unsigned long long mag = m < 0 ? (unsigned long long)(-(m + 1)) + 1ULL : (unsigned long long)m;
+    snprintf(digits, sizeof digits, "%llu", mag);
+    int n = (int)strlen(digits);
+    if (n <= scale) {
+        snprintf(buf, bufsize, "%s0.%0*d%s", m < 0 ? "-" : "", scale - n, 0, digits);
+        if (scale - n == 0) {
+            snprintf(buf, bufsize, "%s0.%s", m < 0 ? "-" : "", digits);
+        }
+        return;
+    }
+    snprintf(buf, bufsize, "%s%.*s.%s", m < 0 ? "-" : "", n - scale, digits, digits + n - scale);
+}
+
 /* INTEGER TEXT -> AN EXACT int64, or 0 and nothing written.
  *
  * `docs/exact_number_design.md` lists `number("...")` under "Where exactness
@@ -1849,6 +2006,26 @@ static int exact_from_integer_text(const char *text, long long *out) {
     }
     *out = parsed;
     return 1;
+}
+
+/* DECIMAL TEXT -> AN EXACT NUMBER, integer or decimal, by the same narrowing
+ * as exact_from_integer_text (no exponent, no hex, no whitespace), or 0 and
+ * nothing written. The doors that call this are the doors the integer helper
+ * already served, so a decimal is exact wherever an integer was
+ * (docs/exact_decimal_design.md §2). */
+static Value value_number_decimal(long long mantissa, int scale);
+static int exact_from_text(const char *text, Value *out) {
+    long long whole = 0;
+    if (exact_from_integer_text(text, &whole)) {
+        *out = value_number_exact(whole);
+        return 1;
+    }
+    int scale = 0;
+    if (text && strchr(text, '.') && gb_decimal_from_text(text, &whole, &scale)) {
+        *out = value_number_decimal(whole, scale);
+        return 1;
+    }
+    return 0;
 }
 
 /* COMPARE AN EXACT INTEGER WITH AN INEXACT DOUBLE **MATHEMATICALLY**, which is
@@ -1921,6 +2098,24 @@ static int exact_vs_double_compare(long long a, double b) {
  * everything here. */
 static int number_compare_exactly(const Value *left, const Value *right) {
     int le = left->as.num.is_exact, re = right->as.num.is_exact;
+    /* EXACT DECIMALS (docs/exact_decimal_design.md §4). Against another exact
+     * number, mathematically: `0.1 + 0.2 = 0.3` is true. Against an INEXACT
+     * number, as doubles, so `sqrt(0.01) = 0.1` stays true -- the literal is
+     * now exactly 0.1 and the root is the nearest double to it, and comparing
+     * them exactly would make every computed-versus-literal test a program
+     * makes today answer differently. */
+    int ld = !le && left->as.num.scale > 0, rd = !re && right->as.num.scale > 0;
+    if (ld || rd) {
+        if ((ld || le) && (rd || re)) {
+            return decimal_compare(left->as.num.exact, ld ? left->as.num.scale : 0,
+                                   right->as.num.exact, rd ? right->as.num.scale : 0);
+        }
+        double a = left->as.num.value, b = right->as.num.value;
+        if (a != a || b != b) {
+            return 2;
+        }
+        return (a > b) - (a < b);
+    }
     if (le && re) {
         long long x = left->as.num.exact, y = right->as.num.exact;
         return (x > y) - (x < y);
@@ -2419,6 +2614,10 @@ static void format_number(char *buf, size_t bufsize, double v);
 static void format_number_value(char *buf, size_t bufsize, Value v) {
     if (v.kind == VALUE_NUMBER && v.as.num.is_exact) {
         snprintf(buf, bufsize, "%lld", v.as.num.exact);
+        return;
+    }
+    if (value_is_decimal(v)) {
+        format_decimal(buf, bufsize, v.as.num.exact, v.as.num.scale);
         return;
     }
     format_number(buf, bufsize, v.as.num.value);
@@ -15292,11 +15491,11 @@ static Value builtin_number_modifier_value(Value value) {
      * two doors into one conversion must not disagree about what a string is.
      * Applied to the TRIMMED text, which is this door's existing whitespace
      * behaviour rather than a new one. */
-    long long whole = 0;
-    if (exact_from_integer_text(trimmed, &whole)) {
+    Value exact_value = {0};
+    if (exact_from_text(trimmed, &exact_value)) {
         free(trimmed);
         value_free(value);
-        return value_number_exact(whole);
+        return exact_value;
     }
 
     errno = 0;
@@ -18905,10 +19104,10 @@ static Value decode_parse_number(DecodeParser *parser) {
          * (the `1e20` ruling -- and JSON's own grammar lets `1e16` through this
          * branch), a fraction stays inexact, and out of int64 range degrades to
          * the double rather than raising. */
-        long long whole = 0;
-        if (valid && exact_from_integer_text(number_text, &whole)) {
+        Value exact_value = {0};
+        if (valid && exact_from_text(number_text, &exact_value)) {
             free(number_text);
-            return value_number_exact(whole);
+            return exact_value;
         }
         free(number_text);
         if (!valid) {
@@ -18939,11 +19138,11 @@ static Value decode_parse_number(DecodeParser *parser) {
         }
         memcpy(token, start, span);
         token[span] = '\0';
-        long long whole = 0;
-        int is_exact = exact_from_integer_text(token, &whole);
+        Value exact_value = {0};
+        int is_exact = exact_from_text(token, &exact_value);
         free(token);
         if (is_exact) {
-            return value_number_exact(whole);
+            return exact_value;
         }
     }
     return value_number(number);
@@ -34822,10 +35021,10 @@ static Value eval_call(AstExpr *expr) {
              * exact_from_integer_text. Tried FIRST because strtod would answer
              * the same digits as a lossy double and nothing downstream could
              * tell. */
-            long long whole = 0;
-            if (exact_from_integer_text(value.as.string, &whole)) {
+            Value exact_value = {0};
+            if (exact_from_text(value.as.string, &exact_value)) {
                 value_free(value);
-                return value_number_exact(whole);
+                return exact_value;
             }
             char *end;
             double result = strtod(value.as.string, &end);
@@ -36314,6 +36513,34 @@ static Value eval_call(AstExpr *expr) {
             value_free(places);
             return value_number_exact(whole);
         }
+        /* AN EXACT DECIMAL ROUNDS IN ITS DIGITS, half away from zero as the
+         * double path below does, so `round(2.675, 2)` is 2.68: the double
+         * 2.675 is 2.67499999999999982236431605997495353221893310546875 and
+         * rounded down. Fewer places than the decimal has is the only case
+         * with work to do. */
+        if (value_is_decimal(value)) {
+            long long m = value.as.num.exact;
+            int ds = value.as.num.scale;
+            int want = (int)value_number_or_zero(places);
+            value_free(value);
+            value_free(places);
+            if (want < 0) {
+                want = 0;
+            }
+            if (want >= ds) {
+                return value_number_decimal(m, ds);
+            }
+            long long d = 1;
+            for (int i = 0; i < ds - want; i++) {
+                d *= 10;             /* ds <= 18, so this fits */
+            }
+            long long q = m / d, r = m % d;
+            long long ar = r < 0 ? -r : r;
+            if (ar >= d - ar) {
+                q += m < 0 ? -1 : 1;
+            }
+            return value_number_decimal(q, want);
+        }
         double scale = 1.0;
         int n = (int)value_number_or_zero(places);
         for (int i = 0; i < n; i++) {
@@ -36697,7 +36924,35 @@ static Value eval_call(AstExpr *expr) {
          * way in. */
         int x_exact = value_is_exact(v);
         long long xe = v.as.num.exact;
+        int x_decimal = value_is_decimal(v);
+        int xs = v.as.num.scale;
         value_free(v);
+        /* AN EXACT DECIMAL keeps its exactness through the same four, by the
+         * same rule: `abs` picks a magnitude, `floor`/`ceil` a whole decimal
+         * (still a decimal, as a double's floor was still a double), and `sign`
+         * an integer, as for any number (docs/exact_decimal_design.md §9). */
+        if (x_decimal) {
+            if (strcmp(fn, "abs") == 0) {
+                return value_number_decimal(xe < 0 ? -xe : xe, xs);
+            }
+            if (strcmp(fn, "sign") == 0) {
+                return value_number_exact((xe > 0) - (xe < 0));
+            }
+            if (strcmp(fn, "floor") == 0 || strcmp(fn, "ceil") == 0) {
+                long long d = 1;
+                for (int i = 0; i < xs; i++) {
+                    d *= 10;
+                }
+                long long q = xe / d, r = xe % d;   /* C truncates toward zero */
+                if (r != 0 && strcmp(fn, "floor") == 0 && xe < 0) {
+                    q--;
+                }
+                if (r != 0 && strcmp(fn, "ceil") == 0 && xe > 0) {
+                    q++;
+                }
+                return value_number_decimal(q, 0);
+            }
+        }
         if (x_exact) {
             if (strcmp(fn, "floor") == 0 || strcmp(fn, "ceil") == 0) {
                 return value_number_exact(xe);
@@ -36831,6 +37086,35 @@ static Value eval_call(AstExpr *expr) {
                 value_free(ex);
                 return value_null();
             }
+        }
+        /* AN EXACT DECIMAL TO A WHOLE POWER is repeated multiplication too,
+         * so `pow(1.05, 3)` is 1.157625 (finance's compounding); a fractional
+         * or negative exponent is a root or a division and stays inexact. */
+        long long dbm = 0;
+        int dbs = 0;
+        long long dexp = ex.as.num.exact;
+        if (value_is_decimal(base) && value_is_exact(ex) && ex.as.num.exact >= 0 &&
+            value_exact_parts(base, &dbm, &dbs)) {
+            Value acc = value_number_exact(1);
+            int fitted = 1;
+            for (long long k = 0; k < ex.as.num.exact && fitted; k++) {
+                long long am = 0;
+                int as = 0;
+                value_exact_parts(acc, &am, &as);
+                fitted = decimal_arith('*', am, as, dbm, dbs, &acc);
+            }
+            value_free(base);
+            value_free(ex);
+            if (fitted) {
+                long long am = 0;
+                int as = 0;
+                value_exact_parts(acc, &am, &as);
+                return value_number_decimal(am, as);   /* pow(1.05, 0) is 1.0 */
+            }
+            /* NOT FITTING IS SILENT here, unlike the operators: `pow` was
+             * never promised exact (a function is inexact, §2), and this is
+             * the double it always answered. 1.005^360 needs 1080 places. */
+            return value_number(pow(gb_decimal_to_double(dbm, dbs), (double)dexp));
         }
         double r = pow(base.as.num.value, ex.as.num.value);
         value_free(base);
@@ -38932,6 +39216,50 @@ static Value eval_call(AstExpr *expr) {
         }
     }
 
+    /* A SUM WITH EXACT DECIMALS IN IT is exact when every item is exact,
+     * integer or decimal, by the operator's rule and with its warning. */
+    if (count > 0 && strcmp(name, "sum") == 0) {
+        int all_exact = 1, any_decimal = 0;
+        for (size_t i = 0; i < count; i++) {
+            long long m = 0;
+            int sc = 0;
+            if (!value_exact_parts(arg.as.array.store->items[i], &m, &sc)) {
+                all_exact = 0;
+                break;
+            }
+            any_decimal |= sc > 0;
+        }
+        if (all_exact && any_decimal) {
+            Value total = value_number_exact(0);
+            int fitted = 1;
+            for (size_t i = 0; i < count && fitted; i++) {
+                long long am = 0, bm = 0;
+                int as = 0, bs = 0;
+                value_exact_parts(total, &am, &as);
+                value_exact_parts(arg.as.array.store->items[i], &bm, &bs);
+                fitted = decimal_arith('+', am, as, bm, bs, &total);
+            }
+            if (fitted) {
+                value_free(arg);
+                return total;
+            }
+            double approx = 0;
+            for (size_t i = 0; i < count; i++) {
+                approx += arg.as.array.store->items[i].as.num.value;
+            }
+            if (decimal_loss_is_loud(approx)) {
+                warn_fmt(2112, "exactness",
+                         "this sum of exact numbers does not fit a whole number"
+                         " the runtime can hold, so the answer is approximate"
+                         " from here on");
+            }
+            if (error_action_pending()) {
+                value_free(arg);
+                return value_null();
+            }
+        }
+    }
+
     /* THE MEDIAN OF AN ODD COUNT IS A PICK -- it is one of the author's own
      * values -- and of an EVEN count is the mean of two, which divides. So the
      * odd case preserves exactness and the even case does not, which is the rule
@@ -40248,7 +40576,8 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
          *
          * A BOOLEAN IS NEVER EXACT, so `0 = false` keeps the double path above and
          * all 1,472 of its measured uses are untouched. */
-        if ((value_is_exact(left) || value_is_exact(right)) &&
+        if ((value_is_exact(left) || value_is_exact(right) ||
+             value_is_decimal(left) || value_is_decimal(right)) &&
             left.kind == VALUE_NUMBER && right.kind == VALUE_NUMBER) {
             int cmp = number_compare_exactly(&left, &right);
             if (cmp == 2) {
@@ -40874,8 +41203,41 @@ static Value eval_binary(AstExpr *expr) {
     int exact_both = value_is_exact(left) && value_is_exact(right);
     long long la = left.as.num.exact;
     long long lb = right.as.num.exact;
+    /* EXACT DECIMALS (docs/exact_decimal_design.md §3): the same three
+     * operators, when both sides are exact and at least one has a fraction.
+     * `6331.475 - 2182.855` is 4148.62, where the doubles answered
+     * 4148.620000000001. Overflow of the mantissa or the scale degrades to
+     * the double below with 2112, as integer overflow does. */
+    long long dm_l = 0, dm_r = 0;
+    int ds_l = 0, ds_r = 0;
+    int decimal_both = !exact_both &&
+        value_exact_parts(left, &dm_l, &ds_l) && value_exact_parts(right, &dm_r, &ds_r);
     value_free(left);
     value_free(right);
+
+    if (decimal_both && (strcmp(op, "+") == 0 || strcmp(op, "-") == 0 ||
+                         strcmp(op, "*") == 0)) {
+        Value out = {0};
+        if (decimal_arith(op[0], dm_l, ds_l, dm_r, ds_r, &out)) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return out;
+        }
+        double whole = strcmp(op, "+") == 0 ? a + b : (strcmp(op, "-") == 0 ? a - b : a * b);
+        if (decimal_loss_is_loud(whole)) {
+            warn_fmt(2112, "exactness",
+                     "this %s of two exact numbers does not fit a whole number"
+                     " the runtime can hold, so the answer is approximate from"
+                     " here on",
+                     strcmp(op, "+") == 0 ? "sum"
+                         : (strcmp(op, "-") == 0 ? "difference" : "product"));
+        }
+        if (error_action_pending()) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_null();
+        }
+    }
 
     if (exact_both && (strcmp(op, "+") == 0 || strcmp(op, "-") == 0 ||
                        strcmp(op, "*") == 0)) {
@@ -41086,7 +41448,9 @@ static Value eval_expr(AstExpr *expr) {
          * inert and the fixture read as a design error rather than a wrong edit.
          * Found by probing the flag at `value_is_exact`, not by reading. */
         return expr->as.num.is_exact ? value_number_exact(expr->as.num.exact)
-                                     : value_number(expr->as.num.value);
+             : expr->as.num.scale > 0
+                 ? value_number_decimal(expr->as.num.exact, expr->as.num.scale)
+                 : value_number(expr->as.num.value);
     case AST_EXPR_STRING:
         return value_string(expr->as.string);
     case AST_EXPR_IDENT:
@@ -41650,6 +42014,14 @@ static Value eval_expr(AstExpr *expr) {
                 current_line = previous_line;
                 current_column = previous_column;
                 return value_number_exact(negated);
+            }
+            if (value_is_decimal(value)) {
+                /* a decimal's mantissa came from digits, so it is never LLONG_MIN */
+                Value negated = value_number_decimal(-value.as.num.exact, value.as.num.scale);
+                value_free(value);
+                current_line = previous_line;
+                current_column = previous_column;
+                return negated;
             }
             value_free(value);
             current_line = previous_line;
@@ -43441,7 +43813,9 @@ static Value server_literal_value(AstExpr *expr) {
     case AST_EXPR_NUMBER:
         /* The literal carries its own exactness, determined from its digits. */
         return expr->as.num.is_exact ? value_number_exact(expr->as.num.exact)
-                                     : value_number(expr->as.num.value);
+             : expr->as.num.scale > 0
+                 ? value_number_decimal(expr->as.num.exact, expr->as.num.scale)
+                 : value_number(expr->as.num.value);
     case AST_EXPR_STRING: return value_string(expr->as.string);
     case AST_EXPR_BOOL:   return value_bool(expr->as.boolean);
     default:              return value_null();   /* refused at load time */
@@ -44760,10 +45134,30 @@ static EvalResult eval_stmt(AstStmt *stmt) {
          * refuses an inexact value there whatever it holds), and one short in
          * `i + 2^53`. Found writing the first program that put a loop counter
          * into a database. The limit is only compared, so it may be either. */
-        int exact = value_is_exact(start_v) && value_is_exact(step_v);
-        long long xstart = start_v.as.num.exact, xstep = step_v.as.num.exact;
-        int xlimit_exact = value_is_exact(limit_v);
-        long long xlimit = limit_v.as.num.exact;
+        /* AND A DECIMAL STEP IS EXACT TOO (docs/exact_decimal_design.md):
+         * the counter is a mantissa at the largest scale of the three, so
+         * `for x = 0 to 1 step 0.1` ends on 1, where adding the double 0.1 ten
+         * times ended on 0.9999999999999999. A scale that does not fit falls
+         * back to the double counter it always was. */
+        long long xstart = 0, xstep = 0, xlimit = 0;
+        int sstart = 0, sstep = 0, slimit = 0;
+        int exact = value_exact_parts(start_v, &xstart, &sstart) &&
+                    value_exact_parts(step_v, &xstep, &sstep);
+        int xlimit_exact = value_exact_parts(limit_v, &xlimit, &slimit);
+        int xscale = 0;
+        if (exact) {
+            xscale = sstart > sstep ? sstart : sstep;
+            if (xlimit_exact && slimit > xscale) {
+                xscale = slimit;
+            }
+            if (!decimal_rescale(xstart, xscale - sstart, &xstart) ||
+                !decimal_rescale(xstep, xscale - sstep, &xstep)) {
+                exact = 0;
+            }
+            if (xlimit_exact && !decimal_rescale(xlimit, xscale - slimit, &xlimit)) {
+                xlimit_exact = 0;
+            }
+        }
         value_free(start_v); value_free(limit_v); value_free(step_v);
         /* Refused rather than run: `step 0` cannot reach any limit, so it is a
          * hang, and a hang is the least debuggable outcome available. */
@@ -44777,12 +45171,14 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         long long xi = xstart;
         for (double i = start; ; ) {
             if (exact) {
+                double xd = xscale ? gb_decimal_to_double(xi, xscale) : (double)xi;
                 int in = xlimit_exact ? (xstep > 0 ? xi <= xlimit : xi >= xlimit)
-                                      : (xstep > 0 ? (double)xi <= limit : (double)xi >= limit);
+                                      : (xstep > 0 ? xd <= limit : xd >= limit);
                 if (!in) {
                     break;
                 }
-                env_set(stmt->as.for_range.name, value_number_exact(xi));
+                env_set(stmt->as.for_range.name, xscale ? value_number_decimal(xi, xscale)
+                                                        : value_number_exact(xi));
             } else {
                 if (!(step > 0 ? i <= limit : i >= limit)) {
                     break;

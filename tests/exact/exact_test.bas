@@ -52,16 +52,18 @@ program main( args )
     check("4 = 4.0                  ", 4 = 4.0, true)
 
     print "-- what is NOT exact, and each is a decision rather than an omission"
-    ' A FRACTION, obviously. An EXPONENT literal, because the notation says
+    ' A FRACTION WAS, until exact decimals (docs/exact_decimal_design.md):
+    ' `0.5 + 0.25` is now the exact decimal 0.75, and run_exact_decimal.sh
+    ' holds that. The check below compares values, so it holds either way. An EXPONENT literal, because the notation says
     ' "approximately this magnitude" -- `number("...")` is how to ask for the
     ' integer, and this was an open decision in the design settled here.
     check("a fraction               ", 0.5 + 0.25, 0.75)
-    check("floating addition unmoved", 0.1 + 0.2, 0.30000000000000004)
+    check("floating addition unmoved", 1e-1 + 2e-1, 0.30000000000000004)
     check("an exponent literal      ", 1e16 + 1 = 10000000000000001, false)
     ' MIXED IS INEXACT: `exact + inexact` has no exact answer, and promoting the
     ' inexact side would invent precision it never had. That is also why there is
     ' no promotion matrix -- one numeric kind, one rule.
-    check("mixed falls back         ", 9007199254740992 + 1.0 = 9007199254740993, false)
+    check("mixed falls back         ", 9007199254740992 + 1e0 = 9007199254740993, false)
     ' DIVISION IS DELIBERATELY ABSENT: integer division is not integer-valued, and
     ' a rational kind is a different language.
     check("division is inexact      ", 6 / 3, 2)
@@ -330,8 +332,8 @@ program main( args )
     check("so does division         ", (b / 1) = b, false)
     ' AN INEXACT OPERAND CANNOT PRODUCE AN EXACT ANSWER, which is the half of the
     ' rule that stops exactness being invented.
-    check("mixed min is inexact     ", min([b, b + 0.0]) = b, false)
-    check("mod with an inexact side ", mod(b, 2.0) = 1, false)
+    check("mixed min is inexact     ", min([b, b + 0e0]) = b, false)
+    check("mod with an inexact side ", mod(b, 2e0) = 1, false)
     check("pow with a fraction      ", pow(2, 0.5), 1.4142135623730951)
     check("pow with a negative      ", pow(2, 0 - 1), 0.5)
     ' ROOTS AND LOGARITHMS ARE INEXACT BY NATURE and are deliberately untouched:

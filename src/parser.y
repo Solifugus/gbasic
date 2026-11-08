@@ -664,7 +664,7 @@ typedef struct {
     double number;
     /* A NUMBER LITERAL plus the exactness `yylex` determined from its digits.
      * `number` stays for anything that only needs the double. */
-    struct { double value; long long exact; int is_exact; } numlit;
+    struct { double value; long long exact; int is_exact; int scale; } numlit;
     char *text;
     AstExpr *expr;
     AstStmt *stmt;
@@ -1948,7 +1948,7 @@ primary
         }
         $$ = expr_at(ast_string($1), @1.first_line, @1.first_column);
       }
-    | NUMBER { $$ = expr_at(ast_number($1.value, $1.exact, $1.is_exact), @1.first_line, @1.first_column); }
+    | NUMBER { $$ = expr_at(ast_number($1.value, $1.exact, $1.is_exact, $1.scale), @1.first_line, @1.first_column); }
     | WATCHERS LPAREN RPAREN { $$ = expr_at(ast_call(copy_const("watchers"), ast_expr_list_empty()), @1.first_line, @1.first_column); }
     | duration_terms { $$ = expr_at(ast_duration($1), @1.first_line, @1.first_column); }
     | STRING { $$ = expr_at(ast_string($1), @1.first_line, @1.first_column); }
@@ -2085,15 +2085,16 @@ parameter_list_opt
  * the question does not arise. Going literal -> expression later is possible;
  * the reverse is not. */
 parameter_default
-    : NUMBER { $$ = expr_at(ast_number($1.value, $1.exact, $1.is_exact), @1.first_line, @1.first_column); }
+    : NUMBER { $$ = expr_at(ast_number($1.value, $1.exact, $1.is_exact, $1.scale), @1.first_line, @1.first_column); }
       /* A SIGNED LITERAL NEGATES THE EXACT VALUE TOO, or `-9007199254740993`
        * would be exact in magnitude and inexact in sign. `LLONG_MIN` has no
        * positive counterpart, so negating it is the one case that degrades. */
     | MINUS NUMBER { $$ = expr_at(ast_number(-$2.value,
                                              $2.exact == LLONG_MIN ? 0 : -$2.exact,
-                                             $2.exact == LLONG_MIN ? 0 : $2.is_exact),
+                                             $2.exact == LLONG_MIN ? 0 : $2.is_exact,
+                                             $2.exact == LLONG_MIN ? 0 : $2.scale),
                                   @1.first_line, @1.first_column); }
-    | PLUS NUMBER { $$ = expr_at(ast_number($2.value, $2.exact, $2.is_exact), @1.first_line, @1.first_column); }
+    | PLUS NUMBER { $$ = expr_at(ast_number($2.value, $2.exact, $2.is_exact, $2.scale), @1.first_line, @1.first_column); }
     | STRING { $$ = expr_at(ast_string($1), @1.first_line, @1.first_column); }
     | TRUE { $$ = expr_at(ast_bool(1), @1.first_line, @1.first_column); }
     | FALSE { $$ = expr_at(ast_bool(0), @1.first_line, @1.first_column); }
@@ -2649,6 +2650,22 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
          * program that runs today. */
         lvalp->numlit.exact = 0;
         lvalp->numlit.is_exact = 0;
+        lvalp->numlit.scale = 0;
+        /* AN EXACT DECIMAL (docs/exact_decimal_design.md §2): a literal with a
+         * point and no exponent is its digits, `6331.475` exactly, where it
+         * was the nearest double. One that does not fit an int64 at scale <= 18
+         * stays the double, as an out-of-range integer does. `2.0` is the
+         * exact DECIMAL 2, not the exact integer (see gb_decimal_from_text). */
+        if (strchr(numbuf, '.') && !strpbrk(numbuf, "eExX")) {
+            long long mantissa = 0;
+            int scale = 0;
+            if (gb_decimal_from_text(numbuf, &mantissa, &scale)) {
+                lvalp->numlit.exact = mantissa;
+                lvalp->numlit.scale = scale;
+                lvalp->numlit.value = gb_decimal_to_double(mantissa, scale);
+            }
+            return NUMBER;
+        }
         {
             const char *digits = numbuf;
             int base = 10;

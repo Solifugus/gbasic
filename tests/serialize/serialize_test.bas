@@ -129,7 +129,7 @@ program main(args)
     ' THE CONTROL: an inexact number must STAY inexact, or "exactness travels"
     ' is satisfied by calling every integral double exact -- the same defect
     ' pointing the other way. 2^53 as a double plus 1 is still 2^53.
-    big = 9007199254740992 * 1.0
+    big = 9007199254740992 * 1e0
     check("an inexact integer stays inexact", back(big) + 1 = big, true)
     check("a fraction is a fraction", back(1.5), 1.5)
     check("-0 keeps its sign", string(back(-0.0)), "-0")

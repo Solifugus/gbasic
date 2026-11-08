@@ -141,12 +141,14 @@ check("int64 max converts exactly too", string(number("9223372036854775807")), "
 check("an exact decimal is a string", type(first_row.exact), "string")
 check("an exact decimal survives to the last digit", first_row.exact, "12345678901234.5678")
 check("a small negative decimal survives", second_row.exact, "-0.05")
-' THE CONTROL LIVES HERE NOW, because this is where the loss is still real: a
-' FRACTIONAL decimal has no exact `number` to become, so converting it drops a
-' digit -- 12345678901234.5678 comes back ...568. Without this the text return
-' would be asserted by nothing at all, and "it is a string" is satisfied by a
-' module that needlessly stringifies everything.
-check("a fractional decimal still cannot convert", string(number(first_row.exact)), "12345678901234.568")
+' CONVERTING IT IS EXACT TOO, since exact decimals (docs/exact_decimal_design.md):
+' it came back ...568 until then, a digit gone. The text return is still what
+' the loss forces, and the control moves to where the loss still is: past 18
+' places or an int64 of digits a decimal is the double, so text is the only
+' form that keeps a DECIMAL(38,20). Without it "it is a string" is satisfied by
+' a module that needlessly stringifies everything.
+check("and converting it is exact now too", string(number(first_row.exact)), "12345678901234.5678")
+check("a decimal past an int64 of digits still cannot convert", string(number("1234567890123456789.12345")), "1.2345678901234568e+18")
 
 ' ----------------------------------------------------------- size and shape
 ' A column is read back with SQLGetData in 1KB pieces, so a value longer than

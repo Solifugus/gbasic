@@ -8255,7 +8255,7 @@ Lua 5.3's rather than an invention.
 ```basic
 print 9007199254740992 + 1                      ' 9007199254740993
 print 9007199254740993 = 9007199254740992.0     ' false
-print 0.1 + 0.2                                 ' 0.30000000000000004, unchanged
+print 0.1 + 0.2                                 ' 0.3, an exact decimal (below)
 print 6 / 3                                     ' 2, inexact
 ```
 
@@ -8294,7 +8294,7 @@ reaching `number()` relies on a C library quirk that nothing here documents.
 
 **What is inexact, each by decision rather than omission:**
 
-- a literal with a decimal point, and **a literal in exponent notation** — `1e16`
+- **a literal in exponent notation** — `1e16`
   is integral and exactly representable, and the notation still says
   *approximately this magnitude*; `number("10000000000000000")` asks for the
   integer. The same reading applies to *text*, so `number("1e16")` is inexact
@@ -8334,6 +8334,49 @@ failure for a test run.
 Memory cost is zero and `tests/run_exact.sh` asserts it: the numeric member is 24
 bytes and `DateTime` in the same union is 32, so `sizeof(Value)` does not move —
 which matters because a `Value` is every array element and every record field.
+
+#### Exact decimals
+
+*(Unreleased; `docs/exact_decimal_design.md`)* A number **written or read with
+a decimal point** is exact too: its digits, held as an integer and a count of
+places (up to 18), where it used to be the nearest double.
+
+```basic
+print 6331.475 - 2182.855                       ' 4148.62 (was 4148.620000000001)
+print 0.1 + 0.2 = 0.3                           ' true (was false)
+print number("412.34") - number("412.3350")     ' 0.005
+print sqrt(0.01) = 0.1                          ' true, still: see comparison
+```
+
+- **Where it comes from:** a literal with a point and no exponent (`0.1`,
+  `6331.475`, `2.0`), and decimal text through `number("…")`, `{number}`, a
+  typed `x:number` lock, and `decode`/`json_decode`. That text door is where a
+  `pg` or `odbc` `numeric` arrives, so `number(row.qty)` is exact now.
+- **`+`, `-` and `*` stay exact**, and so do `sum`, `abs`, `round` (in the
+  digits, half away from zero: `round(2.675, 2)` is `2.68`, where the double
+  rounded down), `floor`, `ceil`, `pow` to a whole power (`pow(1.05, 3)` is
+  `1.157625`), the picks (`min`, `max`, `sort`) and a `for` counter with a
+  decimal step: `for x = 0 to 1 step 0.1` ends on exactly `1`.
+- **Division and functions are the double**, as `6 / 3` is for integers.
+- **A decimal never becomes the exact integer by itself.** `2.0` and `1.5 * 2`
+  are exact and print as `2` and `3`, and they equal `2` and `3`, but every
+  path that asks for an *integer* — integer overflow, a typed integer column —
+  treats them as it treated `2.0` before. That keeps `x * 1.0` from changing
+  what those paths answer. To ask for a double, write an exponent: `x * 1e0`.
+- **Comparison:** exact against exact (integer or decimal) is mathematical, so
+  `0.1 < 0.10000000000000001` is `true`. **Exact against inexact compares as
+  doubles**, so `sqrt(0.01) = 0.1` stays `true`: the root is the nearest double
+  to 0.1, and comparing it exactly against an exact 0.1 would change every
+  computed-against-literal test a program makes.
+- **When the digits do not fit** (past 18 places, or past an `int64` of
+  digits) the answer is the double it always was. That is **silent** when only
+  far fractional digits go — a compounding product needs more places with
+  every step — and warns **2112** when the value is at 2^53 or past it, where
+  whole digits can go too, as integer overflow does.
+- **Printing** shows the digits (`4148.62`); a decimal and the double it used to
+  be print alike up to 15 significant digits.
+- **Not yet:** `serialize`, G-SQL columns and the actor wire carry a decimal as
+  its double (increment 2), and `-0.0` stays a double so its sign survives.
 
 **Number literals.** Decimal (`42`, `3.14`), hexadecimal (`0xFF`), and
 **scientific notation** *(since 0.2.3)* — `1e20`, `6.02e23`, `1.5e-3`, `2E10`,

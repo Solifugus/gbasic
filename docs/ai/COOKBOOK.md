@@ -109,8 +109,9 @@ for error handling, `ERRORS.md`.
   → `tests/equality_test.bas`, `tests/equality_dispatch_test.bas`
 - **Show a number** — `print` renders the shortest decimal that reads back as
   the same value, so nothing is truncated and `number(string(x)) = x` always
-  holds. That makes floating-point error visible (`0.1 + 0.2` shows
-  `0.30000000000000004`): round for display with `round(x, 2)`, or use a money
+  holds. That makes floating-point error visible (`1 / 3` shows
+  `0.3333333333333333`; decimal literals are exact, so `0.1 + 0.2` shows
+  `0.3`, `tests/run_exact_decimal.sh`): round for display with `round(x, 2)`, or use a money
   value (`t{USD}= 265550.75`) for figures that must read exactly. Integers below
   2^53 print plainly, and scientific notation is a literal since 0.2.3
   (`1e20`, `6.02e23`, `1.5e-3`); `number("1e20")` still builds one from text. → `tests/numfmt_test.bas`
