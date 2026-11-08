@@ -1,7 +1,7 @@
 # Exact decimal numbers
 
-**Status:** increments 1 and 2 shipped (2026-11-08, `tests/run_exact_decimal.sh`),
-with the changes measurement forced recorded in §10 and §11; increment 3 open. Design
+**Status:** shipped, all three increments (2026-11-08, `tests/run_exact_decimal.sh`),
+with the changes measurement forced recorded in §10-§12. Design
 written 2026-11-08, from Matthew's ruling on book gap G50: *exact
 decimal numbers*. A number written or read with a decimal point is exact, as
 integers already are; `+`, `-` and `*` stay exact; division and functions
@@ -189,3 +189,25 @@ silently stays off a list.
   before: the v3 walk reports a decimal as not an exact integer.
 - **The decimal text helper moved to `include/gb_decimal.h`**, header-only, so
   G-SQL's harnesses, which compile their files alone, share the one parser.
+
+## 12. Increment 3: what reading the drivers showed
+
+§7 held: `numeric` and `DECIMAL` keep arriving as exact text, and increment 1
+made `number(row.qty)` exact. The work was the other direction, a PARAMETER:
+
+- **`pg` sent `%.17g` of the double**, so `0.1` reached a `numeric` as
+  `0.10000000000000001`, and an exact integer past 2^53 as its double. It now
+  sends the value's own digits (`format_number_value`), read back as
+  `($1::numeric)::text` by Postgres.
+- **`sqlite` bound every number as a double**, including exact integers:
+  measured, 9007199254740993 was stored as ...992 in an INTEGER column. A
+  defect older than this work, found by it. An exact integer binds as `int64`;
+  a decimal stays a REAL, since SQLite has no decimal and text would change
+  what an untyped column holds.
+- **`odbc` declared every number `SQL_DOUBLE`.** A decimal is declared
+  `SQL_DECIMAL` with its scale, as money already was. NOT MEASURED: the
+  SQLite3 ODBC driver keeps the text whatever is declared, so the check holds
+  the digits and not the declaration (perturbed back to `SQL_DOUBLE`, it stayed
+  green). It needs a driver that converts, such as SQL Server's.
+- A driver option to return `numeric` as exact numbers directly is still a
+  later question.

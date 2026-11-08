@@ -121,6 +121,8 @@ deep_value_teardown|segfaults when it is RELEASED
 library_top_statements|top-level statements are silently not run
 find_all_first_match|collects only under the first
 decimal_key_collision|share an index key
+xml_entity_dropped|drops an entity reference in silence
+rsa_pem_certificate|given a CERTIFICATE says
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -299,6 +301,37 @@ probe_decimal_key_collision() {
     else
         printf '     %s\n' "$dk_out"
         fixed "two such decimals no longer share a key (or the probe no longer runs)"
+    fi
+}
+
+probe_xml_entity_dropped() {
+    # Red when the entity is expanded, or refused with an error.
+    printf 'load xml\nd = xml.parse("<!DOCTYPE a [<!ENTITY y \x27Y\x27>]><a>&y;</a>")\nprint "[" + xml.text(d) + "]"\nprint error\n' > "$WORK/xe.bas"
+    xe_out=$(timeout 20 ./gbasic "$WORK/xe.bas" 2>&1 | tr '\n' ' ')
+    if [ "$xe_out" = "[] false " ]; then
+        ok "xml.parse still drops an entity reference with no error"
+    else
+        printf '     %s\n' "$xe_out"
+        fixed "xml.parse no longer drops the entity in silence (or the probe no longer runs)"
+    fi
+}
+
+probe_rsa_pem_certificate() {
+    # Red when the message for a certificate stops pointing at a passphrase.
+    if ! command -v openssl >/dev/null 2>&1; then
+        ok "SKIP rsa_from_pem on a certificate (no openssl to make one)"
+        return
+    fi
+    openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/rk.pem" -out "$WORK/rc.pem" -days 1 -subj /CN=t 2>/dev/null
+    printf 'r = try rsa_from_pem(read("%s/rc.pem"))\nprint error.message\n' "$WORK" > "$WORK/rc.bas"
+    rc_out=$(timeout 20 ./gbasic "$WORK/rc.bas" 2>&1)
+    if printf '%s' "$rc_out" | grep -q 'an encrypted key needs its passphrase'; then
+        ok "rsa_from_pem on a certificate still answers with the passphrase message"
+    elif printf '%s' "$rc_out" | grep -q 'not available\|unknown function'; then
+        ok "SKIP rsa_from_pem on a certificate (no libcrypto in this build)"
+    else
+        printf '     %s\n' "$rc_out"
+        fixed "rsa_from_pem now says something else for a certificate"
     fi
 }
 

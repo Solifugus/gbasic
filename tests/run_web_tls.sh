@@ -198,9 +198,12 @@ ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 if len(sys.argv) > 3:
     ctx.load_cert_chain(sys.argv[2], sys.argv[3])
-with connect("wss://127.0.0.1:%s/ws" % sys.argv[1], ssl=ctx, open_timeout=5) as ws:
+# 20 s, not 5: the gate runs suites in parallel, and twice on 2026-11-08 a
+# client WITH the right certificate read REFUSED, passing alone both times.
+# A refusal is the handshake failing, which is fast, so it costs no time.
+with connect("wss://127.0.0.1:%s/ws" % sys.argv[1], ssl=ctx, open_timeout=20) as ws:
     ws.send("who")
-    sys.stdout.write(ws.recv(timeout=5))
+    sys.stdout.write(ws.recv(timeout=20))
 PY
     }
     got="$(ws_who "$scratch/client.crt" "$scratch/client.key")"

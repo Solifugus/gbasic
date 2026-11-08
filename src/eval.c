@@ -25027,7 +25027,17 @@ static int sqlite_bind_value(sqlite3_stmt *statement, int index, Value value, ch
             sqlite_raise_message("SQLite number parameters must be finite");
             return 0;
         }
-        rc = sqlite3_bind_double(statement, index, value.as.num.value);
+        /* AN EXACT INTEGER IS BOUND AS ONE. Bound as its double, measured
+         * 2026-11-08, 9007199254740993 was stored as ...992 in an INTEGER
+         * column, a digit gone with exit 0. An exact decimal stays the double:
+         * SQLite has no decimal type, so a REAL is what any route stores, and
+         * text would change what an untyped column holds
+         * (docs/exact_decimal_design.md §7). */
+        if (value.as.num.is_exact) {
+            rc = sqlite3_bind_int64(statement, index, (sqlite3_int64)value.as.num.exact);
+        } else {
+            rc = sqlite3_bind_double(statement, index, value.as.num.value);
+        }
         break;
     case VALUE_STRING:
     case VALUE_DATETIME:
@@ -25923,6 +25933,14 @@ static int odbc_bind_value(SQLHSTMT statement,
             format_number_value(text, sizeof(text), value);
             *owned_text = copy_string(text);
             sql_type = SQL_DOUBLE;
+            /* AN EXACT DECIMAL IS DECLARED A DECIMAL, with its scale, as money
+             * is (docs/exact_decimal_design.md §7): declared SQL_DOUBLE, the
+             * driver may take the digits through a double on the way to a
+             * DECIMAL column, which is the loss this value exists to avoid. */
+            if (value_is_decimal(value)) {
+                sql_type = SQL_DECIMAL;
+                decimal_digits = (SQLSMALLINT)value.as.num.scale;
+            }
         }
         break;
     case VALUE_MONEY:
@@ -27541,7 +27559,11 @@ static char *pg_parameter_text(Value value) {
             pg_raise_message("PostgreSQL number parameters must be finite");
             return NULL;
         }
-        snprintf(buffer, sizeof(buffer), "%.17g", value.as.num.value);
+        /* THE VALUE'S OWN DIGITS: an exact integer or decimal as itself, a
+         * double as its shortest round-trip form. `%.17g` sent `0.1` as
+         * 0.10000000000000001, which a `numeric` column keeps, and an exact
+         * integer past 2^53 as its double (docs/exact_decimal_design.md §7). */
+        format_number_value(buffer, sizeof(buffer), value);
         return copy_string(buffer);
     case VALUE_DATETIME:
         return pg_datetime_text(value.as.datetime);

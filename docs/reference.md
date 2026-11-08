@@ -8375,6 +8375,15 @@ print sqrt(0.01) = 0.1                          ' true, still: see comparison
   whole digits can go too, as integer overflow does.
 - **Printing** shows the digits (`4148.62`); a decimal and the double it used to
   be print alike up to 15 significant digits.
+- **Sent to a database as its digits** *(increment 3)*: a decimal or an exact
+  integer **parameter** reaches `pg` as its own digits (it was `%.17g` of the
+  double, so `0.1` arrived in a `numeric` as `0.10000000000000001`), `odbc`
+  declares a decimal `SQL_DECIMAL` with its scale as it does money, and
+  `sqlite` binds an exact integer as an integer (it bound a double, so 2^53 + 1
+  was stored as 2^53). A decimal into SQLite is a REAL, as SQLite has no
+  decimal; pass `string(x)` to a TEXT column to keep the digits. Reading is
+  unchanged: `numeric` and `DECIMAL` still arrive as exact text, and
+  `number(row.qty)` is exact.
 - **Saved and stored as its digits** *(increment 2)*: `serialize` and the actor
   wire carry a decimal exactly (exactness byte 2, its scale and mantissa), a
   G-SQL `number` column holds one, SQL literals with a point are decimals, and

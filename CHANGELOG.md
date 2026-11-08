@@ -43,6 +43,10 @@ reader sees.
   exponent** (`1e-1`, `2000e0`), since plain digits restore as a decimal. A
   G-SQL index keys a decimal by its nearest double; a UNIQUE index refuses two
   decimals that differ only past 17 digits (DOGFOOD row 9).
+- **Parameters keep their digits** (increment 3): `pg` sends a number as its
+  own digits (`0.1` arrived in a `numeric` as `0.10000000000000001`); `odbc`
+  declares a decimal `SQL_DECIMAL` with its scale; **`sqlite` binds an exact
+  integer as an integer** (a defect found here: 2^53 + 1 was stored as 2^53).
   New suite: `tests/run_exact_decimal.sh`.
 
 ### A watch belongs to the scope that declares it

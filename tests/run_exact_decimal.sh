@@ -23,6 +23,17 @@
 #                   index keyed by the nearest double), and dump/restore
 #                   keeping a decimal a decimal and a double a double (the
 #                   same serialize bytes after). Skips without G-SQL.
+# TIER drivers   -- increment 3: what a decimal or an exact integer becomes
+#                   when it is a PARAMETER, read back from the database rather
+#                   than from gBASIC. sqlite: 2^53 + 1 into an INTEGER column
+#                   (it was bound as a double and stored ...992). odbc, over
+#                   the SQLite3 ODBC driver: a decimal into a TEXT column keeps
+#                   its 18 places. That driver keeps the text whatever type
+#                   is declared, so the SQL_DECIMAL declaration is NOT held by
+#                   this check (perturbed: SQL_DOUBLE left it green); it wants
+#                   a driver that converts, such as SQL Server's. pg, with GBASIC_POSTGRES_TEST=1: 0.1 into a
+#                   numeric is 0.1 (`%.17g` sent 0.10000000000000001), and
+#                   2^53 + 1 is its digits. Each part skips, saying so.
 # TIER valgrind  -- bounded.
 . "$(dirname "$0")/portable.sh"
 set -uo pipefail
@@ -148,6 +159,39 @@ else
     else
         printf 'PASS gsql (%s checks: serialize, a number column, its index, dump and restore)\n' "$gok"
     fi
+fi
+
+echo "--- TIER drivers ---"
+printf 'load sqlite\ndb = sqlite.connect("%s/p.db")\nsqlite.exec(db, "create table t (i integer, s text)")\nsqlite.exec(db, "insert into t values (?, ?)", [9007199254740993, string(0.123456789012345678)])\nprint sqlite.query(db, "select cast(i as text) as i from t")[0].i\n' "$tmp" > "$tmp/sq.bas"
+sq="$(timeout 30 ./gbasic "$tmp/sq.bas" 2>&1)"
+if printf '%s' "$sq" | grep -q 'library not loaded\|not available'; then
+    printf 'SKIP drivers sqlite (no sqlite in this build)\n'
+elif [ "$sq" = 9007199254740993 ]; then
+    printf 'PASS drivers sqlite (2^53 + 1 bound as an integer, read back by SQLite as text: %s)\n' "$sq"
+else
+    printf '  %s\n' "$sq"; printf 'FAIL drivers sqlite (an exact integer parameter lost a digit)\n'; status=1
+fi
+if command -v odbcinst >/dev/null 2>&1 && odbcinst -q -d 2>/dev/null | grep -qx '\[SQLite3\]'; then
+    printf 'load odbc\ndb = odbc.connect("Driver=SQLite3;Database=%s/o.db")\nodbc.exec(db, "create table t (s text)")\nodbc.exec(db, "insert into t values (?)", [0.123456789012345678])\nprint odbc.query(db, "select s from t")[0].s\n' "$tmp" > "$tmp/od.bas"
+    od="$(timeout 30 ./gbasic "$tmp/od.bas" 2>&1)"
+    if [ "$od" = 0.123456789012345678 ]; then
+        printf 'PASS drivers odbc (a decimal parameter reaches a TEXT column as its 18 places)\n'
+    else
+        printf '  %s\n' "$od"; printf 'FAIL drivers odbc (a decimal parameter lost digits)\n'; status=1
+    fi
+else
+    printf 'SKIP drivers odbc (no SQLite3 ODBC driver: decimal parameters over odbc were NOT checked)\n'
+fi
+if [ "${GBASIC_POSTGRES_TEST:-}" = 1 ]; then
+    printf 'load pg\ndb = pg.connect({})\nr = pg.query(db, "select ($1::numeric)::text as a, ($2::numeric)::text as b, ($3::numeric)::text as c", [0.1, 9007199254740993, 0.123456789012345678])[0]\nprint r.a + " " + r.b + " " + r.c\n' > "$tmp/pg.bas"
+    pgo="$(timeout 30 ./gbasic "$tmp/pg.bas" 2>&1)"
+    if [ "$pgo" = "0.1 9007199254740993 0.123456789012345678" ]; then
+        printf 'PASS drivers pg (numeric parameters arrive as their digits: %s)\n' "$pgo"
+    else
+        printf '  %s\n' "$pgo"; printf 'FAIL drivers pg (a numeric parameter arrived as another number)\n'; status=1
+    fi
+else
+    printf 'SKIP drivers pg (GBASIC_POSTGRES_TEST is not 1: pg parameters were NOT checked)\n'
 fi
 
 echo "--- TIER valgrind ---"

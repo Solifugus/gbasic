@@ -49,6 +49,8 @@ live list is:
 |---|---|---|
 | 8 | **`xml.find_all(node, "a/b")` collects only under the first `a`**: two `<s><n/></s>` answer one for `"s/n"`, where the reference says "all matches". A path through repeated elements misses all but the first. Workaround: walk the path a step at a time, taking every match at each. | 2026-11-08 entry |
 | 9 | **Two exact decimals that differ only past a double's 17 digits share an index key**: G-SQL keys a decimal by its nearest double, so a UNIQUE index refuses `0.100000000000000001` beside `0.100000000000000002`, and `ORDER BY` through that index ties them. Answers through an index are still right (the condition is checked on every row). By design, since gBASIC compares a decimal and a double as doubles, which no byte order can follow exactly (`docs/exact_decimal_design.md` §6). | 2026-11-08 entry |
+| 10 | **`xml.parse` drops an entity reference in silence**: `<!DOCTYPE a [<!ENTITY y 'Y'>]><a>&y;</a>` parses as an empty `<a>`, no error. Safe against XXE, but silent data loss; an error naming the DTD, or a `refuse_dtd` option, was asked for (Transward M31). | 2026-11-08 entry |
+| 11 | **`rsa_from_pem` given a CERTIFICATE says** "no RSA key could be read (an encrypted key needs its passphrase)", which points at a passphrase rather than at the certificate; `x509_parse` is requested (Transward M31 §10). | 2026-11-08 entry |
 | — | ~~**`qt.run()` from inside a function silently starves every loop-delivered source.**~~ **FIXED 2026-11-08** by `wait until`'s delivery rule (`docs/watch_scope_design.md` §4): a delivery by the event loop fires every live frame's watches, so it no longer depends on the global frame being current. Held by `tests/run_watch_scope.sh` (tier qtrun, the top-level form as the control). | 2026-10-19 entry |
 | — | ~~**A deeply nested value segfaults at teardown**~~ **DOCUMENTED AS AN ACCEPTED LIMITATION 2026-10-14**, with the numbers re-measured at a PINNED stack: ~43,000 levels at 8 MB, records and arrays alike, and 60,000 releases cleanly at 64 MB — so it is a fact about `ulimit -s`. It has a probe in `run_limitations.sh` now, with the 64 MB run as the control, so it goes red if anybody fixes it. | accepted limitations |
 | — | ~~**`watch` inside a function registers nothing, and says so only with an unlocated line on stderr**~~ **FIXED 2026-11-07** (Matthew's model): a watch belongs to the frame that declares it, sees its locals, and ends when it returns; a watch in a function on anything but its own variables is refused, located (`1003`). `docs/watch_scope_design.md` §3, held by `tests/run_watch_scope.sh`. Event sources in a function wait for increment 2 (`wait until`). | 2026-11-07 entry |
@@ -13593,3 +13595,21 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   differ only past 17 digits share a key, so a UNIQUE index refuses the pair.
 - **Status: OPEN** (accepted), probed by `run_limitations.sh`
   (`decimal_key_collision`).
+
+## 2026-11-08 — CC — while: logging Transward's M31 observations (reported by transward-8b)
+
+- **Type:** language-surprise
+- **Severity:** medium (the entity), low (the message)
+- **What:** reported by the Transward session building SAML sign-on, and
+  measured here on 4cf1aa21. (1) `xml.parse("<!DOCTYPE a [<!ENTITY y 'Y'>]><a>&y;</a>")`
+  answers an `<a>` whose text is empty, with `error` false: the reference is
+  dropped and nothing says so. Not expanding it is the safe answer to XXE;
+  doing it in silence is data loss. (2) `rsa_from_pem` on a certificate PEM
+  answers "no RSA key could be read from that text (an encrypted key needs its
+  passphrase)", which sends the reader after a passphrase.
+- **Workaround:** Transward walks the DER itself for the public key until
+  `x509_parse` exists, and has no workaround for (1) beyond refusing DTDs in
+  its own input.
+- **Status: OPEN**, for Matthew: live rows 10 and 11, probed by
+  `run_limitations.sh` (`xml_entity_dropped`, `rsa_pem_certificate`). The
+  requested builtins (`xml.canonicalize`, `x509_parse`) are queued with M31.
