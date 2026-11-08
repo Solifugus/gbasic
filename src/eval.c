@@ -753,6 +753,15 @@ typedef struct {
     int pending;
     int active;      /* 0 after unwatch or replace-on-redeclare: a tombstone */
     char *name;      /* owned; NULL for the anonymous form */
+    /* THE FRAME THAT DECLARED IT (docs/watch_scope_design.md): the global
+     * frame, or one call of a function, whose locals the body sees and whose
+     * end ends it. Frames live on the C stack and their addresses are reused,
+     * so an entry is ended when its frame is cleared, never by comparing. */
+    struct Env *frame;
+    /* what a handle holds: entries come and go at the registry's END as frames
+     * do, so an index is reused and a handle that outlived its frame would
+     * reach a newer watcher through it; a serial is never reused */
+    size_t serial;
 } WatcherDef;
 
 /* PLAT-ERR (docs/error_model_design.md): `on error` is FRAME-scoped. Every
@@ -951,6 +960,7 @@ static size_t lock_count = 0;
 static int lock_cleanup_registered = 0;
 static WatcherDef *watchers = NULL;
 static size_t watcher_count = 0;
+static size_t watcher_next_serial = 1;
 static size_t *watcher_queue = NULL;
 /* THE PRINCIPAL IN FORCE WHEN EACH ENTRY WAS QUEUED, carried beside the queue so
  * a body that runs LATER still acts for whoever made the write. See
@@ -5798,7 +5808,12 @@ static Value env_get(const char *name) {
     return value_copy(symbol->value);
 }
 
+static void watcher_end_frame(Env *env);
+
 static void env_clear(Env *env) {
+    if (env != &global_env) {
+        watcher_end_frame(env);
+    }
     for (size_t i = 0; i < env->outer_reads_count; i++) {
         free(env->outer_reads[i]);
     }
@@ -7475,7 +7490,11 @@ static int watcher_drain(void) {
              * popped on EVERY exit below, including a raise, which is the rule
              * `with principal` itself follows. */
             int pushed = principal_push_captured(watcher_queue_principal[slot]);
+            /* in the frame that declared it, whose locals it reads and writes */
+            Env *drain_env = current_env;
+            current_env = watchers[index].frame;
             EvalResult result = eval_stmt_list(watchers[index].stmt->as.watch.body);
+            current_env = drain_env;
             if (pushed) {
                 principal_pop_captured();
             }
@@ -7519,7 +7538,16 @@ static int watcher_drain(void) {
 }
 
 static int watcher_trigger_change(const char *path) {
-    if (watcher_suppressed || current_env != &global_env) {
+    if (watcher_suppressed) {
+        return 1;
+    }
+    /* a change fires the watches of the frame it is made in, and only those:
+       a callee's local of the same name is the callee's (watch_scope_design §3) */
+    int any = 0;
+    for (size_t i = 0; i < watcher_count && !any; i++) {
+        any = watchers[i].active && watchers[i].frame == current_env;
+    }
+    if (!any) {
         return 1;
     }
     int start_drain = !watcher_draining && watcher_queue_count == 0;
@@ -7528,8 +7556,8 @@ static int watcher_trigger_change(const char *path) {
         watcher_drain_origin_column = current_column;
     }
     for (size_t i = 0; i < watcher_count; i++) {
-        if (!watchers[i].active) {
-            continue;      /* a tombstone: unwatched, or replaced by redeclare */
+        if (!watchers[i].active || watchers[i].frame != current_env) {
+            continue;      /* a tombstone, or another frame's watch */
         }
         if (watcher_matches_change(watchers[i].stmt, path)) {
             watcher_enqueue(i);
@@ -7538,29 +7566,85 @@ static int watcher_trigger_change(const char *path) {
     return watcher_drain();
 }
 
+/* The entry a handle names, by its serial: entries are appended in serial
+ * order and removed only from the end, so the array is sorted by serial. -1
+ * for a watch that has ended. */
+static long watcher_index_of(size_t serial) {
+    size_t lo = 0, hi = watcher_count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (watchers[mid].serial < serial) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo < watcher_count && watchers[lo].serial == serial ? (long)lo : -1;
+}
+
+/* A frame is ending (env_clear): its watches end with it, by every exit --
+ * return, the end of the body, a raise unwinding through it. Entries at the
+ * registry's end are removed outright, which they always are once nothing is
+ * queued: a callee's watches come after its caller's and end first. With a
+ * drain under way they stay as tombstones, since a queued index must not be
+ * reused by a watch registered before the queue empties. */
+static void watcher_end_frame(Env *env) {
+    for (size_t i = 0; i < watcher_count; i++) {
+        if (watchers[i].frame == env) {
+            watchers[i].active = 0;
+            watchers[i].frame = NULL;
+        }
+    }
+    while (watcher_queue_count == 0 && !watcher_draining && watcher_count > 0 &&
+           !watchers[watcher_count - 1].active && watchers[watcher_count - 1].frame == NULL) {
+        watcher_count--;
+        free(watchers[watcher_count].name);
+    }
+}
+
 static int watcher_register(AstStmt *stmt) {
     if (current_env != &global_env) {
-        if (stmt->as.watch.name) {
-            /* New surface, so a proper error rather than the anonymous form's
-             * historical stderr warning: the registry is global, and a named
-             * handle bound in a vanishing scope would be a watcher that fires
-             * forever with its off-switch out of reach. */
-            runtime_error_raise("a named watcher may only be declared at top level",
-                                1003, "watcher");
-            return 0;
+        /* IN A FUNCTION, a watch watches that function's own variables
+         * (docs/watch_scope_design.md §3). Anything else could never fire after
+         * registration: a function cannot assign a global, a global changes
+         * only while no function runs, and an event source is delivered by the
+         * loop, which runs after main -- so it is refused, where it was once
+         * registered nowhere with a line on stderr. */
+        for (size_t i = 0; i < stmt->as.watch.names.count; i++) {
+            const char *path = stmt->as.watch.names.items[i];
+            size_t root_len = strcspn(path, ".[");
+            char root[256];
+            snprintf(root, sizeof root, "%.*s", (int)(root_len < 255 ? root_len : 255), path);
+            Symbol *own = env_find_in_frame(current_env, root);
+            char message[600];
+            if (!own) {
+                snprintf(message, sizeof message,
+                         "a watch in a function watches that function's own variables, and `%s` is not one "
+                         "(assign it before the watch); a watch on a global or an event source belongs at the "
+                         "top level of the program block", root);
+                runtime_error_raise(message, 1003, "watcher");
+                return 0;
+            }
+            if (own->value.kind == VALUE_RECORD && record_find(&own->value, "_webserver_id")) {
+                snprintf(message, sizeof message,
+                         "a watch in a function cannot watch `%s`: its events arrive from the event loop, which "
+                         "runs after the program block ends, so this function would have returned and its watch "
+                         "ended first; watch it at the top level of the program block", path);
+                runtime_error_raise(message, 1003, "watcher");
+                return 0;
+            }
         }
-        fprintf(stderr, "watch may only be registered at top level for now\n");
-        return 1;
     }
 
     /* REPLACE-ON-REDECLARE: re-running setup code must not stack a second
      * watcher doing the work twice. If the name is currently bound to a live
      * watcher, that registration is tombstoned before the new one lands. */
     if (stmt->as.watch.name) {
-        Symbol *existing = env_find_in_frame(&global_env, stmt->as.watch.name);
-        if (existing && existing->value.kind == VALUE_WATCHER &&
-            existing->value.as.watcher_id < watcher_count) {
-            watchers[existing->value.as.watcher_id].active = 0;
+        Symbol *existing = env_find_in_frame(current_env, stmt->as.watch.name);
+        long at = existing && existing->value.kind == VALUE_WATCHER
+                      ? watcher_index_of(existing->value.as.watcher_id) : -1;
+        if (at >= 0) {
+            watchers[at].active = 0;
         }
     }
 
@@ -7573,10 +7657,12 @@ static int watcher_register(AstStmt *stmt) {
     watchers[watcher_count].pending = 0;
     watchers[watcher_count].active = 1;
     watchers[watcher_count].name = stmt->as.watch.name ? copy_string(stmt->as.watch.name) : NULL;
+    watchers[watcher_count].frame = current_env;
+    watchers[watcher_count].serial = watcher_next_serial++;
     if (stmt->as.watch.name) {
         Value handle = {0};
         handle.kind = VALUE_WATCHER;
-        handle.as.watcher_id = watcher_count;
+        handle.as.watcher_id = watchers[watcher_count].serial;
         env_set(stmt->as.watch.name, handle);
     }
     watcher_count++;
@@ -15362,10 +15448,11 @@ static Value builtin_string_value(Value value) {
         snprintf(buffer, sizeof(buffer), "<function %s>", value.as.function.name);
         value_free(value);
         return value_string(buffer);
-    case VALUE_WATCHER:
+    case VALUE_WATCHER: {
+        long at = watcher_index_of(value.as.watcher_id);
         snprintf(buffer, sizeof(buffer), "<watcher %s>",
-                 value.as.watcher_id < watcher_count && watchers[value.as.watcher_id].name
-                     ? watchers[value.as.watcher_id].name : "?");
+                 at >= 0 && watchers[at].name ? watchers[at].name : "?");
+    }
         value_free(value);
         return value_string(buffer);
     case VALUE_REGEX:
@@ -37884,7 +37971,7 @@ static Value eval_call(AstExpr *expr) {
             if (!watchers[i].active) continue;
             Value handle = {0};
             handle.kind = VALUE_WATCHER;
-            handle.as.watcher_id = i;
+            handle.as.watcher_id = watchers[i].serial;
             items[n++] = handle;
         }
         return value_array(items, live);
@@ -40829,12 +40916,14 @@ static Value eval_expr(AstExpr *expr) {
             return duration_field_value(dur, expr->as.field.field);
         }
         if (object.kind == VALUE_WATCHER) {
-            size_t id = object.as.watcher_id;
+            long at = watcher_index_of(object.as.watcher_id);
             value_free(object);
-            if (id >= watcher_count) {
-                runtime_error_raise("watcher handle is not valid", 1003, "watcher");
+            if (at < 0) {
+                runtime_error_raise("watcher handle is not valid: its watch has ended with the function that "
+                                    "declared it", 1003, "watcher");
                 return value_null();
             }
+            size_t id = (size_t)at;
             if (strcmp(expr->as.field.field, "name") == 0) {
                 return value_string(watchers[id].name ? watchers[id].name : "");
             }
@@ -44663,8 +44752,9 @@ static EvalResult eval_stmt(AstStmt *stmt) {
          * definitively off either way, so the caller's belief is true. The
          * typo hazard that argues for raising does not exist here -- this
          * takes a VALUE, not a name. */
-        if (value.as.watcher_id < watcher_count) {
-            watchers[value.as.watcher_id].active = 0;
+        long at = watcher_index_of(value.as.watcher_id);
+        if (at >= 0) {
+            watchers[at].active = 0;
         }
         value_free(value);
         break;

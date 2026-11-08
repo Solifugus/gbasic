@@ -49,7 +49,8 @@ live list is:
 |---|---|---|
 | 1 | **`qt.run()` from inside a function silently starves every loop-delivered source.** `watcher_trigger_change` returns at once unless the GLOBAL frame is current, so a function frame left current for the whole of Qt's loop means every timer tick is appended to `timer.ticks` and never delivered — the timer's own schedule advances, so it looks like it is working, and the program HANGS with no output. Reaches timers, the actor inbox, `http` events and a webserver's requests. Workaround: call `qt.run()` from the top level of the `program` block. | 2026-10-19 entry |
 | — | ~~**A deeply nested value segfaults at teardown**~~ **DOCUMENTED AS AN ACCEPTED LIMITATION 2026-10-14**, with the numbers re-measured at a PINNED stack: ~43,000 levels at 8 MB, records and arrays alike, and 60,000 releases cleanly at 64 MB — so it is a fact about `ulimit -s`. It has a probe in `run_limitations.sh` now, with the 64 MB run as the control, so it goes red if anybody fixes it. | accepted limitations |
-| 6 | **`watch` inside a function registers nothing, and says so only with an unlocated line on stderr** (`watch may only be registered at top level for now`): no position, no warning code, not catchable, and the program carries on with a watcher that will never fire. So a library cannot set up its own watcher (Transward). Inside the `program` block, `if` included, it registers. A NAMED watcher in a function is refused properly (`1003`). Workaround: write the `watch` in the `program` block and call the library from its body. | 2026-11-07 entry |
+| — | ~~**`watch` inside a function registers nothing, and says so only with an unlocated line on stderr**~~ **FIXED 2026-11-07** (Matthew's model): a watch belongs to the frame that declares it, sees its locals, and ends when it returns; a watch in a function on anything but its own variables is refused, located (`1003`). `docs/watch_scope_design.md` §3, held by `tests/run_watch_scope.sh`. Event sources in a function wait for increment 2 (`wait until`). | 2026-11-07 entry |
+| 7 | **A library's top-level statements are silently not run.** A `print` or `counter = 5` at the top of a `library` block does nothing, and a function there reading `counter` raises `undefined variable`. No warning, unlike `2106` for statements beside a `program` block. So a library cannot hold initialised state or a top-level `watch`. Workaround: a function that returns the state, called by the program. | 2026-11-07 entry |
 | 5 | ~~**`DECODE_MAX_DEPTH` is unsafe below a ~2.5 MB stack**~~ **CLOSED 2026-10-14** — the bound is DERIVED from `getrlimit(RLIMIT_STACK)` now, `min(10000, stack_KB * 2)`, so it is unchanged at the 8 MB default and drops instead of the process below ~2.5 MB. The remote demonstration re-run against the fix: HTTP 200 and the listener alive at `ulimit -s 2048`. | 2026-10-14 entry |
 
 The two were one disease seen from both ends — recursion depth bounded by
@@ -13497,3 +13498,29 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Status: OPEN** (watch), for Matthew: making it a located warning, or an
   error as the named form is, is a language change. Both probed by
   `tests/run_limitations.sh` (`watch_in_function`, `spawn_bare_name`).
+- **Status 2026-11-07, later:** Matthew's model is that a watch belongs to the
+  scope that declares it and dies with it. Designed in
+  `docs/watch_scope_design.md`: increment 1 (a function's own variables) and
+  increment 2 (event sources, with `wait until`). Not built.
+- **Status: FIXED 2026-11-07 (increment 1).** A watch in a function watches its
+  own variables and ends with the frame; anything else is refused with a
+  located `1003` naming the variable. The bare stderr line is gone. Held by
+  `tests/run_watch_scope.sh` (16 checks, a shape tier, valgrind); four
+  perturbations red. Event sources in a function are increment 2.
+
+## 2026-11-07 — CC — while: measuring how a watch's scope works today, for docs/watch_scope_design.md
+
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** a library's top-level statements are never run, and nothing says
+  so. `library lw` holding `print "library top ran"`, `counter = 5` and a
+  `function get()` returning `counter`, loaded by a program calling
+  `lw.get()`, printed nothing and raised `undefined variable: counter` at
+  `lw.bas:5:9`. A `watch` at a library's top level is likewise silent. The
+  reference lists what may stand beside a `program` block, but says nothing
+  about what a library body runs.
+- **Workaround:** state a library needs is returned by a function the program
+  calls, and a watch stays in the program's `program` block.
+- **Status: OPEN**, for Matthew: run them once at load, warn as `2106` does
+  beside a `program` block, or refuse them. Probed by `tests/run_limitations.sh`
+  (`library_top_statements`).

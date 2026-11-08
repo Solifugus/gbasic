@@ -119,7 +119,7 @@ spawn_bare_name|resolves a bare function **name**
 nul_string_literal|is refused in a string literal
 deep_value_teardown|segfaults when it is RELEASED
 qt_run_in_function|silently starves every loop-delivered source
-watch_in_function|inside a function registers nothing
+library_top_statements|top-level statements are silently not run
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -347,23 +347,20 @@ probe_spawn_bare_name() {
     fi
 }
 
-probe_watch_in_function() {
-    # The pair: the same watch in a FUNCTION (unlocated stderr line, never
-    # fires) and in the program block (fires). Red when the function form
-    # registers, or when its refusal becomes a located diagnostic.
-    printf 'function arm()\n  o = timer.after(0.1)\n  watch(timer.ticks)\n    while count(timer.ticks) > 0\n      ev = take_first(timer.ticks)\n      print "FIRED"\n    end while\n  end watch\n  return nothing\nend function\nprogram main()\n  arm()\nend program\n' > "$WORK/wf.bas"
-    printf 'program main()\n  o = timer.after(0.1)\n  watch(timer.ticks)\n    while count(timer.ticks) > 0\n      ev = take_first(timer.ticks)\n      print "FIRED"\n    end while\n  end watch\nend program\n' > "$WORK/wp.bas"
-    fn_out=$(timeout 20 ./gbasic "$WORK/wf.bas" 2>&1)
-    top_out=$(timeout 20 ./gbasic "$WORK/wp.bas" 2>&1)
-    if ! printf '%s' "$top_out" | grep -qx 'FIRED'; then
-        printf '%s\n' "$top_out" | sed 's/^/     /'
-        fail "watch_in_function: the CONTROL (watch in the program block) did not fire"
-    elif printf '%s' "$fn_out" | grep -qx 'watch may only be registered at top level for now' &&
-         ! printf '%s' "$fn_out" | grep -qx 'FIRED'; then
-        ok "watch inside a function still registers nothing, with an unlocated stderr line"
+probe_library_top_statements() {
+    # The pair: the library's function reading a top-level variable raises,
+    # and its top-level print prints nothing. Red when either runs or warns.
+    mkdir -p "$WORK/lt"
+    printf 'library lt\n    print "LIBRARY TOP RAN"\n    counter = 5\n    function get()\n        return counter\n    end function\nend library\n' > "$WORK/lt/lt.bas"
+    printf 'load lt\nprogram main()\n    print "got " + string(lt.get())\nend program\n' > "$WORK/lt/m.bas"
+    lt_out=$( (cd "$WORK/lt" && timeout 20 "$OLDPWD/gbasic" m.bas 2>&1) )
+    if printf '%s' "$lt_out" | grep -q 'undefined variable: counter' &&
+       ! printf '%s' "$lt_out" | grep -q 'LIBRARY TOP RAN' &&
+       ! printf '%s' "$lt_out" | grep -q 'warning'; then
+        ok "a library's top-level statements are still silently not run"
     else
-        printf '%s\n' "$fn_out" | sed 's/^/     /'
-        fixed "watch inside a function now registers, or says so with a located diagnostic"
+        printf '%s\n' "$lt_out" | sed 's/^/     /'
+        fixed "a library's top-level statements now run, or are warned about"
     fi
 }
 

@@ -142,6 +142,10 @@ compound. Loop bodies re-run per iteration within the single `eval_stmt` call
 
 ### 2.8 Watchers (VERIFIED synchronous)
 
+- **Superseded 2026-11-07 for functions** (`docs/watch_scope_design.md`): a watch
+  belongs to the frame that declares it, so a watch in a function registers in
+  that frame, fires on changes made in it, and ends when it returns. The two
+  bullets below describe the earlier rule and the top level, which is unchanged.
 - `watch` registers only at top level/global env (`watcher_register`, 3578-3593); a
   non-global registration warns and is ignored (3579-3582).
 - `watcher_trigger_change` fires **only on global-env mutations** (`current_env !=

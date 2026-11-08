@@ -723,9 +723,38 @@ off; unwatching an already-off handle is a quiet no-op. Re-declaring
 `watch name(...)` while `name` is bound to a live watcher **replaces** it —
 setup code is safe to re-run without stacking duplicate watchers.
 `watchers()` returns the live handles, so a watcher is recoverable even when
-no variable holds it any more. Named watchers may only be declared at top
-level; watcher values cannot be encoded or sent to another actor. The
-anonymous `watch(...)` form is unchanged.
+no variable holds it any more. Watcher values cannot be encoded or sent to
+another actor.
+
+**A watch belongs to the scope that declares it** (*since 0.11.0*;
+`docs/watch_scope_design.md`). At the top level it lives for the program. In a
+function it watches that function's own variables, its body runs in that call
+and sees its parameters and locals, and it ends when the function returns, by
+any exit, a raise included. Each call has its own watch, and a callee's local
+of the same name is the callee's:
+
+```basic
+function tally(items)
+    total = 0
+    seen = []
+    watch(total)
+        append(seen, total)     ' writes this call's `seen`
+    end watch
+    for each it in items
+        total = total + it
+    end for
+    return seen                 ' tally([5, 7]) is [0, 5, 12]
+end function
+```
+
+In a function, a watch on anything but its own variables is refused (`1003`,
+naming it): a global (a function cannot assign one, and it changes only while
+no function runs), a variable not yet assigned, or an event source such as
+`timer.ticks`, `inbox.messages` or a server's `requests`, whose events the loop
+delivers only after the program block ends. Those belong at the top level of
+the `program` block. A named watcher's handle that outlives its function names
+a watch that has ended: reading its fields raises, and `unwatch` of it does
+nothing.
 
 During one active watcher-drain cycle, a watcher that is already pending is
 not enqueued again. It executes once and reads the latest live state. Separate

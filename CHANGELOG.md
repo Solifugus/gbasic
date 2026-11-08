@@ -16,6 +16,18 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### A watch belongs to the scope that declares it
+
+- **A `watch` in a function watches that function's own variables**, its body
+  runs in that call and sees its locals, and it ends when the function returns
+  (Matthew's ruling; `docs/watch_scope_design.md`). It used to register
+  nothing and print an unlocated line on stderr.
+- **Anything else in a function is refused** (`1003`, naming it): a global, a
+  variable not yet assigned, or an event source, which still belongs at the top
+  level of the `program` block until `wait until` (designed, not built).
+- **A named watcher may be declared in a function** (`watch w(x)`); a handle
+  that outlives its function names an ended watch.
+
 ### `process.self().pid`
 
 - **`process.self()` answers `pid`, this process's id** (Transward). A spawned
