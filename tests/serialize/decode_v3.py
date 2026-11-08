@@ -57,6 +57,13 @@ class Reader:
             return ("bool", self.u8() == 1)
         if tag == "number":
             flag = self.u8()
+            if flag == 2:
+                # an exact decimal: its scale, then its int64 mantissa
+                scale = self.u8()
+                m = struct.unpack("<q", self.take(8))[0]
+                if not 1 <= scale <= 18 or (scale > 1 and m % 10 == 0):
+                    raise ValueError("a decimal not in its one representation")
+                return ("decimal", m, scale)
             raw = self.take(8)
             if flag == 1:
                 return ("exact", struct.unpack("<q", raw)[0])
@@ -98,7 +105,11 @@ EXPECTED = {
     "exact_min": ("exact", -2**63),
     "exact_max": ("exact", 2**63 - 1),
     "neg_exact": ("exact", -42),
-    "half": ("inexact", 1.5),
+    "half": ("decimal", 15, 1),
+    "half_double": ("inexact", 1.5),
+    "dec_neg": ("decimal", -5, 2),
+    "dec_whole": ("decimal", 20, 1),
+    "dec_18": ("decimal", 123456789012345678, 18),
     "neg_zero": ("inexact", -0.0),
     "tiny": ("inexact", 5e-324),
     "inf": ("inexact", math.inf),
@@ -120,7 +131,7 @@ EXPECTED = {
     "kwd": ("money", -31250000, 3, 414, "KWD"),
     "nested": ("record", {
         "list": ("array", [("exact", 1),
-                           ("array", [("inexact", 2.5), s("x")]),
+                           ("array", [("decimal", 25, 1), s("x")]),
                            ("record", {"k": s("v")})]),
         "u": ("unknown",)}),
     "file": ("file", b"/etc/hostname"),

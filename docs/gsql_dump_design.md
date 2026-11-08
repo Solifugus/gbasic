@@ -38,7 +38,8 @@ A dump is only as good as its literals. Today's printer (`print_lit` in `sql_par
 | unknown | `NULL` | yes |
 | boolean | `TRUE`, `FALSE` | yes |
 | exact integer | `42`, `-9007199254740993` | yes: digits alone are exact |
-| inexact number | its shortest round-trip decimal, with `.0` when it would otherwise read as exact; `-0.0` | yes (`0.1` stays 0.1) |
+| exact decimal | its digits, always with a point (`6331.475`, `2.0`) | yes: digits with a point are an exact decimal (`exact_decimal_design.md`, 2026-11-08) |
+| inexact number | its shortest round-trip decimal **with an exponent** (`1e-1`, `2000e0`), which is what keeps it a double now that `0.1` reads as an exact decimal; `-0.0` | yes. Until 2026-11-08 this was the digits with `.0`, which a restore now reads as a decimal: measured, run_gsql_module's dump tier saw 3.0 and 0.3333333333333333 come back with different bytes |
 | NaN, infinity | `CAST('nan' AS NUMBER)`, `CAST('inf' AS NUMBER)`, `CAST('-inf' AS NUMBER)` | yes. A bare `nan`, which the printer writes now, reads as a column name |
 | text | `'...'`, a quote doubled | yes. The bytes are written as they are, newlines included; text holding a NUL is written `U&'...'` (§7), since SQL text may not hold one |
 | money | `CAST('1.234567' AS MONEY(USD))`, at the currency's **storage** scale, `money.text`'s form | yes, exactly: the text path is exact (`money_design.md`), measured 1.234567 kept. Printing at the minor unit would lose the guard digits |

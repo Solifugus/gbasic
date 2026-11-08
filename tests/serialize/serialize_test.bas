@@ -59,6 +59,10 @@ function battery()
         { name: "exact_max", v: 9223372036854775807 },
         { name: "neg_exact", v: -42 },
         { name: "half", v: 1.5 },
+        { name: "half_double", v: 1.5e0 },
+        { name: "dec_neg", v: -0.05 },
+        { name: "dec_whole", v: 2.0 },
+        { name: "dec_18", v: 0.123456789012345678 },
         { name: "neg_zero", v: -0.0 },
         { name: "tiny", v: number("5e-324") },
         { name: "inf", v: decode("inf") },
@@ -164,7 +168,11 @@ program main(args)
     ' is the other half. Header `gBS` + version 03.
     check("header and version", left(hexof(nothing), 8), "67425303")
     check("an exact int is flag 1 + int64 LE", hexof(9007199254740993), "674253030401" + "0100000000002000")
-    check("an inexact number is flag 0 + double bits LE", hexof(1.5), "674253030400" + "000000000000f83f")
+    check("an inexact number is flag 0 + double bits LE", hexof(1.5e0), "674253030400" + "000000000000f83f")
+    ' AN EXACT DECIMAL is flag 2, its scale, then its int64 mantissa LE
+    ' (docs/exact_decimal_design.md §6): 1.5 is 15 at scale 1.
+    check("an exact decimal is flag 2 + scale + mantissa LE", hexof(1.5), "674253030402" + "01" + "0f00000000000000")
+    check("a decimal keeps its digits through the bytes", deserialize(serialize(0.123456789012345678)) = 0.123456789012345678, true)
     check("a string is a LEB128 length", hexof("hi"), "6742530305" + "02" + "6869")
     check("a length past 127 takes two LEB128 bytes", left(hexof(repeat("x", 300)), 14), "6742530305" + "ac02")
     check("an array count is LEB128", hexof([true]), "6742530306" + "01" + "0301")
@@ -213,7 +221,13 @@ program main(args)
     end while
     check("every one of the " + string(n - 4) + " short prefixes is refused", short, n - 4)
     refused("trailing bytes", whole + chr(0))
-    refused("an exactness flag that is neither 0 nor 1", hex_decode("674253030402" + "0000000000000000"))
+    refused("an exactness flag that is not 0, 1 or 2", hex_decode("674253030403" + "0000000000000000"))
+    ' A DECIMAL HAS ONE REPRESENTATION, so bytes compare as values do: scale
+    ' 1..18, and no trailing zero in the mantissa past the first place.
+    refused("a decimal at scale 0", hex_decode("674253030402" + "00" + "0f00000000000000"))
+    refused("a decimal past 18 places", hex_decode("674253030402" + "13" + "0f00000000000000"))
+    refused("a decimal with a trailing zero", hex_decode("674253030402" + "02" + "9600000000000000"))
+    refused("a decimal cut short", hex_decode("674253030402" + "01" + "0f000000"))
     refused("a LEB128 length running past ten bytes", hex_decode("6742530305" + "ffffffffffffffffffff01"))
     ' 2^64 + 2 in ten LEB128 bytes. Shifted into a uint64 it WRAPS to 2, and the
     ' two bytes after it are there -- so a reader without the tenth-byte check

@@ -1,5 +1,6 @@
 %{
 #include "ast.h"
+#include "gb_decimal.h"
 #include "builtins.h"
 #include "diagnostics.h"
 #include "lexer.h"

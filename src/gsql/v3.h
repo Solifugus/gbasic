@@ -26,7 +26,7 @@ typedef struct {
 /* What a walk found that a column's rules turn on. */
 typedef struct {
     unsigned tag;          /* the top-level tag */
-    unsigned exact;        /* number: the exactness byte */
+    unsigned exact;        /* number: 1 for an exact integer (an exact decimal is 0) */
     unsigned time_only;    /* datetime */
     unsigned precision;    /* datetime: 1 year .. 6 second */
     char currency[8];      /* money: the alphabetic code ("" if the writer had none) */

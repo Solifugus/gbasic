@@ -17,6 +17,12 @@
 # TIER warning   -- a decimal that does not fit, at 2^53 or past it, warns
 #                   2112 as integer overflow does (whole digits may go); a
 #                   loss of far fractional digits does not.
+# TIER gsql      -- increment 2: tests/exact_decimal/gsql_test.bas, a decimal
+#                   through serialize (byte 2), a G-SQL number column (read
+#                   back, SQL arithmetic and sum, seeks and ranges through an
+#                   index keyed by the nearest double), and dump/restore
+#                   keeping a decimal a decimal and a double a double (the
+#                   same serialize bytes after). Skips without G-SQL.
 # TIER valgrind  -- bounded.
 . "$(dirname "$0")/portable.sh"
 set -uo pipefail
@@ -126,6 +132,22 @@ if printf '%s' "$loud" | grep -q '\[2112\]' && [ "$quiet" = true ]; then
 else
     printf '  loud: %s\n  quiet: %s\n' "$loud" "$quiet"
     printf 'FAIL warning\n'; status=1
+fi
+
+echo "--- TIER gsql ---"
+mkdir -p "$tmp/g"
+gout="$(timeout -k 5 60 ./gbasic tests/exact_decimal/gsql_test.bas "$tmp/g" 2>"$tmp/g.err" </dev/null)"
+if grep -q 'library not loaded: gsql\|no G-SQL' "$tmp/g.err"; then
+    printf 'SKIP gsql (no G-SQL in this build: decimals in G-SQL were NOT checked)\n'
+else
+    printf '%s\n' "$gout" | grep '^MISMATCH' | sed 's/^/  /'
+    gok="$(printf '%s\n' "$gout" | grep -c '^ok ')"
+    if printf '%s\n' "$gout" | grep -q '^MISMATCH' || [ "$gok" -lt 18 ] || [ -s "$tmp/g.err" ]; then
+        head -5 "$tmp/g.err" | sed 's/^/  /'
+        printf 'FAIL gsql (%s checks passed)\n' "$gok"; status=1
+    else
+        printf 'PASS gsql (%s checks: serialize, a number column, its index, dump and restore)\n' "$gok"
+    fi
 fi
 
 echo "--- TIER valgrind ---"

@@ -120,6 +120,7 @@ nul_string_literal|is refused in a string literal
 deep_value_teardown|segfaults when it is RELEASED
 library_top_statements|top-level statements are silently not run
 find_all_first_match|collects only under the first
+decimal_key_collision|share an index key
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -283,6 +284,21 @@ probe_find_all_first_match() {
     else
         printf '     %s\n' "$fa_out"
         fixed "xml.find_all now takes every match at every step (or no longer runs)"
+    fi
+}
+
+probe_decimal_key_collision() {
+    # Red when a UNIQUE index takes two decimals that differ past 17 digits
+    # (they would then have distinct keys). Skips without G-SQL in the build.
+    printf 'load gsql\ndb = gsql.connect("%s/dk.gsql", { create: true })\ndb.exec("create table t (x number)")\ndb.exec("create unique index u on t (x)")\ndb.insert("t", [{x: 0.100000000000000001}])\nr = try db.insert("t", [{x: 0.100000000000000002}])\nprint error.details.code\nprint count(db.query("select x from t where x = 0.100000000000000001"))\n' "$WORK" > "$WORK/dk.bas"
+    dk_out=$(timeout 30 ./gbasic "$WORK/dk.bas" 2>&1 | tr '\n' ' ')
+    if printf '%s' "$dk_out" | grep -q 'library not loaded: gsql\|no G-SQL'; then
+        ok "SKIP decimal key collision (no G-SQL in this build)"
+    elif [ "$dk_out" = "DUPLICATE 1 " ]; then
+        ok "two decimals differing past 17 digits still share a G-SQL index key (a unique index refuses the pair)"
+    else
+        printf '     %s\n' "$dk_out"
+        fixed "two such decimals no longer share a key (or the probe no longer runs)"
     fi
 }
 

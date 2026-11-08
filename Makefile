@@ -486,7 +486,7 @@ third_party/cjson/cJSON.o: third_party/cjson/cJSON.c third_party/cjson/cJSON.h
 third_party/yescrypt/%.o: third_party/yescrypt/%.c third_party/yescrypt/yescrypt.h third_party/yescrypt/sha256.h third_party/yescrypt/yescrypt-platform.c
 	$(CC) -std=gnu99 -O2 -fomit-frame-pointer -Ithird_party/yescrypt -c $< -o $@
 
-src/parser.tab.c src/parser.tab.h: src/parser.y include/ast.h include/lexer.h include/diagnostics.h include/parse_ctx.h
+src/parser.tab.c src/parser.tab.h: src/parser.y include/ast.h include/gb_decimal.h include/lexer.h include/diagnostics.h include/parse_ctx.h
 	bison -d -o src/parser.tab.c src/parser.y
 
 # See the PREFIX note at the top of this file. Kept here rather than up there so
@@ -563,16 +563,16 @@ src/platform_win32.o: src/platform_win32.c include/platform.h .buildswitch-stamp
 src/lexer.o: src/lexer.c include/lexer.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/lexer.h include/diagnostics.h include/parse_ctx.h .buildswitch-stamp
+src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/gb_decimal.h include/lexer.h include/diagnostics.h include/parse_ctx.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c src/parser.tab.c -o $@
 
 src/ast.o: src/ast.c include/ast.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/gsql/%.o: src/gsql/%.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/serialize_tags.h .buildswitch-stamp
+src/gsql/%.o: src/gsql/%.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gb_decimal.h include/serialize_tags.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/crypto_ssh.c src/vendor/bcrypt_pbkdf.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/qt.c src/modules/gsql.c src/modules/csv.c src/modules/net.c src/modules/zip.c include/gb_csv.h include/gb_number_text.h include/gsql_sql.h $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gsql_owner.h include/gsql_table.h include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h include/window_check.h src/currency_table.h third_party/yescrypt/yescrypt.h .stdlibdir-stamp .buildswitch-stamp
+src/eval.o: src/eval.c src/modules/crypto_ssh.c src/vendor/bcrypt_pbkdf.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/qt.c src/modules/gsql.c src/modules/csv.c src/modules/net.c src/modules/zip.c include/gb_csv.h include/gb_decimal.h include/gb_number_text.h include/gsql_sql.h $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gsql_owner.h include/gsql_table.h include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h include/window_check.h src/currency_table.h third_party/yescrypt/yescrypt.h .stdlibdir-stamp .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # THE QT BACKEND: moc, then C++. The generated unit is `#include`d by the .cpp

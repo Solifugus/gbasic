@@ -10,6 +10,7 @@
 #include "v3.h"
 #include "gsql_wire.h"
 #include "serialize_tags.h"
+#include "gb_decimal.h"
 
 #include <ctype.h>
 #include <errno.h>
@@ -581,8 +582,9 @@ static SqlExpr *lit_unknown(P *p, uint32_t pos) {
     return e;
 }
 
-/* gBASIC's literal rule: digits alone are EXACT while they fit int64; a
- * fraction or an exponent is inexact (exact_number_design.md). */
+/* gBASIC's literal rule: digits alone are EXACT while they fit int64, digits
+ * with a point are an exact DECIMAL while they fit (exact_decimal_design.md),
+ * and an exponent is inexact (exact_number_design.md). */
 static SqlExpr *lit_number(P *p) {
     const char *s = p->tok.text;
     uint32_t pos = p->tok.pos;
@@ -596,6 +598,15 @@ static SqlExpr *lit_number(P *p) {
         } else {
             exact = 0;
         }
+    }
+    long long dm = 0;
+    int ds = 0;
+    if (!exact && strchr(s, '.') && !strpbrk(s, "eE") && gb_decimal_from_text(s, &dm, &ds)) {
+        v3_u8(&b, SER_NUMBER);
+        v3_u8(&b, 2);
+        v3_u8(&b, (unsigned)ds);
+        v3_le(&b, (uint64_t)dm, 8);
+        exact = 1;
     }
     if (!exact) {
         double d = strtod(s, NULL);
@@ -3249,8 +3260,11 @@ static void print_double(GsqlBuf *o, double d) {
             }
         }
     }
-    if (!strpbrk(b, ".eE")) {
-        strcat(b, ".0");
+    /* AN EXPONENT MARKS A DOUBLE: since exact decimals, digits with a point
+       read back as a decimal (`0.5` is exact), so a double is written with
+       an exponent (`5e-1`, `2000e0`) to read back as the double it is. */
+    if (!strpbrk(b, "eE")) {
+        strcat(b, "e0");
     }
     puts_(o, b);
 }
@@ -3272,6 +3286,39 @@ int sql_print_value(GsqlBuf *o, const unsigned char *v, size_t n) {
         puts_(o, n > 1 && v[1] ? "TRUE" : "FALSE");
         return 1;
     case SER_NUMBER: {
+        if (n >= 11 && v[1] == 2) {
+            /* AN EXACT DECIMAL as its digits, always with a point, so the
+               literal reads back as the same decimal (a dump restores it). */
+            unsigned scale = v[2];
+            uint64_t raw = 0;
+            for (int k = 0; k < 8; k++) {
+                raw |= (uint64_t)v[3 + k] << (8 * k);
+            }
+            int64_t m = (int64_t)raw;
+            if (scale < 1 || scale > 18) {
+                return 0;
+            }
+            char digits[24];
+            uint64_t mag = m < 0 ? (uint64_t)0 - (uint64_t)m : (uint64_t)m;
+            size_t len = 0;
+            do {                                /* least significant first */
+                digits[len++] = (char)('0' + mag % 10);
+                mag /= 10;
+            } while (mag || len <= scale);      /* at least one digit before the point */
+            for (size_t i = 0; i < len / 2; i++) {
+                char t = digits[i];
+                digits[i] = digits[len - 1 - i];
+                digits[len - 1 - i] = t;
+            }
+            digits[len] = 0;
+            if (m < 0) {
+                puts_(o, "-");
+            }
+            v3_put(o, digits, len - scale);
+            puts_(o, ".");
+            puts_(o, digits + len - scale);
+            return 1;
+        }
         if (n < 10) {
             return 0;
         }

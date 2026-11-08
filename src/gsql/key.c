@@ -8,6 +8,7 @@
 
 #include "gsql_key.h"
 #include "serialize_tags.h"
+#include "gb_decimal.h"
 
 #include <stdint.h>
 #include <math.h>
@@ -148,6 +149,32 @@ static void put_magnitude(GsqlKey *key, int negative, uint64_t m, int e) {
 
 static GsqlKeyStatus key_number(GsqlKey *key, In *in) {
     unsigned exact = (unsigned)in_le(in, 1);
+    if (in->ok && exact == 2) {
+        /* AN EXACT DECIMAL IS KEYED AS ITS NEAREST DOUBLE, with no suffix,
+         * so no key that exists changes (docs/exact_decimal_design.md §6). A
+         * decimal against a double is compared as doubles by gBASIC, which is
+         * what this key says. The cost: two decimals that differ only past a
+         * double's 17 digits share a key, where gBASIC orders them. An exact
+         * ordering suffix cannot help, because that comparison is not
+         * transitive (0.1 = the double 0.1 = 0.10000000000000001, and the two
+         * decimals differ), so no byte order can agree with all of it. */
+        unsigned scale = (unsigned)in_le(in, 1);
+        int64_t m = (int64_t)in_le(in, 8);
+        if (!in->ok || scale < 1 || scale > 18 || (scale > 1 && m % 10 == 0)) {
+            return GSQL_KEY_CORRUPT;
+        }
+        double d = gb_decimal_to_double((long long)m, (int)scale);
+        uint64_t dbits;
+        memcpy(&dbits, &d, sizeof dbits);
+        unsigned char tmp[10];
+        tmp[0] = SER_NUMBER;
+        tmp[1] = 0;
+        for (int i = 0; i < 8; i++) {
+            tmp[2 + i] = (unsigned char)(dbits >> (8 * i));
+        }
+        In as_double = { tmp + 1, 9, 0, 1 };
+        return key_number(key, &as_double);
+    }
     uint64_t bits = in_le(in, 8);
     if (!in->ok || exact > 1) {
         return GSQL_KEY_CORRUPT;

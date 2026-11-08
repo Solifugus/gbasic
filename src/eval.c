@@ -4,6 +4,7 @@
 
 #include "eval.h"
 #include "builtins.h"
+#include "gb_decimal.h"
 #include "platform.h"
 #include "actor.h"
 #include "diagnostics.h"
@@ -16232,6 +16233,14 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         if (v.as.num.is_exact) {
             serbuf_u8(b, 1);
             serbuf_le(b, (uint64_t)v.as.num.exact, 8);
+        } else if (v.as.num.scale > 0) {
+            /* AN EXACT DECIMAL is 2, its scale and its int64 mantissa
+             * (docs/exact_decimal_design.md §6), so it travels as its digits.
+             * A reader that does not know 2 refuses it: data written by this
+             * build is refused by an older one, never misread as a double. */
+            serbuf_u8(b, 2);
+            serbuf_u8(b, (unsigned char)v.as.num.scale);
+            serbuf_le(b, (uint64_t)v.as.num.exact, 8);
         } else {
             uint64_t bits;
             memcpy(&bits, &v.as.num.value, sizeof bits);
@@ -16606,6 +16615,18 @@ static Value deserialize_value(SerReader *r, int depth) {
     case SER_NUMBER: {
         if (r->version >= 3) {
             unsigned char exact = serread_u8(r);
+            if (r->ok && exact == 2) {
+                /* ONE REPRESENTATION, so bytes compare as values do: the scale
+                 * is 1..18 and the mantissa carries no trailing zero past the
+                 * first place, or the payload is refused as corrupt. */
+                unsigned scale = serread_u8(r);
+                long long m = (long long)serread_le(r, 8);
+                if (!r->ok || scale < 1 || scale > 18 || (scale > 1 && m % 10 == 0)) {
+                    r->ok = 0;
+                    return value_null();
+                }
+                return value_number_decimal(m, (int)scale);
+            }
             uint64_t bits = serread_le(r, 8);
             if (!r->ok || exact > 1) {
                 r->ok = 0;

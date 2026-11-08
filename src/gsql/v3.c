@@ -123,7 +123,19 @@ int v3_walk(V3In *in, int depth, V3Walk *w) {
         return in->ok && b <= 1;
     }
     case SER_NUMBER: {
+        /* 0 a double, 1 an exact integer, 2 an exact decimal: its scale and
+         * then its mantissa (docs/exact_decimal_design.md §6). `exact` says
+         * INTEGER, which is what an integer column asks; a decimal is not one,
+         * as `2.0` never was. */
         unsigned exact = (unsigned)v3_in_le(in, 1);
+        if (in->ok && exact == 2) {
+            unsigned scale = (unsigned)v3_in_le(in, 1);
+            int64_t m = (int64_t)v3_in_le(in, 8);
+            if (depth == 0) {
+                w->exact = 0;
+            }
+            return in->ok && scale >= 1 && scale <= 18 && (scale == 1 || m % 10 != 0);
+        }
         v3_in_le(in, 8);
         if (depth == 0) {
             w->exact = exact;

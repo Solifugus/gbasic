@@ -1,7 +1,7 @@
 # Exact decimal numbers
 
-**Status:** increment 1 shipped (2026-11-08, `tests/run_exact_decimal.sh`), with
-the changes measurement forced recorded in §10; increments 2 and 3 open. Design
+**Status:** increments 1 and 2 shipped (2026-11-08, `tests/run_exact_decimal.sh`),
+with the changes measurement forced recorded in §10 and §11; increment 3 open. Design
 written 2026-11-08, from Matthew's ruling on book gap G50: *exact
 decimal numbers*. A number written or read with a decimal point is exact, as
 integers already are; `+`, `-` and `*` stay exact; division and functions
@@ -164,3 +164,28 @@ silently stays off a list.
   is what keeps the sign `run_numfmt` pins.
 - **`decode` and `json_decode`** give decimals too, by the integer helper's
   rule: they were the doors exact integers already came through.
+
+## 11. What increment 2 changed, by measurement
+
+- **The key is the nearest double, with no suffix** (§6 proposed a tie-break
+  suffix ordering a decimal exactly against a double). §4's rule makes that
+  impossible: a decimal against a double compares as doubles, so
+  `0.1 = 1e-1` and `1e-1 = 0.10000000000000001` while `0.1 < 0.10000000000000001`.
+  That is not transitive, and no byte order is. Worse, an exact suffix would
+  make an index seek for `0.1` miss a stored `1/10` that a scan finds, a
+  silent wrong answer. Keyed by the nearest double, a seek finds every row the
+  scan would, and the executor checks the condition on each (measured: a seek
+  on `0.100000000000000001` among four rows sharing its key answers the right
+  two). The cost is DOGFOOD live row 9: two decimals differing only past 17
+  digits share a key, so a UNIQUE index refuses the pair and `ORDER BY`
+  through the index ties them. No existing key changed.
+- **One representation on the wire**: scale 1..18 and no trailing zero past
+  the first place, refused otherwise, so `serialize` bytes compare as values do
+  (`frame.bas` groups by them).
+- **`dump` writes a double with an exponent** (`1e-1`, `2000e0`): digits with a
+  point now read back as a decimal, and run_gsql_module's dump tier caught 3.0
+  and 0.3333333333333333 restoring with different bytes.
+- **An integer column refuses a decimal**, `2.0` included, as it refused `2.0`
+  before: the v3 walk reports a decimal as not an exact integer.
+- **The decimal text helper moved to `include/gb_decimal.h`**, header-only, so
+  G-SQL's harnesses, which compile their files alone, share the one parser.

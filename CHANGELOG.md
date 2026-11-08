@@ -36,7 +36,13 @@ reader sees.
   changed.
 - **Digits that do not fit** give the double: silently when only far fractional
   places go (compounding), with warning 2112 at 2^53 and past it.
-- Not yet: `serialize`, G-SQL and the actor wire carry a decimal as its double.
+- **Stored and sent as digits** (increment 2): `serialize` writes a decimal as
+  exactness byte 2 with its scale and mantissa (an older build refuses it
+  rather than misreading it), so the actor wire and G-SQL rows keep it. SQL
+  literals with a point are decimals. **`dump` now writes a double with an
+  exponent** (`1e-1`, `2000e0`), since plain digits restore as a decimal. A
+  G-SQL index keys a decimal by its nearest double; a UNIQUE index refuses two
+  decimals that differ only past 17 digits (DOGFOOD row 9).
   New suite: `tests/run_exact_decimal.sh`.
 
 ### A watch belongs to the scope that declares it

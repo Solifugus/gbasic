@@ -595,13 +595,6 @@ AstStmt *ast_server(char *word, char *name, AstRecordFieldList options,
                     AstServerItemList items, char *close_word);
 
 AstExpr *ast_number(double value, long long exact, int is_exact, int scale);
-/* Decimal text (`[+-]digits[.digits]`, no exponent, no whitespace) as an exact
- * mantissa and scale, normalised, or 0 and nothing written when it does not
- * fit an int64 with scale <= 18. One helper for the lexer and the runtime's
- * text doors, which is why it lives here rather than in eval.c. */
-int gb_decimal_from_text(const char *text, long long *mantissa, int *scale);
-/* The nearest double to mantissa x 10^-scale, correctly rounded. */
-double gb_decimal_to_double(long long mantissa, int scale);
 AstExpr *ast_string(char *value);
 AstExpr *ast_ident(char *name);
 AstExpr *ast_bool(int value);

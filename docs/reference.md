@@ -8375,8 +8375,15 @@ print sqrt(0.01) = 0.1                          ' true, still: see comparison
   whole digits can go too, as integer overflow does.
 - **Printing** shows the digits (`4148.62`); a decimal and the double it used to
   be print alike up to 15 significant digits.
-- **Not yet:** `serialize`, G-SQL columns and the actor wire carry a decimal as
-  its double (increment 2), and `-0.0` stays a double so its sign survives.
+- **Saved and stored as its digits** *(increment 2)*: `serialize` and the actor
+  wire carry a decimal exactly (exactness byte 2, its scale and mantissa), a
+  G-SQL `number` column holds one, SQL literals with a point are decimals, and
+  `dump` writes a decimal as its digits and a double with an exponent
+  (`1e-1`), so a restore gives back each as it was. An integer column still
+  refuses `2.0`. A G-SQL **index** keys a decimal by its nearest double, so
+  two decimals that differ only past 17 digits share a key: answers through
+  the index stay right, but a UNIQUE index refuses the pair (DOGFOOD live row
+  9). `-0.0` stays a double so its sign survives.
 
 **Number literals.** Decimal (`42`, `3.14`), hexadecimal (`0xFF`), and
 **scientific notation** *(since 0.2.3)* — `1e20`, `6.02e23`, `1.5e-3`, `2E10`,

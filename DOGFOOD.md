@@ -48,6 +48,7 @@ live list is:
 | | what | where |
 |---|---|---|
 | 8 | **`xml.find_all(node, "a/b")` collects only under the first `a`**: two `<s><n/></s>` answer one for `"s/n"`, where the reference says "all matches". A path through repeated elements misses all but the first. Workaround: walk the path a step at a time, taking every match at each. | 2026-11-08 entry |
+| 9 | **Two exact decimals that differ only past a double's 17 digits share an index key**: G-SQL keys a decimal by its nearest double, so a UNIQUE index refuses `0.100000000000000001` beside `0.100000000000000002`, and `ORDER BY` through that index ties them. Answers through an index are still right (the condition is checked on every row). By design, since gBASIC compares a decimal and a double as doubles, which no byte order can follow exactly (`docs/exact_decimal_design.md` §6). | 2026-11-08 entry |
 | — | ~~**`qt.run()` from inside a function silently starves every loop-delivered source.**~~ **FIXED 2026-11-08** by `wait until`'s delivery rule (`docs/watch_scope_design.md` §4): a delivery by the event loop fires every live frame's watches, so it no longer depends on the global frame being current. Held by `tests/run_watch_scope.sh` (tier qtrun, the top-level form as the control). | 2026-10-19 entry |
 | — | ~~**A deeply nested value segfaults at teardown**~~ **DOCUMENTED AS AN ACCEPTED LIMITATION 2026-10-14**, with the numbers re-measured at a PINNED stack: ~43,000 levels at 8 MB, records and arrays alike, and 60,000 releases cleanly at 64 MB — so it is a fact about `ulimit -s`. It has a probe in `run_limitations.sh` now, with the 64 MB run as the control, so it goes red if anybody fixes it. | accepted limitations |
 | — | ~~**`watch` inside a function registers nothing, and says so only with an unlocated line on stderr**~~ **FIXED 2026-11-07** (Matthew's model): a watch belongs to the frame that declares it, sees its locals, and ends when it returns; a watch in a function on anything but its own variables is refused, located (`1003`). `docs/watch_scope_design.md` §3, held by `tests/run_watch_scope.sh`. Event sources in a function wait for increment 2 (`wait until`). | 2026-11-07 entry |
@@ -13574,3 +13575,21 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   integer paths as it did. `x * 1.0` still no longer makes a double, so the
   places that meant one now say `x * 1e0`; the reference and UNLEARN say so.
   No such use was found in gdash, Transward, gbasic-books or Studio.
+
+## 2026-11-08 — CC — while: keying exact decimals in G-SQL (G50 increment 2)
+
+- **Type:** design-limit
+- **Severity:** low
+- **What:** the design asked for a decimal's key to be its nearest double plus
+  a suffix ordering it exactly. That cannot agree with gBASIC: a decimal
+  against a double compares as doubles (so `sqrt(0.01) = 0.1`), which makes
+  `0.1 = 1e-1 = 0.10000000000000001` while the two decimals differ, and no
+  byte order is non-transitive. A suffix would make an index seek miss a row
+  a scan finds (`where x = 0.1` against a stored `1/10`).
+- **Workaround:** a decimal's key is its nearest double, no suffix (no key
+  changed). Measured: an index seek on `0.100000000000000001` among four rows
+  sharing that key answers the right two, as the executor checks the
+  condition on each row. What remains is live-list row 9: two decimals that
+  differ only past 17 digits share a key, so a UNIQUE index refuses the pair.
+- **Status: OPEN** (accepted), probed by `run_limitations.sh`
+  (`decimal_key_collision`).
