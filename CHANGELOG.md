@@ -16,6 +16,16 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### G-SQL gives back a dropped table's space beside a live one (gdash B3)
+
+- **A table swapped in again and again kept its old rounds' space**: a staging
+  table renamed over live grew gdash's directory to 90 MB for 5.5 MB of live
+  rows, because each sorted file mixed a live round with dead ones and only a
+  routine compaction ever rewrote it. A file holding a dropped table's rows is
+  now compacted when nothing else is wanted; the same recipe's sorted files
+  peak at one flush (17 MB). The two logs, up to one memtable each, are
+  unchanged and are most of what remains.
+
 ### Exact decimal numbers (book gap G50)
 
 - **A number written or read with a decimal point is exact**

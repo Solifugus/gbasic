@@ -223,6 +223,112 @@ static void blob_space(const char *base, GsqlIo *io) {
     E->close(db);
 }
 
+/* A dataset swapped in again and again (gdash's GDASH-16 B3): a staging tree
+ * is loaded and replaces the live one, each round. Each flush then holds
+ * several rounds -- the live one and the ones it replaced -- so no file is
+ * all dead and sweep_dead cannot drop it, and the space came back only when
+ * the level-0 trigger happened to compact. With the trigger high enough never
+ * to fire, measured 2026-11-08: the sorted files held 10.27x one round's
+ * rows without dead_start and 2.32x with it, under SWAP_SPACE_BOUND. A
+ * reader held across a swap still reads the rows it began with. lsm only. */
+#define SWAP_SPACE_BOUND 3.0
+typedef struct { GsqlIo *io; const char *dir; uint64_t bytes; unsigned files; } SstSum;
+static int sst_sum(void *ctx, const char *name) {
+    SstSum *b = ctx;
+    size_t n = strlen(name);
+    if (n < 4 || strcmp(name + n - 4, ".sst")) return 0;
+    char p[900];
+    snprintf(p, sizeof p, "%s/%s", b->dir, name);
+    GsqlFile *f;
+    uint64_t sz = 0;
+    if (gsql_io_open(b->io, p, GSQL_IO_READ_ONLY, &f) == 0) {
+        gsql_io_size(f, &sz);
+        gsql_io_close(f);
+    }
+    b->bytes += sz;
+    b->files++;
+    return 0;
+}
+
+static void swap_space(const char *base, GsqlIo *io) {
+    if (strcmp(E->name, "lsm")) return;
+    char path[600];
+    snprintf(path, sizeof path, "%s.swapspace", base);
+    /* a memtable of about two and a half rounds, and a level-0 trigger no
+       twelve rounds reach, so only dead_start can give the space back */
+    GsOptions o = {1, 512, 0, io, 400000, 64, 0, 0, NULL};
+    GsStore *db;
+    int rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "opening the swap-space store answered %s", gs_status_name(rc));
+    if (rc) return;
+    enum { ROWS = 1000, VAL = 100, ROUNDS = 12 };
+    unsigned char v[VAL];
+    GsTxn *held = NULL;
+    for (unsigned round = 1; round <= ROUNDS && rc == GS_OK; round++) {
+        GsTxn *w;
+        E->begin_write(db, &w);
+        E->tree_create(w, gss("stage"));
+        for (unsigned k = 0; k < ROWS; k++) {
+            char kb[16];
+            int kn = snprintf(kb, sizeof kb, "r%05u", k);
+            memset(v, 'a' + (int)(round % 26), sizeof v);
+            snprintf((char *)v, 16, "%04u-%05u", round, k);
+            E->put(w, gss("stage"), gsb(kb, (size_t)kn), gsb(v, sizeof v), 0);
+        }
+        rc = E->commit(w, 1, NULL);
+        if (rc) break;
+        E->begin_write(db, &w);
+        if (round == 1) E->tree_create(w, gss("live"));
+        E->tree_replace(w, gss("live"), gss("stage"));
+        rc = E->commit(w, 1, NULL);
+        if (round == 3 && rc == GS_OK) E->begin_read(db, &held);
+        if (round == 6 && held) {
+            unsigned wrong = 0;
+            for (unsigned k = 0; k < ROWS; k++) {
+                char key[16], want[16];
+                int kn = snprintf(key, sizeof key, "r%05u", k);
+                snprintf(want, sizeof want, "%04u-%05u", 3u, k);
+                GsBytes got;
+                if (E->get(held, gss("live"), gsb(key, (size_t)kn), &got) != GS_OK || got.n != VAL || memcmp(got.p, want, 10)) wrong++;
+            }
+            CHECK(wrong == 0, "a reader held from round 3 read %u of %u rows wrong at round 6", wrong, (unsigned)ROWS);
+            E->abort(held);
+            held = NULL;
+        }
+    }
+    CHECK(rc == GS_OK, "a swap answered %s", gs_status_name(rc));
+    /* a few small commits, the way an application goes on after a refresh,
+       which is what gives a compaction its budget */
+    for (unsigned i = 0; i < 50 && rc == GS_OK; i++) {
+        GsTxn *w;
+        E->begin_write(db, &w);
+        if (i == 0) E->tree_create(w, gss("note"));
+        E->put(w, gss("note"), gss("n"), gsb(&i, sizeof i), 0);
+        rc = E->commit(w, 1, NULL);
+    }
+    CHECK(E->sync(db, NULL) == GS_OK, "sync after the swaps");
+    unsigned wrong = 0;
+    GsTxn *r;
+    E->begin_read(db, &r);
+    for (unsigned k = 0; k < ROWS; k++) {
+        char key[16], want[16];
+        int kn = snprintf(key, sizeof key, "r%05u", k);
+        snprintf(want, sizeof want, "%04u-%05u", (unsigned)ROUNDS, k);
+        GsBytes got;
+        if (E->get(r, gss("live"), gsb(key, (size_t)kn), &got) != GS_OK || got.n != VAL || memcmp(got.p, want, 10)) wrong++;
+    }
+    E->abort(r);
+    CHECK(wrong == 0, "after %u swaps %u of %u live rows read wrong", (unsigned)ROUNDS, wrong, (unsigned)ROWS);
+    SstSum ss = {io, path, 0, 0};
+    CHECK(gsql_io_list(io, path, sst_sum, &ss) == 0, "listing the swap-space store");
+    double amp = (double)ss.bytes / (ROWS * (VAL + 6));
+    if (getenv("GS_SHOW_SPACE")) fprintf(stderr, "swap_space: %u sorted files, %llu bytes, %.2fx one round\n", ss.files, (unsigned long long)ss.bytes, amp);
+    CHECK(amp <= SWAP_SPACE_BOUND, "after %u swaps the sorted files are %.2fx one round's rows, over %.2f", (unsigned)ROUNDS, amp,
+          SWAP_SPACE_BOUND);
+    CHECK(E->check(db, print_report, NULL) == GS_OK, "check after the swaps");
+    E->close(db);
+}
+
 /* More sorted files than the process may hold open, every one of them read.
  * 2.C kept a file open from its first read until it was deleted, so a store
  * of N files needed N descriptors: about 16,000 at 1 TB against a default
@@ -1988,6 +2094,7 @@ int main(int argc, char **argv) {
     directory_rules(path, io);
     many_files(path, io, real);
     blob_space(path, io);
+    swap_space(path, io);
     frozen_reads(path, io);
     lost_twin(path, io);
     real_fs = real;
