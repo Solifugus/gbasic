@@ -28,6 +28,13 @@ reader sees.
 - **A named watcher may be declared in a function** (`watch w(x)`); a handle
   that outlives its function names an ended watch.
 
+### xlsx.new could refuse a valid sheet name
+
+- **`xlsx.new("Summary")` could be refused** as `a sheet name is 1 to 31
+  characters`, depending on what was on the stack: the length check read a
+  string header a plain buffer does not have. Found by valgrind; the
+  creating path is under valgrind in `run_xlsx.sh` now.
+
 ### `process.self().pid`
 
 - **`process.self()` answers `pid`, this process's id** (Transward). A spawned

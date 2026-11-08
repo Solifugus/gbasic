@@ -13524,3 +13524,20 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Status: OPEN**, for Matthew: run them once at load, warn as `2106` does
   beside a `program` block, or refuse them. Probed by `tests/run_limitations.sh`
   (`library_top_statements`).
+
+## 2026-11-08 — CC — while: running the gate for the watch-scope change
+
+- **Type:** bug
+- **Severity:** medium
+- **What:** `xlsx.new("Summary")` refused a valid sheet name, `a sheet name
+  is 1 to 31 characters`, in `run_xlsx` and recipe 13 of the xlsx cookbook,
+  once the watch-scope change was built. That change touched no xlsx code.
+  valgrind named it: `xlsx_sheet_name_ok` counted codepoints with
+  `string_cp_count`, which reads a runtime string's header just before the
+  data, and `xlsx.new` passes a plain `char[256]` it copied the name into. So
+  it read the stack. It passed for as long as the bytes there happened to
+  read as a small count. A latent read, not a defect of the change that
+  exposed it.
+- **Workaround:** resolved: the raw `string_codepoint_count(name, n)`.
+  `run_xlsx.sh`'s valgrind tier now runs the creating fixture too, red with
+  the old call (it ran only the reading one).

@@ -1420,6 +1420,18 @@ if vg_available; then
         tail -25 "$err"
         status=1
     fi
+    # CREATING a workbook too (2026-11-08): xlsx.new's sheet-name check read a
+    # runtime string's header before a plain stack buffer, and refused a valid
+    # name once an unrelated change moved the stack. Nothing ran valgrind over
+    # the creating path, and valgrind named the read at once.
+    if vg_run ./gbasic tests/xlsx_formats/create_test.bas "$tmp/vg_made.xlsx" examples/fixtures/xlsx \
+           >"$out" 2>"$err" </dev/null && tail -1 "$out" | grep -qx 'mismatches: 0'; then
+        printf 'PASS valgrind tests/xlsx_formats/create_test.bas\n'
+    else
+        printf 'FAIL valgrind tests/xlsx_formats/create_test.bas\n'
+        tail -25 "$err"
+        status=1
+    fi
 else
     printf 'SKIP valgrind (not installed)\n'
 fi
