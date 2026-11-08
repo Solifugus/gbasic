@@ -276,6 +276,26 @@ check("an entry carrying NtryDtls reports its counterparty",
 check("one without it answers unknown", bare.counterparty.status, "unknown")
 check("and unknown, never \"\"", is_unknown(bare.counterparty.value), true)
 check("while both carry an amount", bare.amount.status, "ok")
+' book gap G43: the counterparty by DIRECTION, the payer's remittance, the
+' bank's reference, and a loss note for anything else in TxDtls
+check("G43 a credit's counterparty is its debtor, the payer", detailed.debtor.value, "ORION LTD")
+check("G43   and its creditor (the company) is not claimed", detailed.creditor.status, "unknown")
+rich = replace(stmt_text, "<Refs><EndToEndId>ORION</EndToEndId></Refs>",
+               "<Refs><EndToEndId>ORION</EndToEndId><AcctSvcrRef>BANK-77</AcctSvcrRef></Refs>"
+               + "<RmtInf><Ustrd>INV 1001</Ustrd><Ustrd>INV 1002</Ustrd>"
+               + "<Strd><RfrdDocInf><Nb>1001</Nb></RfrdDocInf></Strd>"
+               + "<Strd><RfrdDocInf><Nb>1002</Nb></RfrdDocInf></Strd></RmtInf>"
+               + "<Purp><Cd>SUPP</Cd></Purp>")
+rdoc = finio.read_text(reg, rich, {})
+rf = rdoc.records[rdoc.entities.statements[0].entries[0]].fields
+check("G43 remittance lines are read", rf.remittance.value, "INV 1001" + chr(10) + "INV 1002")
+check("G43   with their location", rf.remittance.location.path, "BkToCstmrStmt/Stmt/Ntry/NtryDtls/TxDtls/RmtInf/Ustrd")
+check("G43 referred documents are read", rf.referred_documents.value, ["1001", "1002"])
+check("G43 the bank's reference is read", rf.account_servicer_ref.value, "BANK-77")
+check("G43 what is not interpreted is a loss note", count(rdoc.loss), 1)
+check("G43   naming its path", contains(rdoc.loss[0].why, "TxDtls/Purp/Cd is not interpreted"), true)
+check("G43   and keeping its text", rdoc.loss[0].raw, "SUPP")
+check("G43 the plain statement has no loss", count(doc.loss), 0)
 check("and the optional element's absence is NOT an issue",
       count(finio.validate(reg, doc)), 0)
 ' A present element that cannot be what it claims.

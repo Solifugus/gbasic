@@ -39,7 +39,7 @@
         <NtryDtls>
           <TxDtls>
             <Refs><EndToEndId>ORION</EndToEndId></Refs>
-            <RltdPties><Cdtr><Pty><Nm>ORION LTD</Nm></Pty></Cdtr></RltdPties>
+            <RltdPties><Dbtr><Pty><Nm>ORION LTD</Nm></Pty></Dbtr></RltdPties>
           </TxDtls>
         </NtryDtls>
       </Ntry>

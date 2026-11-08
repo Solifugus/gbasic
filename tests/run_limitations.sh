@@ -119,6 +119,7 @@ spawn_bare_name|resolves a bare function **name**
 nul_string_literal|is refused in a string literal
 deep_value_teardown|segfaults when it is RELEASED
 library_top_statements|top-level statements are silently not run
+find_all_first_match|collects only under the first
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -270,6 +271,18 @@ probe_spawn_bare_name() {
         ok "spawn still takes a bare function name (not a qualified one, not a value, not a library's own)"
     else
         fixed "spawn now accepts a qualified name, a function value, or a library's own function"
+    fi
+}
+
+probe_find_all_first_match() {
+    # Red when find_all takes every match at every step (answers 2 here).
+    printf 'load xml\nd = xml.parse("<a><s><n>1</n></s><s><n>2</n></s></a>")\nprint count(xml.find_all(d, "s/n"))\nprint count(xml.find_all(d, "s"))\n' > "$WORK/fa.bas"
+    fa_out=$(timeout 20 ./gbasic "$WORK/fa.bas" 2>&1 | tr '\n' ' ')
+    if [ "$fa_out" = "1 2 " ]; then
+        ok "xml.find_all still collects only under the first match of a path's earlier steps"
+    else
+        printf '     %s\n' "$fa_out"
+        fixed "xml.find_all now takes every match at every step (or no longer runs)"
     fi
 }
 

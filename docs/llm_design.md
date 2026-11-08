@@ -344,7 +344,7 @@ turn = llm.message("assistant", [ llm.text("Looking that up."),
 | --- | --- |
 | `llm.text(s)` / `llm.tool_call(id, name, args)` / `llm.tool_result(id, content, is_error)` | part constructors |
 | `llm.message(role, parts)` | a canonical message, validated |
-| `llm.parts_of(msg)` | the parts — a legacy `{role, content}` message reads as one text part |
+| `llm.parts_of(msg)` | the parts — a legacy `{role, content}` message reads as one text part, and a provider-shaped turn (OpenAI `tool_calls` and `role: "tool"`, Anthropic content blocks), as `run_tools` keeps them, reads as its text, calls and results (since 0.11.0, book gap G60); `from_response` gives a call's `args` as the arguments, with `args_error` when they do not parse |
 | `llm.text_of(msg)` | the text parts joined |
 | `llm.to_wire(m, messages)` | the transcript in the provider's own shape |
 | `llm.from_response(m, response)` | the assistant turn from a response, as canonical parts |

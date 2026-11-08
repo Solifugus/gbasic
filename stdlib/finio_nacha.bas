@@ -106,6 +106,57 @@ function layout_addenda()
         { concept: "entry_detail_sequence_number", offset: 87, length: 7 } ])
 end function
 
+' THE RETURN AND NOTIFICATION-OF-CHANGE ADDENDA have layouts of their own
+' (book gap G44): a type-99 addenda read with the type-05 layout put the
+' return reason and the original trace number at the front of
+' payment_related_information and read the sequence numbers from the wrong
+' bytes, all `ok`. The layout is chosen by the addenda type code.
+' CHECKED AGAINST: the type-98 layout against cor-example.ach, a notification
+' of change written by another implementation (tests/finio/foreign_test.bas),
+' value by value. The type-99 layout is the standard's, NOT yet checked
+' against a file or a published table from outside this tree.
+function layout_addenda_return()
+    return finio.layout([
+        { concept: "record_type",                   offset: 0,  length: 1 },
+        { concept: "addenda_type_code",             offset: 1,  length: 2 },
+        { concept: "return_reason_code",            offset: 3,  length: 3 },
+        { concept: "original_entry_trace_number",   offset: 6,  length: 15 },
+        { concept: "date_of_death",                 offset: 21, length: 6 },
+        { concept: "original_receiving_dfi",        offset: 27, length: 8 },
+        { concept: "addenda_information",           offset: 35, length: 44 },
+        { concept: "trace_number",                  offset: 79, length: 15 } ])
+end function
+
+function layout_addenda_noc()
+    return finio.layout([
+        { concept: "record_type",                   offset: 0,  length: 1 },
+        { concept: "addenda_type_code",             offset: 1,  length: 2 },
+        { concept: "change_code",                   offset: 3,  length: 3 },
+        { concept: "original_entry_trace_number",   offset: 6,  length: 15 },
+        { concept: "reserved",                      offset: 21, length: 6 },
+        { concept: "original_receiving_dfi",        offset: 27, length: 8 },
+        { concept: "corrected_data",                offset: 35, length: 29 },
+        { concept: "reserved_2",                    offset: 64, length: 15 },
+        { concept: "trace_number",                  offset: 79, length: 15 } ])
+end function
+
+' An addenda's layout, by its type code: 05 the payment-related one, 99 a
+' return, 98 a notification of change; `unknown` for any other, which the
+' reader then reports as a loss rather than reading with the wrong layout.
+function addenda_layout_for(raw)
+    t = byte_slice(raw, 1, 2)
+    if t = "05" then
+        return layout_addenda()
+    end if
+    if t = "99" then
+        return layout_addenda_return()
+    end if
+    if t = "98" then
+        return layout_addenda_noc()
+    end if
+    return unknown
+end function
+
 function layout_batch_control()
     return finio.layout([
         { concept: "record_type",                     offset: 0,  length: 1 },
@@ -174,12 +225,23 @@ end function
 ' code this table does not hold is reported UNKNOWN and left out of both totals
 ' (Axiom 7), never defaulted to either side.
 
+' RETURNS AND NOTIFICATIONS OF CHANGE (book gap G44): 21, 31, 41 and 51 are
+' the automated return or NOC of a credit to a checking, savings, general
+' ledger or loan account, and 26, 36, 46 and 56 of a debit. A bank's return
+' file is coded with these, and without them its amounts were in neither
+' total and the batch and file controls disagreed for a reason nothing named.
+function return_codes()
+    return [ "21", "26", "31", "36", "41", "46", "51", "56" ]
+end function
+
 function credit_codes()
-    return [ "22", "23", "24", "32", "33", "34", "42", "43", "44", "52", "53", "54" ]
+    return [ "22", "23", "24", "32", "33", "34", "42", "43", "44", "52", "53", "54",
+             "21", "31", "41", "51" ]
 end function
 
 function debit_codes()
-    return [ "27", "28", "29", "37", "38", "39", "47", "48", "49", "55", "56" ]
+    return [ "27", "28", "29", "37", "38", "39", "47", "48", "49", "55", "56",
+             "26", "36", "46" ]
 end function
 
 function direction_of(code)
@@ -440,6 +502,20 @@ function read_source(src, revision)
             end if
         else
             lay = layout_for(kind)
+            if kind = "addenda" then
+                lay = addenda_layout_for(raw)
+                if is_unknown(lay) then
+                    ' NOT READ WITH ANOTHER TYPE'S LAYOUT: its type code is
+                    ' kept, and the rest is a loss the caller is told about
+                    lay = finio.layout([
+                        { concept: "record_type",       offset: 0, length: 1 },
+                        { concept: "addenda_type_code", offset: 1, length: 2 } ])
+                    append(loss, finio.loss_note("uninterpreted",
+                        { record: i, byte_offset: src.offsets[i], byte_length: byte_count(raw),
+                          raw: raw,
+                          why: "addenda type '" + byte_slice(raw, 1, 2) + "' is not one this adapter interprets (it reads 05, 98 and 99); the bytes are kept" }))
+                end if
+            end if
             fields = {}
             for each f in lay
                 fields[f.concept] = _field(raw, f, kind)
@@ -968,6 +1044,12 @@ function set_field(doc, record_index, concept, text)
         error ("finio_nacha.set_field: record " + string(record_index) + " is " + r.kind + " and has no fields")
     end if
     lay = layout_for(r.kind)
+    if r.kind = "addenda" then
+        lay = addenda_layout_for(r.raw)
+        if is_unknown(lay) then
+            error ("finio_nacha.set_field: record " + string(record_index) + " is an addenda of a type this adapter does not interpret")
+        end if
+    end if
     spec = unknown
     for each f in lay
         if f.concept = concept then

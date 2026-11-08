@@ -47,6 +47,7 @@ live list is:
 
 | | what | where |
 |---|---|---|
+| 8 | **`xml.find_all(node, "a/b")` collects only under the first `a`**: two `<s><n/></s>` answer one for `"s/n"`, where the reference says "all matches". A path through repeated elements misses all but the first. Workaround: walk the path a step at a time, taking every match at each. | 2026-11-08 entry |
 | — | ~~**`qt.run()` from inside a function silently starves every loop-delivered source.**~~ **FIXED 2026-11-08** by `wait until`'s delivery rule (`docs/watch_scope_design.md` §4): a delivery by the event loop fires every live frame's watches, so it no longer depends on the global frame being current. Held by `tests/run_watch_scope.sh` (tier qtrun, the top-level form as the control). | 2026-10-19 entry |
 | — | ~~**A deeply nested value segfaults at teardown**~~ **DOCUMENTED AS AN ACCEPTED LIMITATION 2026-10-14**, with the numbers re-measured at a PINNED stack: ~43,000 levels at 8 MB, records and arrays alike, and 60,000 releases cleanly at 64 MB — so it is a fact about `ulimit -s`. It has a probe in `run_limitations.sh` now, with the 64 MB run as the control, so it goes red if anybody fixes it. | accepted limitations |
 | — | ~~**`watch` inside a function registers nothing, and says so only with an unlocated line on stderr**~~ **FIXED 2026-11-07** (Matthew's model): a watch belongs to the frame that declares it, sees its locals, and ends when it returns; a watch in a function on anything but its own variables is refused, located (`1003`). `docs/watch_scope_design.md` §3, held by `tests/run_watch_scope.sh`. Event sources in a function wait for increment 2 (`wait until`). | 2026-11-07 entry |
@@ -13541,3 +13542,19 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Workaround:** resolved: the raw `string_codepoint_count(name, n)`.
   `run_xlsx.sh`'s valgrind tier now runs the creating fixture too, red with
   the old call (it ran only the reading one).
+
+## 2026-11-08 — CC — while: reading every structured remittance in a camt entry (book gap G43)
+
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** `xml.find_all(node, "a/b")` takes only the FIRST `a` and returns
+  every `b` under it, so two `<s><n/></s>` answer one for `"s/n"`, measured.
+  The reference says "an array of all matches"; the code says, in a comment,
+  "descend first-match through all but the final step". So each structured
+  remittance in a camt entry (its own `Strd`) was missed after the first.
+- **Workaround:** `finio_camt` walks the path a step at a time, taking every
+  match at each step (`_find_all_steps`).
+- **Status: OPEN**, for Matthew: make `find_all` take every match at every
+  step (what "all matches" reads as), or say in the reference that only the
+  last step is collected in full. Not changed here: it is a core module's
+  rule, and callers may rely on it.

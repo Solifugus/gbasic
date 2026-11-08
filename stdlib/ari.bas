@@ -1396,7 +1396,37 @@ library ari
             for each e in _check_usings(spec.root, spec.types, spec.root.name)
                 append(errs, e)
             end for
+            for each e in _check_field_types(spec.root, spec.types, spec.root.name)
+                append(errs, e)
+            end for
         end if
+        return errs
+    end function
+
+    ' A FIELD'S TYPE IS ONE ARI HAS (book gap G33): `as number`, which ARI does
+    ' not have, parsed with `ok: true` and every value the WHOLE LINE of text,
+    ' with no diagnostic, because an unknown type fell through to the raw line.
+    ' Refused here, at load time, as an unknown `using` already is, naming what
+    ' is accepted: the built-in types and the types this spec declares.
+    function _check_field_types(sec, types, path)
+        errs = []
+        known = builtin_types()
+        for each k in keys(types)
+            append(known, k)
+        end for
+        for each group in [ sec.fields, sec.rows ]
+            for each f in group
+                if f.type != "" and not contains(known, f.type) then
+                    append(errs, ("field `" + f.name + "` in section `" + path + "` is `as "
+                        + f.type + "`, which is not a type: the types are " + join(known, ", ") + "."))
+                end if
+            end for
+        end for
+        for each child in sec.sections
+            for each e in _check_field_types(child, types, path + "." + child.name)
+                append(errs, e)
+            end for
+        end for
         return errs
     end function
 

@@ -10269,7 +10269,17 @@ whole program without needing a call site.
   `{ concept:, offset:, length: }` (offsets are **0-based**; published format
   guides number the same positions from 1, so a layout transcribed straight out
   of one is off by one everywhere), held **once per format** rather than per
-  record, and `finio.concepts(lay)` lists its names.
+  record, and `finio.concepts(lay)` lists its names. `finio.render(lay,
+  values)` (*since 0.11.0*) writes one record from the same layout: every
+  concept given as text of exactly its field's width, a value too short or too
+  long **refused, never padded or cut**, so a payer originating its own file
+  uses the layouts reading does. `finio_nacha.addenda_layout_for(raw)` picks
+  the addenda layout by type code (05, 98 for a notification of change, 99 for
+  a return), and return and NOC transaction codes (21, 26, 31, 36, 41, 46, 51,
+  56) have a direction. A camt entry reads `debtor`, `creditor`, `remittance`
+  (the `Ustrd` lines), `referred_documents` and `account_servicer_ref`, its
+  `counterparty` is chosen by direction (the debtor on a credit), and
+  `TxDtls` content it does not interpret is a loss note.
   **A location is a value with a `kind`**, and that is a correction Phase 1
   shipped without: §4 asked for "a generic source-location abstraction" from the
   beginning, and every location `finio` could make was
@@ -10453,6 +10463,15 @@ whole program without needing a call site.
   `layout_file_control()`; `finio_nacha.record_length()` is 94. Each covers all
   94 bytes with no gap and no overlap, which `finio.coverage` asserts rather
   than the addition being trusted.
+  An addenda is read by its type code (*since 0.11.0*):
+  `finio_nacha.addenda_layout_for(raw)` answers `layout_addenda()` for 05,
+  `layout_addenda_return()` for 99 (return reason, original trace, date of
+  death, original receiving DFI, information, trace) and `layout_addenda_noc()`
+  for 98 (change code, original trace, original receiving DFI, corrected data,
+  trace), and `unknown` for any other, which is then a loss note rather than a
+  record read with another type's layout. `finio_nacha.return_codes()` lists
+  the return and notification-of-change transaction codes (21, 26, 31, 36, 41,
+  46, 51, 56), which are in `credit_codes()` or `debit_codes()` by direction.
   **One revision, named `unresolved`, and that is the honest answer.** The
   Operating Rules are revised every year; the record layout has outlived twenty
   of those revisions and a file does not say which produced it, so naming a
@@ -11235,8 +11254,15 @@ whole program without needing a call site.
   (each with `text`, `confidence` and a box), plus `rotation`,
   `rotation_confidence`, `script`, `script_confidence` and `skew`. Options are
   `{ languages:, psm:, min_confidence: }` and an unknown one is refused by name.
-  `ocr.grid(page)` lays the page out as text; `ocr.skew_of(words)` and
-  `ocr.max_skew()` are the measure and the threshold it refuses past.
+  `ocr.grid(page [, { max_skew: }])` lays the page out as text, always with a
+  space between words (*since 0.11.0*, so two words the engine split are not
+  run back into one); `ocr.grid_lines(page)` gives the same lines as the words
+  placed on them, each with its `index` into `page.words` and its `column`, so a
+  value can be attributed to the words it is made of. `ocr.skew_of(words)` and
+  `ocr.max_skew()` are the measure and the default threshold it refuses past;
+  it also refuses a page whose skew, across the words' span, drifts more than
+  half its median line pitch, where a row starts to carry the next row's
+  figures (measured on real invoices at 2.2 degrees).
 
   **It never returns a bare string, never silently drops a low-confidence word,
   and corrects nothing.** Each is a refusal with a measurement behind it. Plain
@@ -11271,7 +11297,11 @@ whole program without needing a call site.
 
 - `ari_advisor` — **Phase 4: the optional LLM advisor** (design §11). A
   *separate* library, because `llm` needs libcurl and a program that discovers a
-  specification should not carry an HTTP client it never calls.
+  specification should not carry an HTTP client it never calls. Its prompt
+  names no domain of its own (*since 0.11.0*, `prompt_version: ari-advisor-2`;
+  it called every report a banking report), and the option `domain:` is a
+  sentence saying what the report is. `adopt` rewrites the field's
+  declaration in `proposal.spec` as well as in `fields`.
 
   `evidence(proposal [, options])` builds the bounded package that leaves the
   machine. It is built from the **proposal**, never the report, so a value the

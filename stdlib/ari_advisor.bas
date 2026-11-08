@@ -70,10 +70,15 @@ function modes()
 end function
 
 function default_options()
+    ' `domain`: a sentence saying what the report is, sent with the evidence,
+    ' and nothing when the caller says nothing (book gap G35). The prompt said
+    ' "a banking report" whatever the report was. Version 2 is the prompt
+    ' without a domain of its own.
     return { mode: "redacted",
-             prompt_version: "ari-advisor-1",
+             prompt_version: "ari-advisor-2",
              max_fields: 24,
-             max_examples: 3 }
+             max_examples: 3,
+             domain: nothing }
 end function
 
 function _options(given)
@@ -195,9 +200,16 @@ end function
 ' NAME ADVICE -- proposed, never adopted.
 ' ---------------------------------------------------------------------------
 
-function _name_system()
-    return ("You are naming columns in a banking report whose structure has "
-            + "already been determined by a deterministic parser. You are given "
+function _name_system(o)
+    about = ""
+    if not is_nothing(o.domain) then
+        if not is_string(o.domain) then
+            error "ari_advisor: domain is a sentence saying what the report is, as text"
+        end if
+        about = " The report: " + o.domain + "."
+    end if
+    return ("You are naming columns in a report whose structure has "
+            + "already been determined by a deterministic parser." + about + " You are given "
             + "each column's derived name, its type, whether it was located by "
             + "an anchor, and a MASKED example where digits are 9 and letters "
             + "are X or x. Propose a better snake_case name for a column ONLY "
@@ -239,7 +251,7 @@ function advise_names(proposal, model, options = nothing)
     end if
 
     pkg = evidence(proposal, o)
-    reply = llm.ask_json(model, _name_system(), encode(pkg))
+    reply = llm.ask_json(model, _name_system(o), encode(pkg))
 
     prov = { prompt_version: o.prompt_version,
              mode: o.mode,
@@ -319,6 +331,23 @@ function adopt(proposal, derived_name)
         error ("ari_advisor.adopt: no field named '" + derived_name + "'")
     end if
     out.fields = fields
+    ' THE SPECIFICATION SAYS THE NEW NAME TOO (book gap G34): `adopt` renamed
+    ' the field in `fields` and left `spec` saying `field <old>:`, so a caller
+    ' who saved the specification saved the old name. Only the declaration
+    ' line, `field <old>:` at the start of a line, is rewritten; a name is an
+    ' identifier, so it needs no escaping.
+    if has(out, "spec") then
+        if is_string(out.spec) then
+            new_name = ""
+            for each f in fields
+                if has(f, "name_was") and f.name_was = derived_name then
+                    new_name = f.name
+                end if
+            end for
+            out.spec = replace(out.spec, regex("(?m)^([ \\t]*field[ ]+)" + derived_name + "([ ]*:)"),
+                               "$1" + new_name + "$2")
+        end if
+    end if
     return out
 end function
 

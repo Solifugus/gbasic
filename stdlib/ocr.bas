@@ -394,30 +394,70 @@ end function
 ' design exists for: tesseract puts a right-hand column in a SEPARATE BLOCK, so
 ' an account number and its amount arrive twelve lines apart with the
 ' association destroyed and the text still reading like a document.
-function grid(page)
+function grid(page, options = nothing)
+    lines = _layout(page, options)
+    out = []
+    for each ln in lines
+        append(out, ln.text)
+    end for
+    return join(out, chr(10))
+end function
+
+' `ocr.grid_lines(page)` -> the grid's lines as the words placed on them
+' (book gap G52): `{ text, words: [ { index, text, column } ] }`, `index` into
+' `page.words`. The grid alone is text, so a value read from it could be given
+' a confidence only by matching its text against the page's words, which can
+' pick the same text from elsewhere on the page.
+function grid_lines(page, options = nothing)
+    return _layout(page, options)
+end function
+
+function _grid_options(given)
+    o = { max_skew: max_skew() }
+    if is_nothing(given) then
+        return o
+    end if
+    if type(given) != "record" then
+        error "ocr.grid: options must be a record, for example { max_skew: 2 }"
+    end if
+    for each k in keys(given)
+        if k != "max_skew" then
+            error "ocr.grid: unknown option '" + k + "' (known: max_skew)"
+        end if
+        o[k] = given[k]
+    end for
+    return o
+end function
+
+function _layout(page, options)
     if not has(page, "words") then
         error "ocr.grid: expects a page from ocr.read_page"
     end if
+    o = _grid_options(options)
     if count(page.words) = 0 then
-        return ""
+        return []
     end if
     ' REFUSED RATHER THAN LAID OUT SIDEWAYS OR CROOKED. A caller wanting the
     ' words anyway still has them -- `read_page` is unaffected, and the words
     ' are individually fine. What may not be claimed is that a ROW belongs
     ' together, when the evidence for that has gone.
     if not is_unknown(page.skew) then
-        if page.skew > max_skew() or page.skew < 0 - max_skew() then
+        if page.skew > o.max_skew or page.skew < 0 - o.max_skew then
             error ("ocr.grid: the page is skewed " + string(page.skew)
-                   + " degrees, past the " + string(max_skew())
+                   + " degrees, past the " + string(o.max_skew)
                    + " where rows stop being reliable -- beyond it a row carries"
                    + " another row's values and nothing says so")
         end if
     end if
 
-    ' one bucket per engine line
+    ' one bucket per engine line; each word keeps its index into page.words
     lines = {}
     order = []
-    for each d in page.words
+    wi = 0
+    for each d0 in page.words
+        d = d0
+        d.index = wi
+        wi = wi + 1
         k = string(d.block) + "/" + string(d.paragraph) + "/" + string(d.line)
         if not has(lines, k) then
             lines[k] = []
@@ -460,6 +500,39 @@ function grid(page)
         end if
     end for
 
+    ' THE REFUSAL MEASURED ON THIS PAGE (book gap G53): rows were misattributed
+    ' below max_skew on real invoices. A row is misattributed once a word drifts
+    ' more than half a line pitch, since it then lies nearer the next row; so
+    ' the drift across the words' span is set against the page's own median
+    ' pitch. Measured in the book: 2.2 degrees across 900 pixels drifts 35,
+    ' against a 37.5 pitch, and that row carried the next row's figures.
+    if not is_unknown(page.skew) and count(merged) > 1 then
+        gaps = []
+        i = 1
+        while i < count(merged)
+            append(gaps, merged[i].mid - merged[i - 1].mid)
+            i = i + 1
+        end while
+        pitch = _median(gaps)
+        lo = unknown
+        hi = unknown
+        for each d in page.words
+            if is_unknown(lo) or d.left < lo then
+                lo = d.left
+            end if
+            if is_unknown(hi) or d.left + d.width > hi then
+                hi = d.left + d.width
+            end if
+        end for
+        drift = abs(_tan_small(page.skew * 3.141592653589793 / 180) * (hi - lo))
+        if not is_unknown(pitch) and pitch > 0 and drift > pitch / 2 then
+            error ("ocr.grid: the page is skewed " + string(page.skew) + " degrees, which across its "
+                   + string(round(hi - lo)) + "-pixel span drifts " + string(round(drift))
+                   + " pixels, more than half its " + string(round(pitch))
+                   + "-pixel line pitch -- a row would carry another row's values and nothing would say so")
+        end if
+    end if
+
     ' one character cell, from the median width per character across the page
     widths = []
     for each d in page.words
@@ -476,16 +549,31 @@ function grid(page)
     out = []
     for each r in merged
         line = ""
+        placed = []
         for each d in _by_left(r.words)
             col = round(d.left / cw)
             while len(line) < col
                 line = line + " "
             end while
+            ' AT LEAST ONE SPACE BETWEEN WORDS (book gap G52): a word whose
+            ' column fell inside the line so far was appended with none, so
+            ' "Industrial Way" came out "IndustrialWay" and two words the
+            ' engine split read as one. The column moves right by one instead.
+            if len(line) > 0 and right(line, 1) != " " then
+                line = line + " "
+            end if
+            append(placed, { index: d.index, text: d.text, column: len(line) })
             line = line + d.text
         end for
-        append(out, line)
+        append(out, { text: line, words: placed })
     end for
-    return join(out, chr(10))
+    return out
+end function
+
+' tan for the angles a page skews by, from its series as this library's
+' atan is: x + x^3/3 + 2x^5/15 is within a millionth of tan below 10 degrees.
+function _tan_small(x)
+    return x + x * x * x / 3 + 2 * x * x * x * x * x / 15
 end function
 
 function _concat(a, b)

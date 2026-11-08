@@ -28,6 +28,30 @@ reader sees.
 - **A named watcher may be declared in a function** (`watch w(x)`); a handle
   that outlives its function names an ended watch.
 
+### The gBASIC books' last gaps, the library half (G31-G35, G43-G45, G52, G53, G60)
+
+- **Report discovery** (G31-G35): a refusal names the near miss (two row
+  families differing at one token); the detail rows' start pattern is tested
+  against the heading it must not match; column spans come from the printed
+  rule line; with several money columns each run total is read under its own
+  column (it read the hours as the total); discovery and ARI share one type
+  vocabulary and ARI refuses an unknown field type when it reads a
+  specification (an unknown type gave every value as the whole line);
+  `ari_advisor.adopt` rewrites the specification; the advisor's prompt names
+  no domain of its own and takes `domain:`.
+- **finio** (G43-G45): camt reads remittance, referred documents, debtor,
+  creditor and the bank's reference, picks the counterparty by direction (it
+  named the company on every incoming payment), and notes uninterpreted
+  `TxDtls` as a loss; NACHA gives return and NOC codes a direction and reads
+  type-98 and type-99 addenda with their own layouts; `finio.render` writes a
+  record from a layout, refusing a value of the wrong width.
+- **ocr** (G52, G53): the grid keeps a space between words; `ocr.grid_lines`
+  says which words each line is made of; a page whose drift passes half its
+  line pitch is refused, and `max_skew` can be set.
+- **llm** (G60): `parts_of` reads provider-shaped tool turns, and
+  `from_response` gives the arguments rather than `{ ok, value }` (which
+  `to_wire` would have sent as the call's input).
+
 ### The gBASIC books' last gaps (volume 3, G31-G65), the core half
 
 - **`exit` ends the program from any depth** (G63, G48). A bare `exit(70)` in

@@ -209,5 +209,38 @@ check("the control: a well-formed message is accepted", ok.role, "user")
 ok2 = llm.with_volatile(anth, ["system"])
 check("and a well-formed volatile list is", count(ok2.volatile), 1)
 
+' ---- provider-shaped turns, as run_tools keeps them (book gap G60) ---------
+' parts_of read an OpenAI assistant turn with tool_calls as one text part, and
+' Anthropic blocks as nothing, so the tool calls were lost to a caller.
+o_turn = { role: "assistant", content: "Looking.",
+           tool_calls: [ { id: "call_9", type: "function",
+                           function: { name: "get_balance", arguments: "{\"id\": 7}" } } ] }
+op = llm.parts_of(o_turn)
+check("G60 an OpenAI assistant turn reads as its text and its call", count(op), 2)
+check("G60   the call's name", op[1].name, "get_balance")
+check("G60   and its arguments, decoded", op[1].args.id, 7)
+t_turn = { role: "tool", tool_call_id: "call_9", content: "42.00" }
+tp = llm.parts_of(t_turn)
+check("G60 an OpenAI tool turn reads as a result", tp[0].kind, "tool_result")
+check("G60   for the call it answers", tp[0].id, "call_9")
+check("G60   with its content", tp[0].content, "42.00")
+a_turn = { role: "assistant", content: [ { type: "text", text: "Looking." },
+                                         { type: "tool_use", id: "tu_1", name: "get_balance", input: { id: 7 } } ] }
+ap = llm.parts_of(a_turn)
+check("G60 Anthropic blocks read as parts", count(ap), 2)
+check("G60   the tool_use is a call", ap[1].kind, "tool_call")
+r_turn = { role: "user", content: [ { type: "tool_result", tool_use_id: "tu_1", content: "42.00" } ] }
+check("G60 an Anthropic tool_result block reads as a result", llm.parts_of(r_turn)[0].id, "tu_1")
+' from_response gives the ARGUMENTS, not the decode's { ok, value } result,
+' which to_wire would have sent as the call's input
+resp = { raw: { choices: [ { message: { content: "", tool_calls: [ { id: "c1", type: "function",
+          function: { name: "get_balance", arguments: "{\"id\": 7}" } } ] } } ] } }
+fr = llm.from_response(oai, resp)
+check("G60 from_response unwraps the arguments", fr.parts[0].args.id, 7)
+check("G60   and has no ok/value wrapper", has(fr.parts[0].args, "ok"), false)
+bad = { raw: { choices: [ { message: { content: "", tool_calls: [ { id: "c2", type: "function",
+          function: { name: "x", arguments: "{not json" } } ] } } ] } }
+check("G60 malformed arguments are kept as args_error", has(llm.from_response(oai, bad).parts[0], "args_error"), true)
+
 print "checks: " + string(tally.checks)
 print "mismatches: " + string(tally.mismatches)
