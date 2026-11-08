@@ -179,6 +179,11 @@ static int xml_parse_options(Value *opts, int *keep_space, int *want_pos) {
 typedef struct {
     long start;
     long end;
+    /* the element's CONTENT, between its tags (book gap G39): a value's
+       lineage wants the bytes of the value, not of the markup around it.
+       Empty, at the tag's end, for a self-closing element. */
+    long content_start;
+    long content_end;
 } XmlRange;
 
 typedef struct {
@@ -244,6 +249,22 @@ static void xml_pos_start(void *ud, const xmlChar *localname, const xmlChar *pre
     }
     pc->items[pc->count].start = begin;
     pc->items[pc->count].end = -1;
+    /* the start tag's own '>', found from its '<' by quotes, not taken from
+       the parser's cursor (which libxml2 leaves on the '>', or on the '/' of
+       a self-closing tag, measured): the content begins past it */
+    long gt = begin + 1;
+    char quote = 0;
+    while (gt < (long)pc->buflen && (quote || pc->buf[gt] != '>')) {
+        if (quote) {
+            if (pc->buf[gt] == quote) quote = 0;
+        } else if (pc->buf[gt] == '"' || pc->buf[gt] == '\'') {
+            quote = pc->buf[gt];
+        }
+        gt++;
+    }
+    int self_closing = gt > begin && pc->buf[gt - 1] == '/';
+    pc->items[pc->count].content_start = self_closing ? -2 : gt + 1;
+    pc->items[pc->count].content_end = -1;
     pc->open[pc->open_count++] = pc->count;
     pc->count++;
 }
@@ -256,7 +277,66 @@ static void xml_pos_end(void *ud, const xmlChar *localname, const xmlChar *prefi
         return;
     }
     size_t slot = pc->open[--pc->open_count];
-    pc->items[slot].end = xml_pos_cursor(pc);
+    long end = xml_pos_cursor(pc);
+    pc->items[slot].end = end;
+    /* the end tag `</name>` holds no '<' but its first, so going back from
+       its end finds where the content stops; a self-closing element reports
+       its end where its start tag ended, and has no content */
+    if (pc->items[slot].content_start == -2) {
+        pc->items[slot].content_start = end;   /* self-closing: none, at its end */
+        pc->items[slot].content_end = end;
+        return;
+    }
+    long ce = end - 1;
+    while (ce > pc->items[slot].content_start && pc->buf[ce] != '<') {
+        ce--;
+    }
+    pc->items[slot].content_end = ce;
+}
+
+/* Each attribute's VALUE as bytes, read from the start tag's own text
+ * [start, tag_end): { name: { byte_start, byte_end } }, the range inside the
+ * quotes, as written (entities not decoded), so `byte_slice` gives the source.
+ * Walked by quotes, not by '>', since a raw '>' may stand in a value. */
+static Value xml_attribute_ranges(const char *buf, long start, long tag_end) {
+    Value out = value_record(NULL, 0);
+    long i = start + 1;
+    while (i < tag_end && !isspace((unsigned char)buf[i]) && buf[i] != '>' && buf[i] != '/') {
+        i++;   /* the element's name */
+    }
+    for (;;) {
+        while (i < tag_end && isspace((unsigned char)buf[i])) {
+            i++;
+        }
+        if (i >= tag_end || buf[i] == '>' || buf[i] == '/') {
+            break;
+        }
+        long name_start = i;
+        while (i < tag_end && buf[i] != '=' && !isspace((unsigned char)buf[i])) {
+            i++;
+        }
+        long name_end = i;
+        while (i < tag_end && (isspace((unsigned char)buf[i]) || buf[i] == '=')) {
+            i++;
+        }
+        if (i >= tag_end || (buf[i] != '"' && buf[i] != '\'')) {
+            break;   /* not well formed; the parse that succeeded says otherwise */
+        }
+        char quote = buf[i++];
+        long value_start = i;
+        while (i < tag_end && buf[i] != quote) {
+            i++;
+        }
+        char name[256];
+        snprintf(name, sizeof name, "%.*s", (int)(name_end - name_start < 255 ? name_end - name_start : 255),
+                 buf + name_start);
+        Value range = value_record(NULL, 0);
+        record_set(&range, "byte_start", value_number_exact((long long)value_start));
+        record_set(&range, "byte_end", value_number_exact((long long)i));
+        record_set(&out, name, range);
+        i++;   /* the closing quote */
+    }
+    return out;
 }
 
 /* Collect one range per element, in document order. Returns 1 on success; 0
@@ -460,7 +540,7 @@ static int xml_element_to_record(xmlNode *elem, int depth, int keep_space,
      * minority of callers. Absent unless asked for, so an existing parse is
      * byte-identical. */
     if (want_pos) {
-        record_set(&rec, "line", value_number((double)xmlGetLineNo(elem)));
+        record_set(&rec, "line", value_number_exact((long long)xmlGetLineNo(elem)));
 
         /* ZIPPED BY INDEX, using the slot claimed on entry.
          *
@@ -478,8 +558,13 @@ static int xml_element_to_record(xmlNode *elem, int depth, int keep_space,
         if (pos && pidx && my_idx < pos->count) {
             XmlRange r = pos->items[my_idx];
             if (r.start >= 0 && r.end > r.start) {
-                record_set(&rec, "byte_start", value_number((double)r.start));
-                record_set(&rec, "byte_end", value_number((double)r.end));
+                record_set(&rec, "byte_start", value_number_exact((long long)r.start));
+                record_set(&rec, "byte_end", value_number_exact((long long)r.end));
+                if (r.content_start >= r.start && r.content_end >= r.content_start) {
+                    record_set(&rec, "content_start", value_number_exact((long long)r.content_start));
+                    record_set(&rec, "content_end", value_number_exact((long long)r.content_end));
+                }
+                record_set(&rec, "attribute_bytes", xml_attribute_ranges(pos->buf, r.start, r.end));
             }
         }
     }
@@ -1005,8 +1090,8 @@ static Value xml_reader_event(xmlTextReaderPtr r, const char *kind) {
      * honest answer there rather than a number from somewhere else. */
     xmlNodePtr cur = xmlTextReaderCurrentNode(r);
     int line = cur ? (int)xmlGetLineNo(cur) : 0;
-    record_set(&ev, "depth", value_number((double)depth));
-    record_set(&ev, "line", value_number((double)line));
+    record_set(&ev, "depth", value_number_exact((long long)depth));
+    record_set(&ev, "line", value_number_exact((long long)line));
 
     if (strcmp(kind, "text") == 0) {
         const xmlChar *val = xmlTextReaderConstValue(r);

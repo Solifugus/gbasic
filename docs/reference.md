@@ -1538,6 +1538,10 @@ needs a rate.
 - **A refusal names the lock:** `qty is locked to number by qty:number at line
   1, and this value does not convert: ...`. The old value is kept.
 - **`nothing` and `unknown` are allowed**, as in a typed G-SQL column.
+- **A `date` lock refuses a time of day** (*since 0.11.0*), as a G-SQL `date`
+  column does: `d:date = at` with `at` at 14:20 is refused, naming the time,
+  where it used to take the date in silence. Midnight converts, and
+  `{date}at` takes the date when that is what is meant.
 - **A compound assignment converts a text operand first**, because `42 + "1"`
   is `421`: with `n:number = 42`, `n += "1"` is 43. Other operands go in as
   written, so `d += 3 days` on a locked date is date arithmetic.
@@ -1938,7 +1942,12 @@ column, a config file, a loop over `money.currencies()`) could not construct a
 value at all; the workaround was an `if` chain with one branch per currency.
 Same parse path and same refusals as the modifier, so excess precision past the
 storage scale is rejected exactly as `{USD}=` rejects it, and a historical
-currency is refused for new values.
+currency is refused for new values. **A refusal's `error.details` says which**
+(*since 0.11.0*), for `money.of` and the modifier alike: `{ kind: "places",
+allowed, found }`, `{ kind: "range" }`, or `{ kind: "text" }`, so a program can
+turn "this price has seven decimals" into a data outcome without matching the
+message. **Money negates** (`-amount`, *since 0.11.0*), exactly and in its own
+currency.
 
 ```basic
 m = money.of("KWD", "1234.5678")   ' three minor-unit digits, per KWD
@@ -2738,7 +2747,7 @@ SQLite type mapping:
 | SQLite storage class | gBASIC value | Notes |
 | --- | --- | --- |
 | `NULL` | `nothing` | Database null is absence |
-| `INTEGER` | number | Large integers may lose precision in gBASIC's floating-point number type |
+| `INTEGER` | number | **exact**, all 64 bits (*since 0.11.0*; past 2^53 it came back as the nearest double, `9007199254740993` as `...992`) |
 | `REAL` | number | Stored as a gBASIC number |
 | `TEXT` | string | No date/time guessing is applied |
 | `BLOB` | runtime error | Native blob values are future work |
@@ -3392,6 +3401,12 @@ response = webclient.post(
 Use `json_encode`, **not** `encode`, for anything leaving gBASIC: `encode` emits a
 gBASIC dialect (`nothing`/`unknown` instead of `null`) that other JSON parsers
 reject. See "Four serializers, four jobs".
+
+A response whose body parses as JSON carries it as `json`. **When the server
+says the body is JSON (its `content-type` names json) and it does not parse,
+the response carries `json_error`** (*since 0.11.0*), the reason and the byte,
+so the failure is seen where it happens rather than later as "the answer is
+not what I expected".
 
 Use `webclient.request` for custom headers:
 
@@ -4838,9 +4853,14 @@ routes and static fallback (a stream route answers with its opening head);
 `source_outline` shows the block, its sites and every route.
 
 Three primitives shipped with the block and are general:
-`process.self()` → `{ interpreter, script, args, pid }` (how a program launches
-another copy of itself, and its own process id, *`pid` since 0.11.0*; a spawned
-actor is a process of its own and answers its own); `webserver.on_request(server, fn, context)` /
+`process.self()` → `{ interpreter, script, args, pid, started, uid, user }` (how
+a program launches another copy of itself, and *since 0.11.0* its own process
+id, when it started as epoch seconds, and the user it acts as; a spawned actor
+is a process of its own and answers its own); `process.alive(pid)` (whether a
+process with that id exists now) and `process.info(pid)` → `{ pid, alive,
+started, command }`, so a pid recorded by an earlier run can be told from a
+reused one by its start time and command line (`unknown` where the platform
+does not say; on Linux they come from `/proc`); `webserver.on_request(server, fn, context)` /
 `webserver.on_drain(server, fn, context)` (native per-request dispatch —
 `fn(context, request)`, return value delivered as the response); and
 `webserver.stopping()` (true once SIGTERM asked this process to stop
@@ -4929,6 +4949,14 @@ print byte_slice(text, t.byte_start, t.byte_end - t.byte_start)
 names carry the unit. Use `byte_slice`. On an ASCII document the two agree and
 `mid` appears to work; on the first accented character they part company and
 `mid` returns a plausible slice of the wrong text, with nothing raised.
+
+**`content_start` and `content_end`** (*since 0.11.0*) give the element's
+**content**, between its tags (an empty range at the element's end when it is
+self-closing), and **`attribute_bytes`** gives each attribute's **value**,
+inside its quotes and as written, entities not decoded: `{ ccy: { byte_start,
+byte_end } }`. So a value's lineage can name the bytes of the value itself
+rather than of the markup around it. Every position is an exact integer, so a
+G-SQL `integer` column takes it.
 
 Ranges are collected by a second pass over the source, so they cost another
 parse — paid only when `positions` is asked for.
@@ -6670,7 +6698,12 @@ port = default(env("GBASIC_SITE_PORT"), "8080")
 
 **`default(value, fallback)`** (*since 0.1.0-rc9*) - `value`, unless there
 isn't one: returns `fallback` when `value` is `unknown` **or** `nothing`, and
-`value` otherwise.
+`value` otherwise. **A missing field counts too** (*since 0.11.0*):
+`default(r.candidates, [])` on a record without `candidates` answers `[]`,
+where it used to raise `unknown record field`, since `default` is where a
+caller says "this may be absent". That holds for a field of a name or of a
+field chain (`r.a.b`); everywhere else `.field` stays strict, so a misspelling
+still fails.
 
 Both absences count, deliberately — the two commonest producers of "no result"
 split across them (`env(name)` yields `unknown` when unset, `find(...)` yields
@@ -6968,7 +7001,10 @@ give the same answer.
 function, loop or block — `stop` that also names a status. The code must be a
 whole number 0–255; a wider value is **refused** rather than truncated, because
 the kernel keeps only the low byte and `exit(256)` would silently report
-success from a program that meant to fail.
+success from a program that meant to fail. It ends the program **from any
+depth**: before 0.11.0, a bare `exit(70)` in a function two calls deep let that
+function's next statements run, and its caller's, the status still 70 (book
+gap G63), and a statement run that way could print a stray `nothing` (G48).
 
 **Datetime fields.** Components come out as *numbers* via dot access — the
 lenses truncate, the fields extract, and no global names are spent on it:
@@ -7523,7 +7559,16 @@ count({})                      ' 0
 
 **Conversion function differences:**
 - `string(value)` - canonical string conversion for any value
-- `encode(value)` - gBASIC's **JSON-like dialect** for structured data (see below)
+- `encode(value)` - gBASIC's **JSON-like dialect** for structured data (see below).
+  **It is not JSON whenever a value is `nothing` or `unknown`**: it writes
+  them as those bare words, which no JSON parser accepts. For anything another
+  program reads, use `json_encode`, which writes `null` and refuses what JSON
+  cannot hold.
+- `json_decode(text)` (*since 0.11.0*) - **RFC 8259 and nothing else**, nested:
+  `null` is `nothing`, and gBASIC's own notation (`{kind: "repair"}`,
+  `nothing`, `unknown`, `inf`), a key written twice, text after the value and a
+  NUL are refused, naming the byte. The reader for untrusted text that must be
+  JSON, such as a model's reply; `decode` reads the dialect as well.
 - `decode(text)` - parses JSON *and* the dialect back into values; **raises** on
   malformed input. An integer that fits 64 bits comes back **exact**
   *(0.8.1)*, so `decode(encode(x))` is `x`; before that `encode` wrote every
@@ -8694,10 +8739,12 @@ and the other two were taken for the array verb and refused.
   end-of-file.
 - `lock(f)` / `unlock(f)` — advisory locks (see `with lock`). **`lock` waits.**
   If another process holds the lock the call blocks until that process releases
-  it or dies — measured at 2.91 seconds against a holder that held for three —
-  and there is **no non-blocking form**, so a program cannot ask whether a file
-  is in use without committing to wait for the answer. A lock held by something
-  that never finishes is therefore a hang with no diagnostic. Reading is
+  it or dies — measured at 2.91 seconds against a holder that held for three.
+  **`lock(f, { wait: false })` never waits** (*since 0.11.0*): it answers `true`
+  if it took the lock and `false` if another process holds it, so a scheduler
+  steps around a running job rather than queueing behind it, and the lock still
+  goes when its holder dies. Without it, a lock held by something that never
+  finishes is a hang with no diagnostic. Reading is
   unaffected: the lock is advisory, so `read` ignores it. Taking a lock
   installs a cleanup handler for `SIGINT`, `SIGTERM` and `SIGHUP`, and
   **that does not change how the process dies**: after releasing, it re-raises
@@ -8709,7 +8756,11 @@ and the other two were taken for the array verb and refused.
 
 **What a file says about itself, and changing it** *(since 0.11.0)*:
 
-- `permissions(p)` -> `{ mode, readable, writable, executable }`. **Two
+- `permissions(p)` -> `{ mode, readable, writable, executable, owner, owner_name,
+  group, group_name }`. `owner` and `group` (*since 0.11.0*) are the numeric ids
+  and their names, `unknown` where the platform does not say (Windows) or an id
+  has no name here; set beside `process.self().uid`, they say whose `0600` it
+  is. **Two
   different questions, both answered, because conflating them is the classic
   bug.** `mode` is what the **file** says — the permission bits as text,
   `"0640"`. `readable` / `writable` / `executable` are what **this process** can
@@ -8987,6 +9038,11 @@ File metadata and atomic replacement:
 
 Path questions about what is really there:
 
+- `runtime()` -> `{ version, build, stdlib }` (*since 0.11.0*) — which gBASIC is
+  running this: `version` and `build` are what `gbasic --version` prints, split
+  (`build` is empty for a release), and `stdlib` is where a `load` looks first.
+  So a program recording what read each file can say so without being handed
+  `--version` in an environment variable.
 - `platform()` -> `"linux"`, `"windows"`, `"macos"` or `"posix"`
   *(since 0.11.0)* — which platform this binary was **built** for. It answers
   what the build knows: there is one body per platform file and each returns its
@@ -10845,7 +10901,13 @@ whole program without needing a call site.
   `"stamp"` (path, size and modified time, which the listing already carries, so
   it costs nothing) or `"content"` (sha256, which **loads the whole file**:
   measured at just over twice the file in resident memory, refused above
-  `max_hash:` and refused outright on a build without libcrypto). `ready:` says
+  `max_hash:` and refused outright on a build without libcrypto), or
+  `"path+content"` (*since 0.11.0*): sameness by path, with the file's sha256
+  recorded when it is taken, so `repeats` gives each repeat `same_content`,
+  `true` for the same bytes sent again and `false` for the name re-sent with
+  different bytes. That is the rule for extracts named by their period, where
+  `"content"` makes two empty days one file and `"path"` cannot tell a resend
+  from a re-extract. `ready:` says
   when a file has finished arriving — `"renamed"`, `"sentinel"` (take `x` once
   `x.done` appears) or `{ stable_for: 30 seconds }`, which is **a probability
   and not a guarantee**: measured, a file's size held still across consecutive
@@ -10904,8 +10966,9 @@ whole program without needing a call site.
   asserts that difference, implementing the rewrite in the tier as a second
   implementation. The per-file cost is still **linear in the ledger** whichever
   way it is written, because a ledger is a value and `taken` writes to a copy —
-  which is what `purge` bounds. One run at a time: `open` takes a lock, and
-  since `lock` has no non-blocking form a second run **waits**.
+  which is what `purge` bounds. One run at a time: `open` takes a lock that
+  waits, so a second run **waits** for the first (`lock(f, { wait: false })` is
+  there for a caller that would rather step around one).
 - `filetree` — a directory as a value tree, with expand/collapse state carried
   in the nodes. `filetree.visible_count(nodes)` counts currently-visible rows,
   and `filetree.dump(nodes)` renders the visible tree as deterministic,

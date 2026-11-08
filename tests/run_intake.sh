@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: serial -- its journal-versus-rewrite cost ratio (5x required, 8.5-9x alone) fell to 3.8x and 4.3x in two parallel gates on 2026-11-07/08: under load it measured the machine, not the journal
 # `intake` increment 1 -- what arrived, what was taken (docs/intake_design.md).
 #
 # The half of the ETL cycle that needs STATE. Everything else that brief asked
@@ -164,6 +165,19 @@ for mode in stamp content; do
         *) fail "B/$mode answered '$got' (size $size_now)" ;;
     esac
 done
+
+printf 'TIER path+content: a resend and a re-extract told apart\n'
+# Book gap G38: extracts named by their period. Under "content" two empty days
+# were one file (the control here), under "path" a re-extract with new bytes
+# was a plain repeat; "path+content" reports a repeat with `same_content`.
+mkdir -p "$work/pc"
+if ! timeout -k 5 120 ./gbasic tests/intake_path_content_test.bas "$work/pc" >"$work/pc.out" 2>"$work/pc.err"; then
+    cat "$work/pc.err"; fail "the path+content fixture did not run"
+elif grep -q MISMATCH "$work/pc.out" || ! grep -qx 'mismatches: 0' "$work/pc.out"; then
+    grep MISMATCH "$work/pc.out"; fail "path+content"
+else
+    pass "path+content: $(sed -n 's/^checks: //p' "$work/pc.out") checks"
+fi
 
 printf 'TIER stable_for: the window, asserted without a clock\n'
 # A backdated file is past any window; a file written now is not. Both in ONE

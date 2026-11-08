@@ -995,6 +995,8 @@ static int extract_flag(int *argc, char **argv, const char *flag) {
 }
 
 int main(int argc, char **argv) {
+    /* the same two pieces `--version` prints, below; a runner checks the two agree */
+    gb_runtime_identity_set("0.10.0", GBASIC_REVISION);
     int ast_only = 0;
     int tokens_only = 0;
     int json_diagnostics = 0;

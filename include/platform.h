@@ -239,8 +239,14 @@ int gb_mkdir(const char *path, int mode);
  * the range they cover and `with lock(f)` writes the very file it locks --
  * covering the contents made that write fail (measured; see platform_win32.c).
  * A byte no data reaches makes the lock advisory, as flock is. Returns 0 / -1. */
-enum { GB_LOCK_RELEASE = 0, GB_LOCK_EXCLUSIVE = 1 };
+/* GB_LOCK_TRY takes the lock only if nobody holds it: -1 with errno
+ * EWOULDBLOCK when another process does (book gap G42). */
+enum { GB_LOCK_RELEASE = 0, GB_LOCK_EXCLUSIVE = 1, GB_LOCK_TRY = 2 };
 int gb_flock(int fd, int op);
+/* When a process started (book gap G64), as epoch seconds, or -1 where the platform does
+ * not say (read from /proc on Linux). Two answers that differ for one pid mean
+ * the pid was reused. */
+long long gb_process_started(long pid);
 
 /* realpath(path, NULL): the canonical absolute path of an EXISTING file, with
  * every symlink resolved, malloc'd; NULL if it cannot be resolved. web.static's
@@ -282,8 +288,18 @@ typedef struct {
     int readable;
     int writable;
     int executable;   /* 1 yes, 0 no, -1 unknown */
+    /* WHO the bits are about (book gap G65): the owning user and group, ids
+       and names; -1 and "" where the platform does not say (Windows) or the
+       id has no name on this machine */
+    long owner_id;
+    long group_id;
+    char owner_name[64];
+    char group_name[64];
 } GbPermissions;
 int gb_permissions(const char *path, GbPermissions *out);
+/* This process's user, the one access(2) answers for: its id and name, or -1
+ * and "" where the platform does not say. */
+long gb_current_user(char *name, size_t cap);
 
 /* chmod(path, mode). POSIX honours every bit.
  *

@@ -190,6 +190,7 @@
       <item>join</item>
       <item>join_from</item>
       <item>join_path</item>
+      <item>json_decode</item>
       <item>json_encodable</item>
       <item>json_encode</item>
       <item>key</item>
@@ -275,6 +276,7 @@
       <item>rsa_sign</item>
       <item>rsa_to_pem</item>
       <item>rsa_verify</item>
+      <item>runtime</item>
       <item>scrypt</item>
       <item>secure_token</item>
       <item>seed</item>

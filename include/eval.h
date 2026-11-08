@@ -101,6 +101,9 @@ void gb_session_list_vars(FILE *out);
  * BEFORE the compiled-in default -- a relocated copy must prefer the stdlib it
  * shipped with over a system install of a different version. */
 const char *gb_exe_relative_stdlib(void);
+/* Which gBASIC this is, for `runtime()` (book gap G36): set once by main(),
+ * from the same version and revision `--version` prints. */
+void gb_runtime_identity_set(const char *version, const char *revision);
 
 /* `gbasic --gsql-owner DB FD create|open`: the G-SQL owner process a client
  * starts (docs/gsql_owner_design.md §6), serving the SQL layer with this

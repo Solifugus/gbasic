@@ -177,6 +177,38 @@ do
     fi
 done
 
+printf 'TIER bytes and fractions (book gaps G49, G47)\n'
+# A binary column comes back as its BYTES, where the whole query was refused
+# (a rowversion made `select *` fail); and a timestamp's fraction, cut to the
+# whole second, is warned (2123), where it was cut in silence. The control is a
+# timestamp with no fraction, which must say nothing.
+cat >"$work/bytes.bas" <<'BYTES'
+load odbc
+db = odbc.connect(env("GBASIC_ODBC_CONNECTION"))
+odbc.exec(db, "create table g49 (b blob, ts timestamp, whole timestamp)")
+odbc.exec(db, "insert into g49 values (x'00ff10', '2027-03-15 10:00:00.75', '2027-03-15 10:00:01')")
+r = odbc.query(db, "select b, ts from g49")
+print string(byte_count(r[0].b)) + " " + string(byte_at(r[0].b, 0)) + " " + string(byte_at(r[0].b, 1)) + " " + string(byte_at(r[0].b, 2))
+print r[0].ts
+w = odbc.query(db, "select whole from g49")
+odbc.exec(db, "drop table g49")
+odbc.close(db)
+BYTES
+if [[ "$GBASIC_ODBC_CONNECTION" == *"Driver=SQLite3"* ]]; then
+    ./gbasic "$work/bytes.bas" >"$work/bytes.out" 2>"$work/bytes.err"; rc=$?
+    if [ "$rc" = 0 ] && [ "$(sed -n 1p "$work/bytes.out")" = "3 0 255 16" ] &&
+       [ "$(sed -n 2p "$work/bytes.out")" = "2027-03-15 10:00:00" ] &&
+       [ "$(command grep -c '\[2123\]' "$work/bytes.err")" = 1 ] &&
+       command grep -q 'column `ts` has fractional seconds' "$work/bytes.err"; then
+        pass "a blob is its bytes (a NUL among them); a cut fraction is warned once, a whole second not at all"
+    else
+        cat "$work/bytes.out" "$work/bytes.err" | sed 's/^/       /'
+        fail "binary bytes and fraction warning (rc $rc)"
+    fi
+else
+    printf 'SKIP bytes and fractions (the fixture is written for the SQLite3 ODBC driver)\n'
+fi
+
 printf 'TIER refusals (live connection)\n'
 run_fixture tests/odbc_refusal_test.bas 13 'odbc_refusal_test'
 

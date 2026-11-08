@@ -709,8 +709,6 @@ table is real.
 
 ## What is not here yet
 
-- **Binary columns.** `BINARY`, `VARBINARY` and `LONGVARBINARY` results are
-  refused rather than mangled.
 - **Verified support for commercial backends.** See the caution at the top.
 - **Connection pooling and cursors.** One connection, one statement at a time.
 

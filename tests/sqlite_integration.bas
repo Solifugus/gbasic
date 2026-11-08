@@ -44,6 +44,14 @@ bad_param = sqlite.query(db, "select ?", [unknown])
 print(error.source)
 error.clear()
 
+' an INTEGER past 2^53 comes back EXACT (book gap G46): it came back as the
+' nearest double, 9007199254740993 as ...992, with nothing said
+sqlite.exec(db, "create table big (n integer)")
+sqlite.exec(db, "insert into big values (9007199254740993), (-9223372036854775808)")
+big = sqlite.query(db, "select n from big")
+print(big[0].n + 1)
+print(big[1].n)
+
 alias = db
 print(sqlite.close(db))
 closed = sqlite.query(alias, "select 1")

@@ -40,6 +40,9 @@ print(exact_body.json.f + 0.25)
 
 invalid_json = webclient.get(base + "/invalid-json")
 print(is_unknown(invalid_json["json"]))
+' a body the server calls JSON that does not parse says why (book gap G51)
+print(invalid_json.json_error)
+print(has(json_response, "json_error"))
 
 missing = webclient.get(base + "/status/404")
 print(missing.status)

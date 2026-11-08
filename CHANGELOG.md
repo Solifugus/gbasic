@@ -28,6 +28,36 @@ reader sees.
 - **A named watcher may be declared in a function** (`watch w(x)`); a handle
   that outlives its function names an ended watch.
 
+### The gBASIC books' last gaps (volume 3, G31-G65), the core half
+
+- **`exit` ends the program from any depth** (G63, G48). A bare `exit(70)` in
+  a function two calls deep let the rest of that function and its caller run,
+  with the status still 70, and a statement run that way could print a stray
+  `nothing`. A refusal could carry on.
+- **Integers by nature are exact** (G62, G39, G46): `process.run`'s exit code
+  and signal, positions from `xml.parse` and `byte_find`, ids, statuses,
+  ports, sizes, row ids and counts, so a G-SQL `integer` column takes them;
+  and SQLite's `INTEGER` past 2^53 comes back exact, not as the nearest double.
+- **`xml.parse` positions give an element's content and each attribute's
+  value** (`content_start`/`content_end`, `attribute_bytes`) (G39).
+- **Money negates** (`-amount`) (G56), and its two construction refusals say
+  which they are in `error.details` (G41).
+- **`runtime()`** says which gBASIC is running (G36).
+- **`lock(f, { wait: false })`** answers whether it took the lock, never
+  waiting (G42); **`process.alive(pid)`** and **`process.info(pid)`** (start
+  time and command line), with `started`, `uid` and `user` on
+  `process.self()` (G64); **`permissions()`** names the owner and group (G65).
+- **`json_decode(text)`**: RFC 8259 and nothing else (G61); `webclient` says
+  `json_error` when a body it was told is JSON does not parse, and `encode`
+  is documented as not JSON (G51).
+- **A `date` lock refuses a time of day** (G40); **`default(r.field, x)` takes
+  a missing field** (G37).
+- **`pg` and `odbc` warn (2123) when a timestamp's fraction is cut** (G47);
+  **`odbc` returns a binary column as its bytes**, where the whole query was
+  refused (G49).
+- **`intake` identity `"path+content"`**: a repeat says whether its bytes are
+  the same (G38).
+
 ### `wait until`: a function can wait for events
 
 - **`wait until <condition> [for <limit>]`** runs the event loop from where it

@@ -157,6 +157,21 @@ int gb_mkdir(const char *path, int mode) {
  * the same byte, so mutual exclusion between them is unchanged. (SQLite locks
  * the same way, at a fixed offset outside the data.) LockFileEx needs the
  * OVERLAPPED even on a synchronous handle: it carries the range's offset. */
+long long gb_process_started(long pid) {
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
+    if (!h) {
+        return -1;
+    }
+    FILETIME created, exited, kernel, user;
+    BOOL ok = GetProcessTimes(h, &created, &exited, &kernel, &user);
+    CloseHandle(h);
+    if (!ok) {
+        return -1;
+    }
+    unsigned long long t = ((unsigned long long)created.dwHighDateTime << 32) | created.dwLowDateTime;
+    return (long long)(t / 10000000ULL) - 11644473600LL;   /* 1601 to 1970, in seconds */
+}
+
 int gb_flock(int fd, int op) {
     HANDLE h = (HANDLE)_get_osfhandle(fd);
     if (h == INVALID_HANDLE_VALUE) {
@@ -165,9 +180,12 @@ int gb_flock(int fd, int op) {
     OVERLAPPED ov;
     memset(&ov, 0, sizeof ov);
     ov.OffsetHigh = 0x40000000;     /* offset 2^62 */
-    BOOL ok = (op == GB_LOCK_EXCLUSIVE)
-                  ? LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &ov)
-                  : UnlockFileEx(h, 0, 1, 0, &ov);
+    BOOL ok = op == GB_LOCK_EXCLUSIVE ? LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &ov)
+              : op == GB_LOCK_TRY ? LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov)
+                                  : UnlockFileEx(h, 0, 1, 0, &ov);
+    if (!ok && op == GB_LOCK_TRY && GetLastError() == ERROR_LOCK_VIOLATION) {
+        errno = EWOULDBLOCK;
+    }
     return ok ? 0 : -1;
 }
 
@@ -2107,6 +2125,10 @@ int gb_make_temp_dir(const char *dir, const char *prefix, char *out, size_t out_
 }
 
 int gb_permissions(const char *path, GbPermissions *out) {
+    out->owner_id = -1;
+    out->group_id = -1;
+    out->owner_name[0] = '\0';
+    out->group_name[0] = '\0';
     WCHAR *wpath = utf8_to_wide(path);
     if (!wpath) {
         errno = ENOMEM;
@@ -2129,6 +2151,13 @@ int gb_permissions(const char *path, GbPermissions *out) {
     out->executable = -1;
     free(wpath);
     return 0;
+}
+
+long gb_current_user(char *name, size_t cap) {
+    if (cap) {
+        name[0] = '\0';
+    }
+    return -1;
 }
 
 int gb_chmod(const char *path, unsigned mode, int *dropped) {

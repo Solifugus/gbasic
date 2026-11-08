@@ -423,8 +423,8 @@ static Value smtp_eval_send(AstExpr *expr) {
         RecordField *mid = record_find(&message, "message_id");
         Value record = value_record(NULL, 0);
         record_set(&record, "recipients",
-                   value_number((double)rcpt->value->as.array.store->count));
-        record_set(&record, "code", value_number((double)response_code));
+                   value_number_exact((long long)rcpt->value->as.array.store->count));
+        record_set(&record, "code", value_number_exact((long long)response_code));
         record_set(&record, "message_id",
                    (mid && mid->value->kind == VALUE_STRING)
                        ? value_string(mid->value->as.string)

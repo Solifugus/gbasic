@@ -1,5 +1,5 @@
 default keys:   ["name","qname","ns","attrs","children"]
-with positions: ["name","qname","ns","attrs","children","line","byte_start","byte_end"]
+with positions: ["name","qname","ns","attrs","children","line","byte_start","byte_end","content_start","content_end","attribute_bytes"]
 root line 3
 empty line 8
 dup lines 13 13
@@ -34,3 +34,11 @@ distinct lines 10
   <dup>o]
 --- ranges are absent unless asked for ---
   has byte_start: false
+--- content and attribute ranges, exact (book gap G39) ---
+  content      [<line qty="3">Bolt &amp; nut</line><empty/>]
+  no           [A>7]
+  cur          [USD]
+  line content [Bolt &amp; nut]
+  line qty     [3]
+  self-closing content is empty at its end: true
+  exact: 9007199254740993 9007199254741015

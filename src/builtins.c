@@ -213,6 +213,8 @@ int gbasic_builtin_function(const char *name) {
         "join_path",
         "library_collisions",
         "platform",
+        "runtime",
+        "json_decode",
         "principal",
 #if HAVE_LIBXCRYPT || HAVE_YESCRYPT
         "password_hash_cost",

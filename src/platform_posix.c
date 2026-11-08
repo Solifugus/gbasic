@@ -23,6 +23,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <grp.h>
+#include <pwd.h>
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/resource.h>
@@ -224,8 +226,63 @@ int gb_mkdir(const char *path, int mode) {
     return mkdir(path, (mode_t)mode);
 }
 
+long long gb_process_started(long pid) {
+#ifdef __linux__
+    char path[64];
+    snprintf(path, sizeof path, "/proc/%ld/stat", pid);
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        return -1;
+    }
+    char buf[2048];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    /* field 22, starttime in clock ticks after boot, counted from the last ')'
+       since the command name (field 2) may itself hold spaces or ')' */
+    char *p = strrchr(buf, ')');
+    if (!p) {
+        return -1;
+    }
+    unsigned long long ticks = 0;
+    int field = 2;
+    for (p++; *p && field < 22; p++) {
+        if (*p == ' ') {
+            field++;
+            if (field == 22) {
+                ticks = strtoull(p + 1, NULL, 10);
+            }
+        }
+    }
+    if (field != 22) {
+        return -1;
+    }
+    FILE *s = fopen("/proc/stat", "r");
+    if (!s) {
+        return -1;
+    }
+    long long btime = -1;
+    char line[256];
+    while (fgets(line, sizeof line, s)) {
+        if (strncmp(line, "btime ", 6) == 0) {
+            btime = atoll(line + 6);
+            break;
+        }
+    }
+    fclose(s);
+    long hz = sysconf(_SC_CLK_TCK);
+    if (btime < 0 || hz <= 0) {
+        return -1;
+    }
+    return btime + (long long)(ticks / (unsigned long long)hz);
+#else
+    (void)pid;
+    return -1;
+#endif
+}
+
 int gb_flock(int fd, int op) {
-    return flock(fd, op == GB_LOCK_EXCLUSIVE ? LOCK_EX : LOCK_UN);
+    return flock(fd, op == GB_LOCK_EXCLUSIVE ? LOCK_EX : op == GB_LOCK_TRY ? LOCK_EX | LOCK_NB : LOCK_UN);
 }
 
 char *gb_realpath(const char *path) {
@@ -448,7 +505,20 @@ int gb_permissions(const char *path, GbPermissions *out) {
     out->readable = access(path, R_OK) == 0;
     out->writable = access(path, W_OK) == 0;
     out->executable = access(path, X_OK) == 0;
+    out->owner_id = (long)info.st_uid;
+    out->group_id = (long)info.st_gid;
+    struct passwd *pw = getpwuid(info.st_uid);
+    struct group *gr = getgrgid(info.st_gid);
+    snprintf(out->owner_name, sizeof out->owner_name, "%s", pw ? pw->pw_name : "");
+    snprintf(out->group_name, sizeof out->group_name, "%s", gr ? gr->gr_name : "");
     return 0;
+}
+
+long gb_current_user(char *name, size_t cap) {
+    uid_t uid = geteuid();
+    struct passwd *pw = getpwuid(uid);
+    snprintf(name, cap, "%s", pw ? pw->pw_name : "");
+    return (long)uid;
 }
 
 int gb_chmod(const char *path, unsigned mode, int *dropped) {

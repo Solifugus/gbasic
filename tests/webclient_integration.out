@@ -17,6 +17,8 @@ true
 9007199254740994
 0.75
 true
+expected string at byte 1
+false
 404
 missing
 200
