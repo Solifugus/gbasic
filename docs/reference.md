@@ -747,14 +747,49 @@ function tally(items)
 end function
 ```
 
-In a function, a watch on anything but its own variables is refused (`1003`,
-naming it): a global (a function cannot assign one, and it changes only while
-no function runs), a variable not yet assigned, or an event source such as
-`timer.ticks`, `inbox.messages` or a server's `requests`, whose events the loop
-delivers only after the program block ends. Those belong at the top level of
-the `program` block. A named watcher's handle that outlives its function names
-a watch that has ended: reading its fields raises, and `unwatch` of it does
-nothing.
+In a function, a watch may also watch an event source (`timer.ticks`,
+`inbox.messages`, `http.events`, `net.events`, or a server held in one of its
+locals). Anything else is refused (`1003`, naming it): another global (a
+function cannot assign one, and it changes only while no function runs), or a
+variable not yet assigned. A named watcher's handle that outlives its function
+names a watch that has ended: reading its fields raises, and `unwatch` of it
+does nothing.
+
+**`wait until <condition> [for <limit>]`** (*since 0.11.0*) runs the event loop
+from where it is written until the condition is true, so a function can keep
+its watches alive while events arrive. Events are delivered to the watches of
+every scope still running (the program's, and each function's on the way down),
+and the condition is checked again after each pass of the loop:
+
+```basic
+function count_ticks(n)
+    seen = 0
+    t = timer.every(0.1)
+    watch(timer.ticks)
+        while count(timer.ticks) > 0
+            ev = take_first(timer.ticks)
+            seen = seen + 1
+        end while
+    end watch
+    wait until seen >= n for 10 seconds
+    timer.cancel(t)
+    return seen
+end function
+```
+
+- **`for <limit>`** is a duration or a number of seconds. When it passes with
+  the condition still false, the wait raises (`1003`). A month is refused, having
+  no fixed length.
+- **A wait that nothing could end raises** rather than hanging: no server
+  listening, no transfer, no live timer, and no watched inbox or socket.
+- **A wait inside a watch body** works, so a function that waits may be called
+  from one. Past 16 such waits inside one another it raises, since a wait cannot
+  be skipped: the code after it relies on its condition.
+- **`wait` is a keyword only before `until`**, so `wait` stays usable as a
+  variable or a record key.
+- At the top level a wait is the same, which is how a program can wait for a
+  condition before going on rather than leaving everything to the loop after
+  the `program` block.
 
 During one active watcher-drain cycle, a watcher that is already pending is
 not enqueued again. It executes once and reads the latest live state. Separate

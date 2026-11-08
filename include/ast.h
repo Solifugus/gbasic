@@ -47,7 +47,8 @@ typedef enum {
     AST_STMT_SERVER,
     AST_STMT_WINDOW,
     AST_STMT_DATABASE,
-    AST_STMT_SQL
+    AST_STMT_SQL,
+    AST_STMT_WAIT     /* wait until <condition> [for <limit>] (docs/watch_scope_design.md §4) */
 } AstStmtKind;
 
 typedef enum {
@@ -454,6 +455,10 @@ struct AstStmt {
             AstStmtList body;
         } watch;
         AstExpr *unwatch_expr;
+        struct {
+            AstExpr *condition;
+            AstExpr *limit;      /* the `for` duration, or NULL */
+        } wait;
         AstStmtList without_watchers;
         char *on_error_label;
         int warn_mode;   /* WarnMode; PLAT-WARN */
@@ -636,6 +641,7 @@ AstStmt *ast_goto(char *name);
 AstStmt *ast_gosub(char *name);
 AstStmt *ast_watch(char *name, AstNameList names, AstStmtList body);
 AstStmt *ast_unwatch(AstExpr *expr);
+AstStmt *ast_wait(AstExpr *condition, AstExpr *limit);
 AstStmt *ast_without_watchers(AstStmtList body);
 AstStmt *ast_on_error_goto(char *label);
 AstStmt *ast_on_error_goto_next(void);

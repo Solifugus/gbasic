@@ -570,7 +570,7 @@ static int net_emit_full(const char *kind, NetSocket *conn, NetSocket *listener,
     }
     Value ignored = append_to_array_ref(events->value, e, 0);
     value_free(ignored);
-    return watcher_trigger_change("net.events");
+    return watcher_trigger_delivery("net.events", NULL);
 }
 
 static int net_emit(const char *kind, NetSocket *conn, NetSocket *listener,

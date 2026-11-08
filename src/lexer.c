@@ -445,6 +445,25 @@ static Token identifier_token(Lexer *lexer, const char *start, int line, int col
     }
     TokenType type = identifier_type(start, (int)(lexer->current - start));
 
+    /* `wait until`: WAIT IS A KEYWORD ONLY WHEN `until` FOLLOWS on the same
+     * line (docs/watch_scope_design.md §4). `until` is already reserved, so
+     * the pair can mean nothing else, and every other `wait` stays a name:
+     * gdash's throttle has a variable called `wait`, and `{ wait: 10 }` is
+     * gsql.close's option. Reserving the word outright would have broken them. */
+    if (type == TOKEN_IDENT && keyword_equals(start, (int)(lexer->current - start), "wait")) {
+        const char *after = lexer->current;
+        while (*after == ' ' || *after == '\t') {
+            after++;
+        }
+        const char *word = after;
+        while (isalnum((unsigned char)*after) || *after == '_') {
+            after++;
+        }
+        if (after > word && text_equals_keyword(word, after, "until")) {
+            type = TOKEN_WAIT;
+        }
+    }
+
     /* A KEYWORD USED AS A RECORD KEY IS A NAME, NOT A KEYWORD.
      *
      * `{ OR: 1 }` used to lex `OR` as the keyword, and the grammar then mapped
@@ -988,6 +1007,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_WHILE: return "WHILE";
     case TOKEN_DO: return "DO";
     case TOKEN_UNTIL: return "UNTIL";
+    case TOKEN_WAIT: return "WAIT";
     case TOKEN_CONSIDER: return "CONSIDER";
     case TOKEN_BREAK: return "BREAK";
     case TOKEN_CONTINUE: return "CONTINUE";

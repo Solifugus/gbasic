@@ -130,7 +130,7 @@ end function
 
 function watches_the_timer()
     watch(timer.ticks)
-        print "never"
+        n = count(timer.ticks)
     end watch
     return nothing
 end function
@@ -161,12 +161,12 @@ function refusal(which)
     return "accepted"
 end function
 
-' a local server: its requests come from the loop, after main
+' a local server: its requests are delivered while the function waits (§4)
 function watches_a_server()
     server = webserver.listen(0)
     on error goto next
     watch(server.requests)
-        print "never"
+        server = server
     end watch
     e = error
     webserver.close(server)
@@ -190,14 +190,13 @@ end function
     unwatch(h)
     check("and unwatching it does nothing", count(watchers()), 0)
     check("a watch on a global from a function is refused", contains(refusal("global"),
-          "1003 a watch in a function watches that function's own variables, and `glob` is not one"), true)
+          "1003 a watch in a function watches that function's own variables or an event source (timer, inbox, http, net), and `glob` is neither"), true)
     check("a local copy of it is watched", watches_a_local_copy(), 1)
-    check("a watch on an event source from a function is refused", contains(refusal("timer"),
-          "and `timer` is not one"), true)
-    check("and on a local server's requests", contains(watches_a_server(),
-          "1003 a watch in a function cannot watch `server.requests`: its events arrive from the event loop"), true)
+    ' since increment 2 an event source is watched from a function, while it waits
+    check("a watch on an event source from a function is accepted", refusal("timer"), "accepted")
+    check("and on a local server's requests", watches_a_server(), "accepted")
     check("a variable assigned only after the watch is refused", contains(refusal("later"),
-          "and `later` is not one (assign it before the watch)"), true)
+          "and `later` is neither (assign it before the watch)"), true)
     ' the top level is unchanged
     top = 1
     top_fires = { n: 0 }

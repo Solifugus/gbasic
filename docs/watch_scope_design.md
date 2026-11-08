@@ -1,8 +1,10 @@
 # A watch belongs to the scope that declares it
 
-**Status:** Increment 1 (§3) SHIPPED 2026-11-07, held by
-`tests/run_watch_scope.sh`. Increment 2 (§4) is designed, and Matthew ruled on
-§5 the same day; not built.
+**Status:** Increment 1 (§3) SHIPPED 2026-11-07, increment 2 (§4, `wait
+until`) SHIPPED 2026-11-08, both held by `tests/run_watch_scope.sh`. Matthew
+ruled on §5 on 2026-11-07, `for <duration>` confirmed the next day. Two
+departures from the text below, each in §6: `wait` is a keyword only before
+`until`, and a wait past the depth cap raises rather than warning.
 
 **Why:** Transward wanted a library to set up its own watcher, and found that a
 `watch` in a function does nothing. Matthew's model, in his words: *"a watch
@@ -210,6 +212,37 @@ they were put:
   registry read as linear (a timeout is a failure now). And a perturbation that
   ignored the frame changed only one of the two places the frame is tested, so
   it stayed green; done fully, it is red on the same-name case.
+
+### What building increment 2 found
+
+- **`wait` is a keyword only when `until` follows** (§5.1 said a reserved
+  word). Measured first: gdash's throttle has a variable `wait`, and
+  `gsql.close` takes `{ wait: 10 }`. `until` is already reserved, so the pair
+  means nothing else, and it costs no grammar conflicts; it is the lexer's own
+  idiom for `window`, `database` and `sql`.
+- **Past the cap a nested wait RAISES** (§5.4 said a warning, as Qt's `2117`).
+  A Qt handler past its cap is simply not called; a wait cannot be skipped, as
+  the code after it relies on its condition being true.
+- **A delivery and an assignment differ.** A delivery by the loop fires every
+  live frame's watches; an assignment fires its own frame's. The flag is
+  cleared before the bodies run, so their own assignments are assignments.
+- **A server in a local** is found through the frames of live watches, and its
+  requests go to that frame alone; they used to be found only in a global.
+- **A wait in a watch body deadlocked first.** The running drain could not take
+  the wait's deliveries (it was running the body that waits), and the outer
+  queue's `pending` marks then dropped them, a watch registered in that very
+  body among them. The wait now sets the running queue aside, clearing those
+  marks, and restores both after.
+- **It ended live row 1** (`qt.run()` from a function starved the loop), as §4
+  predicted: that was a delivery refused because a function frame was current.
+- **One of my own tiers could hang.** Valgrind ran the fixture unbounded, and
+  a perturbation removing the no-source check hung it for 15 minutes. It is
+  bounded at 240 s and a timeout is a failure.
+- **Eleven perturbations, all red:** increment 1's four, then delivery to the
+  current frame only (the top-level-beside check and qtrun), servers found in
+  globals only (serve), no set-aside and the pending marks kept (the nested
+  wait), no no-source check and the limit ignored (hangs, failed by timeout),
+  and no depth cap.
 
 ## 7. Not proposed
 

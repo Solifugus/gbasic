@@ -961,6 +961,23 @@ static int lock_cleanup_registered = 0;
 static WatcherDef *watchers = NULL;
 static size_t watcher_count = 0;
 static size_t watcher_next_serial = 1;
+/* how many `wait until`s are running, one inside another's watch body */
+#define WAIT_MAX_DEPTH 16
+static int wait_depth = 0;
+/* A DELIVERY BY THE EVENT LOOP fires the watches of every live frame
+ * (docs/watch_scope_design.md §4): they are all still running, and a function
+ * waiting in `wait until` is one of them. An ASSIGNMENT fires only its own
+ * frame's. Set around a loop delivery by watcher_trigger_delivery; `frame`
+ * narrows it to the one frame holding the source (a server in a local). */
+static int watcher_delivering = 0;
+/* A `wait until` inside a watch body sets the running drain's queue aside and
+ * gives the loop a fresh one (its own deliveries must drain while the outer
+ * body is still running); restored, with the outer queue's unrun entries
+ * marked pending again, when the wait ends. While any is set aside, ended
+ * watches stay as tombstones: the saved queue's indexes must not be reused. */
+static size_t watcher_drain_next = 0;
+static int watcher_queues_set_aside = 0;
+static struct Env *watcher_delivery_frame = NULL;
 static size_t *watcher_queue = NULL;
 /* THE PRINCIPAL IN FORCE WHEN EACH ENTRY WAS QUEUED, carried beside the queue so
  * a body that runs LATER still acts for whoever made the write. See
@@ -7480,6 +7497,7 @@ static int watcher_drain(void) {
         }
         size_t slot = cursor;
         size_t index = watcher_queue[cursor++];
+        watcher_drain_next = cursor;   /* where a wait in this body resumes from */
         /* An entry can be unwatched between enqueue and drain -- it must not
          * fire one last time on the way out. */
         if (index < watcher_count && watchers[index].active) {
@@ -7542,10 +7560,16 @@ static int watcher_trigger_change(const char *path) {
         return 1;
     }
     /* a change fires the watches of the frame it is made in, and only those:
-       a callee's local of the same name is the callee's (watch_scope_design §3) */
+       a callee's local of the same name is the callee's (watch_scope_design §3).
+       A loop delivery fires every live frame's, or the one holding the source. */
+    int all = watcher_delivering && !watcher_delivery_frame;
+    Env *only = watcher_delivering && watcher_delivery_frame ? watcher_delivery_frame : current_env;
+    /* the bodies' own assignments are assignments, whatever started the drain */
+    watcher_delivering = 0;
+    watcher_delivery_frame = NULL;
     int any = 0;
     for (size_t i = 0; i < watcher_count && !any; i++) {
-        any = watchers[i].active && watchers[i].frame == current_env;
+        any = watchers[i].active && (all || watchers[i].frame == only);
     }
     if (!any) {
         return 1;
@@ -7556,7 +7580,7 @@ static int watcher_trigger_change(const char *path) {
         watcher_drain_origin_column = current_column;
     }
     for (size_t i = 0; i < watcher_count; i++) {
-        if (!watchers[i].active || watchers[i].frame != current_env) {
+        if (!watchers[i].active || !(all || watchers[i].frame == only)) {
             continue;      /* a tombstone, or another frame's watch */
         }
         if (watcher_matches_change(watchers[i].stmt, path)) {
@@ -7595,11 +7619,35 @@ static void watcher_end_frame(Env *env) {
             watchers[i].frame = NULL;
         }
     }
-    while (watcher_queue_count == 0 && !watcher_draining && watcher_count > 0 &&
+    while (watcher_queue_count == 0 && !watcher_draining && watcher_queues_set_aside == 0 && watcher_count > 0 &&
            !watchers[watcher_count - 1].active && watchers[watcher_count - 1].frame == NULL) {
         watcher_count--;
         free(watchers[watcher_count].name);
     }
+}
+
+/* A delivery by the event loop: every live frame's watches on `path`, or only
+ * `frame`'s when the source is held there. */
+static int watcher_trigger_delivery(const char *path, Env *frame) {
+    watcher_delivering = 1;
+    watcher_delivery_frame = frame;
+    int ok = watcher_trigger_change(path);
+    watcher_delivering = 0;
+    watcher_delivery_frame = NULL;
+    return ok;
+}
+
+/* The global names whose fields the event loop delivers into: a watch in a
+ * function may watch these, since `wait until` keeps it alive while the loop
+ * runs (§4). Every other global is still refused. */
+static int watcher_is_loop_source(const char *root) {
+    static const char *const sources[] = { "timer", "inbox", "http", "net" };
+    for (size_t i = 0; i < sizeof sources / sizeof sources[0]; i++) {
+        if (strcmp(root, sources[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
 }
 
 static int watcher_register(AstStmt *stmt) {
@@ -7617,19 +7665,14 @@ static int watcher_register(AstStmt *stmt) {
             snprintf(root, sizeof root, "%.*s", (int)(root_len < 255 ? root_len : 255), path);
             Symbol *own = env_find_in_frame(current_env, root);
             char message[600];
+            if (!own && watcher_is_loop_source(root)) {
+                continue;   /* an event source: delivered while this function waits */
+            }
             if (!own) {
                 snprintf(message, sizeof message,
-                         "a watch in a function watches that function's own variables, and `%s` is not one "
-                         "(assign it before the watch); a watch on a global or an event source belongs at the "
-                         "top level of the program block", root);
-                runtime_error_raise(message, 1003, "watcher");
-                return 0;
-            }
-            if (own->value.kind == VALUE_RECORD && record_find(&own->value, "_webserver_id")) {
-                snprintf(message, sizeof message,
-                         "a watch in a function cannot watch `%s`: its events arrive from the event loop, which "
-                         "runs after the program block ends, so this function would have returned and its watch "
-                         "ended first; watch it at the top level of the program block", path);
+                         "a watch in a function watches that function's own variables or an event source "
+                         "(timer, inbox, http, net), and `%s` is neither (assign it before the watch); a watch "
+                         "on any other global belongs at the top level of the program block", root);
                 runtime_error_raise(message, 1003, "watcher");
                 return 0;
             }
@@ -20587,7 +20630,7 @@ static int http_emit_event(HttpHandle *h, const char *kind) {
     Value event = value_record(fields, 4);
     Value ignored = append_to_array_ref(events->value, event, 0);
     value_free(ignored);
-    return watcher_trigger_change("http.events");
+    return watcher_trigger_delivery("http.events", NULL);
 }
 
 /* Called once per event-loop iteration: advance the transfers, then report what
@@ -20754,7 +20797,7 @@ static int inbox_loop_service(void) {
     }
     Value ignored = append_to_array_ref(messages->value, frame, 0);
     value_free(ignored);
-    return watcher_trigger_change("inbox.messages");
+    return watcher_trigger_delivery("inbox.messages", NULL);
 }
 
 /* --- the clock in the event loop ------------------------------------------
@@ -21071,7 +21114,7 @@ static int timer_loop_service(void) {
     if (!fired) {
         return 1;
     }
-    return watcher_trigger_change("timer.ticks");
+    return watcher_trigger_delivery("timer.ticks", NULL);
 }
 
 static void timer_shutdown(void) {
@@ -21301,18 +21344,35 @@ static int webserver_record_id(Value *record, unsigned long *out_id) {
     return 1;
 }
 
-static Value *webserver_find_record(unsigned long id, const char **out_name) {
-    for (size_t i = 0; i < global_env.count; i++) {
+/* The frame the last webserver_find_record found its record in: the global
+ * frame, or a function's that holds the server in a local and is waiting. */
+static Env *webserver_record_frame = NULL;
+
+static Value *webserver_find_record_in(Env *env, unsigned long id, const char **out_name) {
+    for (size_t i = 0; i < env->count; i++) {
         unsigned long record_id = 0;
-        if (webserver_record_id(&global_env.items[i].value, &record_id) &&
-            record_id == id) {
+        if (webserver_record_id(&env->items[i].value, &record_id) && record_id == id) {
             if (out_name) {
-                *out_name = global_env.items[i].name;
+                *out_name = env->items[i].name;
             }
-            return &global_env.items[i].value;
+            webserver_record_frame = env;
+            return &env->items[i].value;
         }
     }
     return NULL;
+}
+
+static Value *webserver_find_record(unsigned long id, const char **out_name) {
+    Value *found = webserver_find_record_in(&global_env, id, out_name);
+    /* A SERVER IN A FUNCTION'S LOCAL (docs/watch_scope_design.md §4): the
+     * frames worth looking in are those with a live watch, since only a frame
+     * that is watching can be waiting for its requests. */
+    for (size_t w = 0; !found && w < watcher_count; w++) {
+        if (watchers[w].active && watchers[w].frame && watchers[w].frame != &global_env) {
+            found = webserver_find_record_in(watchers[w].frame, id, out_name);
+        }
+    }
+    return found;
 }
 
 static Value *webserver_field(Value *record, const char *name) {
@@ -22057,7 +22117,7 @@ static int webserver_parse_request(WebServer *server, WebServerClient *client) {
     value_free(ignored);
     char watch_path[256];
     snprintf(watch_path, sizeof(watch_path), "%s.requests", server_name);
-    if (!watcher_trigger_change(watch_path)) {
+    if (!watcher_trigger_delivery(watch_path, webserver_record_frame)) {
         return -500;
     }
     return 1;
@@ -45011,6 +45071,155 @@ static EvalResult eval_stmt(AstStmt *stmt) {
                 current_column = previous_column;
                 return result;
             }
+        }
+        break;
+    }
+    case AST_STMT_WAIT: {
+        /* wait until <condition> [for <limit>] (docs/watch_scope_design.md §4,
+         * Matthew's rulings 2026-11-07): the event loop runs from HERE, in this
+         * frame, delivering to the watches of every live frame, until the
+         * condition is true. Re-checked after each pass of the loop. */
+        if (wait_depth >= WAIT_MAX_DEPTH) {
+            /* RAISED, NOT SKIPPED: a Qt handler past its cap is not called and
+             * the program goes on (2117), but the code after a wait relies on
+             * its condition being true, so a skipped wait would be a lie */
+            char message[200];
+            snprintf(message, sizeof message, "wait until: nested %d deep, inside watches whose bodies wait; "
+                     "a wait in a watch body that calls a waiting function is usually a cycle", WAIT_MAX_DEPTH);
+            runtime_error_raise(message, 1003, "wait");
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        double limit_s = -1.0;
+        if (stmt->as.wait.limit) {
+            int before_limit = error_generation;
+            Value lv = eval_expr(stmt->as.wait.limit);
+            if (error_generation != before_limit) {
+                value_free(lv);
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+            if (lv.kind == VALUE_NUMBER) {
+                limit_s = lv.as.num.value;
+            } else if (lv.kind == VALUE_DURATION) {
+                long long months = 0, seconds = 0;
+                duration_totals(lv.as.duration, &months, &seconds);
+                limit_s = months ? -2.0 : (double)seconds;
+            } else {
+                limit_s = -3.0;
+            }
+            value_free(lv);
+            if (!(limit_s >= 0.0)) {
+                runtime_error_raise(limit_s == -2.0
+                                        ? "wait until ... for: a month has no fixed length; give the limit in days or less"
+                                        : "wait until ... for: the limit is a duration or a number of seconds, at least 0",
+                                    1003, "wait");
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+        }
+        double deadline = limit_s >= 0.0 ? webserver_now() + limit_s : -1.0;
+        wait_depth++;
+        int failed = 0;
+        /* IN A WATCH BODY, the running drain cannot take this wait's
+         * deliveries: it is busy running the body that is waiting. Its queue is
+         * set aside for the length of the wait (see watcher_queues_set_aside). */
+        int set_aside = watcher_draining;
+        size_t *saved_queue = watcher_queue;
+        Value *saved_principal = watcher_queue_principal;
+        size_t saved_count = watcher_queue_count, saved_next = watcher_drain_next;
+        int saved_line = watcher_drain_origin_line, saved_column = watcher_drain_origin_column;
+        if (set_aside) {
+            /* its unrun entries are pending in IT; for the wait they are not,
+               or a delivery to them would be dropped as already queued (a watch
+               registered in this very body is one of them) */
+            for (size_t i = saved_next; i < saved_count; i++) {
+                if (saved_queue[i] < watcher_count) {
+                    watchers[saved_queue[i]].pending = 0;
+                }
+            }
+            watcher_queue = NULL;
+            watcher_queue_principal = NULL;
+            watcher_queue_count = 0;
+            watcher_draining = 0;
+            watcher_drain_origin_line = 0;
+            watcher_drain_origin_column = 0;
+            watcher_queues_set_aside++;
+        }
+        for (;;) {
+            int before_error = error_generation;
+            Value condition = eval_expr(stmt->as.wait.condition);
+            if (error_generation != before_error) {
+                value_free(condition);
+                failed = 1;
+                break;
+            }
+            int refused = 0;
+            int truth = value_truthy(condition, &refused);
+            value_free(condition);
+            if (refused) {
+                failed = 1;
+                break;
+            }
+            if (truth) {
+                break;
+            }
+            if (deadline >= 0.0 && webserver_now() >= deadline) {
+                char message[200];
+                snprintf(message, sizeof message, "wait until: the limit of %g seconds passed and the condition "
+                         "is still false", limit_s);
+                runtime_error_raise(message, 1003, "wait");
+                failed = 1;
+                break;
+            }
+            /* NOTHING LEFT THAT COULD MAKE IT TRUE: no listener, transfer,
+             * watched inbox, live timer or watched socket. It would block for
+             * ever, so it says so (Matthew's ruling) rather than hang. */
+            if (!(webserver_any_active() || aux_loop_sources_active())) {
+                runtime_error_raise("wait until: no event source is left that could make the condition true "
+                                    "(no server listening, no transfer, no live timer, and no watched inbox or "
+                                    "socket)", 1003, "wait");
+                failed = 1;
+                break;
+            }
+            int idle = 0;
+            if (webserver_loop_iterate(&idle) || error_action_pending()) {
+                failed = 1;
+                break;
+            }
+            if (runtime_stopped) {
+                break;
+            }
+        }
+        wait_depth--;
+        if (set_aside) {
+            /* every drain this wait started has finished, so its queue is empty */
+            for (size_t i = 0; i < watcher_queue_count; i++) {
+                value_free(watcher_queue_principal[i]);
+            }
+            free(watcher_queue_principal);
+            free(watcher_queue);
+            watcher_queue = saved_queue;
+            watcher_queue_principal = saved_principal;
+            watcher_queue_count = saved_count;
+            watcher_drain_next = saved_next;
+            watcher_draining = 1;
+            watcher_drain_origin_line = saved_line;
+            watcher_drain_origin_column = saved_column;
+            watcher_queues_set_aside--;
+            for (size_t i = saved_next; i < saved_count; i++) {
+                if (watcher_queue[i] < watcher_count) {
+                    watchers[watcher_queue[i]].pending = 1;
+                }
+            }
+        }
+        if (failed) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
         }
         break;
     }

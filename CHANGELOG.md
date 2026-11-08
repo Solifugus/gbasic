@@ -28,6 +28,18 @@ reader sees.
 - **A named watcher may be declared in a function** (`watch w(x)`); a handle
   that outlives its function names an ended watch.
 
+### `wait until`: a function can wait for events
+
+- **`wait until <condition> [for <limit>]`** runs the event loop from where it
+  is written until the condition is true, delivering to the watches of every
+  scope still running. So a function can watch a timer, its inbox, a transfer,
+  a socket or a server it holds in a local, and wait for what it needs.
+- **It raises rather than hangs:** when its limit passes, when nothing is left
+  that could make the condition true, and past 16 waits inside one another.
+- **`qt.run()` from inside a function no longer starves the loop.**
+- `wait` is a keyword only before `until`; a variable called `wait` is
+  unaffected.
+
 ### xlsx.new could refuse a valid sheet name
 
 - **`xlsx.new("Summary")` could be refused** as `a sheet name is 1 to 31

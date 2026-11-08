@@ -25,6 +25,7 @@ typedef enum {
     TOKEN_STEP,
     TOKEN_DO,
     TOKEN_UNTIL,
+    TOKEN_WAIT,        /* `wait` only when `until` follows (docs/watch_scope_design.md §4) */
     TOKEN_WHILE,
     TOKEN_CONSIDER,
     TOKEN_BREAK,

@@ -118,7 +118,6 @@ unnormalized_load_path|print the load path unnormalized
 spawn_bare_name|resolves a bare function **name**
 nul_string_literal|is refused in a string literal
 deep_value_teardown|segfaults when it is RELEASED
-qt_run_in_function|silently starves every loop-delivered source
 library_top_statements|top-level statements are silently not run
 "
 
@@ -133,79 +132,6 @@ library_top_statements|top-level statements are silently not run
 NOT_MECHANICAL="
 vg_riscv|valgrind does not exist for riscv64|a fact about another architecture, unobservable from this one
 "
-
-probe_qt_run_in_function() {
-    # A PAIR, AND NEITHER HALF MEANS ANYTHING ALONE. The limitation is that
-    # `qt.run()` from inside a FUNCTION never gets gBASIC's sources serviced,
-    # so the program HANGS -- and "it hung" is equally satisfied by a fixture
-    # that cannot run at all, which is why the CONTROL is the identical program
-    # with `qt.run()` at the TOP LEVEL, which must tick and exit 0.
-    #
-    # IT GOES RED WHEN THE DEFECT IS FIXED, which is this suite's whole shape:
-    # the repair is to make the pump establish the global frame for the drain,
-    # and on a build that does so the first half exits 0 and this probe fails,
-    # naming the ledger line to strike.
-    local body
-    body='
-window app( title: "L", width: 200, height: 120 )
-    column
-        text t( label: "x" )
-    end column
-end window
-function handover()
-    qt.run()
-    return nothing
-end function
-program main(args)
-    if not qt.can_display() then
-        print "NODISPLAY"
-        return
-    end if
-    seen = 0
-    qt.open(app)
-    beat = timer.every(0.05)
-    watch(timer.ticks)
-        while count(timer.ticks) > 0
-            ev = take_first(timer.ticks)
-            seen = seen + 1
-            if seen >= 2 then
-                cancelled = timer.cancel(beat)
-                qt.stop()
-            end if
-        end while
-    end watch
-    HANDOVER
-    print "TICKS " + string(seen)
-end program
-'
-    printf '%s' "$body" | sed 's/^    HANDOVER$/    handover()/' > "$WORK/qtrun_fn.bas"
-    printf '%s' "$body" | sed 's/^    HANDOVER$/    qt.run()/'  > "$WORK/qtrun_top.bas"
-
-    set +e
-    QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 12 \
-        ./gbasic --line-buffered "$WORK/qtrun_top.bas" > "$WORK/qtrun_top.out" 2>&1
-    local top_rc=$?
-    QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 12 \
-        ./gbasic --line-buffered "$WORK/qtrun_fn.bas" > "$WORK/qtrun_fn.out" 2>&1
-    local fn_rc=$?
-
-    if grep -q NODISPLAY "$WORK/qtrun_top.out" 2>/dev/null; then
-        skipped "qt_run_in_function (no Qt in this build, so the loop was not exercised)"
-        return 0
-    fi
-    # THE CONTROL FIRST, because without it a hang proves nothing.
-    if [ "$top_rc" != "0" ] || ! grep -q "TICKS 2" "$WORK/qtrun_top.out"; then
-        printf '     %s\n' "$(tail -2 "$WORK/qtrun_top.out")"
-        printf 'FAIL qt_run_in_function CONTROL: qt.run at the TOP LEVEL must tick and exit 0, or a hang below means nothing\n'
-        status=1
-        return 1
-    fi
-    if [ "$fn_rc" = "124" ] || [ "$fn_rc" = "137" ]; then
-        ok "qt.run() inside a function still starves the loop, while the top level still ticks"
-    else
-        fixed "qt.run() inside a function no longer hangs (exit $fn_rc) -- the pump now serves the loop from any frame"
-    fi
-}
 
 probe_deep_value_teardown() {
     # THE DEPTH IS A PROPERTY OF THE STACK, NOT OF THE LANGUAGE, so this probe is

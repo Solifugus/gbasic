@@ -689,6 +689,12 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
     case AST_STMT_PRINT:
         analyze_expr(ctx, stmt->as.print.expr);
         break;
+    case AST_STMT_WAIT:
+        analyze_expr(ctx, stmt->as.wait.condition);
+        if (stmt->as.wait.limit) {
+            analyze_expr(ctx, stmt->as.wait.limit);
+        }
+        break;
     case AST_STMT_EXPR:
         analyze_expr(ctx, stmt->as.expr_stmt);
         break;
