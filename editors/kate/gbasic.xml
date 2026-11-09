@@ -327,6 +327,7 @@
       <item>x25519_keypair</item>
       <item>x25519_public</item>
       <item>x25519_shared</item>
+      <item>x509_parse</item>
       <item>zone_offset</item>
       <item>zone_resolve</item>
     </list>

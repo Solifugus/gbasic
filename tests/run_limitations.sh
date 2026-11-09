@@ -122,7 +122,7 @@ library_top_statements|top-level statements are silently not run
 find_all_first_match|collects only under the first
 decimal_key_collision|share an index key
 xml_entity_dropped|drops an entity reference in silence
-rsa_pem_certificate|given a CERTIFICATE says
+xml_text_unknown|a lookup that missed reads as an element
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -316,22 +316,17 @@ probe_xml_entity_dropped() {
     fi
 }
 
-probe_rsa_pem_certificate() {
-    # Red when the message for a certificate stops pointing at a passphrase.
-    if ! command -v openssl >/dev/null 2>&1; then
-        ok "SKIP rsa_from_pem on a certificate (no openssl to make one)"
-        return
-    fi
-    openssl req -x509 -newkey rsa:2048 -nodes -keyout "$WORK/rk.pem" -out "$WORK/rc.pem" -days 1 -subj /CN=t 2>/dev/null
-    printf 'r = try rsa_from_pem(read("%s/rc.pem"))\nprint error.message\n' "$WORK" > "$WORK/rc.bas"
-    rc_out=$(timeout 20 ./gbasic "$WORK/rc.bas" 2>&1)
-    if printf '%s' "$rc_out" | grep -q 'an encrypted key needs its passphrase'; then
-        ok "rsa_from_pem on a certificate still answers with the passphrase message"
-    elif printf '%s' "$rc_out" | grep -q 'not available\|unknown function'; then
-        ok "SKIP rsa_from_pem on a certificate (no libcrypto in this build)"
+probe_xml_text_unknown() {
+    # Red when xml.text of a missed find raises, or answers anything but "".
+    printf 'load xml\nt = xml.parse("<a><b><c>x</c></b></a>")\nprint "[" + xml.text(xml.find(t, "c")) + "]"\nprint error\n' > "$WORK/xt.bas"
+    xt_out=$(timeout 20 ./gbasic "$WORK/xt.bas" 2>&1 | tr '\n' ' ')
+    if [ "$xt_out" = "[] false " ]; then
+        ok "xml.text of a missed find still answers the empty text with no error"
+    elif printf '%s' "$xt_out" | grep -q 'library not loaded: xml\|not available'; then
+        ok "SKIP xml.text of unknown (no xml in this build)"
     else
-        printf '     %s\n' "$rc_out"
-        fixed "rsa_from_pem now says something else for a certificate"
+        printf '     %s\n' "$xt_out"
+        fixed "xml.text of unknown no longer answers \"\" in silence"
     fi
 }
 

@@ -237,6 +237,11 @@ XML 1.1, canonicalization, DOM mutation helpers (records are already mutable
 by ordinary means), streaming writer (future), and any SEC-specific
 knowledge.
 
+*(Changed 2026-11-08.)* Canonicalization is no longer a non-goal:
+`xml.canonicalize` binds libxml2's c14n for XML-DSig (Transward's SAML
+sign-on, M31). It takes the source text, not a tree from `xml.parse`, and
+refuses a DTD and an ID held twice; `tests/run_xml_sign.sh` holds it.
+
 ---
 
 ## 10. Open questions

@@ -4993,6 +4993,31 @@ Navigation (a *path* is a `/`-separated chain of child element names):
 - `node.text()` (`xml.text`) — the node's text content.
 - `xml.encode(node[, pretty])` — serialize a node back to an XML string; pass
   `true` to pretty-print.
+- `xml.canonicalize(text[, options])` — the canonical bytes of a document, or
+  of one element of it, as XML-DSig signs them: Exclusive XML Canonicalization
+  1.0 by default, Canonical XML 1.0 with `exclusive: false`. It takes the
+  **source text**, never a tree from `xml.parse`, which has already dropped
+  comments and merged CDATA. Options:
+  - `id` — the element whose `ID` attribute (or the unprefixed attribute
+    `id_attribute` names, such as `AssertionID`) is this value.
+  - `element`, `namespace` — the element of that local name (in that
+    namespace URI), inside the `id` element when both are given: how a
+    signature's `ds:SignedInfo`, which has no ID, is reached.
+  - `exclude_signature: true` — the enveloped-signature transform: the chosen
+    element's own `ds:Signature` child is left out (not one further down).
+  - `inclusive_prefixes` — the `InclusiveNamespaces PrefixList`, as an array or
+    as its space-separated text; `#default` is the default namespace.
+  - `comments` — keep comments (default `false`).
+
+  Refused, each by name: a document with a DTD (SAML forbids one, and
+  `xml.parse` drops a declared entity in silence, so the two could disagree
+  about the signed text); an `id` held by more than one element, and an
+  `element` matched more than once, which is how a signature is wrapped round
+  other content; an element holding two `ds:Signature` children with
+  `exclude_signature`; an unknown option. Verifying a SAML signature is then
+  ordinary code: the digest is `sha256` of the canonical element with
+  `exclude_signature`, and `rsa_verify` checks the canonical `SignedInfo`
+  against `x509_parse(cert).public_key` (`tests/run_xml_sign.sh`, TIER signed).
 
 Streaming reader, for documents too large to hold as a tree — it walks the file
 forward without materializing the whole document:
@@ -6290,6 +6315,18 @@ For SSH and other protocols that carry their own key formats (since 0.11.0,
   PKCS#8 (encrypted too) and public keys as PKCS#1 or SubjectPublicKeyInfo.
 - `rsa_to_pem(key)` — PKCS#8 for a private key, SubjectPublicKeyInfo for a
   public one, unencrypted.
+- `x509_parse(cert)` — what an X.509 certificate says, from PEM text or DER
+  bytes: `{ subject, issuer, not_before, not_after, serial, fingerprint_sha256,
+  der, key_type, public_key }`. Names are RFC 2253 text, as `openssl x509
+  -nameopt RFC2253` prints them; the dates are datetimes in UTC; `serial` and
+  `fingerprint_sha256` are big-endian bytes (`hex_encode` for text). `key_type`
+  is `rsa` (`public_key` is `{ n, e }`, as `rsa_verify` takes), `ec` (`{ curve,
+  public }`, as `ecdsa_verify` takes), `ed25519` (the 32 bytes `ed25519_verify`
+  takes), or `ec_other` or `other` with `public_key` unknown. It **checks
+  nothing**: not the signature, the dates or a chain, which are the caller's
+  decisions (a SAML identity provider's certificate is often self-signed and
+  pinned by metadata). Refused: text with no certificate, and DER with bytes
+  after the certificate.
 - `aes_ctr(key, counter, data)` — AES in counter mode (`aes128-ctr`,
   `aes256-ctr`); `key` is 16, 24 or 32 bytes and `counter` a 16-byte block.
   Answers `{ data, counter }`, where `counter` is the next block's, so packets

@@ -97,6 +97,7 @@ int gbasic_builtin_function(const char *name) {
         "rsa_verify",
         "rsa_from_pem",
         "rsa_to_pem",
+        "x509_parse",
         "aes_ctr",
         "bcrypt_pbkdf",
         "chacha20",

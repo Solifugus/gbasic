@@ -2507,9 +2507,11 @@ static int file_all_dead(GsStore *db, FileMeta *m, uint64_t keep_after);
  * records. A file holding ONLY dead trees is sweep_dead's, dropped whole; this
  * is the file that also holds a live one, which nothing reclaimed until a
  * compaction happened to reach it. Measured (gdash's GDASH-16 B3, a staging
- * table renamed over live 12 times, 5.5 MB live): level 0 held up to 54 MB of
- * such files and the directory 90 MB, since each flush mixes the swaps that
- * fell in one memtable and only the l0 trigger ever compacted them.
+ * table renamed over live 12 times, about 18 MB live -- first reported as
+ * 5.5 MB, the recipe's rounds being 110,000 rows rather than 20,000): level
+ * 0 held up to 54 MB of such files and the directory 90 MB, since each flush
+ * mixes the swaps that fell in one memtable and only the l0 trigger ever
+ * compacted them.
  * The largest such file goes first, rewritten where it is below level 0, and
  * level 0 compacted when it is there, as gc_start does. Every output is clean
  * as of the horizon it was written at, so no file is picked twice for the

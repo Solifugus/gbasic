@@ -1392,6 +1392,367 @@ static Value xml_eval_subtree(AstExpr *expr) {
     return out;
 }
 
+/* ---------------------------------------------------------------------------
+ * xml.canonicalize(text[, options]): the canonical bytes of a document or of
+ * one element of it, as XML-DSig signs them (Transward M31 §10.1, for SAML).
+ *
+ * A BINDING, NOT A CANONICALIZER: libxml2's xmlC14NExecute does the work,
+ * with a visibility callback choosing the element and leaving out its
+ * enveloped signature. Exclusive XML Canonicalization 1.0 by default; with
+ * `exclusive: false`, Canonical XML 1.0.
+ *
+ * IT TAKES THE SOURCE TEXT, never a tree from xml.parse: that tree has
+ * already dropped comments, merged CDATA and decided about entities, and
+ * c14n is defined over the document as written.
+ *
+ * TWO REFUSALS ARE THE POINT, not hygiene:
+ *   - a document with a DTD. SAML forbids one, and xml.parse leaves an entity
+ *     reference out silently (`<a>&x;</a>` reads as an empty `<a>`), so a
+ *     canonicalizer and a reader could disagree about the signed text.
+ *   - an ID held by two elements. Answering the first is the signature-
+ *     wrapping attack: the signature covers one element and the application
+ *     reads the other. */
+#include <libxml/c14n.h>
+
+#define XML_DSIG_NS "http://www.w3.org/2000/09/xmldsig#"
+
+typedef struct {
+    xmlNodePtr top;   /* the element canonicalized; NULL for the document */
+    xmlNodePtr drop;  /* its enveloped ds:Signature, left out; or NULL */
+} XmlC14nPick;
+
+/* libxml2 hands a namespace node as an xmlNs cast to xmlNodePtr; xmlNs and
+ * xmlNode both have `type` as their second field, which is what lets c14n
+ * (and this) read it before knowing which one it holds. */
+static int xml_c14n_visible(void *data, xmlNodePtr node, xmlNodePtr parent) {
+    XmlC14nPick *p = data;
+    xmlNodePtr e = (node->type == XML_NAMESPACE_DECL || node->type == XML_ATTRIBUTE_NODE) ? parent : node;
+    for (; e; e = e->parent) {
+        if (e == p->drop) {
+            return 0;
+        }
+        if (p->top && e == p->top) {
+            return 1;
+        }
+    }
+    return p->top == NULL;
+}
+
+typedef struct {
+    const char *attr;
+    const char *value;
+    xmlNodePtr found;
+    size_t count;
+} XmlIdFind;
+
+static void xml_find_id(xmlNodePtr n, XmlIdFind *f) {
+    for (; n; n = n->next) {
+        if (n->type != XML_ELEMENT_NODE) {
+            continue;
+        }
+        for (xmlAttrPtr a = n->properties; a; a = a->next) {
+            /* an unprefixed attribute, as SAML's ID is */
+            if (a->ns || strcmp((const char *)a->name, f->attr) != 0) {
+                continue;
+            }
+            xmlChar *v = xmlNodeListGetString(n->doc, a->children, 1);
+            if (v && strcmp((const char *)v, f->value) == 0) {
+                if (f->count++ == 0) {
+                    f->found = n;
+                }
+            }
+            xmlFree(v);
+        }
+        xml_find_id(n->children, f);
+    }
+}
+
+/* the elements named `name` (in namespace `ns`, or any when NULL) at or under n */
+static void xml_find_named(xmlNodePtr n, const char *name, const char *ns, xmlNodePtr *found, size_t *count) {
+    for (; n; n = n->next) {
+        if (n->type != XML_ELEMENT_NODE) {
+            continue;
+        }
+        if (strcmp((const char *)n->name, name) == 0 &&
+            (!ns || (n->ns && n->ns->href && strcmp((const char *)n->ns->href, ns) == 0))) {
+            if ((*count)++ == 0) {
+                *found = n;
+            }
+        }
+        xml_find_named(n->children, name, ns, found, count);
+    }
+}
+
+static int xml_c14n_options(Value *o, char **id, char **id_attr, char **element, char **ns, int *exclusive, int *comments,
+                            int *exclude_sig, char ***prefixes) {
+    char m[300];
+    for (size_t i = 0; i < o->as.record.count; i++) {
+        const char *k = o->as.record.fields[i].name;
+        Value *v = o->as.record.fields[i].value;
+        int refused = 0;
+        if (strcmp(k, "id") == 0 || strcmp(k, "id_attribute") == 0 || strcmp(k, "element") == 0 ||
+            strcmp(k, "namespace") == 0) {
+            if (v->kind != VALUE_STRING || string_length(v->as.string) == 0 ||
+                memchr(v->as.string, 0, string_length(v->as.string))) {
+                snprintf(m, sizeof m, "xml.canonicalize: `%s` is text, not empty and with no NUL", k);
+                runtime_error_raise(m, XML_ERROR_CODE, "xml");
+                return 0;
+            }
+            char **slot = strcmp(k, "id") == 0 ? id : strcmp(k, "id_attribute") == 0 ? id_attr
+                        : strcmp(k, "element") == 0 ? element : ns;
+            free(*slot);
+            *slot = copy_string(v->as.string);
+        } else if (strcmp(k, "exclusive") == 0) {
+            *exclusive = value_truthy(*v, &refused);
+        } else if (strcmp(k, "comments") == 0) {
+            *comments = value_truthy(*v, &refused);
+        } else if (strcmp(k, "exclude_signature") == 0) {
+            *exclude_sig = value_truthy(*v, &refused);
+        } else if (strcmp(k, "inclusive_prefixes") == 0) {
+            /* an array of prefixes, or the PrefixList attribute's own text:
+               prefixes separated by spaces, `#default` for the default one */
+            size_t n = 0, cap = 8;
+            char **list = calloc(cap, sizeof *list);
+            if (!list) {
+                abort();
+            }
+            int bad = 0;
+            if (v->kind == VALUE_STRING) {
+                const char *s = v->as.string;
+                while (*s) {
+                    while (*s == ' ' || *s == '\t' || *s == '\n' || *s == '\r') s++;
+                    const char *b = s;
+                    while (*s && *s != ' ' && *s != '\t' && *s != '\n' && *s != '\r') s++;
+                    if (s > b) {
+                        if (n + 2 > cap) { cap *= 2; list = realloc(list, cap * sizeof *list); if (!list) abort(); }
+                        list[n] = malloc((size_t)(s - b) + 1);
+                        if (!list[n]) abort();
+                        memcpy(list[n], b, (size_t)(s - b));
+                        list[n++][s - b] = 0;
+                    }
+                }
+            } else if (v->kind == VALUE_ARRAY && v->as.array.store) {
+                for (size_t j = 0; j < v->as.array.store->count && !bad; j++) {
+                    Value *e = &v->as.array.store->items[j];
+                    if (e->kind != VALUE_STRING || string_length(e->as.string) == 0 ||
+                        memchr(e->as.string, 0, string_length(e->as.string))) {
+                        bad = 1;
+                        break;
+                    }
+                    if (n + 2 > cap) { cap *= 2; list = realloc(list, cap * sizeof *list); if (!list) abort(); }
+                    list[n++] = copy_string(e->as.string);
+                }
+            } else {
+                bad = 1;
+            }
+            list[n] = NULL;
+            if (*prefixes) {
+                for (size_t j = 0; (*prefixes)[j]; j++) free((*prefixes)[j]);
+                free(*prefixes);
+            }
+            *prefixes = list;
+            if (bad) {
+                runtime_error_raise("xml.canonicalize: `inclusive_prefixes` is an array of prefixes, or their "
+                                    "PrefixList text (`#default` for the default namespace)",
+                                    XML_ERROR_CODE, "xml");
+                return 0;
+            }
+        } else {
+            snprintf(m, sizeof m,
+                     "xml.canonicalize has no option `%.80s`; its options are id, id_attribute, element, "
+                     "namespace, exclusive, comments, inclusive_prefixes and exclude_signature", k);
+            runtime_error_raise(m, XML_ERROR_CODE, "xml");
+            return 0;
+        }
+        if (refused) {
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static Value xml_eval_canonicalize(AstExpr *expr) {
+    size_t argc = expr->as.call.args.count;
+    if (argc < 1 || argc > 2) {
+        runtime_error_raise("xml.canonicalize expects the document's text, and optionally options",
+                            XML_ERROR_CODE, "xml");
+        return value_null();
+    }
+    Value text = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(text);
+        return value_null();
+    }
+    if (text.kind != VALUE_STRING) {
+        char m[200];
+        snprintf(m, sizeof m, "xml.canonicalize expects the document's text, not %s", value_kind_name(text.kind));
+        value_free(text);
+        runtime_error_raise(m, XML_ERROR_CODE, "xml");
+        return value_null();
+    }
+    if (string_length(text.as.string) != strlen(text.as.string)) {
+        value_free(text);
+        runtime_error_raise("xml.canonicalize: the document contains an interior NUL, which XML forbids",
+                            XML_ERROR_CODE, "xml");
+        return value_null();
+    }
+    char *id = NULL, *id_attr = NULL, *element = NULL, *ns = NULL, **prefixes = NULL;
+    int exclusive = 1, comments = 0, exclude_sig = 0, ok = 1;
+    if (argc == 2) {
+        Value o = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            ok = 0;
+        } else if (o.kind != VALUE_RECORD) {
+            char m[200];
+            snprintf(m, sizeof m, "xml.canonicalize expects its options as a record, not %s", value_kind_name(o.kind));
+            runtime_error_raise(m, XML_ERROR_CODE, "xml");
+            ok = 0;
+        } else {
+            ok = xml_c14n_options(&o, &id, &id_attr, &element, &ns, &exclusive, &comments, &exclude_sig, &prefixes);
+        }
+        value_free(o);
+    }
+    if (ok && prefixes && !exclusive) {
+        runtime_error_raise("xml.canonicalize: `inclusive_prefixes` belongs to exclusive canonicalization, "
+                            "and `exclusive` is false", XML_ERROR_CODE, "xml");
+        ok = 0;
+    }
+    if (ok && ns && !element) {
+        runtime_error_raise("xml.canonicalize: `namespace` is the namespace of `element`, and no `element` was given",
+                            XML_ERROR_CODE, "xml");
+        ok = 0;
+    }
+    if (ok && id_attr && !id) {
+        runtime_error_raise("xml.canonicalize: `id_attribute` names where to find `id`, and no `id` was given",
+                            XML_ERROR_CODE, "xml");
+        ok = 0;
+    }
+    Value result = value_null();
+    xmlDocPtr doc = NULL;
+    xmlParserCtxtPtr ctxt = NULL;
+    if (ok) {
+        xml_install_silent_errors();
+        ctxt = xmlNewParserCtxt();
+        if (!ctxt) {
+            runtime_error_raise("xml: could not create parser context", XML_ERROR_CODE, "xml");
+            ok = 0;
+        }
+    }
+    if (ok) {
+        /* not NOCDATA, so a CDATA section reaches c14n as written (it writes
+           its characters as text either way); not NOENT, and a DTD is refused
+           below before anything could be expanded */
+        doc = xmlCtxtReadMemory(ctxt, text.as.string, (int)string_length(text.as.string), NULL, NULL,
+                                XML_PARSE_NONET | XML_PARSE_BIG_LINES);
+        if (!doc) {
+            xml_raise_from_ctxt(ctxt, "xml: document is not well-formed");
+            ok = 0;
+        }
+    }
+    if (ok && (doc->intSubset || doc->extSubset)) {
+        runtime_error_raise("xml.canonicalize: the document has a DTD (<!DOCTYPE>), which it refuses: SAML "
+                            "forbids one, and an entity the DTD declares would be read differently by "
+                            "xml.parse", XML_ERROR_CODE, "xml");
+        ok = 0;
+    }
+    XmlC14nPick pick = { NULL, NULL };
+    if (ok && id) {
+        XmlIdFind f = { id_attr ? id_attr : "ID", id, NULL, 0 };
+        xml_find_id(xmlDocGetRootElement(doc), &f);
+        char m[400];
+        if (f.count == 0) {
+            snprintf(m, sizeof m, "xml.canonicalize: no element has %.60s=\"%.200s\"", f.attr, id);
+            runtime_error_raise(m, XML_ERROR_CODE, "xml");
+            ok = 0;
+        } else if (f.count > 1) {
+            snprintf(m, sizeof m, "xml.canonicalize: %zu elements have %.60s=\"%.200s\", and a signed ID must be "
+                     "one element's (two is how a signature is wrapped round other content)", f.count, f.attr, id);
+            runtime_error_raise(m, XML_ERROR_CODE, "xml");
+            ok = 0;
+        }
+        pick.top = f.found;
+    }
+    /* an element by name, inside the ID's element when there is one: how a
+       signature's ds:SignedInfo, which has no ID, is reached. One, or it is
+       refused, for the reason two IDs are. */
+    if (ok && element) {
+        xmlNodePtr found = NULL;
+        size_t n = 0;
+        xml_find_named(pick.top ? pick.top : xmlDocGetRootElement(doc), element, ns, &found, &n);
+        if (pick.top && n) {
+            /* xml_find_named walks top's following siblings too: count again
+               inside top alone */
+            n = 0;
+            found = NULL;
+            xmlNodePtr save = pick.top->next;
+            pick.top->next = NULL;
+            xml_find_named(pick.top, element, ns, &found, &n);
+            pick.top->next = save;
+        }
+        char m[500];
+        if (n != 1) {
+            snprintf(m, sizeof m, "xml.canonicalize: %s element is named %.60s%s%.200s%s, and the one to "
+                     "canonicalize must be the only one", n ? "more than one" : "no", element, ns ? " in " : "",
+                     ns ? ns : "", pick.top ? " inside the element with that ID" : "");
+            runtime_error_raise(m, XML_ERROR_CODE, "xml");
+            ok = 0;
+        }
+        pick.top = found;
+    }
+    if (ok && exclude_sig) {
+        /* the enveloped-signature transform: the element's own ds:Signature
+           child, not one further down, which signs something else */
+        xmlNodePtr within = pick.top ? pick.top : xmlDocGetRootElement(doc);
+        size_t n = 0;
+        for (xmlNodePtr c = within ? within->children : NULL; c; c = c->next) {
+            if (c->type == XML_ELEMENT_NODE && c->ns && strcmp((const char *)c->name, "Signature") == 0 &&
+                strcmp((const char *)c->ns->href, XML_DSIG_NS) == 0) {
+                n++;
+                pick.drop = c;
+            }
+        }
+        if (n > 1) {
+            runtime_error_raise("xml.canonicalize: the element holds more than one ds:Signature, so which one "
+                                "is enveloped is not decided", XML_ERROR_CODE, "xml");
+            ok = 0;
+        }
+    }
+    if (ok) {
+        xmlOutputBufferPtr out = xmlAllocOutputBuffer(NULL);
+        if (!out) {
+            abort();
+        }
+        int mode = exclusive ? XML_C14N_EXCLUSIVE_1_0 : XML_C14N_1_0;
+        int whole = !pick.top && !pick.drop;
+        int rc = xmlC14NExecute(doc, whole ? NULL : xml_c14n_visible, whole ? NULL : &pick, mode,
+                                (xmlChar **)prefixes, comments, out);
+        if (rc < 0) {
+            runtime_error_raise("xml.canonicalize: libxml2 could not canonicalize the document",
+                                XML_ERROR_CODE, "xml");
+        } else {
+            result = value_string_n((const char *)xmlOutputBufferGetContent(out),
+                                    (size_t)xmlOutputBufferGetSize(out));
+        }
+        xmlOutputBufferClose(out);
+    }
+    if (doc) {
+        xmlFreeDoc(doc);
+    }
+    if (ctxt) {
+        xmlFreeParserCtxt(ctxt);
+    }
+    if (prefixes) {
+        for (size_t j = 0; prefixes[j]; j++) free(prefixes[j]);
+        free(prefixes);
+    }
+    free(id);
+    free(id_attr);
+    free(element);
+    free(ns);
+    value_free(text);
+    return result;
+}
+
 static Value xml_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     size_t argc = expr->as.call.args.count;
@@ -1465,6 +1826,10 @@ static Value xml_eval_call(AstExpr *expr) {
                                         keep_space, want_pos);
         value_free(text);
         return result;
+    }
+
+    if (strcmp(name, "canonicalize") == 0) {
+        return xml_eval_canonicalize(expr);
     }
 
     if (strcmp(name, "parse_html") == 0) {

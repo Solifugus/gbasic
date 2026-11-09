@@ -16,6 +16,21 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### What verifying a SAML signature needs (Transward M31 §10)
+
+- **`xml.canonicalize(text, options)`**: Exclusive XML Canonicalization 1.0
+  (or Canonical XML 1.0) over libxml2's c14n, of a document or of one element
+  chosen by `id` or by `element` and `namespace`, with `exclude_signature` for
+  the enveloped-signature transform and `inclusive_prefixes`. It refuses a DTD,
+  an ID held twice and a name matched twice (the signature-wrapping attack).
+- **`x509_parse(cert)`**: a certificate's subject, issuer, dates, serial,
+  SHA-256 fingerprint, DER and public key, the key in the record shape
+  `rsa_verify` and `ecdsa_verify` take. It checks nothing.
+- `tests/run_xml_sign.sh`: canonical forms written by hand from the
+  specifications, certificates held against openssl, and an assertion signed
+  by openssl over hand-written canonical bytes that gBASIC verifies, with a
+  tampered and a wrapped copy failing.
+
 ### A closed G-SQL database keeps no logs, and `gsql.space` (gdash B3, second half)
 
 - **A closed database kept two logs at full size**, up to one memtable each
@@ -49,8 +64,9 @@ reader sees.
 ### G-SQL gives back a dropped table's space beside a live one (gdash B3)
 
 - **A table swapped in again and again kept its old rounds' space**: a staging
-  table renamed over live grew gdash's directory to 90 MB for 5.5 MB of live
-  rows, because each sorted file mixed a live round with dead ones and only a
+  table renamed over live grew gdash's directory to 90 MB for about 18 MB of
+  live rows (first reported as 5.5 MB: the recipe's rounds were 110,000 rows,
+  not 20,000, as gdash found), because each sorted file mixed a live round with dead ones and only a
   routine compaction ever rewrote it. A file holding a dropped table's rows is
   now compacted when nothing else is wanted; the same recipe's sorted files
   peak at one flush (17 MB). The two logs, up to one memtable each, are

@@ -253,6 +253,7 @@ rsa_sign:"k","m","sha256"
 rsa_verify:"k","m","s","sha256"
 rsa_from_pem:"x"
 rsa_to_pem:"k"
+x509_parse:"x"
 aes_ctr:"k","c","d"
 bcrypt_pbkdf:"p","s",1,16
 chacha20:"k","i","d"
