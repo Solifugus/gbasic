@@ -37,6 +37,9 @@
 #include <string.h>
 #include "posix_compat.h"   /* poll, sockets, wait, flock: see the header */
 #include <sys/stat.h>
+#ifndef _WIN32
+#include <sys/resource.h>   /* process.start limits: setrlimit, and wait4's rusage */
+#endif
 #include <time.h>
 #include <unistd.h>
 
@@ -617,6 +620,12 @@ struct ProcessHandle {
     ProcBuf pending_err;
     int reaped;             /* waitpid completed; `status` is final */
     int status;             /* raw wait(2) status, valid when reaped */
+    /* `limits: { memory: n }` (gdash's GDASH-16 B1): the child's RLIMIT_DATA,
+     * or 0 for none; and its peak resident bytes from wait4, or -1 when it was
+     * not reaped here. Reported only for a limited child, so no status record
+     * a program already prints changes shape. */
+    long long memory_limit;
+    long long peak_memory;
     size_t ref_count;
 #ifdef _WIN32
     /* The process and its job (include/platform.h, gb_child_start). out_fd,
@@ -25482,6 +25491,53 @@ static Value sqlite_eval_call(AstExpr *expr) {
 }
 #endif
 
+/* A ROW CAP THAT DOES NOT BUFFER PAST IT (gdash's GDASH-16 B2): `max_rows` on
+ * `pg.query` and `odbc.query`. Over the cap is RAISED, not truncated, so a
+ * caller cannot quietly keep a partial result: code 1003 from the module, and
+ * `details: { code: "MAX_ROWS", max_rows }`. Shared by both modules. */
+static void db_max_rows_raise(const char *module, long long max_rows, int code, const char *source) {
+    if (raise_in_flight) {
+        return;
+    }
+    char message[200];
+    snprintf(message, sizeof message,
+             "%s.query: the query returned more than %lld rows, its max_rows", module, max_rows);
+    Value details = value_record(NULL, 0);
+    record_set(&details, "code", value_string("MAX_ROWS"));
+    record_set(&details, "max_rows", value_number_exact(max_rows));
+    error_set_state_full(message, code, source, details, value_null(), 0, 0);
+    error_generation++;
+    raise_in_flight = 1;
+}
+
+/* `{ max_rows: n }`, a closed set, n a whole number of at least 1. Answers 1
+ * and *out (0 when absent), or raises and answers 0. */
+static int db_query_options(Value options, const char *module, long long *out, int code, const char *source) {
+    char message[200];
+    *out = 0;
+    if (options.kind != VALUE_RECORD) {
+        snprintf(message, sizeof message, "%s.query options must be a record, such as { max_rows: 200000 }", module);
+        runtime_error_raise(message, code, source);
+        return 0;
+    }
+    for (size_t i = 0; i < options.as.record.count; i++) {
+        RecordField *f = &options.as.record.fields[i];
+        if (!record_name_is(f, "max_rows")) {
+            snprintf(message, sizeof message, "%s.query: unknown option '%s' (the options are: max_rows)",
+                     module, f->name);
+            runtime_error_raise(message, code, source);
+            return 0;
+        }
+        if (!value_is_exact(*f->value) || f->value->as.num.exact < 1) {
+            snprintf(message, sizeof message, "%s.query: max_rows must be a whole number, at least 1", module);
+            runtime_error_raise(message, code, source);
+            return 0;
+        }
+        *out = f->value->as.num.exact;
+    }
+    return 1;
+}
+
 #if HAVE_ODBC
 #define ODBC_ERROR_CODE 2003
 
@@ -26287,7 +26343,14 @@ static Value odbc_column_value(SQLHSTMT statement,
     return result;
 }
 
+static Value odbc_rows_from_statement_capped(SQLHSTMT statement, long long max_rows);
 static Value odbc_rows_from_statement(SQLHSTMT statement) {
+    return odbc_rows_from_statement_capped(statement, 0);
+}
+
+/* max_rows > 0: raise on the row past it (gdash's GDASH-16 B2), closing the
+ * cursor there, so no more than the rows kept plus one are ever fetched. */
+static Value odbc_rows_from_statement_capped(SQLHSTMT statement, long long max_rows) {
     SQLSMALLINT columns = 0;
     SQLRETURN rc = SQLNumResultCols(statement, &columns);
     if (!SQL_SUCCEEDED(rc)) {
@@ -26350,6 +26413,16 @@ static Value odbc_rows_from_statement(SQLHSTMT statement) {
                 value_free(items[i]);
             }
             free(items);
+            goto fail;
+        }
+        if (max_rows > 0 && (long long)count == max_rows) {
+            SQLCancel(statement);
+            SQLCloseCursor(statement);
+            for (size_t i = 0; i < count; i++) {
+                value_free(items[i]);
+            }
+            free(items);
+            db_max_rows_raise("odbc", max_rows, ODBC_ERROR_CODE, "odbc");
             goto fail;
         }
 
@@ -26454,9 +26527,10 @@ static Value odbc_command_result(SQLHSTMT statement, const char *sql) {
 }
 
 static Value odbc_eval_sql(AstExpr *expr, int query_mode) {
-    if (expr->as.call.args.count != 2 && expr->as.call.args.count != 3) {
+    size_t nargs = expr->as.call.args.count;
+    if (nargs < 2 || nargs > (query_mode ? 4u : 3u)) {
         odbc_raise_message(query_mode
-            ? "odbc.query expects two or three arguments"
+            ? "odbc.query expects two to four arguments (connection, sql, params, options)"
             : "odbc.exec expects two or three arguments");
         return value_null();
     }
@@ -26487,9 +26561,21 @@ static Value odbc_eval_sql(AstExpr *expr, int query_mode) {
         return value_null();
     }
 
+    long long max_rows = 0;
+    if (nargs == 4) {
+        Value options = eval_expr(expr->as.call.args.items[3]);
+        int ok = !error_action_pending() &&
+                 db_query_options(options, "odbc", &max_rows, ODBC_ERROR_CODE, "odbc");
+        value_free(options);
+        if (!ok) {
+            value_free(sql);
+            value_free(connection_value);
+            return value_null();
+        }
+    }
     Value params_value = value_null();
     int have_params = 0;
-    if (expr->as.call.args.count == 3) {
+    if (expr->as.call.args.count >= 3) {
         params_value = eval_expr(expr->as.call.args.items[2]);
         if (error_action_pending()) {
             value_free(params_value);
@@ -26586,7 +26672,7 @@ static Value odbc_eval_sql(AstExpr *expr, int query_mode) {
 
     Value converted = value_null();
     if (query_mode) {
-        converted = odbc_rows_from_statement(params.statement);
+        converted = odbc_rows_from_statement_capped(params.statement, max_rows);
     } else if (columns > 0) {
         odbc_raise_message("odbc.exec cannot discard row results; use odbc.query");
     } else {
@@ -28199,10 +28285,88 @@ static Value pg_command_result(PGresult *result) {
     return value_record(fields, 2);
 }
 
+/* pg.query under a cap: sent, then read in libpq's SINGLE-ROW MODE, so the
+ * client never holds more than the rows kept plus one. On the row past the cap
+ * the query is cancelled on the server and what is in flight is drained, and
+ * the call raises. In a transaction the cancel aborts it, as any statement's
+ * error does in PostgreSQL. */
+static Value pg_query_capped(PgConnectionValue *connection, const char *sql,
+                             PgParameterList *params, int prepared, long long max_rows) {
+    PGconn *conn = connection->connection;
+    int sent = prepared ? PQsendQueryPrepared(conn, "", params->count, params->pointers, NULL, NULL, 0)
+             : params   ? PQsendQueryParams(conn, sql, params->count, NULL, params->pointers, NULL, NULL, 0)
+                        : PQsendQuery(conn, sql);
+    if (!sent) {
+        pg_raise_connection_error(conn, "PostgreSQL operation failed");
+        return value_null();
+    }
+    PQsetSingleRowMode(conn);
+    Value *items = NULL;
+    size_t count = 0, cap = 0;
+    int failed = 0, over = 0;
+    PGresult *r;
+    while ((r = PQgetResult(conn)) != NULL) {
+        ExecStatusType st = PQresultStatus(r);
+        if (failed || over) {
+            PQclear(r);                        /* draining */
+            continue;
+        }
+        if (st == PGRES_SINGLE_TUPLE) {
+            if ((long long)count == max_rows) {
+                over = 1;
+                PQclear(r);
+                PGcancel *c = PQgetCancel(conn);
+                if (c) {
+                    char why[256];
+                    PQcancel(c, why, sizeof why);
+                    PQfreeCancel(c);
+                }
+                continue;
+            }
+            Value one = pg_rows_from_result(r);
+            PQclear(r);
+            if (one.kind != VALUE_ARRAY) {
+                value_free(one);
+                failed = 1;
+                continue;
+            }
+            for (size_t i = 0; i < one.as.array.store->count; i++) {
+                if (count == cap) {
+                    cap = cap ? cap * 2 : 64;
+                    items = realloc(items, cap * sizeof *items);
+                    if (!items) {
+                        abort();
+                    }
+                }
+                items[count++] = value_copy(one.as.array.store->items[i]);
+            }
+            value_free(one);
+        } else if (st == PGRES_TUPLES_OK || st == PGRES_COMMAND_OK) {
+            PQclear(r);
+        } else {
+            pg_raise_result_error_sql(conn, r, sql);
+            PQclear(r);
+            failed = 1;
+        }
+    }
+    if (failed || over) {
+        for (size_t i = 0; i < count; i++) {
+            value_free(items[i]);
+        }
+        free(items);
+        if (over) {
+            db_max_rows_raise("pg", max_rows, PG_ERROR_CODE, "postgres");
+        }
+        return value_null();
+    }
+    return value_array(items, count);
+}
+
 static Value pg_eval_sql(AstExpr *expr, int query_mode) {
-    if (expr->as.call.args.count != 2 && expr->as.call.args.count != 3) {
+    size_t nargs = expr->as.call.args.count;
+    if (nargs < 2 || nargs > (query_mode ? 4u : 3u)) {
         pg_raise_message(query_mode
-            ? "pg.query expects two or three arguments"
+            ? "pg.query expects two to four arguments (connection, sql, params, options)"
             : "pg.exec expects two or three arguments");
         return value_null();
     }
@@ -28238,7 +28402,19 @@ static Value pg_eval_sql(AstExpr *expr, int query_mode) {
     PgParameterList *params_ptr = NULL;
     Oid *param_types = NULL;
     int prepared = 0;
-    if (expr->as.call.args.count == 3) {
+    long long max_rows = 0;
+    if (nargs == 4) {
+        Value options = eval_expr(expr->as.call.args.items[3]);
+        int ok = !error_action_pending() &&
+                 db_query_options(options, "pg", &max_rows, PG_ERROR_CODE, "postgres");
+        value_free(options);
+        if (!ok) {
+            value_free(sql);
+            value_free(connection_value);
+            return value_null();
+        }
+    }
+    if (expr->as.call.args.count >= 3) {
         params_value = eval_expr(expr->as.call.args.items[2]);
         if (error_action_pending()) {
             value_free(params_value);
@@ -28266,6 +28442,15 @@ static Value pg_eval_sql(AstExpr *expr, int query_mode) {
         params_ptr = &params;
     }
 
+    if (max_rows > 0) {
+        Value rows = pg_query_capped(connection, sql.as.string, params_ptr, prepared, max_rows);
+        free(param_types);
+        pg_parameter_list_clear(&params);
+        value_free(params_value);
+        value_free(sql);
+        value_free(connection_value);
+        return rows;
+    }
     PGresult *result = pg_execute_sql(connection, sql.as.string, params_ptr, prepared);
     free(param_types);
     pg_parameter_list_clear(&params);
@@ -29593,7 +29778,7 @@ static int process_parse_options(Value *opts, const char *label, ProcLaunch *out
 static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
                             const int *share_fds, size_t share_count,
                             int *out_fd, int *err_fd, int *launch_errno,
-                            int want_stdin, int *in_fd) {
+                            int want_stdin, int *in_fd, long long memory_limit) {
     int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1}, exec_pipe[2] = {-1, -1};
     int in_pipe[2] = {-1, -1};
     *launch_errno = 0;
@@ -29683,6 +29868,24 @@ static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
             int e = errno;
             ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
             _exit(127);
+        }
+        /* THE MEMORY LIMIT, set here so it binds the program exec runs and not
+         * the parent. RLIMIT_DATA, not RLIMIT_AS: the address space counts every
+         * mapping, shared libraries and reserved thread stacks included, which
+         * for a gbasic linked with Qt is far more than it uses; the data limit
+         * counts the heap and private anonymous mappings, which is what grows
+         * when a child holds a result set. No core dump either: a child killed
+         * by its own limit would otherwise write one about the limit's size,
+         * against the disk the same caller is metering. A refusal is a launch
+         * failure, reported as one. */
+        if (memory_limit > 0) {
+            struct rlimit data = { (rlim_t)memory_limit, (rlim_t)memory_limit };
+            struct rlimit core = { 0, 0 };
+            if (setrlimit(RLIMIT_DATA, &data) != 0 || setrlimit(RLIMIT_CORE, &core) != 0) {
+                int e = errno;
+                ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
+                _exit(127);
+            }
         }
         execvp(argv[0], argv);
         int e = errno;
@@ -29802,12 +30005,19 @@ static void process_try_reap(ProcessHandle *h) {
 #else
     int st;
     pid_t r;
+    struct rusage ru;
+    memset(&ru, 0, sizeof ru);
     do {
-        r = waitpid(h->pid, &st, WNOHANG);
+        r = wait4(h->pid, &st, WNOHANG, &ru);   /* waitpid, plus the child's usage */
     } while (r < 0 && errno == EINTR);
     if (r == h->pid) {
         h->status = st;
         h->reaped = 1;
+#ifdef __APPLE__
+        h->peak_memory = (long long)ru.ru_maxrss;          /* bytes there */
+#else
+        h->peak_memory = (long long)ru.ru_maxrss * 1024;   /* kilobytes on Linux and the BSDs */
+#endif
     } else if (r < 0) {
         h->status = 0;      /* ECHILD: already gone; treat as exit 0 unknown */
         h->reaped = 1;
@@ -29923,7 +30133,18 @@ static Value process_make_status(ProcessHandle *h) {
     *fields[1].value = value_number_exact(exit_code);
     *fields[2].value = value_number_exact(signal_num);
     *fields[3].value = value_bool(success);
-    return value_record(fields, 4);
+    Value status = value_record(fields, 4);
+    /* A LIMITED CHILD SAYS WHAT IT WAS GIVEN AND WHAT IT TOOK. The kernel keeps
+     * no record that a limit was hit -- the child's allocation fails, and what
+     * it does then is its own runtime's (a gBASIC child dies by SIGABRT, 6) --
+     * so the evidence is reported rather than a verdict guessed from it. */
+    if (h->memory_limit > 0) {
+        record_set(&status, "memory_limit", value_number_exact(h->memory_limit));
+        record_set(&status, "peak_memory", h->reaped && h->peak_memory >= 0
+                                               ? value_number_exact(h->peak_memory)
+                                               : value_unknown());
+    }
+    return status;
 }
 
 /* Hand over everything buffered so far and clear it, so the next call starts where
@@ -30042,7 +30263,7 @@ static Value process_do_start(AstExpr *expr) {
     size_t share_count = 0;
     {
         static const char *const allowed[] = {
-            "command", "args", "cwd", "env", "listen_fds", "timeout", "stdin"
+            "command", "args", "cwd", "env", "listen_fds", "timeout", "stdin", "limits"
         };
         if (!process_reject_unknown(&opts, "process.start", allowed,
                                     sizeof(allowed) / sizeof(allowed[0]))) {
@@ -30110,6 +30331,44 @@ static Value process_do_start(AstExpr *expr) {
         }
     }
 
+    /* `limits: { memory: bytes }`: a closed set, so a misspelled limit is
+     * refused by name rather than silently not applied -- a limit that does
+     * not apply is the one failure here nobody would see. */
+    long long memory_limit = 0;
+    {
+        RecordField *lim = record_find(&opts, "limits");
+        if (lim) {
+            const char *why = NULL;
+            char bad[160];
+            if (lim->value->kind != VALUE_RECORD) {
+                why = "process.start: options.limits must be a record, such as { memory: 200000000 }";
+            } else {
+                for (size_t i = 0; i < lim->value->as.record.count && !why; i++) {
+                    RecordField *f = &lim->value->as.record.fields[i];
+                    if (!record_name_is(f, "memory")) {
+                        snprintf(bad, sizeof bad, "process.start: unknown limit '%s' (the limits are: memory)",
+                                 f->name);
+                        why = bad;
+                    } else if (!value_is_exact(*f->value) || f->value->as.num.exact < 1) {
+                        why = "process.start: limits.memory must be a whole number of bytes, at least 1";
+                    } else {
+                        memory_limit = f->value->as.num.exact;
+                    }
+                }
+            }
+#ifdef _WIN32
+            if (!why) {
+                why = "process.start: limits are not available on Windows (they are POSIX rlimits)";
+            }
+#endif
+            if (why) {
+                free(launch.argv);
+                value_free(opts);
+                return process_raise(why);
+            }
+        }
+    }
+
 #ifdef _WIN32
     /* Everything above -- options, refusals, env validation -- is shared with
      * POSIX; only the launch differs, and it is process.run's launch. */
@@ -30149,7 +30408,8 @@ static Value process_do_start(AstExpr *expr) {
 #endif
     int out_fd = -1, err_fd = -1, in_fd = -1, launch_errno = 0;
     pid_t pid = process_launch(launch.argv, launch.cwd, launch.env, share_fds, share_count,
-                               &out_fd, &err_fd, &launch_errno, want_stdin, &in_fd);
+                               &out_fd, &err_fd, &launch_errno, want_stdin, &in_fd,
+                               memory_limit);
     if (pid == -2) {
         free(launch.argv);
         value_free(opts);
@@ -30179,6 +30439,8 @@ static Value process_do_start(AstExpr *expr) {
     h->out_fd = out_fd;
     h->err_fd = err_fd;
     h->in_fd = in_fd;
+    h->memory_limit = memory_limit;
+    h->peak_memory = -1;
     h->ref_count = 1;
     return value_process(h);
 }

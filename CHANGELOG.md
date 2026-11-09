@@ -16,6 +16,24 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### A row cap that does not buffer past it (gdash B2)
+
+- **`pg.query(db, sql, params, { max_rows: n })`** and the same on `odbc.query`:
+  one row past the cap raises with `details.code` `"MAX_ROWS"` instead of
+  answering a partial result. `pg` reads in libpq's single-row mode and
+  cancels the query (33 MB against 655 for a million rows); `odbc` closes the
+  cursor, though a driver that buffers its whole result still holds it.
+  The arity messages for `pg.query` and `odbc.query` now say two to four
+  arguments.
+
+### A child's memory limit (gdash B1)
+
+- **`process.start({ ..., limits: { memory: bytes } })`** runs the child under
+  `RLIMIT_DATA` and with no core dump. A gBASIC child past it dies by SIGABRT;
+  a limited child's status adds `memory_limit` and `peak_memory` (its peak
+  resident bytes), since the kernel does not say a limit was hit. Unknown limits
+  are refused by name.
+
 ### G-SQL gives back a dropped table's space beside a live one (gdash B3)
 
 - **A table swapped in again and again kept its old rounds' space**: a staging

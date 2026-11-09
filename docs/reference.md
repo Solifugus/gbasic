@@ -3080,7 +3080,13 @@ The module provides:
 
 - `pg.connect(config_record)`
 - `connection.close()` (`pg.close`)
-- `connection.query(sql[, params])` (`pg.query`)
+- `connection.query(sql[, params[, { max_rows: n }]])` (`pg.query`). With
+  `max_rows` *(Unreleased; gdash's GDASH-16 B2)* the rows are read in libpq's
+  single-row mode, and one past the cap **cancels the query and raises**,
+  `details: { code: "MAX_ROWS", max_rows }`, rather than answering part of
+  it: measured, a capped million-row query peaked at 33 MB where the whole
+  one took 655. In a transaction the cancel aborts it, as any error does in
+  PostgreSQL. Pass `[]` for no parameters.
 - `connection.exec(sql[, params])` (`pg.exec`)
 - `connection.begin()` (`pg.begin`)
 - `connection.commit()` (`pg.commit`)
@@ -3174,7 +3180,12 @@ The module provides:
 
 - `odbc.connect(connection_string)`
 - `connection.close()` (`odbc.close`)
-- `connection.query(sql[, params])` (`odbc.query`) → array of records
+- `connection.query(sql[, params[, { max_rows: n }]])` (`odbc.query`) → array of
+  records. `max_rows` raises on the row past the cap, as `pg.query`'s does
+  (`MAX_ROWS`), closing the cursor there. It saves gBASIC's own cost of the
+  rows; a driver that buffers its whole result underneath still holds it
+  (measured on the SQLite3 ODBC driver: 158 MB capped against 678 for a
+  million rows, the rest being the driver's).
 - `connection.exec(sql[, params])` (`odbc.exec`) → `{command, rows_affected}`
 - `connection.begin()` (`odbc.begin`)
 - `connection.commit()` (`odbc.commit`)
@@ -6482,6 +6493,27 @@ because bounding a run is now the caller's job (`process.wait` or `process.stop`
 Returns as soon as the child is launched. A child that cannot be launched **raises**
 — exactly as with `process.run`, so it stays distinguishable from a child that ran
 and exited nonzero. `type(h)` is `"process"`.
+
+**`limits: { memory: bytes }`** *(Unreleased; gdash's GDASH-16 B1)* runs the child
+under that memory limit, set before `exec` so it binds the program and not
+the caller: POSIX `RLIMIT_DATA` (the heap and private anonymous memory, not the
+address space, which for a gbasic linked with Qt is much larger than what it
+uses), and no core dump, since a child killed by its own limit would write one
+about the limit's size. A child that runs past it fails an allocation; what
+it does then is its own runtime's, and **a gBASIC child dies by SIGABRT**
+(`signal` 6). The kernel keeps no record that a limit was hit, so the status of
+a limited child gains the evidence rather than a verdict: **`memory_limit`**,
+as given, and **`peak_memory`**, its peak resident bytes when it was reaped
+(`unknown` before). A child with no limit has the status it always had. An
+unknown limit is refused by name; `limits` is refused on Windows.
+
+```basic
+h = process.start({ command: "gbasic", args: ["refresh.bas"], limits: { memory: 500000000 } })
+s = process.wait(h)
+if s.signal = 6 and s.peak_memory > s.memory_limit / 2 then
+    print "the refresh ran out of its memory"
+end if
+```
 
 **`handle.poll()`** → `{running, exit_code, signal, success}`. Never blocks.
 

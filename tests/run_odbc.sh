@@ -520,5 +520,36 @@ else
     fi
 fi
 
+printf 'TIER max_rows (gdash GDASH-16 B2)\n'
+# A cap that RAISES past itself, with the details a program decides on, and
+# the memory it saves measured by the kernel (process.start's peak_memory):
+# a capped million-row query against the same query uncapped. Measured on the
+# SQLite3 ODBC driver 111 MB against 582: what is left is the DRIVER, which
+# buffers its whole result, and no fetch-side cap reaches below it.
+if [[ "$GBASIC_ODBC_CONNECTION" == *"Driver=SQLite3"* ]]; then
+    mr="$(timeout 120 ./gbasic tests/max_rows/max_rows_test.bas odbc "$GBASIC_ODBC_CONNECTION" 2>&1)"
+    if printf '%s\n' "$mr" | grep -q '^MISMATCH' || [ "$(printf '%s\n' "$mr" | grep -c '^ok ')" -lt 9 ]; then
+        printf '%s\n' "$mr" | sed 's/^/       /'
+        fail "max_rows semantics"
+    else
+        pass "max_rows: the cap answered, one past it raised MAX_ROWS, options refused by name"
+    fi
+    q='with recursive c(x) as (select 1 union all select x + 1 from c where x < 1000000) select x, printf('"'"'%050d'"'"', x) as pad from c'
+    printf 'load odbc\ndb = odbc.connect(env("GBASIC_ODBC_CONNECTION"))\nr = try odbc.query(db, "%s", [], { max_rows: 1000 })\nprint error.details.code\n' "$q" > "$work/mrc.bas"
+    printf 'load odbc\ndb = odbc.connect(env("GBASIC_ODBC_CONNECTION"))\nr = odbc.query(db, "%s")\nprint len(r)\n' "$q" > "$work/mru.bas"
+    printf 'for each f in ["mrc", "mru"]\n    h = process.start({ command: "./gbasic", args: ["%s/" + f + ".bas"], limits: { memory: 8000000000 } })\n    s = process.wait(h)\n    print f + " " + trim(process.read(h).stdout) + " " + string(s.peak_memory)\nend for\n' "$work" > "$work/mrm.bas"
+    mm="$(timeout 120 ./gbasic "$work/mrm.bas" 2>&1)"
+    capped="$(printf '%s\n' "$mm" | sed -n 's/^mrc MAX_ROWS //p')"
+    whole="$(printf '%s\n' "$mm" | sed -n 's/^mru 1000000 //p')"
+    if [ -n "$capped" ] && [ -n "$whole" ] && [ $((capped * 2)) -lt "$whole" ]; then
+        pass "max_rows: a capped million-row query peaked at $((capped / 1000000)) MB, the whole one at $((whole / 1000000)) MB"
+    else
+        printf '       %s\n' "$mm"
+        fail "max_rows did not keep the rows past the cap out of memory"
+    fi
+else
+    printf '  SKIP max_rows (written for the SQLite3 ODBC driver)\n'
+fi
+
 printf '\n%d checks, %d failed\n' "$checks" "$failures"
 [[ $failures -eq 0 ]]
