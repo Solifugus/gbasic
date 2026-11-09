@@ -2897,6 +2897,17 @@ The module provides:
   `STATE` before it runs, naming its line. A restore that fails part way keeps
   the batches before the failure.
 
+- `gsql.space(dir)` (or `connection.space()`) — what a database's directory
+  holds, in bytes: `{ total, logs, tables }`. `tables` is the sorted and blob
+  files, `logs` the logs, and `total` every file the database owns (those, the
+  manifest, and the lock and lease files). It is read from the directory, not
+  asked of the owner, so it answers for a closed database without starting
+  one. Sizes are file lengths, not blocks. **The bound:** while a database is
+  open its logs can reach two memtables (64 MB at the default) beyond its
+  tables; once it is closed and its owner has stopped, the logs are empty and
+  `total` is the tables plus under a kilobyte. A directory with no manifest
+  (`db`) is refused.
+
 Parameters are a **record** for `:name` placeholders and an **array** for `$1`,
 `$2`, … . Values cross unchanged in both directions: an exact integer stays
 exact past 2^53, money keeps its currency, a date stays a date, and SQL `NULL`
@@ -6505,7 +6516,13 @@ it does then is its own runtime's, and **a gBASIC child dies by SIGABRT**
 a limited child gains the evidence rather than a verdict: **`memory_limit`**,
 as given, and **`peak_memory`**, its peak resident bytes when it was reaped
 (`unknown` before). A child with no limit has the status it always had. An
-unknown limit is refused by name; `limits` is refused on Windows.
+unknown limit is refused by name; `limits` is refused on Windows. **A limit too
+small to start the program in** fails differently: measured on a build linking
+Qt (86 shared libraries), gbasic under 3.5 MB never runs, the dynamic loader
+failing to map a library, and exits **127** with signal 0; from 4 MB it starts.
+The floor depends on the build and its libraries, so a test forcing the
+out-of-memory path wants a margin (16 MB and a child that grows), and checks
+`signal = 6` rather than "not success".
 
 ```basic
 h = process.start({ command: "gbasic", args: ["refresh.bas"], limits: { memory: 500000000 } })

@@ -33,6 +33,9 @@
 #   close       gsql.close(db, { wait }): true once the owner has exited (the
 #               database can then be deleted), false while another connection
 #               or the linger keeps it
+#   space       gsql.space: a closed database's files as stat sizes them; logs
+#               while open after six swaps, none once the owner has flushed
+#               and stopped; refusals for no manifest and a wrong kind
 #   privatetmp  a service with a private /tmp, a second one, and an
 #               administrator's shell reach one owner (the socket is in the
 #               database directory); skips without bwrap
@@ -833,6 +836,41 @@ verdict close "$work/close.out" $? 16
 if [ -s "$work/close.err" ]; then
     sed 's/^/       /' "$work/close.err" | head -5
     fail "close: the fixture wrote to stderr"
+fi
+
+printf 'TIER space: gsql.space against stat, and a closed database keeps no logs\n'
+mkdir -p "$work/space"
+GSQL_DIR="$work/space" timeout -k 5 120 ./gbasic tests/gsql/space_test.bas >"$work/space.out" 2>"$work/space.err"
+rc=$?
+if [ "$rc" != 0 ] || [ -s "$work/space.err" ]; then
+    sed 's/^/       /' "$work/space.err" | head -5
+    fail "space: the fixture exited $rc or wrote to stderr"
+else
+    # the oracle: the closed directory's files, sized by stat, never by gBASIC
+    read -r st_total st_logs st_tables < <(cd "$work/space/space" && stat -c '%n %s' db* |
+        awk '{ t += $2 } $1 ~ /^db\.log\./ { l += $2 } $1 ~ /\.(sst|blob)$/ { b += $2 } END { print t + 0, l + 0, b + 0 }')
+    read -r _ open_total open_logs open_tables < <(grep '^OPEN ' "$work/space.out")
+    read -r _ c_total c_logs c_tables < <(grep '^CLOSED ' "$work/space.out")
+    if [ "$c_total $c_logs $c_tables" = "$st_total $st_logs $st_tables" ]; then
+        pass "space: closed, it says what stat says (total $c_total, logs $c_logs, tables $c_tables)"
+    else
+        fail "space: closed it says [$c_total $c_logs $c_tables], stat says [$st_total $st_logs $st_tables]"
+    fi
+    # the difference the close makes: logs while open, none once the owner has
+    # flushed and stopped, and nothing much beside the live table
+    if [ "${open_logs:-0}" -gt 1000000 ] && [ "$c_logs" = 0 ] && [ $((c_total - c_tables)) -lt 4096 ] &&
+       [ "${c_tables:-0}" -gt 0 ] && grep -q '^STOPPED true$' "$work/space.out" && grep -q '^ROWS 5000$' "$work/space.out"; then
+        pass "space: $open_logs bytes of logs while open after six swaps, 0 once closed; $((c_total - c_tables)) bytes beside the table"
+    else
+        sed 's/^/       /' "$work/space.out"
+        fail "space: open logs ${open_logs:-?}, closed logs $c_logs, closed total less tables $((c_total - c_tables))"
+    fi
+    if grep -q '^NOTDB_MESSAGE gsql.space: .* is not a G-SQL database (it has no manifest, db)$' "$work/space.out" &&
+       grep -q '^KIND_MESSAGE gsql.space expects a database.s directory or a gsql connection, not number$' "$work/space.out"; then
+        pass "space: a directory with no manifest and a number are each refused by name"
+    else
+        fail "space: the refusals were not as written"
+    fi
 fi
 
 printf 'TIER privatetmp: processes with a /tmp each, as systemd'"'"'s PrivateTmp gives, reach one owner\n'

@@ -151,7 +151,7 @@ openssl req -x509 -newkey rsa:2048 -nodes -keyout "$scratch/stranger.key" -out "
 mtls_up() { # mode -> sets $mport, $msrv
     mlog="$scratch/mtls-$1.log"
     timeout 60 ./gbasic --line-buffered tests/web_tls/mtls_block.bas "$scratch" "$1" >"$mlog" 2>"$scratch/mtls-$1.err" &
-    msrv=$!
+    msrv=$!; mt0=$(date +%s)
     mport=""
     for _ in $(seq 1 100); do
         mport="$(sed -n 's/^PORT //p' "$mlog" | head -1)"; [ -n "$mport" ] && break; sleep 0.05
@@ -190,7 +190,7 @@ printf 'PASS mtls_resume (a client-verified session resumes)\n'
 # over the websocket the webserver hands to net: c.tls is the same session
 if python3 -c 'import websockets.sync.client' 2>/dev/null; then
     ws_who() { # cert key -> what "who" answers, or REFUSED
-        python3 -I - "$mport" "$@" <<'PY' 2>/dev/null || printf 'REFUSED'
+        python3 -I - "$mport" "$@" <<'PY' 2>>"$scratch/wss.err" || { printf 'REFUSED'; echo "  the server was $(( $(date +%s) - mt0 )) s old, alive: $(kill -0 "$msrv" 2>/dev/null && echo yes || echo no)" >> "$scratch/wss.err"; }
 import ssl, sys
 from websockets.sync.client import connect
 ctx = ssl.create_default_context()
@@ -207,7 +207,14 @@ with connect("wss://127.0.0.1:%s/ws" % sys.argv[1], ssl=ctx, open_timeout=20) as
 PY
     }
     got="$(ws_who "$scratch/client.crt" "$scratch/client.key")"
-    [ "$got" = "CN=client-one" ] || fail "mtls_wss (c.tls after the upgrade: got '$got')"
+    # it has failed three times in the parallel gate and never alone, even at
+    # every core busy, so a failure says why: the client's exception, the
+    # server's age and liveness, and what the server wrote
+    if [ "$got" != "CN=client-one" ]; then
+        tail -8 "$scratch/wss.err"; tail -5 "$scratch/mtls-require.err"
+        fail "mtls_wss (c.tls after the upgrade: got '$got')"
+    fi
+    : > "$scratch/wss.err"
     got="$(ws_who)"
     [ "$got" = "REFUSED" ] || fail "mtls_wss (A WSS CLIENT WITH NO CERTIFICATE WAS UPGRADED: '$got')"
     printf 'PASS mtls_wss (the upgraded connection'"'"'s c.tls names the client; none is refused before the 101)\n'

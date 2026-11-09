@@ -16,6 +16,18 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### A closed G-SQL database keeps no logs, and `gsql.space` (gdash B3, second half)
+
+- **A closed database kept two logs at full size**, up to one memtable each
+  (32 MB at the default), for as long as it sat closed. Closing now drops the
+  spare log and cuts the one in use past its last record, and when everything
+  is flushed, which is how the owner closes, the logs go to nothing. Six
+  swaps of a 5,000-row table close to 0.70 MB (0.70 MB of it table), against
+  6.28 MB before (5.58 MB of logs).
+- **`gsql.space(path or connection)`** answers `{ total, logs, tables }` in
+  bytes, read from the directory, so it answers for a closed database without
+  starting an owner. An open database's logs can reach two memtables.
+
 ### A row cap that does not buffer past it (gdash B2)
 
 - **`pg.query(db, sql, params, { max_rows: n })`** and the same on `odbc.query`:

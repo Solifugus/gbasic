@@ -2948,6 +2948,83 @@ static Value gsql_eval_restore(AstExpr *expr) {
     return out;
 }
 
+/* gsql.space(path or connection): what a database's directory holds, in
+ * bytes, as { total, logs, tables } (gdash B3, 2026-11-08). Read from the
+ * directory, not asked of the owner, so it answers for a closed database
+ * without starting one. `tables` is the sorted and blob files, `logs` the
+ * logs, and `total` every file the database owns: those, the manifest and
+ * the lock and lease files. Sizes are each file's length, not the blocks it
+ * takes. A database the program has open holds up to two memtables of logs
+ * (64 MB at the default); a closed one, after the owner's flush, none. */
+static Value gsql_eval_space(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        gsql_module_refuse("gsql.space expects a database's directory or a gsql connection");
+        return value_null();
+    }
+    Value v = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(v);
+        return value_null();
+    }
+    char *dir = NULL;
+    char msg[600];
+    if (v.kind == VALUE_GSQL_CONNECTION) {
+        dir = copy_string(v.as.gsql_connection->path);
+    } else if (v.kind == VALUE_STRING && !memchr(v.as.string, 0, string_length(v.as.string))) {
+        dir = copy_string(v.as.string);
+    } else {
+        snprintf(msg, sizeof msg, "gsql.space expects a database's directory or a gsql connection, not %s",
+                 v.kind == VALUE_STRING ? "text holding a NUL byte" : value_kind_name(v.kind));
+        value_free(v);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    value_free(v);
+    GbDir *d = gb_opendir(dir);
+    if (!d) {
+        snprintf(msg, sizeof msg, "gsql.space: could not read %.400s (%s)", dir, strerror(errno));
+        free(dir);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    long long total = 0, logs = 0, tables = 0;
+    int manifest = 0;
+    const char *name;
+    while ((name = gb_readdir(d)) != NULL) {
+        /* the database's own names, as gs_db_owned has them */
+        if (strncmp(name, "db", 2) != 0 || (name[2] && name[2] != '.' && name[2] != '-')) {
+            continue;
+        }
+        char *p = join_path(dir, name);
+        struct stat st;
+        if (p && gb_stat(p, &st) == 0 && S_ISREG(st.st_mode)) {
+            size_t n = strlen(name);
+            total += (long long)st.st_size;
+            if (strcmp(name, "db") == 0) {
+                manifest = 1;
+            } else if (strncmp(name, "db.log.", 7) == 0) {
+                logs += (long long)st.st_size;
+            } else if ((n > 4 && strcmp(name + n - 4, ".sst") == 0) || (n > 5 && strcmp(name + n - 5, ".blob") == 0)) {
+                tables += (long long)st.st_size;
+            }
+        }
+        free(p);
+    }
+    gb_closedir(d);
+    if (!manifest) {
+        snprintf(msg, sizeof msg, "gsql.space: %.400s is not a G-SQL database (it has no manifest, db)", dir);
+        free(dir);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    free(dir);
+    Value out = value_record(NULL, 0);
+    record_set(&out, "total", value_number_exact(total));
+    record_set(&out, "logs", value_number_exact(logs));
+    record_set(&out, "tables", value_number_exact(tables));
+    return out;
+}
+
 static Value gsql_eval_call(AstExpr *expr) {
     const char *fn = expr->as.call.name;
     if (strcmp(fn, "connect") == 0) return gsql_eval_connect(expr);
@@ -2964,6 +3041,7 @@ static Value gsql_eval_call(AstExpr *expr) {
     if (strcmp(fn, "backup") == 0) return gsql_eval_backup(expr);
     if (strcmp(fn, "dump") == 0) return gsql_eval_dump(expr);
     if (strcmp(fn, "restore") == 0) return gsql_eval_restore(expr);
+    if (strcmp(fn, "space") == 0) return gsql_eval_space(expr);
     char message[256];
     module_unknown_verb(message, sizeof(message), "gsql", fn);
     gsql_module_refuse(message);

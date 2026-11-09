@@ -4266,9 +4266,51 @@ static int lsm_flush(GsStore *db) {
     return rc == GS_OK ? GS_OK : rc == GS_FULL ? GS_FULL : GS_IO;
 }
 
+/* What a closing store leaves of its logs. Without this a closed database
+ * kept two logs at their high-water size -- the one in use, recycled at full
+ * size by the flush, and a spare -- up to a memtable each (32 MB by default),
+ * for as long as it sat closed (gdash B3, 2026-11-08: 4.3 MB of logs beside
+ * 3.2 MB of table after one 20,000-row load).
+ *
+ * The spare goes: the next open makes one when it needs one. Past the last
+ * record the log is zeros or what lost commits left, so it is cut there.
+ * When everything is flushed (the owner flushes before it closes), the log
+ * in use goes to nothing and the older ones go, after a manifest naming only
+ * the one in use. That manifest is NOT load-bearing, measured: without it
+ * store_test stays green, since the next open finds the first named log
+ * gone, makes it anew, and sweeps the rest as unnamed. It is kept so the
+ * open names what is there, rather than relying on the sweep. Each step
+ * leaves a store the next open reads the same: a cut that is lost leaves a
+ * longer file, and an old log that survives its removal is unnamed. */
+static void close_tidy(GsStore *db) {
+    if (db->spare) {
+        gsql_io_close(db->spare);
+        db->spare = NULL;
+        char *name = log_name(db->path, db->log_num + 1);
+        gsql_io_remove(db->io, name);
+        free(name);
+    }
+    if (!db->log) return;
+    uint64_t first = db->log_first;
+    if (!db->fl && !db->cur->imm && !db->cur->mem->sk.count) {
+        db->log_first = db->log_num;
+        if (manifest_write(db) != GS_OK) {
+            db->log_first = first;
+        } else {
+            for (uint64_t k = first; k < db->log_num; k++) {
+                char *name = log_name(db->path, k);
+                gsql_io_remove(db->io, name);
+                free(name);
+            }
+            db->log_end = 0;
+        }
+    }
+    gsql_io_truncate(db->log, db->log_end);
+}
+
 static int lsm_close(GsStore *db) {
     if (db->writer || db->nsnaps) return GS_MISUSE;
-    if (!db->failed) lsm_sync(db, NULL);
+    if (!db->failed && lsm_sync(db, NULL) == GS_OK) close_tidy(db);
     store_free(db);
     return GS_OK;
 }
