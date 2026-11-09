@@ -88,7 +88,7 @@ check("a DTD with no entity", refusal("<!DOCTYPE r><r/>", {}), "xml.canonicalize
 two = "<a ID=\"x\" xmlns:ds=\"http://www.w3.org/2000/09/xmldsig#\"><ds:Signature/><ds:Signature/></a>"
 check("two enveloped signatures", refusal(two, { id: "x", exclude_signature: true }), "xml.canonicalize: the element holds more than one ds:Signature, so which one is enveloped is not decided")
 check("two signatures are fine when none is excluded", refusal(two, { id: "x" }), "accepted")
-check("an unknown option", refusal("<r/>", { ids: "x" }), "xml.canonicalize has no option `ids`; its options are id, id_attribute, element, namespace, exclusive, comments, inclusive_prefixes and exclude_signature")
+check("an unknown option", refusal("<r/>", { ids: "x" }), "xml.canonicalize has no option `ids`; its options are id, id_attribute, element, namespace, exclusive, comments, inclusive_prefixes, exclude_signature and signed_info")
 check("prefixes without exclusive", refusal("<r/>", { exclusive: false, inclusive_prefixes: "p" }), "xml.canonicalize: `inclusive_prefixes` belongs to exclusive canonicalization, and `exclusive` is false")
 check("id_attribute alone", refusal("<r/>", { id_attribute: "AssertionID" }), "xml.canonicalize: `id_attribute` names where to find `id`, and no `id` was given")
 check("not well-formed", left(refusal("<r>", {}), 5), "xml: ")
@@ -102,6 +102,26 @@ check("by name alone", xml.canonicalize(si, { element: "b" }), "<b></b>")
 check("a name in another namespace is not it", refusal(si, { element: "SignedInfo", namespace: "urn:other" }), "xml.canonicalize: no element is named SignedInfo in urn:other, and the one to canonicalize must be the only one")
 check("a name held twice", refusal("<r><e/><e/></r>", { element: "e" }), "xml.canonicalize: more than one element is named e, and the one to canonicalize must be the only one")
 check("a name outside the ID's element is not inside it", refusal("<r><a ID=\"x\"/><e/></r>", { id: "x", element: "e" }), "xml.canonicalize: no element is named e inside the element with that ID, and the one to canonicalize must be the only one")
+' --- signed_info: the SignedInfo of the element's OWN signature (Transward) --
+' A Response and its Assertion both signed, as Okta and ADFS send them: the
+' Response's subtree holds two SignedInfos, told apart by their Reference URIs
+both = "<r ID=\"resp\" xmlns:ds=\"" + dsig + "\"><ds:Signature><ds:SignedInfo><ds:Reference URI=\"#resp\"/></ds:SignedInfo></ds:Signature><a ID=\"asrt\"><ds:Signature><ds:SignedInfo><ds:Reference URI=\"#asrt\"/></ds:SignedInfo></ds:Signature></a></r>"
+check("by name the Response's is ambiguous", refusal(both, { id: "resp", element: "SignedInfo", namespace: dsig }), "xml.canonicalize: more than one element is named SignedInfo in " + dsig + " inside the element with that ID, and the one to canonicalize must be the only one")
+check("signed_info names the Response's own", xml.canonicalize(both, { id: "resp", signed_info: true }), "<ds:SignedInfo xmlns:ds=\"" + dsig + "\"><ds:Reference URI=\"#resp\"></ds:Reference></ds:SignedInfo>")
+check("and the Assertion's own", xml.canonicalize(both, { id: "asrt", signed_info: true }), "<ds:SignedInfo xmlns:ds=\"" + dsig + "\"><ds:Reference URI=\"#asrt\"></ds:Reference></ds:SignedInfo>")
+check("with no id, the root element's", xml.canonicalize(both, { signed_info: true }), "<ds:SignedInfo xmlns:ds=\"" + dsig + "\"><ds:Reference URI=\"#resp\"></ds:Reference></ds:SignedInfo>")
+check("inclusive, the ancestor's namespace comes along", xml.canonicalize(both, { id: "asrt", signed_info: true, exclusive: false }), "<ds:SignedInfo xmlns:ds=\"" + dsig + "\"><ds:Reference URI=\"#asrt\"></ds:Reference></ds:SignedInfo>")
+nosig = "<r ID=\"x\" xmlns:ds=\"" + dsig + "\"><b><ds:Signature><ds:SignedInfo/></ds:Signature></b></r>"
+check("a signature further down is not the element's", refusal(nosig, { id: "x", signed_info: true }), "xml.canonicalize: the element with that ID has no ds:Signature child, so whose SignedInfo is meant is not decided")
+twosig = "<r xmlns:ds=\"" + dsig + "\"><ds:Signature><ds:SignedInfo/></ds:Signature><ds:Signature><ds:SignedInfo/></ds:Signature></r>"
+check("two signatures", refusal(twosig, { signed_info: true }), "xml.canonicalize: the document's root element has more than one ds:Signature child, so whose SignedInfo is meant is not decided")
+noinfo = "<r xmlns:ds=\"" + dsig + "\"><ds:Signature><SignedInfo/></ds:Signature></r>"
+check("a SignedInfo in no namespace is not one", refusal(noinfo, { signed_info: true }), "xml.canonicalize: the ds:Signature of the document's root element holds no ds:SignedInfo, and XML-DSig gives it exactly one")
+twoinfo = "<r xmlns:ds=\"" + dsig + "\"><ds:Signature><ds:SignedInfo/><ds:SignedInfo/></ds:Signature></r>"
+check("two SignedInfos", refusal(twoinfo, { signed_info: true }), "xml.canonicalize: the ds:Signature of the document's root element holds more than one ds:SignedInfo, and XML-DSig gives it exactly one")
+check("not with element", refusal(both, { id: "resp", signed_info: true, element: "a" }), "xml.canonicalize: `signed_info` chooses the element itself, so it is not given with `element`")
+check("not with exclude_signature", refusal(both, { id: "resp", signed_info: true, exclude_signature: true }), "xml.canonicalize: `signed_info` is inside the signature, so the signature is not excluded from it; `exclude_signature` is for the signed element")
+check("false is the default", xml.canonicalize("<r/>", { signed_info: false }), "<r></r>")
 check("namespace alone", refusal("<r/>", { namespace: dsig }), "xml.canonicalize: `namespace` is the namespace of `element`, and no `element` was given")
 
 print "ok " + string(checks.n) + " checks, " + string(checks.bad) + " mismatches"

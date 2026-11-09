@@ -6,7 +6,7 @@
 #
 # NO EXPECTED BYTE COMES FROM libxml2. lxml would be the easy oracle and is
 # libxml2 underneath, so it could only agree. Instead:
-#   TIER c14n     -- tests/xml_sign/c14n_test.bas, every answer written by
+#   TIER c14n     -- tests/xml_sign/c14n_test.bas (floor 56), every answer written by
 #                    hand from the specifications (exc-c14n §2.2's two
 #                    documents, whose outputs the spec gives), and refusals
 #                    (an ID held twice, a DTD, two enveloped signatures)
@@ -45,7 +45,7 @@ out="$(timeout -k 5 60 ./gbasic tests/xml_sign/c14n_test.bas 2>"$tmp/c14n.err" <
 last="$(printf '%s\n' "$out" | tail -1)"
 printf '%s\n' "$out" | grep '^MISMATCH' | sed 's/^/  /'
 n="$(printf '%s\n' "$last" | sed -n 's/^ok \([0-9]*\) checks, 0 mismatches$/\1/p')"
-if [ -z "$n" ] || [ "$n" -lt 44 ]; then
+if [ -z "$n" ] || [ "$n" -lt 56 ]; then
     fail "c14n (${last:-no verdict})"
 elif [ -s "$tmp/c14n.err" ]; then
     sed 's/^/  /' "$tmp/c14n.err" | head -5; fail "c14n (the fixture wrote to stderr)"

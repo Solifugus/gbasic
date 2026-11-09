@@ -48,6 +48,9 @@ reader sees.
   chosen by `id` or by `element` and `namespace`, with `exclude_signature` for
   the enveloped-signature transform and `inclusive_prefixes`. It refuses a DTD,
   an ID held twice and a name matched twice (the signature-wrapping attack).
+  `signed_info: true` canonicalizes the `ds:SignedInfo` of the element's own
+  signature, so a Response signed beside its signed Assertion (Okta, ADFS) can
+  be verified; asked for by Transward the same day.
 - **`x509_parse(cert)`**: a certificate's subject, issuer, dates, serial,
   SHA-256 fingerprint, DER and public key, the key in the record shape
   `rsa_verify` and `ecdsa_verify` take. It checks nothing.

@@ -5012,6 +5012,13 @@ Navigation (a *path* is a `/`-separated chain of child element names):
     signature's `ds:SignedInfo`, which has no ID, is reached.
   - `exclude_signature: true` — the enveloped-signature transform: the chosen
     element's own `ds:Signature` child is left out (not one further down).
+  - `signed_info: true` *(after 0.10.0)* — the `ds:SignedInfo` of that same
+    signature: the `id` element's own `ds:Signature` child (the root element's
+    with no `id`). When a Response and its Assertion are both signed, the
+    Response's subtree holds two SignedInfos and `element` refuses as
+    ambiguous; this names the Response's. Refused when the element has no
+    `ds:Signature` child or more than one, when that signature holds anything
+    but one `ds:SignedInfo`, and beside `element` or `exclude_signature`.
   - `inclusive_prefixes` — the `InclusiveNamespaces PrefixList`, as an array or
     as its space-separated text; `#default` is the default namespace.
   - `comments` — keep comments (default `false`).
@@ -5024,6 +5031,7 @@ Navigation (a *path* is a `/`-separated chain of child element names):
   `exclude_signature`; an unknown option. Verifying a SAML signature is then
   ordinary code: the digest is `sha256` of the canonical element with
   `exclude_signature`, and `rsa_verify` checks the canonical `SignedInfo`
+  (`{ id: X, signed_info: true }`)
   against `x509_parse(cert).public_key` (`tests/run_xml_sign.sh`, TIER signed).
 
 Streaming reader, for documents too large to hold as a tree — it walks the file

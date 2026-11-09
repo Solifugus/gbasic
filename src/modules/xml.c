@@ -1484,7 +1484,7 @@ static void xml_find_named(xmlNodePtr n, const char *name, const char *ns, xmlNo
 }
 
 static int xml_c14n_options(Value *o, char **id, char **id_attr, char **element, char **ns, int *exclusive, int *comments,
-                            int *exclude_sig, char ***prefixes) {
+                            int *exclude_sig, int *signed_info, char ***prefixes) {
     char m[300];
     for (size_t i = 0; i < o->as.record.count; i++) {
         const char *k = o->as.record.fields[i].name;
@@ -1508,6 +1508,8 @@ static int xml_c14n_options(Value *o, char **id, char **id_attr, char **element,
             *comments = value_truthy(*v, &refused);
         } else if (strcmp(k, "exclude_signature") == 0) {
             *exclude_sig = value_truthy(*v, &refused);
+        } else if (strcmp(k, "signed_info") == 0) {
+            *signed_info = value_truthy(*v, &refused);
         } else if (strcmp(k, "inclusive_prefixes") == 0) {
             /* an array of prefixes, or the PrefixList attribute's own text:
                prefixes separated by spaces, `#default` for the default one */
@@ -1560,7 +1562,7 @@ static int xml_c14n_options(Value *o, char **id, char **id_attr, char **element,
         } else {
             snprintf(m, sizeof m,
                      "xml.canonicalize has no option `%.80s`; its options are id, id_attribute, element, "
-                     "namespace, exclusive, comments, inclusive_prefixes and exclude_signature", k);
+                     "namespace, exclusive, comments, inclusive_prefixes, exclude_signature and signed_info", k);
             runtime_error_raise(m, XML_ERROR_CODE, "xml");
             return 0;
         }
@@ -1597,7 +1599,7 @@ static Value xml_eval_canonicalize(AstExpr *expr) {
         return value_null();
     }
     char *id = NULL, *id_attr = NULL, *element = NULL, *ns = NULL, **prefixes = NULL;
-    int exclusive = 1, comments = 0, exclude_sig = 0, ok = 1;
+    int exclusive = 1, comments = 0, exclude_sig = 0, signed_info = 0, ok = 1;
     if (argc == 2) {
         Value o = eval_expr(expr->as.call.args.items[1]);
         if (error_action_pending()) {
@@ -1608,7 +1610,8 @@ static Value xml_eval_canonicalize(AstExpr *expr) {
             runtime_error_raise(m, XML_ERROR_CODE, "xml");
             ok = 0;
         } else {
-            ok = xml_c14n_options(&o, &id, &id_attr, &element, &ns, &exclusive, &comments, &exclude_sig, &prefixes);
+            ok = xml_c14n_options(&o, &id, &id_attr, &element, &ns, &exclusive, &comments, &exclude_sig,
+                                  &signed_info, &prefixes);
         }
         value_free(o);
     }
@@ -1619,6 +1622,14 @@ static Value xml_eval_canonicalize(AstExpr *expr) {
     }
     if (ok && ns && !element) {
         runtime_error_raise("xml.canonicalize: `namespace` is the namespace of `element`, and no `element` was given",
+                            XML_ERROR_CODE, "xml");
+        ok = 0;
+    }
+    if (ok && signed_info && (element || exclude_sig)) {
+        runtime_error_raise(element ? "xml.canonicalize: `signed_info` chooses the element itself, so it is not "
+                                      "given with `element`"
+                                    : "xml.canonicalize: `signed_info` is inside the signature, so the signature "
+                                      "is not excluded from it; `exclude_signature` is for the signed element",
                             XML_ERROR_CODE, "xml");
         ok = 0;
     }
@@ -1698,6 +1709,44 @@ static Value xml_eval_canonicalize(AstExpr *expr) {
             ok = 0;
         }
         pick.top = found;
+    }
+    if (ok && signed_info) {
+        /* the SignedInfo of the element's OWN signature, its ds:Signature
+           child: when a Response and its Assertion are both signed, the
+           Response's subtree holds two SignedInfos and only this rule says
+           which is the Response's (Transward). One Signature, holding one
+           SignedInfo, or it is refused, as exclude_signature refuses two. */
+        xmlNodePtr within = pick.top ? pick.top : xmlDocGetRootElement(doc);
+        xmlNodePtr sig = NULL, info = NULL;
+        size_t nsig = 0, ninfo = 0;
+        for (xmlNodePtr c = within ? within->children : NULL; c; c = c->next) {
+            if (c->type == XML_ELEMENT_NODE && c->ns && strcmp((const char *)c->name, "Signature") == 0 &&
+                strcmp((const char *)c->ns->href, XML_DSIG_NS) == 0) {
+                nsig++;
+                sig = c;
+            }
+        }
+        for (xmlNodePtr c = nsig == 1 ? sig->children : NULL; c; c = c->next) {
+            if (c->type == XML_ELEMENT_NODE && c->ns && strcmp((const char *)c->name, "SignedInfo") == 0 &&
+                strcmp((const char *)c->ns->href, XML_DSIG_NS) == 0) {
+                ninfo++;
+                info = c;
+            }
+        }
+        const char *what = pick.top ? "the element with that ID" : "the document's root element";
+        char m[300];
+        if (nsig != 1) {
+            snprintf(m, sizeof m, "xml.canonicalize: %s has %s ds:Signature child, so whose SignedInfo is meant is "
+                     "not decided", what, nsig ? "more than one" : "no");
+            runtime_error_raise(m, XML_ERROR_CODE, "xml");
+            ok = 0;
+        } else if (ninfo != 1) {
+            snprintf(m, sizeof m, "xml.canonicalize: the ds:Signature of %s holds %s ds:SignedInfo, and XML-DSig "
+                     "gives it exactly one", what, ninfo ? "more than one" : "no");
+            runtime_error_raise(m, XML_ERROR_CODE, "xml");
+            ok = 0;
+        }
+        pick.top = info;
     }
     if (ok && exclude_sig) {
         /* the enveloped-signature transform: the element's own ds:Signature
