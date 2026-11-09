@@ -2956,7 +2956,14 @@ number written in digits *(after 0.10.0)*, with spaces around it trimmed:
 column). It refuses a decimal in text (`'2.5'`, `' 2.5'`) or as a number, and
 anything else, each with its reason. A number column takes text that is a number
 written plainly, decimals and exponents included (`'2.5'`, `'1e3'`), trimmed the
-same way (`docs/gsql_store_conversion_design.md` §1a). If the owner exits, the
+same way (`docs/gsql_store_conversion_design.md` §1a). A `duration` column
+*(after 0.10.0)* holds a duration as given, field for field (`24 hours` stays
+`24 hours`), and reads text in the form a duration prints in (`'1 month 14
+days'`, as `CAST(... AS DURATION)` does); a number is refused, having no unit.
+It is never keyed: a primary key, `UNIQUE`, an index, `GROUP BY` and `DISTINCT`
+refuse it, since `1 month` has no order against `31 days`, so keep its
+`total_seconds` in a number column to find or sort by length
+(`docs/gsql_duration_design.md`). If the owner exits, the
 request in flight fails with `LOST` and nothing is retried; the next call
 starts a new owner. An owner whose database another machine has taken writes
 nothing more and exits, so its clients see `LOST`, and their next call is
@@ -11208,6 +11215,16 @@ whole program without needing a call site.
   the first, and `safe_name(s)` is the identifier validator — identifiers cannot
   be bound as parameters, so they are **refused rather than escaped**.
   `to_table(df, db, table, options)` creates and loads a SQLite table.
+  *After 0.10.0:* `schema(df)` gives each column `{ name, column, type, kind }`,
+  where `kind` is the gBASIC kind every value shares, in G-SQL's words (`date`,
+  `datetime`, `time`, `duration`, `money(USD)`, `money` for several currencies,
+  `boolean`, `number`, `text`; mixed or empty is `text`; `column_kind(values)`
+  decides it for one column and `value_kind(v)` for one value, `other` for a
+  value no typed column holds), and
+  `gsql_create_sql(table, df)` writes a G-SQL `CREATE TABLE` from it, with no
+  key, to read and change before running. A whole number is `number`, not
+  `integer`, because a G-SQL integer column refuses an inexact value even when
+  it is whole. `type`, the SQLite type, is unchanged.
   `to_gsql(df, db, table, options)` loads an **existing** G-SQL table, whose
   declared types and constraints are the contract, and answers `{ok, message,
   table, rows, refused, columns, sql}`: each row the table refuses is listed

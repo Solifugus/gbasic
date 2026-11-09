@@ -41,11 +41,11 @@ const char *gsql_code_name(int code) {
 }
 
 static const char *const kind_names[] = {
-    "?", "number", "integer", "string", "boolean", "money", "date", "time", "datetime", "record"
+    "?", "number", "integer", "string", "boolean", "money", "date", "time", "datetime", "record", "duration"
 };
 
 const char *gsql_kind_name(int kind) {
-    if (kind < 1 || kind > GSQL_COL_RECORD) {
+    if (kind < 1 || kind > GSQL_COL_LAST) {
         return "?";
     }
     return kind_names[kind];
@@ -248,7 +248,7 @@ static void schema_encode(const GsqlTable *tb, GsqlBuf *b) {
 }
 
 static int kind_from_name(const char *s) {
-    for (int k = 1; k <= GSQL_COL_RECORD; k++) {
+    for (int k = 1; k <= GSQL_COL_LAST; k++) {
         if (strcmp(s, kind_names[k]) == 0) {
             return k;
         }
@@ -644,6 +644,13 @@ static int has_serial(const GsqlTable *tb) {
 
 /* ==== 5. the type rules (§3.1) =========================================== */
 
+/* A duration column is stored exactly and never keyed (docs/gsql_duration_design.md
+ * §3): one holding `1 month` has no order against `31 days`, so no byte order
+ * answers `<`. The way to find or sort by a length is a number beside it. */
+#define NO_DURATION_WHY "a duration has no single order (`1 month` against `31 days` has none); " \
+                        "to find or sort by its length, keep its total_seconds in a NUMBER column beside it"
+#define NO_DURATION_KEY "so it cannot be in a key: " NO_DURATION_WHY
+
 static int check_name(const char *what, const char *name, GsqlError *err) {
     size_t n = name ? strlen(name) : 0;
     if (n == 0) {
@@ -708,6 +715,9 @@ static int value_fits_rule(const char *table, const GsqlColumn *c, const unsigne
         break;
     case GSQL_COL_RECORD:
         good = w.tag == SER_RECORD;
+        break;
+    case GSQL_COL_DURATION:
+        good = w.tag == SER_DURATION;
         break;
     }
     if (!good) {
@@ -1052,7 +1062,7 @@ static int check_column_decl(const char *table, const GsqlColumn *c, GsqlError *
     if (rc) {
         return rc;
     }
-    if (c->kind < GSQL_COL_NUMBER || c->kind > GSQL_COL_RECORD) {
+    if (c->kind < GSQL_COL_NUMBER || c->kind > GSQL_COL_LAST) {
         return fail(err, GSQL_SCHEMA, "%s.%s: kind %d is not a column kind", table, c->name, (int)c->kind);
     }
     if (c->currency[0] && c->kind != GSQL_COL_MONEY) {
@@ -1146,6 +1156,9 @@ int gsql_table_create(const GsEngine *e, GsTxn *t, const GsqlTableDecl *d, GsqlE
         if (d->cols[d->key[i]].kind == GSQL_COL_RECORD) {
             return fail(err, GSQL_SCHEMA, "%s.%s is a record, which has no order, so it cannot be in a key", d->name,
                         d->cols[d->key[i]].name);
+        }
+        if (d->cols[d->key[i]].kind == GSQL_COL_DURATION) {
+            return fail(err, GSQL_SCHEMA, "%s.%s is a duration, " NO_DURATION_KEY, d->name, d->cols[d->key[i]].name);
         }
     }
     if ((rc = ensure_trees(e, t, err))) {
@@ -1812,6 +1825,10 @@ int gsql_index_create(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlInde
     for (size_t i = 0; i < d->ncols; i++) {
         if (tb->cols[d->cols[i]].kind == GSQL_COL_RECORD) {
             return fail(err, GSQL_SCHEMA, "%s.%s is a record, which has no order, so index %s cannot hold it",
+                        tb->name, tb->cols[d->cols[i]].name, d->name);
+        }
+        if (tb->cols[d->cols[i]].kind == GSQL_COL_DURATION) {
+            return fail(err, GSQL_SCHEMA, "%s.%s is a duration, which index %s cannot hold: " NO_DURATION_WHY,
                         tb->name, tb->cols[d->cols[i]].name, d->name);
         }
     }

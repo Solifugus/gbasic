@@ -1008,6 +1008,11 @@ be queried and joined.
     dbframe.create_sql(table, df)             the DDL, for inspection and diffing
     dbframe.to_table(df, db, table, options)  create and bulk load
 
+*(2026-11-08: `schema` also gives each column's gBASIC `kind`, and
+`dbframe.gsql_create_sql(table, df)` writes G-SQL DDL from it, a date column
+DATE and a duration DURATION; see `docs/reference.md`'s dbframe entry and
+`gsql_duration_design.md` §8.)*
+
 *Two refusals, both for the module's standing reason:*
 
 - **A type is never guessed from one value.** It is decided from every value in

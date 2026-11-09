@@ -176,11 +176,10 @@ int v3_walk(V3In *in, int depth, V3Walk *w) {
         return 1;
     }
     case SER_DURATION:
+        /* storable, in a DURATION column or a record (docs/gsql_duration_design.md);
+           the key encoder still refuses one */
         for (int i = 0; i < 7; i++) {
             v3_in_le(in, 4);
-        }
-        if (!w->bad_tag) {
-            w->bad_tag = tag;
         }
         return in->ok;
     case SER_ARRAY: {

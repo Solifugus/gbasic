@@ -1501,7 +1501,7 @@ static int parse_type(P *p, SqlType *t) {
         { "string", GSQL_COL_STRING }, { "varchar", GSQL_COL_STRING }, { "boolean", GSQL_COL_BOOLEAN },
         { "bool", GSQL_COL_BOOLEAN }, { "money", GSQL_COL_MONEY }, { "date", GSQL_COL_DATE },
         { "time", GSQL_COL_TIME }, { "datetime", GSQL_COL_DATETIME }, { "timestamp", GSQL_COL_DATETIME },
-        { "record", GSQL_COL_RECORD }, { NULL, 0 }
+        { "record", GSQL_COL_RECORD }, { "duration", GSQL_COL_DURATION }, { NULL, 0 }
     };
     if (strcmp(w, "double") == 0) {
         if (!accept_kw(p, "precision")) {
@@ -1518,7 +1518,8 @@ static int parse_type(P *p, SqlType *t) {
     if (!t->kind) {
         return fail_at(p, pos, GSQL_SYNTAX,
                        "`%s` is not a G-SQL type: the types are NUMBER, INTEGER, TEXT, BOOLEAN, MONEY, MONEY(CUR), "
-                       "DATE, TIME, DATETIME and RECORD", w);
+                       "DATE, TIME, DATETIME, RECORD and DURATION%s", w,
+                       strcmp(w, "interval") == 0 ? "; for INTERVAL, write DURATION" : "");
     }
     if (at_sym(p, "(")) {
         uint32_t at = p->tok.pos;
@@ -1548,9 +1549,9 @@ static int parse_type(P *p, SqlType *t) {
 
 const char *sql_type_name(const SqlType *t, char *buf, size_t cap) {
     static const char *const names[] = {
-        "?", "NUMBER", "INTEGER", "TEXT", "BOOLEAN", "MONEY", "DATE", "TIME", "DATETIME", "RECORD"
+        "?", "NUMBER", "INTEGER", "TEXT", "BOOLEAN", "MONEY", "DATE", "TIME", "DATETIME", "RECORD", "DURATION"
     };
-    const char *n = t->kind >= 1 && t->kind <= GSQL_COL_RECORD ? names[t->kind] : "?";
+    const char *n = t->kind >= 1 && t->kind <= GSQL_COL_LAST ? names[t->kind] : "?";
     if (t->kind == GSQL_COL_MONEY && t->currency[0]) {
         snprintf(buf, cap, "MONEY(%s)", t->currency);
     } else {

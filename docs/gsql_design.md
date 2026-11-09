@@ -194,7 +194,7 @@ That was `exact_number_design.md`'s **increment 4**, and it **shipped 2026-10-23
 
 Persist stable, serializable value kinds, not executable/process-bound values such as functions, watchers, handles, or actors. Disk representation must be versioned and independent of process pointers and in-memory layout.
 
-**Decided 2026-10-29 (§13 question 4): the first release stores** numbers (exact integers and decimals), strings (which carry any bytes, so no separate binary kind), booleans, dates, times and date-times, money, and records (§3.5), with `unknown` (SQL's `NULL`; the two spellings interchangeable, §3.1) in any column. **Left out of the first release:** durations, which have no single sort order and so could be stored but never indexed (`gsql_storage_design.md` §3.2), and arrays, which records cover for now; and everything process-bound, as above.
+**Decided 2026-10-29 (§13 question 4): the first release stores** numbers (exact integers and decimals), strings (which carry any bytes, so no separate binary kind), booleans, dates, times and date-times, money, and records (§3.5), with `unknown` (SQL's `NULL`; the two spellings interchangeable, §3.1) in any column. **Left out of the first release:** durations, which have no single sort order and so could be stored but never indexed (`gsql_storage_design.md` §3.2) *(reopened by Matthew 2026-11-08: stored, never indexed, `gsql_duration_design.md`)*, and arrays, which records cover for now; and everything process-bound, as above.
 
 ### 3.5 Record-valued columns (decided 2026-10-22, first release)
 
@@ -778,7 +778,7 @@ ROLLUP/GROUPING, grouping sets/CUBE, richer windows, sophisticated optimizer, im
 1. *(Direction decided 2026-10-29.)* The SQL dialect: **standard SQL where it makes sense, PostgreSQL's choice where the standard is silent or impractical, and never SQLite's over either** (Matthew: "Postgres over SQLite although I hope we take standard SQL over either where it makes sense"). The item-by-item disagreement list is still to be measured over G-Dash's, `nlq`'s and this repository's SQL (§4.0).
 2. *(Decided 2026-10-29.)* An integer column **refuses** an inexact value on write, and refuses on overflow rather than degrading with warning 2112 (§3.2).
 3. Decided: SQL's (§3.1.1), with `if unknown` still raising in procedural code.
-4. *(Decided 2026-10-29.)* Numbers, strings, booleans, dates, times and date-times, money and records, with `unknown` in any column; not durations or arrays (§3.4).
+4. *(Decided 2026-10-29.)* Numbers, strings, booleans, dates, times and date-times, money and records, with `unknown` in any column; not durations or arrays (§3.4). *(2026-11-08: durations added, stored and never keyed, `gsql_duration_design.md`.)*
 5. Which storage design wins the §6.2 measurements, and how long does an owner handoff take (§6.1)?
 6. *(Decided 2026-10-29.)* gBASIC's own string order, exact equality, no normalization; case-insensitive comparison later and opt-in (§9).
 7. *(Decided 2026-10-29: constraints arrive over a couple of releases, each carefully.)* The first release has `NOT NULL`, `PRIMARY KEY` and `UNIQUE`, which indexes depend on; `FOREIGN KEY` and `CHECK` follow in the next, each with its own tests.

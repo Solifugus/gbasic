@@ -145,7 +145,19 @@ if [ -s "$work/datetext.err" ]; then
     fail "date text: the fixture wrote to stderr"
 fi
 
-printf 'TIER savepoints: a BEGIN inside a write transaction nests, and a statement refused part way is undone alone\n'
+printf 'TIER duration: a DURATION column holds a duration field for field and is never keyed; a dump puts back the same bytes\n'
+# docs/gsql_duration_design.md; the generated half's oracle is the fields it
+# drew, written out as text, never the values read back
+mkdir -p "$work/duration"
+(cd "$work/duration" && timeout -k 5 120 "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/duration_test.bas") \
+    >"$work/duration.out" 2>"$work/duration.err"
+verdict "duration" "$work/duration.out" $? 44
+if [ -s "$work/duration.err" ]; then
+    sed 's/^/       /' "$work/duration.err" | head -5
+    fail "duration: the fixture wrote to stderr"
+fi
+
+printf 'TIER savepoints:a BEGIN inside a write transaction nests, and a statement refused part way is undone alone\n'
 # gap G8 from the gBASIC books (volume 3's gap ledger)
 mkdir -p "$work/savepoint"
 (cd "$work/savepoint" && timeout -k 5 120 "$OLDPWD/gbasic" "$OLDPWD/tests/gsql/savepoint_test.bas") \

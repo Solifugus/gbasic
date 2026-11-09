@@ -25,7 +25,11 @@
 #      and undone alone, the rest commit; `atomic: true` loads none; `columns:`
 #      maps names; inside a caller's transaction it is a savepoint. Run from an
 #      empty directory. Self-checking; every answer is written there by hand.
-#   7. VALGRIND, over both.
+#   7. KIND -- tests/dbframe/kind_test.bas: each column's gBASIC kind (date,
+#      duration, money(USD), ...) beside its SQLite type, written by hand, and
+#      gsql_create_sql's DDL RUN in G-SQL with the frame loaded into it by
+#      to_gsql, typed values read back. Floor 44 checks.
+#   8. VALGRIND, over the golden and tier 6.
 #
 # Skips when sqlite3 dev files were absent at build time, per the project's
 # optional-dependency convention.
@@ -112,6 +116,19 @@ if [ "$(printf '%s\n' "$g23_res" | tail -1)" = "mismatches: 0" ]; then
     printf 'PASS tests/dbframe/gsql_test.bas (%s)\n' "$(printf '%s\n' "$g23_res" | head -1)"
 else
     printf 'FAIL tests/dbframe/gsql_test.bas\n%s\n' "$g23_res"
+    status=1
+fi
+
+printf -- '-- each column'"'"'s gBASIC kind, and G-SQL DDL from it, run and loaded\n'
+# the kinds are written by hand; the DDL is run and the frame loaded into it,
+# since advice G-SQL refused, or that refused the frame's own rows, is wrong
+mkdir -p "$tmp/kind"
+kind_res=$(cd "$tmp/kind" && GBASIC_PATH="$root/stdlib" timeout 60 "$root/gbasic" "$root/tests/dbframe/kind_test.bas" 2>&1)
+kind_n=$(printf '%s\n' "$kind_res" | sed -n 's/^checks: \([0-9]*\)$/\1/p')
+if [ "$(printf '%s\n' "$kind_res" | tail -1)" = "mismatches: 0" ] && [ "${kind_n:-0}" -ge 44 ]; then
+    printf 'PASS tests/dbframe/kind_test.bas (%s)\n' "$(printf '%s\n' "$kind_res" | head -1)"
+else
+    printf 'FAIL tests/dbframe/kind_test.bas (floor 44 checks)\n%s\n' "$kind_res"
     status=1
 fi
 

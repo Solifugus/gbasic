@@ -71,8 +71,11 @@ typedef enum {
     GSQL_COL_DATE,
     GSQL_COL_TIME,
     GSQL_COL_DATETIME,
-    GSQL_COL_RECORD
+    GSQL_COL_RECORD,
+    GSQL_COL_DURATION   /* stored exactly, never keyed (docs/gsql_duration_design.md) */
 } GsqlColKind;
+
+#define GSQL_COL_LAST GSQL_COL_DURATION
 
 const char *gsql_kind_name(int kind);
 

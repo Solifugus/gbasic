@@ -123,6 +123,8 @@ find_all_first_match|collects only under the first
 decimal_key_collision|share an index key
 xml_entity_dropped|drops an entity reference in silence
 xml_text_unknown|a lookup that missed reads as an element
+duration_negate|negation does not. Workaround
+duration_scale_rounds|rounded, half away from zero, in silence (
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -313,6 +315,30 @@ probe_xml_entity_dropped() {
     else
         printf '     %s\n' "$xe_out"
         fixed "xml.parse no longer drops the entity in silence (or the probe no longer runs)"
+    fi
+}
+
+probe_duration_negate() {
+    # Red when unary minus takes a duration.
+    printf 'on error goto next\nx = -(2 hours)\nprint error.message\n' > "$WORK/dn.bas"
+    dn_out=$(timeout 20 ./gbasic "$WORK/dn.bas" 2>&1)
+    if printf '%s' "$dn_out" | grep -q "expected number but got duration"; then
+        ok "unary minus still refuses a duration"
+    else
+        printf '     %s\n' "$dn_out"
+        fixed "unary minus now takes a duration (or the probe no longer runs)"
+    fi
+}
+
+probe_duration_scale_rounds() {
+    # Red when scaling to a fraction of a second warns, raises or keeps it.
+    printf 'x = (1 second) * 2.5\nprint x\nprint error\n' > "$WORK/ds.bas"
+    ds_out=$(timeout 20 ./gbasic "$WORK/ds.bas" 2>&1 | tr '\n' ' ')
+    if [ "$ds_out" = "3 seconds false " ]; then
+        ok "a duration scaled to half a second still rounds in silence"
+    else
+        printf '     %s\n' "$ds_out"
+        fixed "scaling a duration to a fraction of a second no longer rounds in silence"
     fi
 }
 

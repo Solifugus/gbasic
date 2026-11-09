@@ -16,6 +16,31 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### G-SQL stores durations (Matthew's ruling 2026-11-08)
+
+- **A `DURATION` column** holds a duration as given, field for field:
+  `24 hours` comes back as `24 hours`, not `1 day`. Text stored into one is read
+  in the form a duration prints in (`'1 month 14 days 1 minute 30 seconds'`), and
+  so is `CAST(... AS DURATION)`; a number is refused, having no unit. A duration
+  may be stored inside a record as well. `DUMP TO` writes one as
+  `CAST('<text>' AS DURATION)`, and a restore puts back the same bytes.
+- **It is never keyed**: a primary key, `UNIQUE`, an index, `GROUP BY` and
+  `DISTINCT` refuse it, because `1 month` has no order against `31 days`. The
+  refusal says to keep its `total_seconds` in a number column beside it.
+  `=`, `<` between exact durations, arithmetic and `ORDER BY` work, as gBASIC's.
+- **`dbframe.schema` gives each column's gBASIC `kind`** (`date`, `datetime`,
+  `time`, `duration`, `money(USD)`, `boolean`, `number`, `text`) beside its
+  SQLite `type`, and **`dbframe.gsql_create_sql(table, df)`** writes a G-SQL
+  `CREATE TABLE` from it, so a date column is advised as `DATE` rather than
+  `TEXT` (the books' Chapter 6). A whole number is `number`: a G-SQL integer
+  column refuses an inexact whole value, which a sheet's numbers can be.
+- `INTERVAL` is refused as a type, naming `DURATION`. An older build refuses a
+  table with a duration column as `CORRUPT` (it is not) and serves the others.
+- The "grouped or made DISTINCT" refusals said a kind had "no single equality
+  G-SQL can key", which was false of a duration; they say "G-SQL has no key for
+  it" now. `gsql_storage_design.md` §3.2's claim that `1 day` and `24 hours` are
+  not `=` is corrected: they are.
+
 ### What verifying a SAML signature needs (Transward M31 §10)
 
 - **`xml.canonicalize(text, options)`**: Exclusive XML Canonicalization 1.0

@@ -52,6 +52,8 @@ live list is:
 | 10 | **`xml.parse` drops an entity reference in silence**: `<!DOCTYPE a [<!ENTITY y 'Y'>]><a>&y;</a>` parses as an empty `<a>`, no error. Safe against XXE, but silent data loss; an error naming the DTD, or a `refuse_dtd` option, was asked for (Transward M31). | 2026-11-08 entry |
 | — | ~~**`rsa_from_pem` given a CERTIFICATE says** "no RSA key could be read (an encrypted key needs its passphrase)", which points at a passphrase rather than at the certificate; `x509_parse` is requested (Transward M31 §10).~~ **FIXED 2026-11-08**: `x509_parse` shipped, and `rsa_from_pem` given a certificate now says "that text is an X.509 certificate, not a key; x509_parse(text).public_key is the key it holds". Held by `tests/run_xml_sign.sh` (tier x509, text that is neither keeping the passphrase message as the control). | 2026-11-08 entry |
 | 12 | **`xml.text` of `unknown` answers `""`**: `xml.find(t, "c")` misses when `c` is not a direct child (a path is a chain of CHILD names), answers `unknown`, and `xml.text` of that is the empty text with no error, so a lookup that missed reads as an element with nothing in it. Met as a digest comparing `false` (2026-11-08 entry). | 2026-11-08 entry |
+| 13 | **`-(2 hours)` is refused** ("arithmetic operator '-' expected number but got duration") where `0 seconds - 2 hours` answers `-2 hours`: subtraction takes a duration and negation does not. Workaround: `0 seconds - d`. | 2026-11-08 entry |
+| 14 | **`(1 second) * 2.5` is `3 seconds`, with no warning**: a duration scaled to a fraction of a second is rounded, half away from zero, in silence (`(1 hour) * 0.5` is exactly 30 minutes). Seconds are the resolution by design; changing the value without a word is the surprise. | 2026-11-08 entry |
 | — | ~~**`qt.run()` from inside a function silently starves every loop-delivered source.**~~ **FIXED 2026-11-08** by `wait until`'s delivery rule (`docs/watch_scope_design.md` §4): a delivery by the event loop fires every live frame's watches, so it no longer depends on the global frame being current. Held by `tests/run_watch_scope.sh` (tier qtrun, the top-level form as the control). | 2026-10-19 entry |
 | — | ~~**A deeply nested value segfaults at teardown**~~ **DOCUMENTED AS AN ACCEPTED LIMITATION 2026-10-14**, with the numbers re-measured at a PINNED stack: ~43,000 levels at 8 MB, records and arrays alike, and 60,000 releases cleanly at 64 MB — so it is a fact about `ulimit -s`. It has a probe in `run_limitations.sh` now, with the 64 MB run as the control, so it goes red if anybody fixes it. | accepted limitations |
 | — | ~~**`watch` inside a function registers nothing, and says so only with an unlocated line on stderr**~~ **FIXED 2026-11-07** (Matthew's model): a watch belongs to the frame that declares it, sees its locals, and ends when it returns; a watch in a function on anything but its own variables is refused, located (`1003`). `docs/watch_scope_design.md` §3, held by `tests/run_watch_scope.sh`. Event sources in a function wait for increment 2 (`wait until`). | 2026-11-07 entry |
@@ -13629,3 +13631,22 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Status: OPEN**, for Matthew: live row 12, probed by `run_limitations.sh`
   (`xml_text_unknown`). Raising there, as other verbs do on `unknown`, would
   make a missed lookup say so.
+
+## 2026-11-08 — CC — while: building G-SQL's DURATION column (gsql_duration_design.md)
+
+- **Type:** language-surprise
+- **Severity:** low (the minus), medium (the rounding)
+- **What:** two things met while writing durations for the column's tests.
+  (1) `-(2 hours)` is refused, "arithmetic operator '-' expected number but
+  got duration", where `0 seconds - 2 hours` answers `-2 hours`: subtraction
+  takes a duration and negation does not. (2) `(1 second) * 2.5` is
+  `3 seconds` and `(1 second) * 3.5` is `4 seconds`, with `error` false and
+  no warning, while `(1 hour) * 0.5` is exactly `30 minutes`: a fraction of a
+  second is rounded, half away from zero, in silence. Seconds are the
+  resolution on purpose; saying nothing when a value is changed to fit it is
+  the part that surprises (`datetime_design.md` says scaling exact parts "is
+  fine" and does not mention rounding).
+- **Workaround:** `0 seconds - d` for a negation; for (2), scale a larger
+  unit, or round deliberately before scaling.
+- **Status: OPEN**, for Matthew: live rows 13 and 14, probed by
+  `run_limitations.sh` (`duration_negate`, `duration_scale_rounds`).

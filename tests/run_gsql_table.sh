@@ -12,8 +12,10 @@
 #           written there BY HAND from the design's table -- including the
 #           ones a plausible checker gets wrong: 6 / 2 is 3.0 and an integer
 #           column refuses it, a year-month date fits neither `date` nor
-#           `datetime`, a record holding a duration is refused like the
-#           duration. Every truncation of every value is refused too.
+#           `datetime`, and a duration fits only a `duration` column, where a
+#           record may hold one (2026-11-08, docs/gsql_duration_design.md; it
+#           was refused like the duration until then). Every truncation of
+#           every value is refused too.
 #   refuse  each refusal of §3.2 and §7 beside the case that is accepted, so
 #           the tier cannot pass on a layer that refuses everything; and the
 #           invariant check's own control, a stray rows tree it must report.
@@ -118,7 +120,7 @@ else
     out=$(bounded 60 "$work/table_test" kinds "$work/values.txt" 2>&1)
     last=$(printf '%s\n' "$out" | tail -1)
     case "$last" in
-        "ok "*" 0 mismatches") pass "$(printf '%s\n' "$out" | grep '^values' | sed 's/^values //') values, ten kinds each, nullable and NOT NULL: $last" ;;
+        "ok "*" 0 mismatches") pass "$(printf '%s\n' "$out" | grep '^values' | sed 's/^values //') values, eleven kinds each, nullable and NOT NULL: $last" ;;
         *) printf '%s\n' "$out" | grep MISMATCH | head -10; fail "the column kinds: $last" ;;
     esac
 fi

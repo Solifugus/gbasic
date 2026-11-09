@@ -414,6 +414,83 @@ static GsqlHv *gsql_h_call(void *ctx, const char *name, GsqlHv *const *args, siz
     return gsql_apply(source, vs, n, err);
 }
 
+/* A duration's text as gBASIC prints it, which is its literal syntax: an integer
+ * then a unit, repeated, each unit once (docs/gsql_duration_design.md §5). Each
+ * number lands in its OWN field, so '24 hours' is 24 hours rather than 1 day and
+ * the printed form reads back as the very fields it was printed from. 1 when it
+ * reads; otherwise 0, with `why` saying what did not. */
+static int gsql_duration_text(const char *t, Duration *d, char *why, size_t cap) {
+    static const char *const units[] = { "year", "month", "week", "day", "hour", "minute", "second" };
+    int *fields[] = { &d->years, &d->months, &d->weeks, &d->days, &d->hours, &d->minutes, &d->seconds };
+    int seen[7] = { 0 };
+    memset(d, 0, sizeof *d);
+    const char *p = t;
+    int parts = 0;
+    for (;;) {
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        if (!*p) {
+            break;
+        }
+        const char *num = p;
+        if (*p == '-' || *p == '+') {
+            p++;
+        }
+        if (!isdigit((unsigned char)*p)) {
+            snprintf(why, cap, "expected a whole number at '%.40s'", num);
+            return 0;
+        }
+        long long n = 0;
+        while (isdigit((unsigned char)*p)) {
+            n = n * 10 + (*p++ - '0');
+            if (n > INT32_MAX) {
+                snprintf(why, cap, "a part is past the largest amount a duration field holds");
+                return 0;
+            }
+        }
+        if (*p == '.' || *p == ',') {
+            snprintf(why, cap, "a part is not a whole number, and each part of a duration is");
+            return 0;
+        }
+        if (*num == '-') {
+            n = -n;
+        }
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        const char *word = p;
+        while (isalpha((unsigned char)*p)) {
+            p++;
+        }
+        size_t wl = (size_t)(p - word);
+        int u = -1;
+        for (int k = 0; k < 7; k++) {
+            size_t ul = strlen(units[k]);
+            if ((wl == ul || (wl == ul + 1 && word[ul] == 's')) && strncmp(word, units[k], ul) == 0) {
+                u = k;
+            }
+        }
+        if (u < 0) {
+            snprintf(why, cap, "'%.*s' is not a unit (year, month, week, day, hour, minute, second)",
+                     (int)(wl ? wl : 1), wl ? word : p);
+            return 0;
+        }
+        if (seen[u]) {
+            snprintf(why, cap, "%ss are given twice", units[u]);
+            return 0;
+        }
+        seen[u] = 1;
+        *fields[u] = (int)n;
+        parts++;
+    }
+    if (!parts) {
+        snprintf(why, cap, "the text is empty (no duration is '0 seconds')");
+        return 0;
+    }
+    return 1;
+}
+
 static GsqlHv *gsql_h_cast(void *ctx, const GsqlHv *v, int kind, const char *currency, GsqlError *err) {
     (void)ctx;
     const Value *args[1] = { &v->v };
@@ -490,6 +567,24 @@ static GsqlHv *gsql_h_cast(void *ctx, const GsqlHv *v, int kind, const char *cur
             return NULL;
         }
         return r;
+    }
+    case GSQL_COL_DURATION: {
+        if (v->v.kind == VALUE_DURATION) {
+            return gsql_hv(value_copy(v->v));
+        }
+        if (!is_text) {
+            gsql_host_fail(err, GSQL_EXPRESSION, "CAST to DURATION takes a duration's text, such as '90 seconds', "
+                           "and this value is %s", builtin_type_name(v->v));
+            return NULL;
+        }
+        Value d = {0};
+        d.kind = VALUE_DURATION;
+        char why[160];
+        if (!gsql_duration_text(v->v.as.string, &d.as.duration, why, sizeof why)) {
+            gsql_host_fail(err, GSQL_EXPRESSION, "'%.80s': %s", v->v.as.string, why);
+            return NULL;
+        }
+        return gsql_hv(d);
     }
     default:
         gsql_host_fail(err, GSQL_MISUSE, "CAST to an unknown kind");

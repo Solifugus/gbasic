@@ -21,7 +21,8 @@
 '     refused by name.
 '
 ' Types are inferred to SQLite's affinities: INTEGER, REAL, TEXT. `unknown`
-' becomes NULL, which is what it means.
+' becomes NULL, which is what it means. Each column's gBASIC kind (date,
+' duration, money(USD), ...) is inferred beside it, for G-SQL's typed columns.
 
 library dbframe
     load frame from "frame.bas"
@@ -116,14 +117,87 @@ library dbframe
         return "TEXT"
     end function
 
-    ' The inferred schema: a list of { name, column, type }, where `name` is the
-    ' frame's column and `column` the identifier that will be created.
+    ' The gBASIC kind of one value, in G-SQL's column words: number, text,
+    ' boolean, date, time, datetime, duration or money(CUR); "other" for one no
+    ' typed column holds (a year or month, a record, an array).
+    function value_kind(v)
+        if is_boolean(v) then
+            return "boolean"
+        end if
+        if is_number(v) then
+            return "number"
+        end if
+        if is_string(v) then
+            return "text"
+        end if
+        t = type(v)
+        if t = "money" then
+            return "money(" + money.currency(v) + ")"
+        end if
+        if t = "duration" then
+            return "duration"
+        end if
+        if t = "datetime" then
+            p = v.precision
+            if p = "time" then
+                return "time"
+            end if
+            if p = "day" then
+                return "date"
+            end if
+            if p = "hour" or p = "minute" or p = "second" then
+                return "datetime"
+            end if
+        end if
+        return "other"
+    end function
+
+    ' The kind of a column, decided from EVERY value as column_type is: one kind
+    ' throughout is that kind, money in several currencies is "money" (an
+    ' untyped money column holds any), and anything mixed, or nothing at all, is
+    ' "text", as column_type says TEXT. A whole number is "number" rather than
+    ' "integer": a G-SQL integer column refuses an inexact value even when it is
+    ' whole, and a frame read from a sheet holds those, so advising one would
+    ' refuse the frame's own rows.
+    function column_kind(values)
+        kind = ""
+        for each v in values
+            if is_unknown(v) then
+                continue
+            end if
+            k = value_kind(v)
+            if k = "other" then
+                return "text"
+            end if
+            if kind = "" then
+                kind = k
+            else
+                if k != kind then
+                    if starts_with(k, "money(") and starts_with(kind, "money") then
+                        kind = "money"
+                    else
+                        return "text"
+                    end if
+                end if
+            end if
+        end for
+        if kind = "" then
+            return "text"
+        end if
+        return kind
+    end function
+
+    ' The inferred schema: a list of { name, column, type, kind }, where `name`
+    ' is the frame's column, `column` the identifier that will be created, `type`
+    ' the SQLite type create_sql writes, and `kind` the gBASIC kind the values
+    ' share, which gsql_create_sql writes.
     function schema(df)
         out = []
         for each name in frame.columns(df)
             append(out, { name: name,
                           column: to_identifier(name),
-                          type: column_type(df[name]) })
+                          type: column_type(df[name]),
+                          kind: column_kind(df[name]) })
         end for
         return out
     end function
@@ -151,6 +225,21 @@ library dbframe
             head = "create table if not exists "
         end if
         return head + "\"" + table + "\" (" + chr(10) + join(cols, "," + chr(10)) + chr(10) + ")"
+    end function
+
+    ' G-SQL CREATE TABLE text for a frame, from each column's kind, so a date
+    ' column is DATE and a duration DURATION rather than TEXT. Returned, as
+    ' create_sql's is, to be read and changed before it is run: it declares no
+    ' key, which only the caller knows.
+    function gsql_create_sql(table, df)
+        if not safe_name(table) then
+            error "dbframe.gsql_create_sql: unsafe table name: " + table
+        end if
+        cols = []
+        for each c in schema(df)
+            append(cols, "  \"" + c.column + "\" " + upper(c.kind))
+        end for
+        return "create table \"" + table + "\" (" + chr(10) + join(cols, "," + chr(10)) + chr(10) + ")"
     end function
 
     ' --------------------------------------------------------------- loading
