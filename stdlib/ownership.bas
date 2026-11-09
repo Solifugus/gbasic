@@ -198,11 +198,16 @@ library ownership
     ' not yet expose. Kept honest rather than guessed.
 
     ' Text at the first of several candidate slash-paths that yields non-empty
-    ' text, else "". (xml.text never raises and returns "" for a missing node.)
+    ' text, else "". A path that finds nothing is passed over (xml.text raises on
+    ' the unknown that xml.find answers for a miss).
     function _text_any(node, paths)
         i = 0
         while i < count(paths)
-            s = xml.text(xml.find(node, paths[i]))
+            n = xml.find(node, paths[i])
+            s = ""
+            if not is_unknown(n) then
+                s = xml.text(n)
+            end if
             if s != "" then
                 return s
             end if

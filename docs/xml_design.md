@@ -209,8 +209,11 @@ rather than configurably**:
 - **No external entities, ever** (XXE). No DTD loading, no network access
   from the parser (`NONET`), external entity references resolve to nothing.
 - **Entity-expansion cap** (billion-laughs): only the five predefined
-  entities and character references are expanded; DTD-defined entities are
-  not processed at all.
+  entities and character references are expanded in text; DTD-defined entities are
+  not processed at all. A reference to one in text is **refused**, naming the
+  entity and its line (2026-11-09). It used to be dropped, so `<a>&y;</a>` read
+  as an empty `<a>` and its text was lost (DOGFOOD row 10). In an attribute value, libxml2
+  expands an internal entity itself, so nothing is lost there.
 - **Depth cap** (default 256, generous) against pathological nesting;
   exceeding it is a structured error, not a crash.
 
@@ -224,9 +227,12 @@ different tool.
 Structured runtime errors, source **`xml`**, carrying the libxml2 message
 plus **line and column** where available: not-well-formed input, encoding
 failures, depth-cap violations, reader use-after-close, `subtree` when the
-cursor is not on a start-element. `find`/`attr`/`text` never raise on
-absence — they return `unknown` (find/attr) or `""` (text on empty), keeping
-lookup code linear.
+cursor is not on a start-element. `find` and `attr` never raise on absence:
+they return `unknown`. `text` of an element with no text is `""`. *(Changed
+2026-11-09.)* `text` of `unknown`, which is what a missed `find` answers,
+**raises**. It used to answer `""`, so a lookup that missed read as an element
+with nothing in it (DOGFOOD row 12). A find that may miss is checked with
+`is_unknown` first. A DTD entity in text raises too (§7).
 
 ---
 

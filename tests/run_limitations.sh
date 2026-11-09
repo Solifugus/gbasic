@@ -121,10 +121,6 @@ deep_value_teardown|segfaults when it is RELEASED
 library_top_statements|top-level statements are silently not run
 find_all_first_match|collects only under the first
 decimal_key_collision|share an index key
-xml_entity_dropped|drops an entity reference in silence
-xml_text_unknown|a lookup that missed reads as an element
-duration_negate|negation does not. Workaround
-duration_scale_rounds|rounded, half away from zero, in silence (
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -306,55 +302,9 @@ probe_decimal_key_collision() {
     fi
 }
 
-probe_xml_entity_dropped() {
-    # Red when the entity is expanded, or refused with an error.
-    printf 'load xml\nd = xml.parse("<!DOCTYPE a [<!ENTITY y \x27Y\x27>]><a>&y;</a>")\nprint "[" + xml.text(d) + "]"\nprint error\n' > "$WORK/xe.bas"
-    xe_out=$(timeout 20 ./gbasic "$WORK/xe.bas" 2>&1 | tr '\n' ' ')
-    if [ "$xe_out" = "[] false " ]; then
-        ok "xml.parse still drops an entity reference with no error"
-    else
-        printf '     %s\n' "$xe_out"
-        fixed "xml.parse no longer drops the entity in silence (or the probe no longer runs)"
-    fi
-}
 
-probe_duration_negate() {
-    # Red when unary minus takes a duration.
-    printf 'on error goto next\nx = -(2 hours)\nprint error.message\n' > "$WORK/dn.bas"
-    dn_out=$(timeout 20 ./gbasic "$WORK/dn.bas" 2>&1)
-    if printf '%s' "$dn_out" | grep -q "expected number but got duration"; then
-        ok "unary minus still refuses a duration"
-    else
-        printf '     %s\n' "$dn_out"
-        fixed "unary minus now takes a duration (or the probe no longer runs)"
-    fi
-}
 
-probe_duration_scale_rounds() {
-    # Red when scaling to a fraction of a second warns, raises or keeps it.
-    printf 'x = (1 second) * 2.5\nprint x\nprint error\n' > "$WORK/ds.bas"
-    ds_out=$(timeout 20 ./gbasic "$WORK/ds.bas" 2>&1 | tr '\n' ' ')
-    if [ "$ds_out" = "3 seconds false " ]; then
-        ok "a duration scaled to half a second still rounds in silence"
-    else
-        printf '     %s\n' "$ds_out"
-        fixed "scaling a duration to a fraction of a second no longer rounds in silence"
-    fi
-}
 
-probe_xml_text_unknown() {
-    # Red when xml.text of a missed find raises, or answers anything but "".
-    printf 'load xml\nt = xml.parse("<a><b><c>x</c></b></a>")\nprint "[" + xml.text(xml.find(t, "c")) + "]"\nprint error\n' > "$WORK/xt.bas"
-    xt_out=$(timeout 20 ./gbasic "$WORK/xt.bas" 2>&1 | tr '\n' ' ')
-    if [ "$xt_out" = "[] false " ]; then
-        ok "xml.text of a missed find still answers the empty text with no error"
-    elif printf '%s' "$xt_out" | grep -q 'library not loaded: xml\|not available'; then
-        ok "SKIP xml.text of unknown (no xml in this build)"
-    else
-        printf '     %s\n' "$xt_out"
-        fixed "xml.text of unknown no longer answers \"\" in silence"
-    fi
-}
 
 probe_library_top_statements() {
     # The pair: the library's function reading a top-level variable raises,

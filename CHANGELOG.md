@@ -16,6 +16,28 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Errors in place of plausible answers: xml and durations (2026-11-09)
+
+- **`xml.parse` refuses an entity a DTD declares, when it appears in text.**
+  The entity is still never expanded, as a defence against XXE and
+  billion-laughs attacks. The reference used to be dropped, so `<a>&y;</a>`
+  read as an empty `<a>`. Now the parse raises, naming the entity and its line,
+  and so do `xml.parse_file`, `xml.read` and `xml.subtree`.
+- **`xml.text` of `unknown` raises.** `unknown` is what `xml.find` answers when
+  nothing matched, and `xml.text` used to answer `""` for it, so a miss read as
+  an element with nothing in it. It also raises, naming the kind, for anything
+  that is not an element or a text child. **A program that read a missing
+  element as `""` through `xml.text(xml.find(...))` now raises**: check the
+  find with `is_unknown` first. `stdlib/insiders.bas` and `ownership.bas` have
+  been changed to do that. Rebaselined golden: `examples/xml_form4_test.out`'s
+  last line, `text_of_unknown=[]`, is now `text_of_unknown_raises=true`.
+- **`-d` negates a duration**, field by field, so `-(90 minutes)` is
+  `-90 minutes`. It used to be refused as not a number.
+- **A duration scaled to a fraction of a second is refused.** `(1 second) * 2.5`
+  used to answer `3 seconds`, silently; now it raises, saying to round the
+  seconds first. `(1 hour) / 7` raises the same way. `(1 hour) / 3` is still 20
+  minutes.
+
 ### G-SQL stores durations (Matthew's ruling 2026-11-08)
 
 - **A `DURATION` column** holds a duration as given, field for field:

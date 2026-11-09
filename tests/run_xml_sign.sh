@@ -201,8 +201,8 @@ else
         write(env("OUT") + ".si", si)
     end if
     tree = xml.parse(si)
-    ' a path is a chain of CHILD names, and xml.text of a missed find is ""
-    ' (DOGFOOD live row 12), so each is the full path
+    ' a path is a chain of CHILD names, so each is the full path (a miss is
+    ' unknown, and xml.text of it raises)
     want = xml.text(xml.find(tree, "Reference/DigestValue"))
     sig = xml.text(xml.find(xml.parse(doc), "Assertion/Signature/SignatureValue"))
     print "digest " + string(base64_encode(sha256(a)) = want)

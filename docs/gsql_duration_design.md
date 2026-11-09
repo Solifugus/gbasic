@@ -64,7 +64,7 @@ The catalog names a column's kind as a word (`table.c`, `kind_from_name`), so a 
 
 **A duration inside a record is refused by `DUMP TO`**, as a date there already was, since `encode` has no form for one; the fixture checks the refusal and dumps after clearing it.
 
-**Found on the way, and not changed here:** `-(2 hours)` is refused (*"arithmetic operator '-' expected number but got duration"*) where `0 seconds - 2 hours` works, and `(1 second) * 3.5` is `4 seconds` with no warning. Both are DOGFOOD's (2026-11-08 entry).
+**Found on the way, and not changed here:** `-(2 hours)` is refused (*"arithmetic operator '-' expected number but got duration"*) where `0 seconds - 2 hours` works, and `(1 second) * 3.5` is `4 seconds` with no warning. Both are DOGFOOD's (2026-11-08 entry). Both were fixed 2026-11-09: `-d` negates each field, and a scaling that is not a whole number of seconds raises.
 
 ## 8. `dbframe`
 

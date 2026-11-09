@@ -520,6 +520,23 @@ static int xml_element_to_record(xmlNode *elem, int depth, int keep_space,
                 textlen += add;
                 textbuf[textlen] = '\0';
             }
+        } else if (c->type == XML_ENTITY_REF_NODE) {
+            /* An entity a DTD declares is never expanded (no NOENT, above), and
+             * dropping the reference lost its text in silence (DOGFOOD row 10). */
+            char m[512];
+            snprintf(m, sizeof(m),
+                     "xml: line %ld uses the entity &%.80s; in text, which the document's DTD declares, "
+                     "and xml expands no DTD entity in text (that is how XXE and billion-laughs attacks "
+                     "work), so its text would be lost; write the text in place of the entity",
+                     (long)xmlGetLineNo(c), c->name ? (const char *)c->name : "");
+            runtime_error_raise(m, XML_ERROR_CODE, "xml");
+            free(textbuf);
+            for (size_t i = 0; i < count; i++) {
+                value_free(items[i]);
+            }
+            free(items);
+            value_free(rec);
+            return 0;
         }
         /* other node types (comment, PI, ...) are dropped */
     }
@@ -859,8 +876,21 @@ static void xml_gather_text(Value *node, char **buf, size_t *len, size_t *cap) {
 }
 
 static Value xml_do_text(Value *node) {
+    /* A miss used to answer "", which reads as an element with nothing in it
+     * (DOGFOOD row 12): a digest of the empty text compared false, far away. */
+    if (node->kind == VALUE_UNKNOWN) {
+        runtime_error_raise("xml.text was given unknown, which is what xml.find answers when nothing "
+                            "matched (a path is a chain of child names from the element it starts at); "
+                            "check the find with is_unknown first if a miss is expected",
+                            XML_ERROR_CODE, "xml");
+        return value_null();
+    }
     if (node->kind != VALUE_STRING && !xml_is_element(node)) {
-        return value_string("");
+        char m[160];
+        snprintf(m, sizeof m, "xml.text expects an element or a text child, not %s",
+                 value_kind_name(node->kind));
+        runtime_error_raise(m, XML_ERROR_CODE, "xml");
+        return value_null();
     }
     char *buf = NULL;
     size_t len = 0, cap = 0;
@@ -1226,6 +1256,18 @@ static Value xml_eval_read(AstExpr *expr) {
             char m[96];
             snprintf(m, sizeof(m), "xml.read: maximum nesting depth (%d) exceeded",
                      XML_READER_MAX_DEPTH);
+            runtime_error_raise(m, XML_ERROR_CODE, "xml");
+            return value_null();
+        }
+        if (xmlTextReaderNodeType(rv->reader) == XML_READER_TYPE_ENTITY_REFERENCE) {
+            const xmlChar *en = xmlTextReaderConstName(rv->reader);
+            char m[512];
+            snprintf(m, sizeof(m),
+                     "xml.read: line %d uses the entity &%.80s; in text, which the document's DTD declares, "
+                     "and xml expands no DTD entity in text, so its text would be lost; write the text "
+                     "in place of the entity",
+                     (int)xmlGetLineNo(xmlTextReaderCurrentNode(rv->reader)), en ? (const char *)en : "");
+            value_free(rvv);
             runtime_error_raise(m, XML_ERROR_CODE, "xml");
             return value_null();
         }

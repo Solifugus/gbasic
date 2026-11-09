@@ -32,9 +32,14 @@ library insiders
 
     ' --- private helpers -----------------------------------------------------
 
-    ' Text at a slash-path under a node, or "" when absent (xml.text never raises).
+    ' Text at a slash-path under a node, or "" when absent (xml.text raises on the
+    ' unknown that xml.find answers for a miss, so the miss is decided here).
     function _txt(node, path)
-        return xml.text(xml.find(node, path))
+        n = xml.find(node, path)
+        if is_unknown(n) then
+            return ""
+        end if
+        return xml.text(n)
     end function
 
     ' A numeric cell: a value string -> number; an empty (absent/footnoted) cell
@@ -48,7 +53,7 @@ library insiders
 
     ' A boolean relationship flag ("true"/anything-else), absent -> false.
     function _flag(node, path)
-        if xml.text(xml.find(node, path)) = "true" then
+        if _txt(node, path) = "true" then
             return true
         end if
         return false

@@ -4993,11 +4993,11 @@ parse — paid only when `positions` is asked for.
 
 Navigation (a *path* is a `/`-separated chain of child element names):
 
-- `node.find(path)` (`xml.find`) — the first matching descendant, or `unknown`.
+- `node.find(path)` (`xml.find`) — the first match, or `unknown` when nothing matched. Check a find that may miss with `is_unknown` before reading it.
 - `node.find_all(path)` (`xml.find_all`) — an array of all matches (empty when none).
 - `node.attr(name[, default])` (`xml.attr`) — an attribute value as a string; returns
   `default` (or `unknown`) when the attribute is absent.
-- `node.text()` (`xml.text`) — the node's text content.
+- `node.text()` (`xml.text`) — the node's text content, trimmed. Given `unknown`, which is what a missed find answers, it raises rather than answering `""`. It also raises for anything that is not an element or a text child.
 - `xml.encode(node[, pretty])` — serialize a node back to an XML string; pass
   `true` to pretty-print.
 - `xml.canonicalize(text[, options])` — the canonical bytes of a document, or
@@ -7159,7 +7159,11 @@ two are never blurred: equality canonicalises within each family
 (`1 week = 7 days`, `1 year = 12 months`, but `1 month = 30 days` is
 **false**); ordering is defined only between exact durations — comparing a
 month-bearing duration with `<`/`>` raises, as does scaling its months by a
-non-integer. Refusals, not guesses: a month has no fixed length.
+non-integer. Refusals, not guesses: a month has no fixed length. A duration
+holds whole seconds, so a scaling that lands between two is refused as well:
+`(1 second) * 2.5` raises, and `(1 second) * round(n)` is the way round it.
+`(1 hour) / 3` is 20 minutes. `-d` negates each field, so `-(90 minutes)` is
+`-90 minutes`, equal to `0 seconds - d`.
 
 **Timezone edges** — `to_zone(dt, zone)`, `from_zone(dt, zone)`,
 `zone_offset(dt, zone)`, `zone_offset(dt)`, `zone_resolve(dt, zone)`, with IANA names

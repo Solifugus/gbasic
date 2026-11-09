@@ -1,0 +1,25 @@
+-2 hours
+-90 minutes
+-1 year -2 days
+-1 month -3 days -4 hours -5 minutes -6 seconds
+0 seconds
+3 weeks
+-45 minutes
+18 hours
+-d = 0 seconds - d and -(-d) = d for each: true
+true
+2026-03-09
+-2.50
+30 minutes
+20 minutes
+1 second
+3 minutes
+1 hour
+1 minute 30 seconds
+2 months
+6 hours
+(1 second) * 2.5: that duration would be 2.5 seconds, and a duration holds whole seconds; round the seconds first, such as (1 second) * round(n)
+(1 hour) / 7: that duration would be 514.2857143 seconds, and a duration holds whole seconds; round the seconds first, such as (1 second) * round(n)
+(1 minute) * 0.001: that duration would be 0.06 seconds, and a duration holds whole seconds; round the seconds first, such as (1 second) * round(n)
+(1 month) * 2.5: cannot scale a duration with months or years by a non-integer
+8 minutes 34 seconds

@@ -41266,26 +41266,36 @@ static Value eval_binary(AstExpr *expr) {
         value_free(right);
         current_line = previous_line;
         current_column = previous_column;
-        if (strcmp(op, "/") == 0) {
-            if (n == 0) {
-                runtime_error_raise("division by zero", 1003, "duration");
-                return value_null();
-            }
-            n = 1.0 / n;
+        int divide = strcmp(op, "/") == 0;
+        if (divide && n == 0) {
+            runtime_error_raise("division by zero", 1003, "duration");
+            return value_null();
         }
         long long dm, ds;
         duration_totals(d, &dm, &ds);
         /* Months scale only by integers: 2.5 months has no meaning, and a
-         * plausible wrong answer would be worse than the refusal. Seconds
-         * scale freely and round to the whole second, which durations are. */
-        double scaled_months = (double)dm * n;
-        if (fabs(scaled_months - llround(scaled_months)) > 1e-9) {
+         * plausible wrong answer would be worse than the refusal. Seconds are
+         * the resolution, so a result between two whole seconds is refused
+         * too: it was rounded in silence, `(1 second) * 2.5` answering 3
+         * seconds (DOGFOOD row 14). The tolerance is relative, so a double's
+         * last-digit error leaves `(1 hour) / 3` whole either way. */
+        double scaled_months = divide ? (double)dm / n : (double)dm * n;
+        if (fabs(scaled_months - llround(scaled_months)) > 1e-9 * fmax(1.0, fabs(scaled_months))) {
             runtime_error_raise("cannot scale a duration with months or years by a non-integer",
                                 1003, "duration");
             return value_null();
         }
+        double scaled_seconds = divide ? (double)ds / n : (double)ds * n;
+        if (fabs(scaled_seconds - llround(scaled_seconds)) > 1e-9 * fmax(1.0, fabs(scaled_seconds))) {
+            char m[240];
+            snprintf(m, sizeof m,
+                     "that duration would be %.10g seconds, and a duration holds whole seconds; "
+                     "round the seconds first, such as (1 second) * round(n)", scaled_seconds);
+            runtime_error_raise(m, 1003, "duration");
+            return value_null();
+        }
         return value_duration(duration_from_totals(llround(scaled_months),
-                                                   llround((double)ds * n)));
+                                                   llround(scaled_seconds)));
     }
 
     if (strcmp(op, "+") == 0 &&
@@ -42300,6 +42310,23 @@ static Value eval_expr(AstExpr *expr) {
                 Value negated = value;
                 negated.as.money.units = -value.as.money.units;
                 return negated;
+            }
+            /* A DURATION NEGATES FIELD BY FIELD, as `0 seconds - d` would give
+             * on its totals (DOGFOOD row 13); it was refused as not a number.
+             * Each field negated keeps a literal's shape, so -(90 minutes)
+             * prints -90 minutes, as the literal 90 minutes keeps its form. */
+            if (value.kind == VALUE_DURATION) {
+                current_line = previous_line;
+                current_column = previous_column;
+                Duration d = value.as.duration;
+                if (d.years == INT_MIN || d.months == INT_MIN || d.weeks == INT_MIN || d.days == INT_MIN ||
+                    d.hours == INT_MIN || d.minutes == INT_MIN || d.seconds == INT_MIN) {
+                    runtime_error_raise("duration value is out of range", 1003, "duration");
+                    return value_null();
+                }
+                d.years = -d.years; d.months = -d.months; d.weeks = -d.weeks; d.days = -d.days;
+                d.hours = -d.hours; d.minutes = -d.minutes; d.seconds = -d.seconds;
+                return value_duration(d);
             }
             double number = 0.0;
             if (!value_number_for_arithmetic(value, expr->as.unary.op, &number)) {
