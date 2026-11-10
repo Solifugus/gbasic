@@ -108,9 +108,14 @@ v  = xml.attr(n, "id", "none")      ' attribute or default
 
 **Path syntax is deliberately tiny and is not XPath:** slash-separated steps,
 each a local name or `*`, matched against element children only, descending
-from the given node. First match for `find`, all matches at the final step for
-`find_all`. Anything fancier (predicates, `//`, axes) is a non-goal — user
-code loops.
+from the given node. Each step is taken from **every** element the step before
+reached, so `find_all` answers every element the path reaches, in document
+order, and `find` the first of them. *(Changed 2026-11-09.)* Both used to follow
+only the first element at each step but the last. `find_all(d, "s/n")` then
+missed the `n` under every `s` but the first, and `find` missed an `n` that only
+a later `s` held (DOGFOOD row 8). A path of 1024 bytes or more, or of more
+than 64 steps, is refused; it was cut short in silence. Anything fancier
+(predicates, `//`, axes) is a non-goal — user code loops.
 
 Matching is on **local names** by default, which is the right ergonomic for
 SEC documents where prefixes vary by filer. Exact qualified matching is

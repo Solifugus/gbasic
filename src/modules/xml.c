@@ -721,7 +721,8 @@ static Value xml_parse_html_memory(const char *text, size_t len) {
  * owns the `xml.` qualifier — `load xml` is intercepted before any stdlib file,
  * so `xml.find`/`text`/`attr` must live here. Mini-path is slash-separated local
  * names or `*`, matched against element children, descending. find/attr return
- * `unknown` on absence; text returns "" (§8) — none of them raise. */
+ * `unknown` on absence; text of an element with none is "", and text of
+ * unknown raises (§8). */
 
 static int xml_is_element(const Value *v) {
     return v->kind == VALUE_RECORD && record_find_const(v, "name") != NULL;
@@ -743,34 +744,55 @@ static Value *xml_children_of(Value *elem) {
     return f->value;
 }
 
-static Value *xml_first_child_named(Value *elem, const char *step) {
+/* Every element a path reaches, in document order: each step is taken from
+ * EVERY element the previous step reached, not only the first. Taking only the
+ * first (as both verbs did) made `find_all(d, "s/n")` miss the n under every s
+ * but the first, and `find` miss an n that only a later s holds (DOGFOOD live
+ * row 8). The walk is depth first, so the first match it meets is the first in
+ * the document, and `find` stops there. */
+static int xml_path_walk(Value *elem, const char **steps, size_t n, size_t i,
+                         int first_only, Value **items, size_t *count, size_t *cap,
+                         Value **first) {
     Value *ch = xml_children_of(elem);
     if (!ch) {
-        return NULL;
+        return 0;
     }
-    for (size_t i = 0; i < ch->as.array.store->count; i++) {
-        Value *c = &ch->as.array.store->items[i];
+    for (size_t k = 0; k < ch->as.array.store->count; k++) {
+        Value *c = &ch->as.array.store->items[k];
         if (!xml_is_element(c)) {
             continue;
         }
         const char *nm = xml_local_name(c);
-        if (nm && (strcmp(step, "*") == 0 || strcmp(step, nm) == 0)) {
-            return c;
+        if (!nm || !(strcmp(steps[i], "*") == 0 || strcmp(steps[i], nm) == 0)) {
+            continue;
+        }
+        if (i + 1 == n) {
+            if (first_only) {
+                *first = c;
+                return 1;
+            }
+            xml_items_push(items, count, cap, value_copy(*c));
+        } else if (xml_path_walk(c, steps, n, i + 1, first_only, items, count, cap, first)) {
+            return 1;
         }
     }
-    return NULL;
+    return 0;
 }
 
-/* split a mini-path into non-empty steps (pointers into the mutable buf) */
+/* split a mini-path into non-empty steps (pointers into the mutable buf);
+ * answers SIZE_MAX when there are more than `max` */
 static size_t xml_split_path(char *buf, const char **steps, size_t max) {
     size_t n = 0;
     char *p = buf;
-    while (*p && n < max) {
+    while (*p) {
         while (*p == '/') {
             p++;
         }
         if (!*p) {
             break;
+        }
+        if (n == max) {
+            return SIZE_MAX;
         }
         steps[n++] = p;
         while (*p && *p != '/') {
@@ -784,25 +806,45 @@ static size_t xml_split_path(char *buf, const char **steps, size_t max) {
     return n;
 }
 
+/* A path too long was cut short in silence, so a long path could answer for a
+ * shorter one; it is refused. Answers the step count, or SIZE_MAX having raised. */
+static size_t xml_path_steps(const char *verb, const char *path, char *buf, size_t bufsz,
+                             const char **steps, size_t max) {
+    if (strlen(path) >= bufsz) {
+        char m[160];
+        snprintf(m, sizeof m, "xml.%s: the path is %zu bytes, and a path may be at most %zu",
+                 verb, strlen(path), bufsz - 1);
+        runtime_error_raise(m, XML_ERROR_CODE, "xml");
+        return SIZE_MAX;
+    }
+    memcpy(buf, path, strlen(path) + 1);
+    size_t n = xml_split_path(buf, steps, max);
+    if (n == SIZE_MAX) {
+        char m[160];
+        snprintf(m, sizeof m, "xml.%s: the path has more than %zu steps", verb, max);
+        runtime_error_raise(m, XML_ERROR_CODE, "xml");
+    }
+    return n;
+}
+
 static Value xml_do_find(Value *node, const char *path) {
     if (!xml_is_element(node)) {
         return value_unknown();
     }
     char buf[1024];
-    snprintf(buf, sizeof(buf), "%s", path);
     const char *steps[64];
-    size_t n = xml_split_path(buf, steps, 64);
+    size_t n = xml_path_steps("find", path, buf, sizeof buf, steps, 64);
+    if (n == SIZE_MAX) {
+        return value_null();
+    }
     if (n == 0) {
         return value_unknown();
     }
-    Value *cur = node;
-    for (size_t i = 0; i < n; i++) {
-        cur = xml_first_child_named(cur, steps[i]);
-        if (!cur) {
-            return value_unknown();
-        }
+    Value *first = NULL;
+    if (!xml_path_walk(node, steps, n, 0, 1, NULL, NULL, NULL, &first)) {
+        return value_unknown();
     }
-    return value_copy(*cur);
+    return value_copy(*first);
 }
 
 static Value xml_do_find_all(Value *node, const char *path) {
@@ -810,38 +852,17 @@ static Value xml_do_find_all(Value *node, const char *path) {
         return value_array(NULL, 0);
     }
     char buf[1024];
-    snprintf(buf, sizeof(buf), "%s", path);
     const char *steps[64];
-    size_t n = xml_split_path(buf, steps, 64);
+    size_t n = xml_path_steps("find_all", path, buf, sizeof buf, steps, 64);
+    if (n == SIZE_MAX) {
+        return value_null();
+    }
     if (n == 0) {
-        return value_array(NULL, 0);
-    }
-    /* descend first-match through all but the final step */
-    Value *cur = node;
-    for (size_t i = 0; i + 1 < n; i++) {
-        cur = xml_first_child_named(cur, steps[i]);
-        if (!cur) {
-            return value_array(NULL, 0);
-        }
-    }
-    /* collect ALL matches at the final step */
-    const char *last = steps[n - 1];
-    Value *ch = xml_children_of(cur);
-    if (!ch) {
         return value_array(NULL, 0);
     }
     Value *items = NULL;
     size_t count = 0, cap = 0;
-    for (size_t i = 0; i < ch->as.array.store->count; i++) {
-        Value *c = &ch->as.array.store->items[i];
-        if (!xml_is_element(c)) {
-            continue;
-        }
-        const char *nm = xml_local_name(c);
-        if (nm && (strcmp(last, "*") == 0 || strcmp(last, nm) == 0)) {
-            xml_items_push(&items, &count, &cap, value_copy(*c));
-        }
-    }
+    (void)xml_path_walk(node, steps, n, 0, 0, &items, &count, &cap, NULL);
     return value_array(items, count);
 }
 

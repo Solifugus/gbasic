@@ -16,6 +16,21 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### xml paths reach every match; a library's top level is declarations (2026-11-09)
+
+- **`xml.find_all` answers every element a path reaches**, in document order.
+  `xml.find` answers the first of them. Both used to follow only the first
+  element at each step but the last, so `find_all(d, "s/n")` missed the `n`
+  under every `s` but the first, and `find` missed an `n` that only a later
+  `s` held. A path of 1024 bytes or more, or more than 64 steps, is refused,
+  where it used to be cut short in silence.
+- **A statement at the top level of a `library` block is refused** when the
+  library is loaded, at its own line: an assignment, a `print`, a `watch`, an
+  `if`, or a `function obj.f()` attached to a value. A library's body is
+  `load`, `function`, `modifier`, `database` and `sql`. These statements used
+  to be skipped in silence, so `counter = 5` there left a function that read
+  `counter` with "undefined variable". Every library in `stdlib/` still loads.
+
 ### Errors in place of plausible answers: xml and durations (2026-11-09)
 
 - **`xml.parse` refuses an entity a DTD declares, when it appears in text.**

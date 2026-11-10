@@ -10382,6 +10382,38 @@ static void library_import_from_block(AstStmt *library, const char *effective) {
     const char *importer = current_importer_library;   /* who asked for THIS library */
     const char *previous_importer = current_importer_library;
     current_importer_library = effective;               /* nested loads are on its behalf */
+    /* A LIBRARY'S BODY IS DECLARATIONS, and anything else at its top level was
+     * skipped in silence: a `print` printed nothing, `counter = 5` left a
+     * function reading `counter` with "undefined variable", and a `watch`
+     * registered nothing (DOGFOOD row 7). Running them at load time would make
+     * a load a program, so they are refused, at the statement, before anything
+     * of the library is registered. A dotted `function obj.f()` is an attach
+     * statement, not a declaration, and was skipped the same way. */
+    for (size_t i = 0; i < library->as.library.body.count; i++) {
+        AstStmt *stmt = library->as.library.body.items[i];
+        AstStmtKind k = stmt->kind;
+        int declaration = k == AST_STMT_USE || k == AST_STMT_MODIFIER || k == AST_STMT_DATABASE ||
+                          k == AST_STMT_SQL || k == AST_STMT_SERVER || k == AST_STMT_WINDOW ||
+                          (k == AST_STMT_FUNCTION && !stmt->as.function.object);
+        if (declaration) {
+            continue;
+        }
+        char m[512];
+        snprintf(m, sizeof m,
+                 "library %s: this statement is at the top level of the library, where it would never "
+                 "run -- a library holds declarations (load, function, modifier, database, sql), and "
+                 "loading it runs no code. Put it in a function the program calls%s",
+                 library->as.library.name,
+                 k == AST_STMT_WATCH ? "; a watch belongs in the function that wants the deliveries"
+                 : k == AST_STMT_FUNCTION ? "; a function attached to a value (function obj.f) is "
+                                            "a statement, so attach it inside a function"
+                 : k == AST_STMT_ASSIGN ? ", and return the value from it (a library has no variables "
+                                          "of its own)"
+                 : "");
+        runtime_error_raise_at(m, 1003, "library", stmt->line, stmt->column);
+        current_importer_library = previous_importer;
+        return;
+    }
     for (size_t i = 0; i < library->as.library.body.count; i++) {
         AstStmt *stmt = library->as.library.body.items[i];
         if (stmt->kind == AST_STMT_USE) {

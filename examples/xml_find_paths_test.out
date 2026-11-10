@@ -1,0 +1,18 @@
+s/n: [1][2][3]
+*/n: [1][2][t][3]
+s/*: [0][1][2][3][deep]
+s/g/n: [deep]
+s: 3
+find s/n: 1
+find s/g/n: deep
+find */n: 1
+find n misses: true
+find_all n: 0
+find s/q misses: true
+find_all s/q: 0
+//s//n//: [1][2][3]
+find is find_all's first for each: true
+65 steps: xml.find: the path has more than 64 steps
+1024 bytes: xml.find_all: the path is 1024 bytes, and a path may be at most 1023
+64 steps: true
+1023 bytes: 0

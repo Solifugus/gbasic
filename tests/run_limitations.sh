@@ -118,8 +118,6 @@ unnormalized_load_path|print the load path unnormalized
 spawn_bare_name|resolves a bare function **name**
 nul_string_literal|is refused in a string literal
 deep_value_teardown|segfaults when it is RELEASED
-library_top_statements|top-level statements are silently not run
-find_all_first_match|collects only under the first
 decimal_key_collision|share an index key
 "
 
@@ -275,17 +273,6 @@ probe_spawn_bare_name() {
     fi
 }
 
-probe_find_all_first_match() {
-    # Red when find_all takes every match at every step (answers 2 here).
-    printf 'load xml\nd = xml.parse("<a><s><n>1</n></s><s><n>2</n></s></a>")\nprint count(xml.find_all(d, "s/n"))\nprint count(xml.find_all(d, "s"))\n' > "$WORK/fa.bas"
-    fa_out=$(timeout 20 ./gbasic "$WORK/fa.bas" 2>&1 | tr '\n' ' ')
-    if [ "$fa_out" = "1 2 " ]; then
-        ok "xml.find_all still collects only under the first match of a path's earlier steps"
-    else
-        printf '     %s\n' "$fa_out"
-        fixed "xml.find_all now takes every match at every step (or no longer runs)"
-    fi
-}
 
 probe_decimal_key_collision() {
     # Red when a UNIQUE index takes two decimals that differ past 17 digits
@@ -306,22 +293,6 @@ probe_decimal_key_collision() {
 
 
 
-probe_library_top_statements() {
-    # The pair: the library's function reading a top-level variable raises,
-    # and its top-level print prints nothing. Red when either runs or warns.
-    mkdir -p "$WORK/lt"
-    printf 'library lt\n    print "LIBRARY TOP RAN"\n    counter = 5\n    function get()\n        return counter\n    end function\nend library\n' > "$WORK/lt/lt.bas"
-    printf 'load lt\nprogram main()\n    print "got " + string(lt.get())\nend program\n' > "$WORK/lt/m.bas"
-    lt_out=$( (cd "$WORK/lt" && timeout 20 "$OLDPWD/gbasic" m.bas 2>&1) )
-    if printf '%s' "$lt_out" | grep -q 'undefined variable: counter' &&
-       ! printf '%s' "$lt_out" | grep -q 'LIBRARY TOP RAN' &&
-       ! printf '%s' "$lt_out" | grep -q 'warning'; then
-        ok "a library's top-level statements are still silently not run"
-    else
-        printf '%s\n' "$lt_out" | sed 's/^/     /'
-        fixed "a library's top-level statements now run, or are warned about"
-    fi
-}
 
 probe_atomic_replace_inode() {
     mkdir -p "$WORK/ar"

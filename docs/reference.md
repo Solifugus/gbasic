@@ -2111,6 +2111,15 @@ end program
 
 If a `program` block exists, only that program executes. If no `program` block exists, top-level statements are treated as an implicit program.
 
+**A library's body is declarations**: `load`, `function`, `modifier`,
+`database` and `sql` (*since 2026-11-09*). Loading a library runs none of its
+code, so any other statement at the top of a `library` block is refused when
+it is loaded, at its own line, before the program runs. That includes an
+assignment, a `print`, a `watch`, and a `function obj.f()` attached to a
+value. They used to be skipped in silence, so `counter = 5` there left a
+function reading `counter` with "undefined variable". State a library needs
+comes from a function that returns it.
+
 **`load` is a declaration, and either position works** (*since 0.1.0*). Write it
 at the top level or inside the `program` block; both are registered before
 anything runs.
@@ -4994,7 +5003,7 @@ parse — paid only when `positions` is asked for.
 Navigation (a *path* is a `/`-separated chain of child element names):
 
 - `node.find(path)` (`xml.find`) — the first match, or `unknown` when nothing matched. Check a find that may miss with `is_unknown` before reading it.
-- `node.find_all(path)` (`xml.find_all`) — an array of all matches (empty when none).
+- `node.find_all(path)` (`xml.find_all`) — every element the path reaches, in document order (empty when none). Each step is taken from every element the step before reached, so `find_all(d, "s/n")` is the `n` under each `s`, and `find` answers the first of them.
 - `node.attr(name[, default])` (`xml.attr`) — an attribute value as a string; returns
   `default` (or `unknown`) when the attribute is absent.
 - `node.text()` (`xml.text`) — the node's text content, trimmed. Given `unknown`, which is what a missed find answers, it raises rather than answering `""`. It also raises for anything that is not an element or a text child.

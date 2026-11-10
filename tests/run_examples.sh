@@ -202,6 +202,7 @@ examples=(
     xml_window_13f_test.bas
     xml_parse_html_test.bas
     xml_refusals_test.bas
+    xml_find_paths_test.bas
     insiders_form4_test.bas
     insiders_cluster_test.bas
     ownership_13f_test.bas
