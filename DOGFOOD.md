@@ -13749,3 +13749,36 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Status: FIXED 2026-11-09**: the error and warning objects' `line`,
   `column` and `code` are exact integers, as a count is. Held by
   `tests/run_exact.sh`.
+
+## 2026-11-09 — CC — while: G55, giving the xlsx writer bold, fills, widths, panes and a filter
+
+- **Type:** bug
+- **Severity:** low (could not be seen yet)
+- **What:** re-reading a workbook's sheets after an edit (`xlsx_reload_sheets`,
+  which `add_sheet` calls) freed the sheet table and read it again, but left
+  the defined names in place while the read appended them again. Each name was
+  then held twice. Nothing could see it, because the two copies were the same
+  and a lookup takes the first. It would have mattered the moment a name could
+  change: `xlsx.filter` changes one (the sheet's `_xlnm._FilterDatabase`), and
+  the old range would have been the one found.
+- **Workaround:** none needed.
+- **Status: FIXED 2026-11-09**: the reload frees the names before reading them
+  again. Held by `tests/run_xlsx.sh` (tier 2l, the filter's name exactly once
+  after a second filter replaced the first).
+
+## 2026-11-09 — CC — while: G55, styling a workbook another program wrote
+
+- **Type:** surprise
+- **Severity:** low
+- **What:** setting a typed value, such as a date or money, into a cell that
+  already had a style moved the cell to some style showing that format, which
+  could be any style with that number format or a fresh default one. A bold
+  heading lost its bold, or a plain cell could take another cell's bold.
+  Separately, a workbook may leave out `fonts` and `fills` (both optional in
+  the format, and several of this tree's fixtures do); bold had nowhere to go.
+- **Workaround:** none in a program; the book repacked the parts by hand.
+- **Status: FIXED 2026-11-09**: a cell's new style is its old one with only
+  what was named changed. A style the workbook already shows that way is
+  reused, compared with attributes in name order. `fonts` and `fills` are made
+  when first needed. Held by `tests/run_xlsx.sh` (tier 2l, LibreOffice as the
+  reader that decides).

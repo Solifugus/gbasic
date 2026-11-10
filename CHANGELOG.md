@@ -16,6 +16,32 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### A readable worksheet, and zip.write (book gap G55, 2026-11-09)
+
+- **`xlsx.set` and `xlsx.set_formula` take `{ format, bold, fill }`.** Each
+  changes only what it names, starting from the cell's own style: a heading
+  made bold keeps its number format, and a money value written into a bold cell
+  stays bold. `fill` is six hex digits (`"D9D9D9"`) or `"none"`. `set_formula`
+  took no options before, so a `SUBTOTAL` over money cells could only be
+  `General`.
+- **A behaviour change on `set`:** a typed value, such as a date or money,
+  written into a cell that already had a style used to move the cell to a plain
+  style showing that format, which dropped bold and anything else the old style
+  had. It now keeps the rest of the cell's style. A workbook with no `fonts` or
+  `fills` (both optional) gets them made when they are first needed.
+- **`xlsx.column_widths(wb, sheet, widths)`, `xlsx.freeze(wb, sheet, rows,
+  columns)` and `xlsx.filter(wb, sheet, range)`**, each replacing what the
+  sheet had: `freeze(.., 0, 0)` and `filter(.., "")` take theirs off. A filter
+  is also written as the sheet's hidden `_xlnm._FilterDatabase` name, as Excel
+  writes it.
+- **`zip.write(f, members)`** writes a ZIP holding `{ name, data }` members, in
+  order. The same members give the same bytes, because every member is dated
+  1980-01-01. It refuses what `zip.extract` would refuse, and anything needing
+  ZIP64.
+- Fixed along the way: re-reading a workbook's sheets after an edit (as
+  `add_sheet` does) appended its defined names a second time. Nothing could see
+  that until a name could change; `filter` changes one.
+
 ### gpdf.save returns nothing; an error's code is exact (2026-11-09)
 
 - **`gpdf.save(doc, path)` returns `nothing`.** It returned the bytes

@@ -576,7 +576,7 @@ end for
 The design and its evidence are `docs/csv_design.md`; the suite is
 `tests/run_csv.sh`.
 
-#### The members of a ZIP file — `zip.members(f)`, `zip.read(f, name)`, `zip.extract(f, folder)`
+#### The members of a ZIP file — `zip.members(f)`, `zip.read(f, name)`, `zip.extract(f, folder)`, `zip.write(f, members)`
 
 Needs no `load`, and only zlib in the build. Partners often send several files
 in one ZIP:
@@ -612,6 +612,28 @@ end for
   drive letter, an empty component, a symbolic link, and two members of one
   name are refused, each naming the member. A file already there is refused
   unless `replace: true`.
+- **`zip.write(f, members)`** writes a ZIP holding `members`, a list of
+  `{ name, data }` in archive order, `data` being the bytes as text. A name
+  ending in `/` is a folder and holds no data. Each member is deflated, or
+  stored when deflating would not shrink it. **The same members give the same
+  bytes**: every member is dated 1980-01-01 00:00 and carries no extra fields,
+  so two archives can be compared. It writes only what `zip.extract` would
+  take: an unsafe name, two members of one name, a name that is not UTF-8, and
+  anything needing ZIP64 are refused before a byte is written. A file already
+  at `f` is replaced. To change one part of a workbook, read every member,
+  change the one, and write them all:
+
+```basic
+parts = []
+for each m in zip.members({file}"report.xlsx")
+    body = zip.read({file}"report.xlsx", m.name)
+    if m.name = "xl/worksheets/sheet1.xml" then
+        body = replace(body, "<v>41</v>", "<v>42</v>")
+    end if
+    append(parts, { name: m.name, data: body })
+end for
+zip.write({file}"report2.xlsx", parts)
+```
 
 The suite is `tests/run_zip.sh`, whose answers come from Python's `zipfile`.
 

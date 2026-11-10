@@ -688,6 +688,282 @@ done:
     return out;
 }
 
+/* ------------------------------------------------------------- writing (G55)
+ *
+ * zip.write(f, members): a ZIP made of `members`, a list of { name, data },
+ * in that order (gap G55 from the gBASIC books: a workbook's part could be
+ * read out of its ZIP and not put back). Each member is deflated, or stored
+ * when deflating would not shrink it.
+ *
+ * THE SAME MEMBERS GIVE THE SAME BYTES: every member is dated 1980-01-01
+ * 00:00, the format's earliest date, and carries no extra fields, so an
+ * archive written twice compares equal -- the book had Info-ZIP's zip run
+ * over files touched to that date for it.
+ *
+ * Written only as this module reads: a name zip.extract would refuse, two
+ * members of one name, and anything needing ZIP64 (a member or the archive
+ * past 4 GB, or more than 65535 members) are refused before a byte is
+ * written. A name past ASCII is marked UTF-8 (flag bit 11). A name ending in
+ * "/" is a folder, and holds no data. */
+
+typedef struct {
+    unsigned char *d;
+    size_t n, cap;
+} ZipBuf;
+
+static void zipb_put(ZipBuf *b, const void *p, size_t n) {
+    if (b->n + n > b->cap) {
+        size_t cap = b->cap ? b->cap : 4096;
+        while (cap < b->n + n) cap *= 2;
+        unsigned char *d = realloc(b->d, cap);
+        if (!d) abort();
+        b->d = d;
+        b->cap = cap;
+    }
+    memcpy(b->d + b->n, p, n);
+    b->n += n;
+}
+
+static void zipb_16(ZipBuf *b, unsigned v) {
+    unsigned char t[2] = { (unsigned char)(v & 0xff), (unsigned char)((v >> 8) & 0xff) };
+    zipb_put(b, t, 2);
+}
+
+static void zipb_32(ZipBuf *b, unsigned long v) {
+    unsigned char t[4] = { (unsigned char)(v & 0xff), (unsigned char)((v >> 8) & 0xff),
+                           (unsigned char)((v >> 16) & 0xff), (unsigned char)((v >> 24) & 0xff) };
+    zipb_put(b, t, 4);
+}
+
+/* raw deflate of `in`, or NULL when it would not shrink it */
+static unsigned char *zip_deflate(const unsigned char *in, size_t n, size_t *out_n) {
+    if (n == 0) return NULL;
+    uLong bound = compressBound((uLong)n) + 64;
+    unsigned char *out = malloc(bound);
+    if (!out) abort();
+    z_stream zs;
+    memset(&zs, 0, sizeof zs);
+    if (deflateInit2(&zs, Z_DEFAULT_COMPRESSION, Z_DEFLATED, -MAX_WBITS, 8, Z_DEFAULT_STRATEGY) != Z_OK) {
+        free(out);
+        return NULL;
+    }
+    zs.next_in = (Bytef *)in;
+    zs.avail_in = (uInt)n;
+    zs.next_out = out;
+    zs.avail_out = (uInt)bound;
+    int rc = deflate(&zs, Z_FINISH);
+    size_t made = zs.total_out;
+    deflateEnd(&zs);
+    if (rc != Z_STREAM_END || made >= n) {
+        free(out);
+        return NULL;
+    }
+    *out_n = made;
+    return out;
+}
+
+static Value zip_write(AstExpr *expr) {
+    if (expr->as.call.args.count != 2) {
+        return zip_raise("zip.write expects the ZIP file to write and its members, a list of { name, data }");
+    }
+    Value f = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(f);
+        return value_null();
+    }
+    Value list = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(f);
+        value_free(list);
+        return value_null();
+    }
+    if (!zip_path_arg("zip.write", f, "the file to write")) {
+        value_free(f);
+        value_free(list);
+        return value_null();
+    }
+    char m[900] = "";
+    size_t count = list.kind == VALUE_ARRAY ? list.as.array.store->count : 0;
+    if (list.kind != VALUE_ARRAY) {
+        snprintf(m, sizeof m, "zip.write: the members are a list of { name, data }, such as "
+                 "[{ name: \"a.txt\", data: \"hello\" }]");
+    } else if (count > 65535) {
+        snprintf(m, sizeof m, "zip.write: %zu members is more than the 65535 a ZIP holds without ZIP64, which "
+                 "zip does not write", count);
+    }
+    /* every member checked before anything is written */
+    for (size_t i = 0; !m[0] && i < count; i++) {
+        Value *r = &list.as.array.store->items[i];
+        RecordField *nf = r->kind == VALUE_RECORD ? record_find(r, "name") : NULL;
+        RecordField *df = r->kind == VALUE_RECORD ? record_find(r, "data") : NULL;
+        if (r->kind != VALUE_RECORD || !nf) {
+            snprintf(m, sizeof m, "zip.write: member %zu is not a record { name, data }", i + 1);
+            break;
+        }
+        for (size_t k = 0; k < r->as.record.count; k++) {
+            const char *fname = r->as.record.fields[k].name;
+            if (strcmp(fname, "name") != 0 && strcmp(fname, "data") != 0) {
+                snprintf(m, sizeof m, "zip.write: member %zu has the field '%s'; a member is { name, data }", i + 1,
+                         fname);
+                break;
+            }
+        }
+        if (m[0]) break;
+        if (nf->value->kind != VALUE_STRING) {
+            snprintf(m, sizeof m, "zip.write: member %zu's name is not text", i + 1);
+            break;
+        }
+        const char *name = nf->value->as.string;
+        size_t nn = string_length(name);
+        const char *why = nn != strlen(name) ? "it holds a NUL" : zip_unsafe_name(name);
+        if (!why && nn > 65535) why = "it is longer than the 65535 bytes a ZIP name holds";
+        if (!why && utf8_first_invalid((const unsigned char *)name, nn) != nn) why = "it is not UTF-8";
+        if (why) {
+            snprintf(m, sizeof m, "zip.write: member %zu's name \"%.300s\" cannot be written: %s", i + 1, name, why);
+            break;
+        }
+        int folder = nn > 0 && name[nn - 1] == '/';
+        if (df && df->value->kind != VALUE_STRING) {
+            snprintf(m, sizeof m, "zip.write: member \"%.300s\"'s data is not text (its bytes)", name);
+            break;
+        }
+        size_t dn = df ? string_length(df->value->as.string) : 0;
+        if (!df && !folder) {
+            snprintf(m, sizeof m, "zip.write: member \"%.300s\" has no data (only a folder, a name ending in /, "
+                     "has none)", name);
+            break;
+        }
+        if (folder && dn) {
+            snprintf(m, sizeof m, "zip.write: member \"%.300s\" is a folder (its name ends in /) and cannot hold "
+                     "data", name);
+            break;
+        }
+        if (dn > 0xFFFFFFFEul) {
+            snprintf(m, sizeof m, "zip.write: member \"%.300s\" is past 4 GB, which needs ZIP64, which zip does "
+                     "not write", name);
+            break;
+        }
+        for (size_t j = 0; j < i; j++) {
+            Value *o = &list.as.array.store->items[j];
+            const char *on = record_find(o, "name")->value->as.string;
+            if (string_length(on) == nn && memcmp(on, name, nn) == 0) {
+                snprintf(m, sizeof m, "zip.write: two members are named \"%.300s\" (%zu and %zu), and a reader "
+                         "could not tell which is meant", name, j + 1, i + 1);
+                break;
+            }
+        }
+    }
+    if (m[0]) {
+        value_free(f);
+        value_free(list);
+        return zip_raise(m);
+    }
+    ZipBuf body = {0}, dir = {0};
+    for (size_t i = 0; i < count && !m[0]; i++) {
+        Value *r = &list.as.array.store->items[i];
+        const char *name = record_find(r, "name")->value->as.string;
+        RecordField *df = record_find(r, "data");
+        const unsigned char *data = df ? (const unsigned char *)df->value->as.string : (const unsigned char *)"";
+        size_t n = df ? string_length(df->value->as.string) : 0, nn = strlen(name);
+        size_t packed = 0;
+        unsigned char *z = zip_deflate(data, n, &packed);
+        unsigned method = z ? 8 : 0;
+        if (!z) packed = n;
+        unsigned long crc = crc32(0L, Z_NULL, 0);
+        for (size_t at = 0; at < n;) {
+            uInt step = n - at > 0x40000000u ? 0x40000000u : (uInt)(n - at);
+            crc = crc32(crc, data + at, step);
+            at += step;
+        }
+        int utf8 = 0;
+        for (size_t k = 0; k < nn; k++) utf8 |= (unsigned char)name[k] >= 0x80;
+        unsigned flags = utf8 ? 0x0800 : 0;
+        size_t local = body.n;
+        if (local > 0xFFFFFFFEul || local + 30 + nn + packed > 0xFFFFFFFEul) {
+            snprintf(m, sizeof m, "zip.write: the archive passes 4 GB at member \"%.300s\", which needs ZIP64, "
+                     "which zip does not write", name);
+            free(z);
+            break;
+        }
+        int folder = nn > 0 && name[nn - 1] == '/';
+        zipb_32(&body, 0x04034b50);
+        zipb_16(&body, 20);
+        zipb_16(&body, flags);
+        zipb_16(&body, method);
+        zipb_16(&body, 0);        /* 00:00 */
+        zipb_16(&body, 0x21);     /* 1980-01-01 */
+        zipb_32(&body, crc);
+        zipb_32(&body, (unsigned long)packed);
+        zipb_32(&body, (unsigned long)n);
+        zipb_16(&body, (unsigned)nn);
+        zipb_16(&body, 0);
+        zipb_put(&body, name, nn);
+        zipb_put(&body, z ? z : data, packed);
+        zipb_32(&dir, 0x02014b50);
+        zipb_16(&dir, 0x0314);    /* made by Unix, so the mode below is read */
+        zipb_16(&dir, 20);
+        zipb_16(&dir, flags);
+        zipb_16(&dir, method);
+        zipb_16(&dir, 0);
+        zipb_16(&dir, 0x21);
+        zipb_32(&dir, crc);
+        zipb_32(&dir, (unsigned long)packed);
+        zipb_32(&dir, (unsigned long)n);
+        zipb_16(&dir, (unsigned)nn);
+        zipb_16(&dir, 0);
+        zipb_16(&dir, 0);
+        zipb_16(&dir, 0);
+        zipb_16(&dir, 0);
+        /* rw-r--r-- for a file, rwxr-xr-x for a folder, and MS-DOS's folder bit */
+        zipb_32(&dir, folder ? (0040755ul << 16) | 0x10 : 0100644ul << 16);
+        zipb_32(&dir, (unsigned long)local);
+        zipb_put(&dir, name, nn);
+        free(z);
+    }
+    if (!m[0] && body.n + dir.n > 0xFFFFFFFEul) {
+        snprintf(m, sizeof m, "zip.write: the archive passes 4 GB, which needs ZIP64, which zip does not write");
+    }
+    if (m[0]) {
+        free(body.d);
+        free(dir.d);
+        value_free(f);
+        value_free(list);
+        return zip_raise(m);
+    }
+    size_t cd = body.n;
+    zipb_put(&body, dir.d ? dir.d : (unsigned char *)"", dir.n);
+    zipb_32(&body, 0x06054b50);
+    zipb_16(&body, 0);
+    zipb_16(&body, 0);
+    zipb_16(&body, (unsigned)count);
+    zipb_16(&body, (unsigned)count);
+    zipb_32(&body, (unsigned long)dir.n);
+    zipb_32(&body, (unsigned long)cd);
+    zipb_16(&body, 0);
+    free(dir.d);
+    const char *path = file_target_path(f);
+    FILE *out = fopen(path, "wb");
+    int failed = !out, saved = errno;
+    if (out) {
+        failed = fwrite(body.d, 1, body.n, out) != body.n || ferror(out);
+        saved = errno;
+        if (fclose(out) != 0 && !failed) {
+            failed = 1;
+            saved = errno;
+        }
+    }
+    free(body.d);
+    Value result = value_bool(1);
+    if (failed) {
+        snprintf(m, sizeof m, "could not write file: %s (%s)", path, strerror(out ? saved : path_open_errno(path, saved)));
+        runtime_error_raise(m, 1004, "file operation");
+        result = value_null();
+    }
+    value_free(f);
+    value_free(list);
+    return result;
+}
+
 #endif
 
 static Value zip_eval_call(AstExpr *expr) {
@@ -704,6 +980,9 @@ static Value zip_eval_call(AstExpr *expr) {
     }
     if (strcmp(verb, "extract") == 0) {
         return zip_extract(expr);
+    }
+    if (strcmp(verb, "write") == 0) {
+        return zip_write(expr);
     }
     char message[200];
     module_unknown_verb(message, sizeof message, "zip", verb);

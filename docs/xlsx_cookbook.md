@@ -1137,8 +1137,87 @@ sheets: ["Summary","Notes"]
 What a cell cannot hold is refused by name rather than guessed: a date before
 1900 (or before 1904 in a 1904-system workbook), and a duration of months,
 which has no length in days. LibreOffice opens what this writes and shows each
-typed cell formatted (`tests/run_xlsx.sh`, the creating tier). Fonts, fills,
-borders and column widths are not written.
+typed cell formatted (`tests/run_xlsx.sh`, the creating tier). How a
+worksheet looks, bold and fills and widths, is the next recipe.
+
+## 14. Make a worksheet a reader can use
+
+A report someone will filter needs more than values: headings that look like
+headings, a subtotal shown as the money it adds up, columns wide enough to
+read, the heading row kept in view as the rows scroll, and a filter.
+
+<!--CODE:14_a_readable_report-->
+
+```basic
+' Recipe 14 — Make a worksheet a reader can use.
+'
+' A report someone will filter needs headings that look like headings, a
+' subtotal shown as the money it adds up, columns wide enough to read, the
+' heading row kept in view, and a filter. `set` and `set_formula` take
+' { format, bold, fill }, each changing only what it names; column_widths,
+' freeze and filter each replace what the sheet had.
+
+program main(args)
+  usd = "#,##0.00 \"USD\""
+  wb = xlsx.new("Invoices")
+  for each h, i in ["Supplier", "Due", "Amount"]
+    wb.set("Invoices", ["A1", "B1", "C1"][i], h, { bold: true, fill: "D9D9D9" })
+  end for
+  rows = [["Harlow Paper", {date}"2026-11-20", {USD}"1840.00"],
+          ["Brant & Sons", {date}"2026-11-27", {USD}"312.40"],
+          ["Okafor Freight", {date}"2026-12-01", {USD}"5096.75"]]
+  for each r, i in rows
+    n = string(i + 2)
+    wb.set("Invoices", "A" + n, r[0])
+    wb.set("Invoices", "B" + n, r[1])
+    wb.set("Invoices", "C" + n, r[2])
+  end for
+  wb.set("Invoices", "B5", "Total", { bold: true })
+  ' SUBTOTAL(109, ...) adds only the rows the filter shows
+  wb.set_formula("Invoices", "C5", "SUBTOTAL(109,C2:C4)", { format: usd, bold: true })
+  wb.column_widths("Invoices", [22, 12, 14])
+  wb.freeze("Invoices", 1, 0)
+  wb.filter("Invoices", "A1:C4")
+
+  out = temp_file({ prefix: "invoices-" })
+  wb.save(string(out))
+  back = xlsx.open(string(out))
+  for each ref in ["A1", "B2", "C3", "C5"]
+    c = back.cell("Invoices", ref)
+    print ref + "  " + c.kind + "  [" + c.format + "]"
+  end for
+  delete(out)
+end program
+```
+
+<!--OUT:14_a_readable_report-->
+
+```
+A1  text  [General]
+B2  date  [yyyy-mm-dd]
+C3  number  [#,##0.00 "USD"]
+C5  number  [#,##0.00 "USD"]
+```
+
+- **`set` and `set_formula` take `{ format, bold, fill }`**, and each changes
+  only what it names. A heading made bold keeps its number format, and a money
+  value written into a bold cell stays bold. `fill` is a colour as six hex
+  digits, red green blue (`"D9D9D9"` is a light grey), or `"none"`. A style
+  the workbook already has is used again, not made twice.
+- **A formula cell has no number format of its own** until it is given one:
+  `SUBTOTAL(109, ...)` over money cells is written `General` otherwise, and
+  shows `7249.15` beside cells showing `1,840.00 USD`.
+- **`column_widths(sheet, widths)`** sets the columns' widths in characters,
+  from column A. **`freeze(sheet, rows, columns)`** keeps that many rows and
+  columns in view, and `freeze(sheet, 0, 0)` takes it off. **`filter(sheet,
+  range)`** puts a filter over the range, its heading row first, and `""`
+  takes it off. Each replaces what the sheet had.
+
+LibreOffice opens what this writes and shows each cell, width, pane and filter
+as set (`tests/run_xlsx.sh`, the styling tier). Excel is untested, but each
+sheet's parts are held to the order the file format's schema requires, which
+Excel enforces and LibreOffice does not. Borders, alignment, fonts other than
+bold, and merged cells are not written.
 
 ## Where to go next
 
@@ -1150,8 +1229,8 @@ borders and column widths are not written.
 
 ## Known limits
 
-- Writing sets values, formulas and number formats only: no fonts, fills,
-  borders, column widths or merges.
+- Writing sets values, formulas, number formats, bold, a fill, column widths,
+  frozen panes and a filter: no borders, alignment, other fonts or merges.
 - Dynamic arrays (which spill) and `LET`/`LAMBDA` are not implemented.
 - `YEARFRAC` basis 1, `XLOOKUP` non-exact modes and `AGGREGATE` 14–19 are
   refused rather than approximated.
