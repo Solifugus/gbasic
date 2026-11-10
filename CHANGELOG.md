@@ -16,6 +16,19 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### A whole number is exact: file_size, floor, ceil and round (2026-11-09)
+
+- **`file_size` answers an exact integer**, as `len` and `byte_count` do. It
+  answered a double, which a G-SQL `integer` column refuses.
+- **`floor`, `ceil` and `round` to no places answer an exact integer**, from
+  an inexact or decimal number too, up to 2^53. Past 2^53 the answer stays a
+  double. This is the way to make a whole inexact number exact:
+  `round(x)` goes into an `integer` column. `round(x, places)` is unchanged.
+  One consequence: `floor(a / b)` is exact, although `/` is not. It is right
+  whenever `a` and `b` are below 2^53.
+- The integer column's refusal says that floor, ceil and round answer an
+  exact integer.
+
 ### xml paths reach every match; a library's top level is declarations (2026-11-09)
 
 - **`xml.find_all` answers every element a path reaches**, in document order.

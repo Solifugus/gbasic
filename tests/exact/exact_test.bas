@@ -211,6 +211,40 @@ program main( args )
     check("round with places        ", round(b, 2), b)
     check("sign                     ", sign(b), 1)
 
+    print "-- a whole answer is exact: floor, ceil and round of an inexact or decimal number"
+    ' Matthew, 2026-11-09: floor, ceil and round answer a whole number, and to
+    ' 2^53 a double holds each whole number, so the answer is exact. It was a
+    ' double, which a G-SQL `integer` column refuses (Transward). OBSERVED BY
+    ' ARITHMETIC: added to n = 2^53 - 2, an exact 3 gives ...993, which no double
+    ' holds; an inexact 3 gives ...992 or ...994.
+    n = 9007199254740990
+    check("floor of a double        ", floor(3.7e0) + n, 9007199254740993)
+    check("ceil of a double         ", ceil(2.1e0) + n, 9007199254740993)
+    check("round of a double        ", round(2.5e0) + n, 9007199254740993)
+    check("round of a negative      ", round(0e0 - 2.5e0) + n, 9007199254740987)
+    check("floor of a decimal       ", floor(3.7) + n, 9007199254740993)
+    check("ceil of a decimal        ", ceil(0 - 3.7) + n, 9007199254740987)
+    check("round of a decimal       ", round(2.675) + n, 9007199254740993)
+    check("round to no places, said ", round(2.5e0, 0) + n, 9007199254740993)
+    ' A DECIMAL WITH NO PLACES IS STILL A DECIMAL, and exact, so the sums above
+    ' cannot tell it from an integer; serialize records the kind, and an integer
+    ' column wants the integer
+    check("floor(3.7) is integer 3  ", serialize(floor(3.7)) = serialize(3), true)
+    check("ceil(-3.7) is integer -3 ", serialize(ceil(0 - 3.7)) = serialize(0 - 3), true)
+    check("round(2.675) is integer 3", serialize(round(2.675)) = serialize(3), true)
+    check("round(3.7e0) is integer 4", serialize(round(3.7e0)) = serialize(4), true)
+    ' the neighbours: with places the answer keeps its kind, and past 2^53 a
+    ' double is not every integer, so floor leaves it a double
+    check("round(2.675, 2) a decimal", round(2.675, 2), 2.68)
+    check("round(2.25e0, 1)          ", round(2.25e0, 1) = 2.3, true)
+    check("floor(1e300) a double     ", floor(1e300) = 1e300, true)
+    check("and its arithmetic too    ", floor(1e300) + 1 = 1e300, true)
+    ' a size is a count, exact as len and byte_count are
+    tf = temp_file()
+    write(tf, "abc")
+    check("file_size                ", file_size(tf) + n, 9007199254740993)
+    delete(tf)
+
     print "-- `mod` on exact operands, which was a WRONG answer"
     check("parity of an odd integer ", mod(b, 2), 1)
     check("and of its neighbour     ", mod(b - 1, 2), 0)

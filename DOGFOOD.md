@@ -13650,3 +13650,27 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   unit, or round deliberately before scaling.
 - **Status: OPEN**, for Matthew: live rows 13 and 14, probed by
   `run_limitations.sh` (`duration_negate`, `duration_scale_rounds`).
+
+## 2026-11-09 — Transward (relayed by CC) — while: moving Transward onto G-SQL (its M32)
+
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** `file_size(path)` answered an inexact number, so a G-SQL
+  `integer` column refused it: "the number is not an exact integer (it is
+  refused rather than converted)". `floor` and `round` of it stayed inexact and
+  were refused too; only `number(string(x))` gave the exact integer. A size is
+  a count, and `len`, `count`, `byte_count` and `epoch` are exact for that
+  reason. Two neighbours met on the same move, both documented, both
+  surprising to a program coming from the `sqlite` module: G-SQL reads `NULL`
+  as `unknown` where the sqlite driver gave `nothing` (so an `if` on it is
+  refused), and `'user:' || id` with an integer `id` is refused only once the
+  table has a row, so a migration checked against an empty schema passes.
+- **Workaround:** Transward's database module converts whole inexact numbers
+  through text at its boundary.
+- **Status: FIXED 2026-11-09** (Matthew chose the alternative to a new verb):
+  `file_size` is exact, and `floor`, `ceil` and `round` to no places answer an
+  exact integer up to 2^53 (`docs/exact_number_design.md`, the decision and its
+  accepted cost). The integer column's refusal now says floor, ceil and round
+  answer one. Held by `tests/run_exact.sh` ("a whole answer is exact"). The
+  two neighbours stay, as designed (Matthew: unknown is gBASIC's NULL); both
+  are in `docs/gsql_cookbook.md`, recipes 2 and 10.

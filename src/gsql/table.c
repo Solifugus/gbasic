@@ -687,7 +687,8 @@ static int value_fits_rule(const char *table, const GsqlColumn *c, const unsigne
         if (w.tag == SER_NUMBER && !w.exact) {
             return fail(err, GSQL_TYPE,
                         "%s.%s is integer, and the number is not an exact integer (it is refused rather than "
-                        "converted)", table, c->name);
+                        "converted; floor, ceil and round answer an exact integer)",
+                        table, c->name);
         }
         good = w.tag == SER_NUMBER;
         break;

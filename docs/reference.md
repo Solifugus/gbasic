@@ -8384,7 +8384,7 @@ arithmetic.
 value fits a 64-bit integer; *(since 0.7.1)* **`number("…")` and `{number}`
 on decimal integer text** that fits one; and *(since 0.8.1)* the **counting
 builtins** — `len`, `count`, `byte_count`, a found index from `find`, and
-`epoch` — whose answers are integers by nature, plus **`decode`, `try_decode`
+`epoch` and `file_size` — whose answers are integers by nature, plus **`decode`, `try_decode`
 and a JSON HTTP body**, so `decode(encode(x))` is `x`. That round trip did not
 hold before 0.8.1: `encode` wrote all the digits and `decode` read back a double,
 so a value could be written to a file and could not be read from it.
@@ -8392,13 +8392,16 @@ so a value could be written to a file and could not be read from it.
 **How it travels, and the rule is one sentence** *(completed in 0.8.1)*: a
 function that **picks** a value preserves its exactness, and one that
 **calculates** is exact when both operands are exact and the answer is an integer
-the runtime holds. An inexact operand never yields an exact answer.
+the runtime holds. An inexact operand yields an exact answer only from the three
+functions whose answer is whole: `floor`, `ceil`, and `round` to no places, which
+are exact up to 2⁵³ *(2026-11-09)*.
 
 | | |
 |---|---|
 | picks | `min`, `max`, `median` of an odd count, `percentile`/`quantile` landing on a data point, and `sort`, which now **orders** two exact integers that round to the same double |
 | calculates, exactly | `+` `-` `*`, unary minus, `sum` (the fold of `+`), `pow` with a non-negative exponent, `mod` |
 | the identity on an integer | `abs`, `floor`, `ceil`, `round`, `sign` |
+| whole, so exact from any number | `floor`, `ceil`, `round` to no places (to 2⁵³) |
 | never exact | `/`, `mean`, an even `median`, an interpolated `percentile` — all of them divide — and the roots, logarithms and transcendentals |
 
 Text is judged the way a literal is, with one difference worth knowing: only
@@ -8532,7 +8535,10 @@ units that exist. `number("1e20")` still builds a value from text.
 - `round(number [, places])` — round to a number of decimal places. `places`
   is optional and defaults to 0, so `round(3.7)` is `4`. Rounding an exact
   integer to any number of decimal places is that integer *(0.8.1)*. Halves round away from
-  zero: `round(2.5)` is `3` and `round(-2.5)` is `-3`.
+  zero: `round(2.5)` is `3` and `round(-2.5)` is `-3`. To no places the answer is
+  an exact integer, as `floor`'s and `ceil`'s always are, up to 2⁵³, beyond which a
+  double is not every integer *(2026-11-09)*. So `round(x)` is the way to make a
+  whole inexact number exact, as a G-SQL `integer` column requires.
 - `compare(a, operator, b)` — compare two values using an operator named as a
   string (the general form behind the comparison operators and modifiers).
 
@@ -9174,11 +9180,11 @@ Listing a directory — two functions, and the difference matters:
 
 File metadata and atomic replacement:
 
-- `file_size(f)` — the file's size in bytes as a number, from `stat`
+- `file_size(f)` — the file's size in bytes as an exact integer, from `stat`
   (metadata only, not a read). This is the binary byte count, so it counts
   embedded NULs and is unaffected by text length; a zero-byte file returns `0`.
-  Numbers hold integers exactly up to 2⁵³ (8 PiB), well beyond any real file, so
-  there is no practical truncation. Takes a path string or a file reference. A directory has
+  A size is a count, so it is exact as `len` and `byte_count` are, and a G-SQL
+  `integer` column takes it *(2026-11-09; it was inexact)*. Takes a path string or a file reference. A directory has
   no content size and raises; a missing path raises with the OS reason.
 - `file_mtime(f)` — the file's last-modification time as a `datetime`, from
   `stat`, in local time. **Second resolution:** gBASIC's `datetime` has no

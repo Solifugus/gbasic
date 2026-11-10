@@ -11765,8 +11765,11 @@ static Value eval_file_call(AstExpr *expr) {
         if (strcmp(name, "file_size") == 0) {
             /* Size is the regular-file byte length. A directory has no meaningful
              * content size, so reject it rather than return the platform's dirent
-             * bookkeeping bytes. off_t -> double is exact up to 2^53 bytes (8 PiB),
-             * far beyond any real file, so no practical truncation. */
+             * bookkeeping bytes. A SIZE IS A COUNT, so it is exact, as `len`
+             * and `byte_count` are (see builtin_len_value): it answered a
+             * double, and a G-SQL `integer` column refuses an inexact number,
+             * so a size could not be stored without a trip through text
+             * (Transward, 2026-11-09). */
             if (S_ISDIR(st.st_mode)) {
                 char message[512];
                 snprintf(message,
@@ -11777,9 +11780,9 @@ static Value eval_file_call(AstExpr *expr) {
                 value_free(file_value);
                 return value_null();
             }
-            double size = (double)st.st_size;
+            long long size = (long long)st.st_size;
             value_free(file_value);
-            return value_number(size);
+            return value_number_exact(size);
         }
 
         /* file_mtime: st_mtime is whole seconds since the epoch. gBASIC's DateTime
@@ -36867,6 +36870,7 @@ static Value eval_call(AstExpr *expr) {
             if (want >= ds) {
                 return value_number_decimal(m, ds);
             }
+            int whole = want == 0;
             long long d = 1;
             for (int i = 0; i < ds - want; i++) {
                 d *= 10;             /* ds <= 18, so this fits */
@@ -36876,7 +36880,7 @@ static Value eval_call(AstExpr *expr) {
             if (ar >= d - ar) {
                 q += m < 0 ? -1 : 1;
             }
-            return value_number_decimal(q, want);
+            return whole ? value_number_exact(q) : value_number_decimal(q, want);
         }
         double scale = 1.0;
         int n = (int)value_number_or_zero(places);
@@ -36887,6 +36891,10 @@ static Value eval_call(AstExpr *expr) {
         long long rounded = scaled >= 0 ? (long long)(scaled + 0.5) : (long long)(scaled - 0.5);
         value_free(value);
         value_free(places);
+        /* to no places the answer is whole, and exact as floor's is (above) */
+        if (n <= 0 && fabs(scaled) <= 9007199254740992.0) {
+            return value_number_exact(rounded);
+        }
         return value_number((double)rounded / scale);
     }
 
@@ -37287,7 +37295,7 @@ static Value eval_call(AstExpr *expr) {
                 if (r != 0 && strcmp(fn, "ceil") == 0 && xe > 0) {
                     q++;
                 }
-                return value_number_decimal(q, 0);
+                return value_number_exact(q);
             }
         }
         if (x_exact) {
@@ -37338,10 +37346,18 @@ static Value eval_call(AstExpr *expr) {
                 return value_null();
             }
             r = log10(x);
-        } else if (strcmp(fn, "floor") == 0) {
-            r = floor(x);
-        } else if (strcmp(fn, "ceil") == 0) {
-            r = ceil(x);
+        } else if (strcmp(fn, "floor") == 0 || strcmp(fn, "ceil") == 0) {
+            r = strcmp(fn, "floor") == 0 ? floor(x) : ceil(x);
+            /* A WHOLE NUMBER IS EXACT once it is one (Matthew, 2026-11-09): the
+             * answer of floor and ceil is whole by definition, and where a
+             * double holds every whole number (to 2^53) it is the integer
+             * itself, so it is answered exact. That is the way to make a whole
+             * inexact number exact, with no verb of its own: a G-SQL
+             * `integer` column refused floor(size) as inexact. Past 2^53 a
+             * double is no longer every integer, so it stays a double. */
+            if (fabs(r) <= 9007199254740992.0) {
+                return value_number_exact((long long)r);
+            }
         } else if (strcmp(fn, "erf") == 0) {
             r = erf(x);
         } else if (strcmp(fn, "erfc") == 0) {
