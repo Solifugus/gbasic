@@ -648,6 +648,7 @@ if [ -f Makefile ] && [ -f README.md ]; then
             # because a reader who tries pkg-config concludes it is
             # absent on a machine where it works.
             HAVE_KSYNTAX)  want='KSyntaxHighlighting' ;;
+            HAVE_QT_SVG)   want='QtSvg' ;;
             *) echo "FAIL dependency     Makefile probes $m and this check has no README spelling for it"
                dep_ok=0; status=1; continue ;;
         esac

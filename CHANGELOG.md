@@ -16,6 +16,39 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Studio's notebook, part 1: comments, figures, themes (2026-11-10)
+
+Asked for by gBASIC Studio (docs/qt_gui_design.md §0.38): a `.bas` file that
+reads like a notebook. Every ask was measured first with an offscreen probe
+(29 checks); all are feasible. This is the first batch.
+
+- **`source_comments(text)`** (B1): every comment run the parser read, as
+  `{ start_line, end_line, start_column, start_offset, end_offset, text, raw,
+  trailing }` in `{ ok, comments, diagnostics }`. It parses with the lexer's
+  own comment reader recording, so a `'` in a string or an `sql` body is not a
+  comment. Suite `tests/run_source_comments.sh`: 22 checks by hand, and a
+  corpus tier over all 1,544 `.bas` files in the tree (each comment is exactly
+  its bytes; blanking them all leaves `source_outline`'s answer unchanged;
+  every comment line is reported), 65,687 checks.
+- **Fixed: a column after a `{modifier}` was one too far right.** The lexer
+  counted the `{` twice, so every token after `x {date}= ...` or `{USD}"2"` on
+  a line (and every diagnostic pointing at one) was a column off. Found by the
+  corpus tier above. No golden pinned such a column.
+- **`qt.render_svg(svg, file, { width, height, scale })`** (C): an SVG as a PNG
+  for print, on white, no alpha, the same bytes twice on one machine, its text
+  antialiased in gray. Built on QtSvg, a new optional dependency riding Qt's
+  switch (`HAVE_QT_SVG`).
+- **`theme:` names a KSyntaxHighlighting theme** (D1): one it ships
+  (`"Printing"` is a gray one) or one in `themes/*.theme` on the syntax path;
+  an unknown name is refused with the near miss or the list.
+  `qt.highlighting` now answers the theme the highlighter holds.
+- **Measured, not changed:** `qt.capture` draws widget text with subpixel
+  antialiasing, so glyphs have colour fringes (467 coloured pixels in an
+  editor whose theme is gray throughout); drawing into an image with alpha does
+  not change that for `QWidget::render`. Recorded for Studio's print figures.
+- New suite `tests/run_qt_notebook.sh`: 25 checks plus 11 pixel checks by
+  PIL, valgrind; 16 perturbations across this batch each went red.
+
 ### BREAKING: every instant is UTC (2026-11-10)
 
 - **`now()` returns UTC**, and so do `from_epoch(n)`, `file_mtime(f)` and a

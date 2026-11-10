@@ -599,6 +599,22 @@ int gb_qt_capture(void *window, const char *name, double scale, char **png,
                   long *len, int *width, int *height, char *err,
                   size_t err_size);
 
+/* AN SVG AS A PNG (§0.38 C): `svg` (len bytes) drawn by QtSvg into an image
+ * `width` x `height` logical pixels (0 for the SVG's own size) at `scale`
+ * device pixels per pixel, on white, no alpha. 1 with the bytes (caller frees)
+ * and the size in pixels; 0 refused, with the reason in `err`. Needs no
+ * window, but needs the application (gb_qt_begin). */
+int gb_qt_render_svg(const char *svg, long svg_len, int width, int height,
+                     double scale, char **png, long *len, int *out_width,
+                     int *out_height, char *err, size_t err_size);
+
+/* NAMED SYNTAX THEMES (§0.38 D1): 1 when KSyntaxHighlighting knows a theme
+ * called `name` (on the syntax search path too), 0 when it does not, -1 when
+ * this build has no KSyntaxHighlighting. gb_qt_theme_names answers every name,
+ * one per line (caller frees), or NULL without it. */
+int gb_qt_theme_known(const char *name);
+char *gb_qt_theme_names(void);
+
 int gb_qt_scrolled(void *window, const char *name, double *at, char *err,
                    size_t err_size);
 int gb_qt_scroll_to(void *window, const char *name, double at, char *err,
@@ -881,6 +897,8 @@ void gb_qt_gutter_painted(int *lines, int *marks, int *first);
 
 char *gb_qt_highlight_language(void *window, const char *name);
 char *gb_qt_highlight_file(void *window, const char *name);
+/* The name of the theme the part's highlighter holds (§0.38 D1), or NULL. */
+char *gb_qt_highlight_theme(void *window, const char *name);
 
 /* ---- DIALOGS (docs/qt_gui_design.md §0.15) ---------------------------------
  *

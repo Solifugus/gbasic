@@ -8,6 +8,7 @@
 #include "platform.h"
 #include "actor.h"
 #include "diagnostics.h"
+#include "lexer.h"
 #include "window_check.h"
 #include "gb_number_text.h"
 
@@ -32055,6 +32056,156 @@ static Value builtin_source_outline_value(Value text, const char *path) {
 }
 
 
+/* ---- source_comments: the comments the parser read (Qt design §0.38 B1) ---
+ *
+ * Studio shows marked comment runs as prose, and a raw-text scan gets a `'`
+ * inside a string wrong. So this parses the text exactly as source_outline
+ * does with the lexer's comment recorder attached (include/lexer.h): the
+ * comments it answers are the ones the parser consumed as comments, by
+ * construction. A comment the lexer meets twice (a re-lex) is recorded once,
+ * since only a position past the last one recorded is kept. */
+typedef struct {
+    int line;
+    int column;
+    char *text;            /* from the `'` to the end of the line */
+} CommentSeen;
+
+typedef struct {
+    CommentSeen *items;
+    size_t count;
+    size_t cap;
+} CommentLog;
+
+static void comment_log_sink(void *ctx, int line, int column,
+                             const char *text, size_t length) {
+    CommentLog *log = ctx;
+    if (log->count > 0) {
+        CommentSeen *last = &log->items[log->count - 1];
+        if (line < last->line || (line == last->line && column <= last->column)) {
+            return;
+        }
+    }
+    if (log->count == log->cap) {
+        log->cap = log->cap ? log->cap * 2 : 32;
+        CommentSeen *grown = realloc(log->items, log->cap * sizeof(CommentSeen));
+        if (!grown) { abort(); }
+        log->items = grown;
+    }
+    char *copy = malloc(length + 1);
+    if (!copy) { abort(); }
+    memcpy(copy, text, length);
+    copy[length] = '\0';
+    log->items[log->count].line = line;
+    log->items[log->count].column = column;
+    log->items[log->count].text = copy;
+    log->count++;
+}
+
+/* Whether only blanks precede `column` on `line`: a comment that does not is
+ * TRAILING (it follows code). */
+static int comment_leads_line(const OutlineLines *l, int line, int column) {
+    if (line < 1 || (size_t)line > l->line_count) { return 1; }
+    size_t base = l->starts[line - 1];
+    for (int i = 0; i < column - 1 && base + (size_t)i < l->len; i++) {
+        char c = l->src[base + (size_t)i];
+        if (c != ' ' && c != '\t') { return 0; }
+    }
+    return 1;
+}
+
+static Value builtin_source_comments_value(Value text) {
+    if (text.kind != VALUE_STRING) {
+        value_free(text);
+        runtime_error_raise("source_comments expects a string", 1003, "invalid function call");
+        return value_null();
+    }
+    const char *src = text.as.string;
+    size_t len = string_length(text.as.string);
+
+    CommentLog log = { NULL, 0, 0 };
+    gb_diagnostics diags;
+    gb_diagnostics_init(&diags);
+    AstStmtList program = ast_stmt_list_empty();
+    lexer_set_comment_sink(comment_log_sink, &log);
+    int rc = gb_parse(src, NULL, &program, &diags);
+    lexer_set_comment_sink(NULL, NULL);
+
+    OutlineLines lines;
+    outline_lines_build(&lines, src, len);
+
+    /* Runs: consecutive comment-only lines at the same column are one run; a
+     * trailing comment is a run of its own. */
+    Value runs = value_array(NULL, 0);
+    size_t i = 0;
+    while (i < log.count) {
+        int trailing = !comment_leads_line(&lines, log.items[i].line, log.items[i].column);
+        size_t j = i + 1;
+        if (!trailing) {
+            while (j < log.count &&
+                   log.items[j].line == log.items[j - 1].line + 1 &&
+                   log.items[j].column == log.items[i].column &&
+                   comment_leads_line(&lines, log.items[j].line, log.items[j].column)) {
+                j++;
+            }
+        }
+        StringBuilder stripped, raw;
+        sb_init(&stripped);
+        sb_init(&raw);
+        for (size_t k = i; k < j; k++) {
+            if (k > i) {
+                sb_append_char(&stripped, '\n');
+                sb_append_char(&raw, '\n');
+            }
+            sb_append_text(&raw, log.items[k].text);
+            sb_append_text(&stripped, log.items[k].text + 1);   /* one `'` off */
+        }
+        int sl = log.items[i].line, el = log.items[j - 1].line;
+        size_t so = outline_offset(&lines, sl, log.items[i].column);
+        size_t eo = outline_offset(&lines, el, log.items[j - 1].column) + strlen(log.items[j - 1].text);
+        Value r = value_record(NULL, 0);
+        record_set(&r, "start_line", value_number_exact((long long)sl));
+        record_set(&r, "end_line", value_number_exact((long long)el));
+        record_set(&r, "start_column", value_number_exact((long long)log.items[i].column));
+        record_set(&r, "start_offset", value_number_exact((long long)so));
+        record_set(&r, "end_offset", value_number_exact((long long)eo));
+        char *st = sb_take(&stripped);
+        char *rw = sb_take(&raw);
+        record_set(&r, "text", value_string(st));
+        record_set(&r, "raw", value_string(rw));
+        free(st);
+        free(rw);
+        record_set(&r, "trailing", value_bool(trailing));
+        runs = append_to_array_value(runs, r, 0);
+        i = j;
+    }
+
+    Value diag_arr = value_array(NULL, 0);
+    for (size_t d = 0; d < gb_diagnostics_count(&diags); d++) {
+        const gb_diag *g = gb_diagnostics_at(&diags, d);
+        const char *sev = g->severity == GB_SEVERITY_ERROR ? "error"
+                        : g->severity == GB_SEVERITY_WARNING ? "warning" : "note";
+        Value dr = value_record(NULL, 0);
+        record_set(&dr, "severity", value_string(sev));
+        record_set(&dr, "message", value_string(g->message ? g->message : ""));
+        record_set(&dr, "start_line", value_number_exact((long long)g->span.start_line));
+        record_set(&dr, "start_column", value_number_exact((long long)g->span.start_column));
+        diag_arr = append_to_array_value(diag_arr, dr, 0);
+    }
+
+    Value result = value_record(NULL, 0);
+    record_set(&result, "ok", value_bool(rc == 0));
+    record_set(&result, "comments", runs);
+    record_set(&result, "diagnostics", diag_arr);
+
+    for (size_t k = 0; k < log.count; k++) { free(log.items[k].text); }
+    free(log.items);
+    free(lines.starts);
+    ast_free_program(program);
+    gb_diagnostics_free(&diags);
+    value_free(text);
+    return result;
+}
+
 /* --- PLAT-MONEY phase 3: exchange rates, which are DATED facts -------------
  *
  * Converting without an as-of date produces a number nobody can reproduce.
@@ -39285,6 +39436,17 @@ static Value eval_call(AstExpr *expr) {
             items[n++] = handle;
         }
         return value_array(items, live);
+    }
+
+    if (strcmp(expr->as.call.name, "source_comments") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("source_comments expects one argument, the text",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        Value text = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(text); return value_null(); }
+        return builtin_source_comments_value(text);
     }
 
     if (strcmp(expr->as.call.name, "source_outline") == 0) {

@@ -296,6 +296,7 @@
       <item>sleep</item>
       <item>slice</item>
       <item>sort</item>
+      <item>source_comments</item>
       <item>source_outline</item>
       <item>split</item>
       <item>sqrt</item>

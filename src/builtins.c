@@ -155,6 +155,7 @@ int gbasic_builtin_function(const char *name) {
         "json_encode",
         "json_encodable",
         "source_outline",
+        "source_comments",
         "watchers",
         "serialize",
         "deserialize",

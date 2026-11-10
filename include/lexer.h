@@ -1,6 +1,8 @@
 #ifndef GBASIC_LEXER_H
 #define GBASIC_LEXER_H
 
+#include <stddef.h>
+
 typedef enum {
     TOKEN_EOF,
     TOKEN_IDENT,
@@ -164,6 +166,17 @@ typedef struct {
 } Lexer;
 
 void lexer_init(Lexer *lexer, const char *source);
+
+/* A recorder for the comments the lexer consumes (source_comments, Qt design
+ * §0.38 B1). skip_spaces_and_comments is the one place a `'` comment is read,
+ * so a recorder set here sees exactly the comments the parser does, and none
+ * it reads as something else (a `'` in a string, an SQL body, a lens). The
+ * callback gets the comment's 1-based line and byte column, and its text from
+ * the `'` to the end of the line (a trailing CR excluded). Process-wide, set
+ * around one synchronous parse; NULL turns it off. */
+typedef void (*LexerCommentSink)(void *ctx, int line, int column,
+                                 const char *text, size_t length);
+void lexer_set_comment_sink(LexerCommentSink sink, void *ctx);
 
 /* Initialise for a buffer whose first character is at line `first_line` of some
  * larger text -- see the comment on the definition. lexer_init is this with 1. */

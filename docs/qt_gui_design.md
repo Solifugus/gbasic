@@ -4428,3 +4428,170 @@ background (RGBA), the scale ignored (text extent 39x10 at both scales), drawn a
 1 and stretched, the part ignored (the window's size for every part), no layout
 flush (the editor did not grow), and the option set left open (two misspellings
 accepted, and a file written by a call that should have refused).
+
+## 0.38 A source file that reads like a notebook (2026-11-10)
+
+Asked for by Studio (`gbasic-studio/docs/gbasic-studio-research-teaching-publishing-ideas.md`
+§3, §4 and §12 stage 2): a `.bas` file shown with each section's run results
+under it and its marked comment blocks shown as prose, while the source file
+stays the only authored file. Four asks, A to D; A and B block the work.
+Feasibility was measured first, as asked, with a standalone offscreen probe
+against Qt 6.10.2 (29 checks, all held); the numbers below are from it.
+
+### A. Blocks between the lines of a `source`
+
+```basic
+qt.blocks(win, "editor", [
+    { id: "run-3", line: 12, kind: "text", content: "3 of 41 tapes rejected" },
+    { id: "fig-1", line: 30, kind: "image", content: "out/rates.svg", max_height: 300 },
+    { id: "tbl-2", line: 44, kind: "table",
+      content: { columns: ["date", "rate"], rows: [["2027-01-02", 4.1]] } },
+    { id: "doc-1", line: 3, kind: "markdown", content: "**Rates** are read from ..." }
+])
+qt.blocks(win, "editor")     ' what Qt holds now: [{ id, line, kind, height, visible, collapsed }]
+```
+
+**How: the gap is layout, not text.** A `source`'s document gets its own
+`QPlainTextDocumentLayout` subclass whose `blockBoundingRect` adds a block's
+height under its line; the block is a child widget of the editor's viewport,
+placed in that gap whenever the editor scrolls or repaints. Nothing touches the
+document, so the hard requirement holds by construction, and was measured:
+after setting, changing and clearing blocks, `plainText`, the undo stack (0 → 0
+steps), the modified flag, the document's revision (1 → 1), the caret and the
+line count were all unchanged. QTextBlockFormat margins were not used: they are
+document formatting and go through the undo stack. Measured with the gaps in
+place:
+
+- **Geometry.** The line under a 120-pixel block begins 120 pixels lower, and
+  `cursorRect` agrees with the layout to the pixel.
+- **Clicks and the caret.** A click on a line below a gap lands on that line; a
+  click inside the gap lands on the line above it (the block's own line). The
+  Down key from a block's line goes to the next line, not into the block.
+- **Copying across a block copies only code**: three lines selected across a
+  block copied as exactly those three lines.
+- **Scrolling.** `QPlainTextEdit` scrolls by lines, and with 420 pixels of gaps in
+  200 lines the scrollbar's end still shows the last line. A block taller than
+  the viewport cannot be scrolled through part-way (the view moves a line at a
+  time), which is one reason every block has a maximum height.
+- **Cost.** A replace marks the layout dirty; 100 replaces of 20 blocks over 200
+  lines took 18 ms in all, with no flicker because no widget is recreated for an
+  unchanged block (below).
+
+**Replace-all, reconciled by id.** `qt.blocks(win, part, items)` replaces the
+whole set, as `qt.mark` replaces a category. A block whose id, kind and content
+are unchanged keeps its widget; a changed one is updated in place; an id that is
+no longer sent is removed; a new one is created. `id` is text and unique within
+the set; a repeated id is refused by name. `line` is 1-based and must name a
+line the editor has.
+
+**Anchored to its line through edits.** Each block holds two `QTextCursor`s,
+one at its line's start and one at its end, which Qt moves with every edit.
+Measured: a line typed above a block moves it down with its line. The rules:
+
+- a line typed or deleted elsewhere: the block stays with its line;
+- the block's line **joined onto the one above** (Backspace at its start): the
+  block moves with its text, under the joined line;
+- the block's line **deleted**, or all its text removed: the block is
+  **dropped**, because what it showed belonged to code that is gone. Studio's
+  next replace sends it again if it still applies. Detected by the two cursors
+  meeting; an emptied line followed by an empty line is the one case the two
+  cannot tell apart, and there the block shows at the same place either way.
+
+**Kinds**, each with `covers:` (default false; B2) and `max_height:` (pixels, default 240, at most 2000) past which
+it scrolls inside, and `collapsed:` (default false), which Studio controls and
+which shows only the block's header line:
+
+- `text`: the editor's own monospace font, whitespace kept, no wrapping (stdout).
+- `table`: `{ columns, rows }`; at most 1,000 rows are shown, and a last line says
+  how many more there were. Cells are shown as `print` renders them.
+- `image`: a path string or `{file}` (PNG, or SVG by extension), or
+  `{ bytes, format: "png" | "svg" }`. SVG is drawn by QtSvg at the block's size.
+- `markdown`: `QTextDocument::setMarkdown` (CommonMark and GitHub's tables,
+  lists and task lists). A link does not navigate; it raises the `block` event.
+
+**Events.** `on <part>.block` fires for a click on a block's body, on its
+collapse control, or on a link in a markdown block; `qt.block_event(win, part)`
+answers the last one: `{ id, action: "click" | "collapse" | "link", target }`,
+`target` being a link's address and `unknown` otherwise. (One event and a reader,
+the shape `gutter` and `qt.gutter` have.)
+
+**Theme.** A block takes the editor's palette (base, text, alternate base for its
+header), so a dark editor has dark blocks; a named theme (D1) sets that palette
+too.
+
+**Readback reads Qt.** `qt.blocks(win, part)` answers, for every block Qt still
+holds, the line its cursors are on now, its height in pixels as laid out, whether
+it is visible (in view, and not collapsed away), and whether it is collapsed:
+the oracle a fixture proves anchoring with. A dropped block is absent.
+**`qt.capture`** draws the editor's children, so blocks are in the picture.
+
+### B. Comments shown as prose
+
+**B1. `source_comments(text)`**, a core builtin beside `source_outline`: every
+comment run as `{ start_line, end_line, start_column, text, raw, trailing }`.
+Consecutive comment-only lines are one run; a comment after code on its line is
+a run of its own with `trailing: true`. `text` is the run with one `'` removed
+from each line and lines joined by `\n`; `raw` keeps the markers, so Studio can
+choose its own (`''` for documentation, say). **It is the parser's own lexer**:
+`skip_spaces_and_comments` is the one place a comment is consumed, and it gains
+a recorder; `source_comments` parses the text as `source_outline` does with the
+recorder attached, so a `'` inside a string, an SQL body or a lens is not a
+comment because the parser does not read it as one. A text that does not parse
+answers the comments read before the error, and the diagnostics, in the shape
+`source_outline` uses.
+
+**B2. `qt.fold(win, part, ranges)`**, replace-all, `ranges` as
+`[{ from, to }]` (1-based, inclusive); `qt.fold(win, part)` reads back the
+ranges Qt holds now, anchored like blocks. **A fold keeps its first line and
+hides the rest** (`from + 1` to `to`), as an editor's code folding does, with
+`QTextBlock::setVisible(false)`, which is layout state: measured, plainText,
+undo stack, modified flag and revision unchanged, and line 25 drawn directly
+under line 19 with 20-24 folded.
+
+**Prose in place of a comment is a block that covers its line.** An item may say
+`covers: true`: it is drawn over its own line rather than under it, so a
+markdown block on a fold's first line, with the rest folded, shows the prose
+exactly where the comment was, line 1 included.
+
+*Measured and rejected first:* giving the gap to a hidden line. Qt lays out and
+paints a hidden line at zero height whatever the layout reports (line 25 began
+where line 19 ended, with 100 pixels asked for on hidden line 24), and a click in
+that place put the caret on the hidden line. Covering a visible line has neither
+problem, and it is what makes a fold at line 1 possible at all: there is no line
+above it to hang a block under.
+
+Measured caret behaviour across a fold: Down from the line above lands on the
+line below the hidden ones (19 to 25 in the probe), and a selection extended
+across a fold includes the hidden text, so copying it copies the folded lines,
+as code. The caret can reach a covered line (Down from the line above lands on
+it): that is Studio's signal to unfold, which it reads by polling the caret, as
+it said. Nothing else is needed from here.
+
+**B3. Markdown** is the `markdown` block kind above. **B4.** A read-only
+`markdown` part (a `QTextBrowser`, links raising `on <part>.link` with
+`qt.link(win, part)` answering the target), for a preview pane.
+
+### C. Figures as PNG: `qt.render_svg(svg, file, { width, height, scale })`
+
+QtSvg draws the SVG text into an image the size asked for (`width` and `height`
+in pixels, default the SVG's own size; `scale` as `qt.capture`'s), on white, no
+alpha, written as PNG by `write`'s code; answers `{ file, width, height }`.
+Measured: one SVG rasterised in two processes gave byte-identical PNGs. As with
+`qt.capture`, identical across machines is not promised (fonts differ). Needs no
+window and no display under `offscreen`.
+
+### D. Smaller asks
+
+- **D1. `theme:` names a KSyntaxHighlighting theme** (`Repository::theme(name)`,
+  searched on the same path as definitions, so `<path>/themes/*.theme` works),
+  as well as `dark` and `light`; an unknown name is refused, listing the near
+  miss, as `language:` is.
+- **D2. `mcp`: content blocks and dispatch by name.** A tool's result may be
+  `{ content: [...] }` with `text` and `image` blocks (`{ type: "image", data,
+  mime_type }`), passed through as MCP's own result shape; and a toolset may name
+  one `dispatch:` function that receives `(name, args)` for every tool, so a
+  gate that reads the tool's name needs no closure.
+- **D3. Lines from standard input inside the event loop**: `watch w(stdin.lines)`,
+  one delivery per complete line, the source closing at end of input. Under
+  `qt.run()` sources are socket notifiers already (§0.31), so a visible window
+  keeps painting while a line is awaited.

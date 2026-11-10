@@ -5236,12 +5236,13 @@ end program
 | `win.shortcuts(part)` (`qt.shortcuts`) | **every** shortcut a menu or toolbar item answers to, as a list of texts (a button's single one, too). `qt.read(..., "shortcut")` reports only the first, so this is how both of `["Ctrl++", "Ctrl+="]` are checked |
 | `qt.wheel()` | the wheel event **being handled** — `{ dy, dx, dy_exact, dx_exact, ctrl, shift, alt }`, with `dy` in **notches** rather than Qt's 120-unit delta and **positive meaning away from you** (Qt's sign, and the opposite of GTK's). `dy` is whole notches, and a sub-notch turn is rounded **away from zero** so its sign survives; `dy_exact` is the same turn **unrounded** (a quarter-notch is `0.25`), for a program that accumulates a trackpad's small deltas rather than counting each as a notch. Refuses outside a wheel handler, since there is no sensible record to hand back and a program asking in the wrong place would otherwise read zeros and act on them |
 | `qt.swallow()` | claim the event being handled, so the view does not also act on it. Not optional for a zoom: Ctrl+wheel scrolls a `source` *faster* than a plain wheel, so a handler that zooms without claiming leaves the editor jumping about while it resizes. Refuses when nothing is in flight rather than being a silent no-op |
+| `qt.render_svg(svg, file)`, `qt.render_svg(svg, file, { width, height, scale })` | draws SVG text into a PNG file with QtSvg, for a figure: on white, no alpha, at its own size (the SVG's `width`/`height` or `viewBox`) unless given one (whole pixels, 1 to 20000; one alone keeps the aspect ratio), at `scale:` device pixels per pixel (above 0, at most 8). Needs no window. Answers `{ file, width, height }`; the same SVG gives the same bytes on one machine (fonts differ across machines). The options are closed and refused by name; text that is not SVG is refused. *After 0.10.0* (§0.38 C) |
 | `win.capture(file)`, `win.capture(file, { part, scale })` (`qt.capture`) | writes the window, or one named `part:` of it, to a PNG file, drawn at `scale:` device pixels per pixel (above 0, at most 8; default 1). It works offscreen, and answers `{ file, width, height }` in pixels written. The file is a path string or a `{file}`, written as `write` writes. A focused editor's caret is drawn steady and pending layout is applied first, so the same window gives the same file. An unknown part is refused with the window's parts listed; so are a menu item and a part that is not showing. Byte-identical across machines is not promised (fonts differ) |
 | `win.has_icon(part)` (`qt.has_icon`) | whether a part has an icon. It exists because a QIcon has **no text form** — measured, a button carrying a real image and one carrying nothing both read back as `""` — so `win.read(part, "icon")` (`qt.read`) **refuses** and names this instead, an empty answer for a property that *is* set being a wrong answer rather than no answer. A part that cannot carry one (a `text`, a `table`) is refused, naming its kind |
 | `win.scrolled(part)` (`qt.scrolled`) | how far a part is scrolled, or **`unknown`** for one that does not scroll — a different claim from *scrolled to nowhere*, since a `button` has no position where a `source` at the top has position 0. A `QAbstractScrollArea` reaches its scrollbar by a method, so this is the only route to it |
 | `win.scroll_to(part, position)` (`qt.scroll_to`) | put it back, which is how *"reopen the editor where I left it"* is written. A part that does not scroll is refused by name rather than succeeding and doing nothing; the range is Qt's own, so a position past the end is clamped |
 | `qt.can_highlight()` | whether this build can highlight a `source` at all. **Answers rather than raising**, like `qt.can_display`, because a program asking is choosing what to offer — and a build without KSyntaxHighlighting still edits text perfectly well |
-| `win.highlighting(part)` (`qt.highlighting`) | what is **actually** highlighting a `source`: `{ language, file }`, or `unknown` when nothing is. It reports the **file** as well as the language because a definition the user installed in their own home *shadows* the one gBASIC ships and reports the identical name — which of the two wins is the machine's business, but being unable to see it would not be. A missing definition is warning **2115**, never a raise: the editor still works, and an absent definition still colours every line with the theme's ordinary text, so there is nothing on screen to notice |
+| `win.highlighting(part)` (`qt.highlighting`) | what is **actually** highlighting a `source`: `{ language, file, theme }`, or `unknown` when nothing is; `theme` is the name of the theme the highlighter holds (`"dark"` answers the theme it resolved to, `"Breeze Dark"`). It reports the **file** as well as the language because a definition the user installed in their own home *shadows* the one gBASIC ships and reports the identical name — which of the two wins is the machine's business, but being unable to see it would not be. A missing definition is warning **2115**, never a raise: the editor still works, and an absent definition still colours every line with the theme's ordinary text, so there is nothing on screen to notice |
 | `win.caret(part)` (`qt.caret`) | where the caret is in a `source` or a `memo` — `{ line, column, selecting }`, **1-based** — or **`unknown`** for a part that is not a text editor. The numbering is the one gBASIC's diagnostics, `source_outline` and `qt.mark` all use, so a `line:column` from any of them goes straight into `qt.caret_to` with no arithmetic. `selecting` is there because a caret inside a selection is one end of a range, and a bare line and column would be an ambiguous reading |
 | `win.caret_to(part, line, column)` (`qt.caret_to`) | put it there, which is how *"stopped at line 7 — show me why"* is written. A **line past the end is refused**, naming the document's real length: a program placing the caret where a diagnostic said is working from a model of the document, and clamping would put it on the wrong line and look like it worked. A **column** past the end of its own line clamps, landing where End would — that case is ordinary rather than a stale model |
 | `win.select_text(part, line, column, line2, column2)` (`qt.select_text`) | select a range in a `source` or a `memo`, which is how find shows the current match; the caret ends at the second position. Positions are **caret positions**, 1-based like `qt.caret`, so `1, 1` to `1, 4` covers three characters, and **columns count codepoints**, as `len` and `regex` do, so a match found in gBASIC goes straight in. A line past the end is refused with the real length, a column past its line clamps, and a range that ends before it starts is refused *(after 0.10.0)* |
@@ -5727,8 +5728,12 @@ end column
 `language:` names a **definition**, never a file extension, and that is
 load-bearing rather than fussy: `*.bas` is claimed by FreeBASIC at the same
 priority as gBASIC, so a lookup by extension picks FreeBASIC — with no error,
-and plausibly, FreeBASIC being a near neighbour. `theme:` is `"light"` or
-`"dark"`, and is **declared** rather than inferred because `qt.theme` sets a
+and plausibly, FreeBASIC being a near neighbour. `theme:` is `"light"`,
+`"dark"`, or the **name of a KSyntaxHighlighting theme** *(after 0.10.0)*:
+one it ships (`"Breeze Light"`, `"Solarized Dark"`, `"Printing"`) or one in
+`themes/*.theme` on the syntax search path, as a print theme a program ships
+would be. An unknown name is refused, with the near miss when there is one and
+otherwise the names there are. It is **declared** rather than inferred because `qt.theme` sets a
 stylesheet and a stylesheet does not move Qt's palette, so a dark application
 with an inferred theme would get light highlighting on a dark background.
 A `theme:` with **no `language:`** gives a plain editor the theme's background
@@ -7963,6 +7968,27 @@ The **wire** parser is unaffected and stays strict: a JSON request or response
 body cannot carry `inf`, `nan`, `nothing` or `unknown`, because RFC 8259 has no
 syntax for them. `json_encode` refuses non-finite values for the same reason,
 and `json_encodable` answers `false` for them.
+
+**`source_comments(text)` — the comments the parser read.** *(after 0.10.0;
+Qt design §0.38 B1)* Every comment run in a source text, as
+`{ start_line, end_line, start_column, start_offset, end_offset, text, raw,
+trailing }`, inside `{ ok, comments, diagnostics }` (the shape `source_outline`
+answers). Consecutive comment-only lines at the same column are one run; a
+comment after code on its line is a run of its own with `trailing: true`.
+`text` has one `'` removed from each line, so a marker of the caller's own
+(`''`) is still there; `raw` keeps every quote. Lines are 1-based and columns
+are bytes, as every diagnostic's are (a byte-order mark is not counted).
+
+The text is **parsed**, with the lexer's own comment reader recording, so a `'`
+the parser reads as something else -- inside a string, inside an `sql` body --
+is not a comment. A text that does not parse answers `ok: false`, the
+diagnostics, and the comments read before the error.
+
+```basic
+r = source_comments("' Rates\n' are read here\nx = \"it's\"  ' after code\n")
+print r.comments[0].text        ' " Rates\n are read here"
+print r.comments[1].trailing    ' true
+```
 
 **`try_decode(text)` — decode that reports failure as a value.** `decode` raises
 on malformed input. That raise *is* catchable — see **Errors** — but a raise

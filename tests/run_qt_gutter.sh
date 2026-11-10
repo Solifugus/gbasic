@@ -202,6 +202,7 @@ elif ! command -v g++ >/dev/null 2>&1; then
 elif ! g++ -std=c++17 -fPIC -Iinclude -Isrc/modules -o "$work/gprobe" \
         tests/qt/gutter_probe.cpp src/modules/qt_backend.o \
         $(pkg-config --cflags --libs Qt6Widgets) \
+        $(pkg-config --libs Qt6Svg 2>/dev/null) \
         $(pkg-config --libs KF6SyntaxHighlighting 2>/dev/null \
           || echo -lKF6SyntaxHighlighting) 2>"$work/cxx.err"; then
     head -8 "$work/cxx.err"

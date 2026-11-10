@@ -1500,13 +1500,55 @@ static int qt_build_item(void *parent, Value *item, void *root) {
              * asking Qt's palette -- which answers something reasonable, so
              * `theme: "Dark"` would look like a theme that does not work
              * rather than a word that is not one. */
+            /* A KSyntaxHighlighting THEME BY NAME too (§0.38 D1), checked
+             * against the repository, which searches the syntax path's
+             * themes/ as well as its own. A build without the library (-1)
+             * lets the name through to the warning below, which says why
+             * there are no colours. */
             if (strcmp(theme_text, "light") != 0 &&
-                strcmp(theme_text, "dark") != 0) {
-                snprintf(message, sizeof(message),
-                         "window: `source %s( theme: \"%s\" )` is not a "
-                         "theme; write \"light\" or \"dark\", or leave it "
-                         "out to follow the window's own colours",
-                         name ? name : "?", theme_text);
+                strcmp(theme_text, "dark") != 0 &&
+                gb_qt_theme_known(theme_text) == 0) {
+                char *all = gb_qt_theme_names();
+                const char *set[128];
+                int n = 0;
+                for (char *p = all; p && *p && n < 127;) {
+                    set[n++] = p;
+                    char *nl = strchr(p, '\n');
+                    if (!nl) { break; }
+                    *nl = '\0';
+                    p = nl + 1;
+                }
+                set[n] = NULL;
+                const char *near = gb_nearest_word(theme_text, set);
+                /* No near miss: the names themselves (as many as the message
+                 * holds), since a theme's name ("Breeze Light") is not
+                 * something to guess at. */
+                char listing[360];
+                size_t at = 0;
+                listing[0] = '\0';
+                for (int k = 0; !near && k < n; k++) {
+                    size_t need = strlen(set[k]) + 4;
+                    if (at + need + 8 >= sizeof(listing)) {
+                        snprintf(listing + at, sizeof(listing) - at, ", ...");
+                        break;
+                    }
+                    at += (size_t)snprintf(listing + at, sizeof(listing) - at,
+                                           "%s\"%s\"", k ? ", " : "", set[k]);
+                }
+                if (near) {
+                    snprintf(message, sizeof(message),
+                             "window: `source %s( theme: \"%s\" )` is not a "
+                             "theme -- did you mean \"%s\"? (\"light\", "
+                             "\"dark\" or a KSyntaxHighlighting theme's name)",
+                             name ? name : "?", theme_text, near);
+                } else {
+                    snprintf(message, sizeof(message),
+                             "window: `source %s( theme: \"%s\" )` is not a "
+                             "theme; write \"light\", \"dark\" or a theme's "
+                             "name: %s",
+                             name ? name : "?", theme_text, listing);
+                }
+                free(all);
                 qt_raise(message);
                 return 0;
             }
@@ -5618,11 +5660,16 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_unknown();
         }
         char *file = gb_qt_highlight_file(root, which.as.string);
+        char *theme = gb_qt_highlight_theme(root, which.as.string);
         Value out = value_record(NULL, 0);
         record_set(&out, "language", value_string(lang));
         record_set(&out, "file", value_string(file ? file : ""));
+        /* The theme's own name, read from the highlighter (§0.38 D1): "dark"
+         * and "light" answer the theme they resolved to. */
+        record_set(&out, "theme", theme ? value_string(theme) : value_unknown());
         free(lang);
         free(file);
+        free(theme);
         value_free(win); value_free(which);
         return out;
     }
@@ -6770,6 +6817,120 @@ static Value qt_eval_call(AstExpr *expr) {
      * THE FILE IS A PATH STRING OR A `{file}`, as every file verb takes it, and
      * it is written by `write`'s own code, so a folder that is not there fails
      * with the sentence `write` gives. */
+    /* AN SVG AS A PNG (§0.38 C): figures for print. No window: what is drawn
+     * is the text given. The option set is closed and refused by name, as
+     * qt.capture's is, for the same reason -- a misspelt `scale` is a figure
+     * at the wrong resolution with nothing to say so. */
+    if (strcmp(verb, "render_svg") == 0) {
+        if (argc < 2 || argc > 3) {
+            qt_raise("qt.render_svg expects the SVG as text, the file to write "
+                     "the PNG to, and optionally { width, height, scale }");
+            return value_null();
+        }
+        Value svg = eval_expr(expr->as.call.args.items[0]);
+        Value target = eval_expr(expr->as.call.args.items[1]);
+        Value opts = argc == 3 ? eval_expr(expr->as.call.args.items[2]) : value_null();
+        if (error_action_pending()) {
+            value_free(svg); value_free(target); value_free(opts);
+            return value_null();
+        }
+        if (svg.kind != VALUE_STRING) {
+            qt_raise("qt.render_svg expects the SVG as text -- read(f) for a file");
+            value_free(svg); value_free(target); value_free(opts);
+            return value_null();
+        }
+        if (!file_arg_from_path("qt.render_svg", &target)) {
+            value_free(svg); value_free(opts);
+            return value_null();
+        }
+        if (target.kind != VALUE_FILE) {
+            qt_raise("qt.render_svg expects the file to write as a path string "
+                     "or file reference");
+            value_free(svg); value_free(target); value_free(opts);
+            return value_null();
+        }
+        if (argc == 3 && opts.kind != VALUE_RECORD) {
+            qt_raise("qt.render_svg expects its options as a record -- "
+                     "`{ width: 800, scale: 2 }`");
+            value_free(svg); value_free(target); value_free(opts);
+            return value_null();
+        }
+        static const char *const svg_opts[] = { "width", "height", "scale", NULL };
+        double width = 0, height = 0, scale = 1.0;
+        for (size_t i = 0; argc == 3 && i < opts.as.record.count; i++) {
+            RecordField *f = &opts.as.record.fields[i];
+            const char *fname = f->name ? f->name : "";
+            int is_w = strcmp(fname, "width") == 0;
+            int is_h = strcmp(fname, "height") == 0;
+            int is_s = strcmp(fname, "scale") == 0;
+            if (is_w || is_h) {
+                if (!f->value || f->value->kind != VALUE_NUMBER ||
+                    !(f->value->as.num.value >= 1) || f->value->as.num.value > 20000 ||
+                    f->value->as.num.value != floor(f->value->as.num.value)) {
+                    snprintf(message, sizeof(message),
+                             "qt.render_svg expects `%s` as a whole number of "
+                             "pixels from 1 to 20000", fname);
+                    qt_raise(message);
+                    value_free(svg); value_free(target); value_free(opts);
+                    return value_null();
+                }
+                if (is_w) { width = f->value->as.num.value; }
+                else { height = f->value->as.num.value; }
+            } else if (is_s) {
+                if (!f->value || f->value->kind != VALUE_NUMBER ||
+                    !(f->value->as.num.value > 0) || f->value->as.num.value > 8) {
+                    qt_raise("qt.render_svg expects `scale` as a number above 0 "
+                             "and at most 8");
+                    value_free(svg); value_free(target); value_free(opts);
+                    return value_null();
+                }
+                scale = f->value->as.num.value;
+            } else {
+                const char *near = gb_nearest_word(fname, svg_opts);
+                if (near) {
+                    snprintf(message, sizeof(message),
+                             "qt.render_svg does not know the option `%s` -- "
+                             "did you mean `%s`?", fname, near);
+                } else {
+                    snprintf(message, sizeof(message),
+                             "qt.render_svg does not know the option `%s`. It "
+                             "takes width, height and scale", fname);
+                }
+                qt_raise(message);
+                value_free(svg); value_free(target); value_free(opts);
+                return value_null();
+            }
+        }
+        char *png = NULL;
+        long len = 0;
+        int ow = 0, oh = 0;
+        err[0] = '\0';
+        int ok = gb_qt_render_svg(svg.as.string, (long)string_length(svg.as.string),
+                                  (int)width, (int)height, scale, &png, &len,
+                                  &ow, &oh, err, sizeof(err));
+        value_free(svg); value_free(opts);
+        if (!ok) {
+            snprintf(message, sizeof(message), "qt.render_svg: %s",
+                     err[0] ? err : "the SVG could not be drawn");
+            qt_raise(message);
+            value_free(target);
+            return value_null();
+        }
+        Value bytes = value_string_n(png, (size_t)len);
+        free(png);
+        Value wrote = file_write_text("write", value_copy(target), bytes);
+        value_free(wrote);
+        if (error_action_pending()) {
+            value_free(target);
+            return value_null();
+        }
+        Value answer = value_record(NULL, 0);
+        record_set(&answer, "file", target);
+        record_set(&answer, "width", value_number((double)ow));
+        record_set(&answer, "height", value_number((double)oh));
+        return answer;
+    }
+
     if (strcmp(verb, "capture") == 0) {
         if (argc < 2 || argc > 3) {
             qt_raise("qt.capture expects a window, the file to write the PNG "

@@ -121,6 +121,9 @@
 
 #include <QGuiApplication>
 #include <QBuffer>
+#if HAVE_QT_SVG
+#include <QSvgRenderer>
+#endif
 #include <QImage>
 #include <QImageWriter>
 #include <fcntl.h>
@@ -3657,6 +3660,84 @@ extern "C" int gb_qt_has_icon(void *window, const char *name, int *has,
  *
  * THE BYTES COME BACK rather than being written here, so the file is written
  * by the same code as `write` and fails with the same sentence. */
+/* AN SVG AS A PNG (§0.38 C), for a figure a book prints: Studio writes the
+ * author's Markdown for their publisher, and a chart.bas figure is SVG.
+ *
+ * DETERMINISTIC WITHIN A MACHINE, measured: one SVG drawn in two processes
+ * gave byte-identical PNGs. Across machines it is not promised, for the reason
+ * qt.capture's is not: text is drawn with whatever fonts are installed.
+ *
+ * ON WHITE, NO ALPHA, as qt.capture's image is: a page shows transparency as
+ * black or a checkerboard. The SVG's own size is its viewBox (QSvgRenderer's
+ * defaultSize) when no size is given; asking for one size alone keeps the
+ * aspect ratio. */
+extern "C" int gb_qt_render_svg(const char *svg, long svg_len, int width,
+                                int height, double scale, char **png,
+                                long *len, int *out_width, int *out_height,
+                                char *err, size_t err_size) {
+#if HAVE_QT_SVG
+    if (!gb_qt_begin(err, err_size)) {
+        return 0;
+    }
+    QSvgRenderer r(QByteArray(svg, (int)svg_len));
+    if (!r.isValid()) {
+        say(err, err_size, "the text is not an SVG that QtSvg can draw");
+        return 0;
+    }
+    QSize own = r.defaultSize();
+    if (own.isEmpty()) {
+        QRectF vb = r.viewBoxF();
+        own = QSize(qRound(vb.width()), qRound(vb.height()));
+    }
+    if (width <= 0 && height <= 0) {
+        width = own.width();
+        height = own.height();
+    } else if (width <= 0) {
+        width = own.height() > 0 ? qRound((double)height * own.width() / own.height()) : height;
+    } else if (height <= 0) {
+        height = own.width() > 0 ? qRound((double)width * own.height() / own.width()) : width;
+    }
+    QSize px(qRound(width * scale), qRound(height * scale));
+    if (px.width() <= 0 || px.height() <= 0) {
+        say(err, err_size, "the SVG has no size; give width and height");
+        return 0;
+    }
+    if ((long long)px.width() * px.height() > 100000000LL) {
+        say(err, err_size, "that is more than 100 million pixels; ask for a smaller width, height or scale");
+        return 0;
+    }
+    QImage img(px, QImage::Format_RGB32);
+    img.fill(Qt::white);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setRenderHint(QPainter::TextAntialiasing);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
+    r.render(&p, QRectF(0, 0, px.width(), px.height()));
+    p.end();
+    QByteArray bytes;
+    QBuffer buf(&bytes);
+    buf.open(QIODevice::WriteOnly);
+    if (!img.save(&buf, "PNG")) {
+        say(err, err_size, "the image could not be encoded as PNG");
+        return 0;
+    }
+    *png = (char *)malloc((size_t)bytes.size());
+    if (!*png) {
+        abort();
+    }
+    memcpy(*png, bytes.constData(), (size_t)bytes.size());
+    *len = bytes.size();
+    *out_width = px.width();
+    *out_height = px.height();
+    return 1;
+#else
+    (void)svg; (void)svg_len; (void)width; (void)height; (void)scale;
+    (void)png; (void)len; (void)out_width; (void)out_height;
+    say(err, err_size, "this gBASIC was built without QtSvg (Qt6Svg), which draws SVG");
+    return 0;
+#endif
+}
+
 extern "C" int gb_qt_capture(void *window, const char *name, double scale,
                              char **png, long *len, int *width, int *height,
                              char *err, size_t err_size) {
@@ -4749,8 +4830,49 @@ static KSyntaxHighlighting::Theme theme_named(QPlainTextEdit *e, const char *the
     if (theme && strcmp(theme, "light") == 0) {
         return repo()->defaultTheme(KSyntaxHighlighting::Repository::LightTheme);
     }
+    /* A THEME BY ITS NAME (§0.38 D1): "Breeze Light", "Printing", or one in
+     * <syntax path>/themes/*.theme. qt.c has already refused a name the
+     * repository does not know, so an invalid one here is not reached. */
+    if (theme && *theme) {
+        KSyntaxHighlighting::Theme t = repo()->theme(QString::fromUtf8(theme));
+        if (t.isValid()) {
+            return t;
+        }
+    }
     return repo()->themeForPalette(e->palette());
 }
+#endif
+
+extern "C" int gb_qt_theme_known(const char *name) {
+#if HAVE_KSYNTAX
+    return repo()->theme(QString::fromUtf8(name ? name : "")).isValid() ? 1 : 0;
+#else
+    (void)name;
+    return -1;
+#endif
+}
+
+extern "C" char *gb_qt_theme_names(void) {
+#if HAVE_KSYNTAX
+    QStringList names;
+    for (const KSyntaxHighlighting::Theme &t : repo()->themes()) {
+        names << t.name();
+    }
+    names.sort();
+    QByteArray bytes = names.join("\n").toUtf8();
+    char *out = (char *)malloc((size_t)bytes.size() + 1);
+    if (!out) {
+        abort();
+    }
+    memcpy(out, bytes.constData(), (size_t)bytes.size());
+    out[bytes.size()] = '\0';
+    return out;
+#else
+    return nullptr;
+#endif
+}
+
+#if HAVE_KSYNTAX
 
 /* THE EDITOR'S OWN COLOURS MUST FOLLOW THE THEME, or a dark theme paints dark
  * text on the widget's light background and the result is less readable than
@@ -4872,6 +4994,26 @@ extern "C" char *gb_qt_highlight_file(void *window, const char *name) {
 #if HAVE_KSYNTAX
     KSyntaxHighlighting::Definition def = applied_definition(window, name);
     return def.isValid() ? dup_qbytes(def.filePath().toUtf8()) : nullptr;
+#else
+    (void)window;
+    (void)name;
+    return nullptr;
+#endif
+}
+
+extern "C" char *gb_qt_highlight_theme(void *window, const char *name) {
+#if HAVE_KSYNTAX
+    QPlainTextEdit *e = source_named(window, name, nullptr, 0);
+    if (!e) {
+        return nullptr;
+    }
+    KSyntaxHighlighting::SyntaxHighlighter *hl =
+        e->findChild<KSyntaxHighlighting::SyntaxHighlighter *>(
+            QString(), Qt::FindDirectChildrenOnly);
+    if (!hl || !hl->theme().isValid()) {
+        return nullptr;
+    }
+    return dup_qbytes(hl->theme().name().toUtf8());
 #else
     (void)window;
     (void)name;

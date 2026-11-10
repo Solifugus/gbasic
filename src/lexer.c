@@ -82,14 +82,32 @@ static int match(Lexer *lexer, char expected) {
     return 1;
 }
 
+static LexerCommentSink comment_sink = NULL;
+static void *comment_sink_ctx = NULL;
+
+void lexer_set_comment_sink(LexerCommentSink sink, void *ctx) {
+    comment_sink = sink;
+    comment_sink_ctx = ctx;
+}
+
 static void skip_spaces_and_comments(Lexer *lexer) {
     for (;;) {
         char ch = peek(lexer);
         if (ch == ' ' || ch == '\r' || ch == '\t') {
             advance(lexer);
         } else if (ch == '\'') {
+            const char *start = lexer->current;
+            int line = lexer->line;
+            int column = lexer->column;
             while (peek(lexer) != '\n' && !is_at_end(lexer)) {
                 advance(lexer);
+            }
+            if (comment_sink) {
+                size_t length = (size_t)(lexer->current - start);
+                if (length > 0 && start[length - 1] == '\r') {
+                    length--;
+                }
+                comment_sink(comment_sink_ctx, line, column, start, length);
             }
         } else {
             return;
@@ -849,7 +867,11 @@ Token lexer_next(Lexer *lexer) {
                 t.length = (int)name_len;
                 t.line = line;
                 t.column = column;
-                lexer->column += (int)((after + 1) - start);
+                /* From lexer->current, not `start`: the `{` was consumed by
+                 * advance(), which counted its column already. Counting from
+                 * `start` put every token after a modifier one column right
+                 * (found 2026-11-10 by source_comments' corpus tier). */
+                lexer->column += (int)((after + 1) - lexer->current);
                 lexer->current = after + 1;
                 return t;
             }
@@ -919,7 +941,7 @@ Token lexer_next(Lexer *lexer) {
                     t.length = (int)(end - name_start);
                     t.line = line;
                     t.column = column;
-                    lexer->column += (int)((close + 1) - start);
+                    lexer->column += (int)((close + 1) - lexer->current);
                     lexer->current = close + 1;
                     return t;
                 }

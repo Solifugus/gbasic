@@ -13875,3 +13875,18 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   replaces each `unknown` with `nothing`, recursively.
 - **Status:** open, by design (strict JSON refuses on purpose), recorded
   because the walk is what every such emitter will write.
+
+## 2026-11-10 — CC — while: Studio §0.38 B1, source_comments' corpus tier
+
+- **Type:** bug
+- **Severity:** low (a column one to the right, in diagnostics and outlines)
+- **What:** after a modifier in braces -- `d {datetime}= "x" ) ` or
+  `{USD}"2"` -- every later token on the line was reported one column to the
+  right: `--tokens` put that `)` at 1:20, and it is at column 19. The lexer
+  consumed the `{` with advance(), which counts its column, then added the
+  whole span from the `{` again. A parse error after a modifier pointed one
+  column past its cause. Nothing pinned such a column, so no test saw it.
+- **Workaround:** none needed in a program.
+- **Status: FIXED 2026-11-10** (src/lexer.c, both the one-word and the
+  phrase form). Held by tests/source_comments_test.bas (three columns after a
+  modifier) and the corpus tier of tests/run_source_comments.sh.
