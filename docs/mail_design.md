@@ -1,6 +1,7 @@
 # Mail design — composing and sending email
 
-Status: **Shipped** (composer `stdlib/mail.bas`, transport `smtp` module).
+Status: **Shipped** (composer `stdlib/mail.bas`, transport `smtp` module;
+reading a received message, `mail.parse`, §10, since book gap G59).
 
 ## 1. Why
 
@@ -125,6 +126,46 @@ are asserted directly:
 
 ## 9. Not in scope
 
-Reading mail (IMAP/POP3), S/MIME and PGP, DKIM signing, address-header
+Fetching mail (IMAP/POP3; reading a message once it has arrived is §10),
+S/MIME and PGP, DKIM signing, address-header
 folding beyond what `Subject` needs, and delivery-status parsing. Each is a
 project of its own; none is needed to send a notification.
+
+## 10. Reading a received message
+
+`mail.parse(raw)` (book gap G59) reads a message as it arrived: headers,
+addresses, date, every part with its transfer encoding undone, and the text a
+person would read. Its decisions:
+
+* **Nothing in a received message raises.** The composer refuses, because its
+  input is the author's and a refusal tells the author what to fix. A received
+  message is someone else's, and a part that cannot be read is no reason to
+  lose the others. So every failure is a sentence in `problems` naming the
+  part, and a text that cannot be decoded is `unknown` with its bytes kept in
+  the part's `body`. A guess (reading an unknown charset as Latin-1, say) would
+  be a plausible wrong answer, which is the kind nobody catches. The one
+  exception is header bytes that are neither ASCII nor UTF-8: a header has no
+  `body` to keep them in, so they are read as Latin-1 and that is a problem.
+* **Which part is the text is Python's rule** (`email.message.get_body`): the
+  first `text/plain` that is not an attachment, depth first, and only the
+  start of a `multipart/related`. Any rule would do; this one is shared with
+  the oracle, so the two can be held to each other.
+* **The oracle is Python's `email` package**, reading the same bytes
+  (`tests/run_mail_parse.sh`), and where it departs from the RFCs the RFC is
+  followed and the suite says where: white space between adjacent encoded
+  words in a display name (RFC 2047 6.2), trailing white space on a
+  quoted-printable line (RFC 2045 6.7), and two-digit years 50-68
+  (RFC 5322 4.3).
+* **Dates are instants in UTC**, as `{datetime}` reads a text with an offset,
+  with the writer's offset beside them (`date_offset`). gBASIC's datetime has
+  no zone, `now()` is the system's civil time, and `compose` writes its `date`
+  as civil time, so a parsed date handed to `compose` moves by the machine's
+  offset. That is recorded rather than changed: it is a question about what a
+  zoneless datetime means, and the answer belongs to the datetime design.
+* **Quotation is a convention.** `mail.own_text` cuts at the first line
+  starting `>`, an `On … wrote:` line or `-----Original Message-----`, says
+  which, and names unquoted lines below the cut, since a reply written between
+  quoted lines is the case the rule gets wrong. `format=flowed` (RFC 3676)
+  makes quote depth explicit, and `mail.unflow` keeps depths apart.
+* **Charsets** are the ones `transcode` reads, plus us-ascii: utf-8,
+  iso-8859-1, windows-1252, utf-16. The rest are named, not read.

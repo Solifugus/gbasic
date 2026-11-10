@@ -16,6 +16,46 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Reading a received message: `mail.parse` (book gap G59, 2026-11-10)
+
+- **`mail.parse(raw)` reads a message's bytes** into its headers (unfolded,
+  RFC 2047 encoded words decoded), `from`/`to`/`cc`/`reply_to` as
+  `{ name, address }` with groups opened, `subject`, `date` (the instant in
+  UTC) and `date_offset` (the writer's), the ids, every leaf part with its type,
+  charset, disposition, filename (RFC 2231 sections and charsets, or encoded
+  words), transfer encoding undone (`body`) and text in UTF-8 (`text`), a
+  `message/rfc822` part read as a message, and `text`/`html`: the parts a
+  person would read, chosen by the rule Python's `email.message.get_body`
+  applies. A `format=flowed` text is unflowed in `m.text`.
+- **Nothing in a received message raises.** What could not be read is a
+  sentence in `problems`, naming the part, and the rest is still read; a text
+  that cannot be decoded is `unknown` with its bytes kept. Charsets read:
+  us-ascii, utf-8, iso-8859-1, windows-1252, utf-16. Others (koi8-r,
+  iso-8859-2, the CJK sets) are named as not read.
+- **`mail.unflow(text [, delsp])`** (RFC 3676), **`mail.own_text(text)`**
+  (the text above a quotation, naming the convention it cut at and any
+  unquoted lines below the cut), **`mail.header(m, name)`** and
+  **`mail.headers_named(m, name)`**.
+- **Where Python and the RFCs part, the RFC is followed:** white space
+  between adjacent encoded words in a display name is dropped (RFC 2047 6.2;
+  Python keeps a space, "Anna Kowalsk a"); trailing white space on a
+  quoted-printable line is deleted, so `= ` ending a line is a soft break
+  (RFC 2045 6.7; binascii keeps both); a two-digit year 50-99 is 19xx
+  (RFC 5322 4.3; Python makes 50-68 20xx).
+- **A zone question, not changed:** `mail.compose` reads its `date` as the
+  system's civil time (as `now()` is, and as documented), while `parse`
+  answers UTC, as `{datetime}` reads a text with an offset. A date read by
+  `parse` and handed to `compose` is shifted by the machine's offset. Recorded
+  in DOGFOOD for a ruling.
+- New suite `tests/run_mail_parse.sh`: by hand from the RFCs (135 checks,
+  every problem parse can report), and Python's `email` package reading the
+  same bytes for 1200 messages made per run (half written byte by byte, half
+  by Python's EmailMessage; the generator refuses a corpus missing any of the
+  40 forms it claims), about 43,000 checks; valgrind. 29 perturbations of
+  `stdlib/mail.bas` each went red; two of the first ones hung, and one of
+  those was a real hang (a quoted parameter ending in a lone backslash), now
+  fixed and checked.
+
 ### Embedded fonts in gpdf (book gap G58, 2026-11-10)
 
 - **`gpdf.font_file(path [, { name, index }])` reads a TrueType font**, and

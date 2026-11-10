@@ -3532,6 +3532,7 @@ outgoing requests only. Incoming requests use the separate WebServer module.
 Sending email is two pieces, and the split is deliberate: `mail` builds the
 message and is ordinary gBASIC, `smtp` speaks to the relay and is native. See
 [mail_design.md](mail_design.md) for why each refusal lives where it does.
+`mail.parse` reads a received message, below.
 
 ```basic
 program main( args )
@@ -3595,6 +3596,75 @@ that reason:
 | `mail.address_parts(field, address)` | `{ name, address }` from either spelling; raises, naming `field`, if it is not an address. |
 | `mail.format_address(field, address)` | the header form, with the display name encoded if it needs it. |
 | `mail.format_date(when)` | a datetime as an RFC 5322 `Date`, using the system's own offset. Byte-identical to python's `email.utils.format_datetime` across all seven weekdays. |
+
+### `mail.parse(raw)`
+
+A received message's bytes (CRLF or LF line ends), read. *After 0.10.0* (book
+gap G59).
+
+```basic
+program main( args )
+    load mail
+    m = mail.parse("From: Anna <anna@example.com>\nSubject: =?utf-8?B?xYHDs2TFug==?= order\n" +
+                   "Date: Tue, 6 Apr 2027 07:52:00 -0500\n\nTwo pallets, please.\n")
+    print m.from.name + ": " + m.subject      ' Anna: Łódź order
+    print m.date                               ' 2027-04-06 12:52:00
+    print m.text                               ' Two pallets, please.
+end program
+```
+
+| field | |
+|---|---|
+| `headers` | every header in order, as `{ name, value }`: unfolded, RFC 2047 encoded words decoded |
+| `from` | the first mailbox, `{ name, address }`, or `unknown` |
+| `to`, `cc`, `reply_to` | arrays of `{ name, address }`; groups are opened, comments dropped |
+| `subject` | decoded; `""` when there is none |
+| `date` | the instant in UTC, as `{datetime}` reads a text with an offset; `unknown` when it cannot be read |
+| `date_offset` | the writer's offset, a duration: `m.date + m.date_offset` is their clock |
+| `message_id`, `in_reply_to`, `references` | as written; the last two are arrays of `<id>` |
+| `type` | the message's own content type |
+| `parts` | every leaf part, depth first (below) |
+| `text`, `text_part` | the text a person would read, and the path of the part it came from |
+| `html`, `html_part` | the same for HTML |
+| `attachments` | the parts whose disposition is `attachment`, or that carry a filename |
+| `problems` | a sentence for everything that could not be read, naming the part |
+
+Each part is `{ path, type, params, charset, disposition, filename, encoding,
+content_id, headers, body, text, flowed, message }`. `path` numbers parts as
+IMAP does (`"1"`, `"2.1"`); `body` is the bytes with the transfer encoding
+(base64, quoted-printable) undone; `text` is a `text/*` part's body in UTF-8
+with its line ends read as LF, or `unknown`; `message` is a
+`message/rfc822` part read as a message of its own. A filename may be written
+the RFC 2231 way, in sections or with a charset, or as encoded words; it comes
+back as text.
+
+Which part is `text` is the rule Python's `email` package applies in
+`get_body`: the first `text/plain` that is not an attachment, depth first,
+reading only the start of a `multipart/related`. A `format=flowed` text
+(RFC 3676) is unflowed in `m.text`, and kept as sent in the part.
+
+**A received message is someone else's text**, so `parse` raises only when
+given something that is not a string. Everything else that is wrong is a
+sentence in `problems` and the rest of the message is still read: a charset
+gBASIC does not read (it reads `us-ascii`, `utf-8`, `iso-8859-1`,
+`windows-1252` and `utf-16`), bytes that are not their charset, base64 that
+does not decode, a multipart with no closing boundary, nesting past 32, a
+`Date` with no zone, a word in `To` that is not an address. A text that cannot
+be decoded is `unknown`, never a guess; its bytes are in the part's `body`.
+
+`mail.compose` writes its `date` as the system's civil time, the way `now()`
+is; `parse` answers UTC. A date read by `parse` and handed to `compose` is
+shifted by the machine's offset unless it is converted first.
+
+| | |
+|---|---|
+| `mail.header(m, name)` | the first header of a message or part with that name, in any case, or `unknown` |
+| `mail.headers_named(m, name)` | every one, in order (`Received`) |
+| `mail.unflow(text [, delsp])` | RFC 3676 `format=flowed` read: soft breaks joined, space-stuffing removed, quote depths kept apart |
+| `mail.own_text(text)` | `{ text, quoted, by, line, uncertain }`: the text above the first line that begins a quotation (`>`, an `On … wrote:` line, or `-----Original Message-----`). It is a convention, not a fact about who wrote what, so `by` names the convention and `uncertain` names unquoted lines below the cut. |
+
+Tested by `tests/run_mail_parse.sh`: by hand from the RFCs, and against
+Python's `email` package over 1200 messages made per run.
 
 ### `smtp.send(config, message)`
 

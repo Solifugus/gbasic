@@ -13838,3 +13838,38 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Workaround:** `usage` and `stride`.
 - **Status:** open, by design: both are keywords. Recorded so the next person
   writing a binary-format reader knows to reach for other names.
+
+## 2026-11-10 — CC — while: G59, reading a message's Date with mail.parse
+
+- **Type:** language-surprise
+- **Severity:** medium (an instant moved by the machine's offset, silently)
+- **What:** a gBASIC datetime carries no zone, and three doors read it three
+  ways. `now()` is the system's civil time; `{datetime}"2027-04-06T07:52:00-05:00"`
+  is converted to UTC (`2027-04-06 12:52:00`); and `mail.compose`'s `date:`
+  (through `mail.format_date`) writes the value's fields beside the SYSTEM's
+  offset, so it reads the value as civil time. Round-tripping a parsed date
+  through compose on this machine (EST/EDT) wrote `12:52:00 -0400`, four hours
+  late; under `TZ=UTC` it was right, which is why nothing had caught it.
+  compose's reading is documented ("using the system's own offset") and agrees
+  with `now()`, so it is not a defect of compose alone.
+- **Workaround:** `mail.parse` answers UTC (as `{datetime}` reads an offset)
+  and adds `date_offset`, so `m.date + m.date_offset` is the writer's clock;
+  a parsed date handed to compose must be converted first
+  (`d + zone_offset(d)` gives civil time near enough, `to_zone` exactly).
+  tests/mail/parse_test.bas pins compose's reading by name.
+- **Status:** open, a question for Matthew: which zone a zoneless datetime
+  means where it meets the outside (compose's `date`, and anything else that
+  writes an offset). Changing compose moves every composed message's Date.
+
+## 2026-11-10 — CC — while: G59, emitting mail.parse's records as JSON
+
+- **Type:** language-surprise
+- **Severity:** low (a raise at once, naming the fix)
+- **What:** `json_encode` refuses `unknown` anywhere in a value ("`unknown`
+  has no JSON representation; omit the field or replace it with nothing
+  (null)"). A record that uses `unknown` for "none", as gBASIC's absence
+  convention says to, cannot be encoded without a walk over it first.
+- **Workaround:** a ten-line `nulls(v)` in tests/mail/mail_emit.bas that
+  replaces each `unknown` with `nothing`, recursively.
+- **Status:** open, by design (strict JSON refuses on purpose), recorded
+  because the walk is what every such emitter will write.
