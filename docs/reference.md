@@ -5254,6 +5254,12 @@ end program
 | `win.marks(part, category)` (`qt.marks`) | that category's lines, as a list. **What was set, never what is currently drawable**: a program may mark line 40 and then shorten the document, and a read filtered to the lines still in the file would disagree with the write for a reason the caller cannot see. The drawing is the widget's business; the list is the program's |
 | `win.gutter(part)` (`qt.gutter`) | what that `source`'s margin is — `{ line_numbers, marks, width }` — or **`unknown`** for one that has none, since `width: 0` would say a margin exists and is empty. The `width` follows the **digit count**, so a thousand-line document reserves more than a nine-line one |
 | `win.gutter_press(part, line)` (`qt.gutter_press`) | press the margin beside a line, which is what makes a `gutter` handler drivable without a person — `qt.right_click`'s and `qt.scroll`'s shape. A line that is **not on screen** is refused, because a mouse cannot land there |
+| `win.blocks(part, items)` (`qt.blocks`) | show content **between a `source`'s lines** without it being text: each item `{ id, line, kind, content, title, max_height, collapsed, covers }` is drawn under its 1-based line (or, with `covers: true`, over it), and **replaces the whole set**, reconciled by `id` so an unchanged block keeps its widget. Kinds: `text` (monospace, whitespace kept), `table` (`{ columns, rows }`, at most 1,000 rows shown, then a line saying how many more), `image` (a path, a `{file}`, or `{ bytes, format: "png" \| "svg" }`) and `markdown` (CommonMark and GitHub's tables and lists; a link raises the `block` event and never navigates). `max_height` (20-2000, default 240) caps it, past which it scrolls inside or, an image, is scaled down; `collapsed` (Studio's to set) shows only its header. **None of it is document text**: plainText, the caret, the undo stack, the modified flag and the line numbers do not move (tests/qt/blocks_probe.cpp, linking the real backend). A block **follows its line through edits**: typed lines above move it, a line split in two keeps it under the second half, a line joined onto the one above takes it along, and a line **deleted or emptied drops it**. Replacing the whole text drops them all. An unknown field or kind is refused with its near miss; a line past the end names how many lines there are. *After 0.10.0* (§0.38 A) |
+| `win.blocks(part)` (`qt.blocks`) | what Qt holds now: `[{ id, kind, line, height, visible, collapsed, covers }]`, the line its anchor is on **after any edits** and `visible` whether it is on screen, so a fixture proves anchoring from Qt rather than from what it sent |
+| `win.fold(part, ranges)` (`qt.fold`) | fold lines: `ranges` is `[{ from, to }]`, **replacing** every fold; each **keeps its first line** and hides the rest, as an editor's folding does, and moves with its lines through edits. Hiding is layout, not text: plainText and the undo stack do not move, and copying a selection across a fold copies the folded lines. A fold that hides the caret's line moves the caret to the fold's first line. `win.fold(part)` reads back the ranges Qt holds now. Prose in place of a comment is a fold over the comment with a `markdown` block on its first line that `covers` it. *After 0.10.0* (§0.38 B2) |
+| `qt.block_event()` | inside an `on <part>.block` handler, the event being handled: `{ id, action, target }`, `action` being `"click"` (the block's body), `"collapse"` (its collapse control, which changes nothing by itself: the program re-sends the block collapsed) or `"link"` (a link in a markdown block, `target` its address). `unknown` outside a handler |
+| `win.block_press(part, id, action [, target])` (`qt.block_press`) | a real press on a block's body, its collapse control or a markdown link's text, which is how a fixture drives the `block` handler as a person would. A block or link that is not there is refused |
+| `markdown name()` (a window word), `win.set(part, "markdown", text)` | a **read-only rendered-prose part**, for a preview pane: a QTextBrowser showing CommonMark and GitHub's tables, lists and task lists, set through Qt's own `markdown` property. A link **does not navigate**: pressing it is the part's `link` event, and `qt.link()` in an `on <part>.link` handler answers its target (`unknown` outside one). `win.link_press(part, target)` (`qt.link_press`) presses a link's own text for a fixture; a link that is not there is refused. *After 0.10.0* (§0.38 B4) |
 | `qt.gutter_click()` | which line the margin click being handled was on: `{ line }`, or **`unknown`** outside a handler — a different claim from *line 0*. Takes no arguments, because a handler here takes none and the event is asked for instead, the rule `qt.wheel()` and `principal()` already follow |
 | `win.dock(name)` (`qt.dock`) | what that dock pane is doing — `{ area, floating, visible, tabbed_with }` — or **`unknown`** for a name that is not a pane. The `area` is asked of the **window**, not of anything remembered when it was built, because a remembered position agrees with a placement that was wrong; `tabbed_with` counts the panes sharing its tab group, which only the window can answer |
 | `win.layout()` (`qt.layout`) | the window's whole dock and toolbar arrangement as **text** to keep — which area each pane is in, their order, which tab is raised, what is floating and how big. **Base64**, because Qt's own blob is not valid UTF-8 and the obvious thing to do with it is store it, through `encode` or `persist`, both of which write JSON. It is Qt's format, not ours: keep it, do not read it — `qt.dock` is what answers questions |
@@ -5821,6 +5827,22 @@ The filter sits on the margin itself, so an ordinary press in the text is still
 an ordinary caret move, and it is installed **only where a handler was
 declared**. A `gutter` handler on a `source` with no margin is refused at load
 time, naming the option that would give it one.
+
+**Blocks between the lines** (*after 0.10.0*, §0.38): a run's output, a
+table, a figure or rendered prose shown under the line that produced it, with
+the source still the only thing being edited. A click on a block, its collapse
+control or a link in it is the `block` event:
+
+<!--fragment: a handler block, which lives inside a `window` declaration-->
+```basic
+on code.block
+    e = qt.block_event()        ' { id, action, target }
+    if e.action = "collapse" then
+        g.collapsed[e.id] = not default(g.collapsed[e.id], false)
+        show_results()          ' re-sends the blocks, this one collapsed
+    end if
+end on
+```
 
 **Not there yet:** completion (the data exists in `source_outline` and
 `gbasic-lsp`; the popup is a `QCompleter`, another object attached to a widget,

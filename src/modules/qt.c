@@ -6817,6 +6817,513 @@ static Value qt_eval_call(AstExpr *expr) {
      * THE FILE IS A PATH STRING OR A `{file}`, as every file verb takes it, and
      * it is written by `write`'s own code, so a folder that is not there fails
      * with the sentence `write` gives. */
+    /* BLOCKS BETWEEN THE LINES OF A `source` (§0.38 A): replace-all, as
+     * qt.mark replaces a category, and reconciled by id in the backend. With
+     * no items, what Qt holds now: each block's id, the line its cursors are
+     * on after any edits, its height as laid out, whether it is on screen,
+     * collapsed, and covering its line -- the oracle a fixture proves
+     * anchoring with. */
+    if (strcmp(verb, "blocks") == 0) {
+        if (argc != 2 && argc != 3) {
+            qt_raise("qt.blocks expects a window and a `source`'s name, and "
+                     "the blocks as an array to set them");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value list = argc == 3 ? eval_expr(expr->as.call.args.items[2]) : value_null();
+        if (error_action_pending()) {
+            value_free(win); value_free(which); value_free(list);
+            return value_null();
+        }
+        if (!qt_window_record(&win, verb) || which.kind != VALUE_STRING ||
+            (argc == 3 && list.kind != VALUE_ARRAY)) {
+            if (!error_action_pending()) {
+                qt_raise("qt.blocks expects a window, a `source`'s name as "
+                         "text, and the blocks as an array of records");
+            }
+            value_free(win); value_free(which); value_free(list);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which); value_free(list);
+            return value_null();
+        }
+        char *pname = copy_string(which.as.string);
+        value_free(win); value_free(which);
+        if (argc == 2) {
+            static GbQtBlockInfo info[1024];
+            int n = gb_qt_blocks_get(root, pname, info, 1024, err, sizeof(err));
+            free(pname);
+            if (n < 0) {
+                snprintf(message, sizeof(message), "qt.blocks: %s", err);
+                qt_raise(message);
+                return value_null();
+            }
+            Value out = value_array(NULL, 0);
+            for (int i = 0; i < n && i < 1024; i++) {
+                Value r = value_record(NULL, 0);
+                record_set(&r, "id", value_string(info[i].id));
+                record_set(&r, "kind", value_string(info[i].kind));
+                record_set(&r, "line", value_number((double)info[i].line));
+                record_set(&r, "height", value_number((double)info[i].height));
+                record_set(&r, "visible", value_bool(info[i].visible));
+                record_set(&r, "collapsed", value_bool(info[i].collapsed));
+                record_set(&r, "covers", value_bool(info[i].covers));
+                free(info[i].id);
+                free(info[i].kind);
+                out = append_to_array_value(out, r, 0);
+            }
+            return out;
+        }
+        size_t count = list.as.array.store ? list.as.array.store->count : 0;
+        if (count > 1024) {
+            free(pname); value_free(list);
+            qt_raise("qt.blocks: at most 1024 blocks in one source");
+            return value_null();
+        }
+        GbQtBlockItem *items = count ? calloc(count, sizeof(GbQtBlockItem)) : NULL;
+        QtNameSet owned = { NULL, 0, 0 };     /* every string made here, freed at the end */
+        int ok = 1;
+        static const char *const fields[] = { "id", "line", "kind", "content",
+            "title", "max_height", "collapsed", "covers", NULL };
+        static const char *const kinds[] = { "text", "table", "image", "markdown", NULL };
+        for (size_t i = 0; ok && i < count; i++) {
+            Value *v = &list.as.array.store->items[i];
+            GbQtBlockItem *it = &items[i];
+            it->max_height = 240;
+            char where[96];
+            snprintf(where, sizeof(where), "block %zu", i + 1);
+            if (v->kind != VALUE_RECORD) {
+                snprintf(message, sizeof(message), "qt.blocks: %s is a %s, not a record "
+                         "{ id, line, kind, content }", where, value_kind_name(v->kind));
+                ok = 0;
+                break;
+            }
+            for (size_t f = 0; ok && f < v->as.record.count; f++) {
+                const char *fname = v->as.record.fields[f].name;
+                int known = 0;
+                for (int k = 0; fields[k]; k++) {
+                    if (strcmp(fname, fields[k]) == 0) { known = 1; }
+                }
+                if (!known) {
+                    const char *near = gb_nearest_word(fname, fields);
+                    snprintf(message, sizeof(message),
+                             "qt.blocks: %s has a field `%s`%s%s%s; a block has "
+                             "id, line, kind, content, title, max_height, collapsed "
+                             "and covers", where, fname, near ? " -- did you mean `" : "",
+                             near ? near : "", near ? "`?" : "");
+                    ok = 0;
+                }
+            }
+            if (!ok) { break; }
+            RecordField *f_id = record_find(v, "id");
+            if (!f_id || !f_id->value || f_id->value->kind != VALUE_STRING ||
+                !f_id->value->as.string[0]) {
+                snprintf(message, sizeof(message), "qt.blocks: %s needs an `id` as "
+                         "text, unique among the blocks", where);
+                ok = 0;
+                break;
+            }
+            it->id = f_id->value->as.string;
+            snprintf(where, sizeof(where), "block `%.60s`", it->id);
+            for (size_t j = 0; j < i; j++) {
+                if (strcmp(items[j].id, it->id) == 0) {
+                    snprintf(message, sizeof(message), "qt.blocks: two blocks are "
+                             "called `%.60s`; an id names one block", it->id);
+                    ok = 0;
+                }
+            }
+            if (!ok) { break; }
+            RecordField *f_line = record_find(v, "line");
+            if (!f_line || !f_line->value || f_line->value->kind != VALUE_NUMBER ||
+                f_line->value->as.num.value < 1 ||
+                f_line->value->as.num.value != floor(f_line->value->as.num.value) ||
+                f_line->value->as.num.value > 100000000) {
+                snprintf(message, sizeof(message), "qt.blocks: %s needs a `line`, "
+                         "a whole number from 1 (line 1 is the first line)", where);
+                ok = 0;
+                break;
+            }
+            it->line = (int)f_line->value->as.num.value;
+            RecordField *f_kind = record_find(v, "kind");
+            const char *kind = (f_kind && f_kind->value && f_kind->value->kind == VALUE_STRING)
+                                   ? f_kind->value->as.string : NULL;
+            int kind_ok = 0;
+            for (int k = 0; kind && kinds[k]; k++) {
+                if (strcmp(kind, kinds[k]) == 0) { kind_ok = 1; it->kind = kinds[k]; }
+            }
+            if (!kind_ok) {
+                const char *near = kind ? gb_nearest_word(kind, kinds) : NULL;
+                snprintf(message, sizeof(message), "qt.blocks: %s has %s%s%s as its "
+                         "kind%s%s%s; the kinds are text, table, image and markdown",
+                         where, kind ? "`" : "no kind", kind ? kind : "", kind ? "`" : "",
+                         near ? " -- did you mean `" : "", near ? near : "", near ? "`?" : "");
+                ok = 0;
+                break;
+            }
+            RecordField *f_title = record_find(v, "title");
+            if (f_title && f_title->value) {
+                if (f_title->value->kind != VALUE_STRING) {
+                    snprintf(message, sizeof(message), "qt.blocks: %s's `title` must be text", where);
+                    ok = 0;
+                    break;
+                }
+                it->title = f_title->value->as.string;
+            }
+            RecordField *f_max = record_find(v, "max_height");
+            if (f_max && f_max->value) {
+                double m = f_max->value->kind == VALUE_NUMBER ? f_max->value->as.num.value : -1;
+                if (m < 20 || m > 2000 || m != floor(m)) {
+                    snprintf(message, sizeof(message), "qt.blocks: %s's `max_height` must "
+                             "be a whole number of pixels from 20 to 2000", where);
+                    ok = 0;
+                    break;
+                }
+                it->max_height = (int)m;
+            }
+            const char *flags[2] = { "collapsed", "covers" };
+            for (int k = 0; ok && k < 2; k++) {
+                RecordField *fb = record_find(v, flags[k]);
+                if (fb && fb->value) {
+                    if (fb->value->kind != VALUE_BOOL) {
+                        snprintf(message, sizeof(message), "qt.blocks: %s's `%s` must be "
+                                 "true or false", where, flags[k]);
+                        ok = 0;
+                        break;
+                    }
+                    if (k == 0) { it->collapsed = fb->value->as.boolean; }
+                    else { it->covers = fb->value->as.boolean; }
+                }
+            }
+            if (!ok) { break; }
+            RecordField *f_c = record_find(v, "content");
+            Value *c = f_c ? f_c->value : NULL;
+            if (!c) {
+                snprintf(message, sizeof(message), "qt.blocks: %s has no `content`", where);
+                ok = 0;
+                break;
+            }
+            if (strcmp(it->kind, "text") == 0 || strcmp(it->kind, "markdown") == 0) {
+                if (c->kind != VALUE_STRING) {
+                    snprintf(message, sizeof(message), "qt.blocks: %s is %s, so its "
+                             "content is text", where, it->kind);
+                    ok = 0;
+                    break;
+                }
+                it->text = c->as.string;
+                it->text_len = (long)string_length(c->as.string);
+            } else if (strcmp(it->kind, "image") == 0) {
+                if (c->kind == VALUE_STRING) {
+                    it->text = c->as.string;
+                } else if (c->kind == VALUE_FILE) {
+                    it->text = c->as.file_path;
+                } else if (c->kind == VALUE_RECORD) {
+                    RecordField *fb = record_find(c, "bytes");
+                    RecordField *ff = record_find(c, "format");
+                    if (!fb || !fb->value || fb->value->kind != VALUE_STRING) {
+                        snprintf(message, sizeof(message), "qt.blocks: %s's content is a "
+                                 "record, so it needs `bytes` (and `format`: \"png\" or \"svg\")", where);
+                        ok = 0;
+                        break;
+                    }
+                    it->image_bytes = 1;
+                    it->text = fb->value->as.string;
+                    it->text_len = (long)string_length(fb->value->as.string);
+                    if (ff && ff->value) {
+                        if (ff->value->kind != VALUE_STRING ||
+                            (strcmp(ff->value->as.string, "png") != 0 &&
+                             strcmp(ff->value->as.string, "svg") != 0)) {
+                            snprintf(message, sizeof(message), "qt.blocks: %s's `format` is "
+                                     "\"png\" or \"svg\"", where);
+                            ok = 0;
+                            break;
+                        }
+                        it->format = ff->value->as.string;
+                    }
+                } else {
+                    snprintf(message, sizeof(message), "qt.blocks: %s is an image, so its "
+                             "content is a path, a {file}, or { bytes, format }", where);
+                    ok = 0;
+                    break;
+                }
+            } else {   /* table */
+                RecordField *fc = c->kind == VALUE_RECORD ? record_find(c, "columns") : NULL;
+                RecordField *fr = c->kind == VALUE_RECORD ? record_find(c, "rows") : NULL;
+                if (!fc || !fc->value || fc->value->kind != VALUE_ARRAY ||
+                    !fr || !fr->value || fr->value->kind != VALUE_ARRAY) {
+                    snprintf(message, sizeof(message), "qt.blocks: %s is a table, so its "
+                             "content is { columns: [...], rows: [[...], ...] }", where);
+                    ok = 0;
+                    break;
+                }
+                size_t ncols = fc->value->as.array.store ? fc->value->as.array.store->count : 0;
+                size_t nrows = fr->value->as.array.store ? fr->value->as.array.store->count : 0;
+                size_t shown = nrows > 1000 ? 1000 : nrows;
+                if (ncols == 0 || ncols > 200) {
+                    snprintf(message, sizeof(message), "qt.blocks: %s's table has %zu "
+                             "columns; it takes 1 to 200", where, ncols);
+                    ok = 0;
+                    break;
+                }
+                const char **cells = calloc(ncols * (shown + 1), sizeof(char *));
+                qt_names_add(&owned, (const char *)cells);
+                for (size_t r = 0; ok && r <= shown; r++) {
+                    Value *row = r == 0 ? fc->value : &fr->value->as.array.store->items[r - 1];
+                    if (row->kind != VALUE_ARRAY ||
+                        (row->as.array.store ? row->as.array.store->count : 0) != ncols) {
+                        snprintf(message, sizeof(message), "qt.blocks: %s's row %zu does not "
+                                 "have %zu cells, one per column", where, r, ncols);
+                        ok = 0;
+                        break;
+                    }
+                    for (size_t k = 0; k < ncols; k++) {
+                        Value s = builtin_string_value(value_copy(row->as.array.store->items[k]));
+                        char *text = copy_string(s.kind == VALUE_STRING ? s.as.string : "");
+                        value_free(s);
+                        qt_names_add(&owned, text);
+                        cells[r * ncols + k] = text;
+                    }
+                }
+                it->columns = (int)ncols;
+                it->rows = (int)shown;
+                it->more_rows = (int)(nrows - shown);
+                it->cells = cells;
+            }
+        }
+        if (ok) {
+            err[0] = '\0';
+            ok = gb_qt_blocks_set(root, pname, items, (int)count, err, sizeof(err));
+            if (!ok) {
+                snprintf(message, sizeof(message), "qt.blocks: %s",
+                         err[0] ? err : "the blocks could not be set");
+            }
+        }
+        for (size_t i = 0; i < owned.count; i++) { free((void *)owned.names[i]); }
+        free(owned.names);
+        free(items);
+        free(pname);
+        value_free(list);
+        if (!ok) {
+            qt_raise(message);
+            return value_null();
+        }
+        return value_bool(1);
+    }
+
+    /* FOLDS (§0.38 B2): replace-all ranges, each keeping its first line and
+     * hiding the rest; with no ranges, what Qt holds now. */
+    if (strcmp(verb, "fold") == 0) {
+        if (argc != 2 && argc != 3) {
+            qt_raise("qt.fold expects a window and a `source`'s name, and the "
+                     "ranges as an array of { from, to } to set them");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value list = argc == 3 ? eval_expr(expr->as.call.args.items[2]) : value_null();
+        if (error_action_pending()) {
+            value_free(win); value_free(which); value_free(list);
+            return value_null();
+        }
+        if (!qt_window_record(&win, verb) || which.kind != VALUE_STRING ||
+            (argc == 3 && list.kind != VALUE_ARRAY)) {
+            if (!error_action_pending()) {
+                qt_raise("qt.fold expects a window, a `source`'s name as text, "
+                         "and the ranges as an array of { from, to }");
+            }
+            value_free(win); value_free(which); value_free(list);
+            return value_null();
+        }
+        const char *wname = qt_record_text(&win, "name");
+        void *root = wname ? qt_window_find(wname) : NULL;
+        if (!root) {
+            snprintf(message, sizeof(message), "window `%s` is not open",
+                     wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which); value_free(list);
+            return value_null();
+        }
+        char *pname = copy_string(which.as.string);
+        value_free(win); value_free(which);
+        static int from[4096], to[4096];
+        if (argc == 2) {
+            int n = gb_qt_fold_get(root, pname, from, to, 4096, err, sizeof(err));
+            free(pname);
+            if (n < 0) {
+                snprintf(message, sizeof(message), "qt.fold: %s", err);
+                qt_raise(message);
+                return value_null();
+            }
+            Value out = value_array(NULL, 0);
+            for (int i = 0; i < n && i < 4096; i++) {
+                Value r = value_record(NULL, 0);
+                record_set(&r, "from", value_number((double)from[i]));
+                record_set(&r, "to", value_number((double)to[i]));
+                out = append_to_array_value(out, r, 0);
+            }
+            return out;
+        }
+        size_t count = list.as.array.store ? list.as.array.store->count : 0;
+        int ok = count <= 4096;
+        snprintf(message, sizeof(message), "qt.fold: at most 4096 ranges");
+        for (size_t i = 0; ok && i < count; i++) {
+            Value *v = &list.as.array.store->items[i];
+            RecordField *ff = v->kind == VALUE_RECORD ? record_find(v, "from") : NULL;
+            RecordField *ft = v->kind == VALUE_RECORD ? record_find(v, "to") : NULL;
+            int good = ff && ft && ff->value && ft->value &&
+                       ff->value->kind == VALUE_NUMBER && ft->value->kind == VALUE_NUMBER &&
+                       ff->value->as.num.value == floor(ff->value->as.num.value) &&
+                       ft->value->as.num.value == floor(ft->value->as.num.value) &&
+                       v->as.record.count == 2;
+            if (!good) {
+                snprintf(message, sizeof(message), "qt.fold: range %zu is not "
+                         "{ from, to }, two whole line numbers (line 1 is the "
+                         "first line)", i + 1);
+                ok = 0;
+                break;
+            }
+            from[i] = (int)ff->value->as.num.value;
+            to[i] = (int)ft->value->as.num.value;
+        }
+        if (ok) {
+            err[0] = '\0';
+            ok = gb_qt_fold_set(root, pname, from, to, (int)count, err, sizeof(err));
+            if (!ok) {
+                snprintf(message, sizeof(message), "qt.fold: %s",
+                         err[0] ? err : "the folds could not be set");
+            }
+        }
+        free(pname);
+        value_free(list);
+        if (!ok) {
+            qt_raise(message);
+            return value_null();
+        }
+        return value_bool(1);
+    }
+
+    /* THE LINK BEING HANDLED in a `markdown` part's `link` handler (§0.38
+     * B4): its target as text, `unknown` outside one. */
+    if (strcmp(verb, "link") == 0) {
+        if (argc != 0) {
+            qt_raise("qt.link takes no arguments -- it answers the link being "
+                     "handled");
+            return value_null();
+        }
+        char *t = gb_qt_link_event();
+        if (!t) {
+            return value_unknown();
+        }
+        Value out = value_string(t);
+        free(t);
+        return out;
+    }
+
+    /* A REAL PRESS ON A LINK in a `markdown` part, for a fixture. */
+    if (strcmp(verb, "link_press") == 0) {
+        if (argc != 3) {
+            qt_raise("qt.link_press expects a window, a `markdown` part's name "
+                     "and the link's target");
+            return value_null();
+        }
+        Value win = eval_expr(expr->as.call.args.items[0]);
+        Value which = eval_expr(expr->as.call.args.items[1]);
+        Value tgt = eval_expr(expr->as.call.args.items[2]);
+        int ok = 0;
+        if (!error_action_pending() && qt_window_record(&win, verb) &&
+            which.kind == VALUE_STRING && tgt.kind == VALUE_STRING) {
+            const char *wname = qt_record_text(&win, "name");
+            void *root = wname ? qt_window_find(wname) : NULL;
+            err[0] = '\0';
+            if (!root) {
+                qt_raise("qt.link_press: that window is not open");
+            } else if (!(ok = gb_qt_link_press(root, which.as.string, tgt.as.string,
+                                               err, sizeof(err)))) {
+                snprintf(message, sizeof(message), "qt.link_press: %s", err);
+                qt_raise(message);
+            }
+        } else if (!error_action_pending()) {
+            qt_raise("qt.link_press expects a window, then the part and the "
+                     "link's target as text");
+        }
+        value_free(win); value_free(which); value_free(tgt);
+        return ok ? value_bool(1) : value_null();
+    }
+
+    /* THE `block` EVENT BEING HANDLED (§0.38 A), asked for as
+     * `qt.gutter_click` is: `{ id, action, target }`, `target` a link's
+     * address and `unknown` otherwise; `unknown` outside a handler. */
+    if (strcmp(verb, "block_event") == 0) {
+        if (argc != 0) {
+            qt_raise("qt.block_event takes no arguments -- it answers the "
+                     "block event being handled");
+            return value_null();
+        }
+        char *id = NULL, *action = NULL, *target = NULL;
+        if (!gb_qt_block_event(&id, &action, &target)) {
+            return value_unknown();
+        }
+        Value out = value_record(NULL, 0);
+        record_set(&out, "id", value_string(id));
+        record_set(&out, "action", value_string(action));
+        record_set(&out, "target", target ? value_string(target) : value_unknown());
+        free(id); free(action); free(target);
+        return out;
+    }
+
+    /* DRIVING A BLOCK, as qt.gutter_press drives the margin: a real press on
+     * its body, a real click on its collapse control, or a real press on a
+     * link's text, so the `block` handler runs as it would for a person. */
+    if (strcmp(verb, "block_press") == 0) {
+        if (argc != 4 && argc != 5) {
+            qt_raise("qt.block_press expects a window, a `source`'s name, a "
+                     "block's id, an action (click, collapse or link) and, for "
+                     "a link, its target");
+            return value_null();
+        }
+        Value a[5];
+        for (int i = 0; i < argc; i++) {
+            a[i] = eval_expr(expr->as.call.args.items[i]);
+        }
+        int bad = error_action_pending() || !qt_window_record(&a[0], verb);
+        for (int i = 1; !bad && i < argc; i++) {
+            bad = a[i].kind != VALUE_STRING;
+        }
+        void *root = NULL;
+        if (!bad) {
+            const char *wname = qt_record_text(&a[0], "name");
+            root = wname ? qt_window_find(wname) : NULL;
+        }
+        int ok = 0;
+        if (bad) {
+            if (!error_action_pending()) {
+                qt_raise("qt.block_press expects a window, then the part, the "
+                         "block's id, the action and a link's target as text");
+            }
+        } else if (!root) {
+            qt_raise("qt.block_press: that window is not open");
+        } else {
+            err[0] = '\0';
+            ok = gb_qt_block_press(root, a[1].as.string, a[2].as.string,
+                                   a[3].as.string, argc == 5 ? a[4].as.string : NULL,
+                                   err, sizeof(err));
+            if (!ok) {
+                snprintf(message, sizeof(message), "qt.block_press: %s", err);
+                qt_raise(message);
+            }
+        }
+        for (int i = 0; i < argc; i++) {
+            value_free(a[i]);
+        }
+        return ok ? value_bool(1) : value_null();
+    }
+
     /* AN SVG AS A PNG (§0.38 C): figures for print. No window: what is drawn
      * is the text given. The option set is closed and refused by name, as
      * qt.capture's is, for the same reason -- a misspelt `scale` is a figure

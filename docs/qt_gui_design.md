@@ -4510,10 +4510,24 @@ which shows only the block's header line:
   lists and task lists). A link does not navigate; it raises the `block` event.
 
 **Events.** `on <part>.block` fires for a click on a block's body, on its
-collapse control, or on a link in a markdown block; `qt.block_event(win, part)`
-answers the last one: `{ id, action: "click" | "collapse" | "link", target }`,
-`target` being a link's address and `unknown` otherwise. (One event and a reader,
-the shape `gutter` and `qt.gutter` have.)
+collapse control, or on a link in a markdown block; `qt.block_event()` (no
+arguments, like `qt.gutter_click`) answers the one being handled:
+`{ id, action: "click" | "collapse" | "link", target }`, `target` being a link's
+address and `unknown` otherwise, and `unknown` outside a handler. A press on a
+link is the link's alone, not also a click. The collapse control changes
+nothing itself; Studio controls `collapsed:` and re-sends.
+`qt.block_press(win, part, id, action [, target])` presses one for a fixture.
+
+*Built 2026-11-10, and what building it found:* QPlainTextEdit recomputes its
+scrollbar's range only when the layout reports a size change, which it does
+only when the line count changes -- and a block adds height, not lines.
+Measured: with blocks under lines 2-10, `caret_to(40)` scrolled six lines and
+line 40 stayed below the view, unreachable. The layout now announces a size
+change on every relayout. The probe's first scrollbar check had blocks only
+near the top, where the stale range did not show; it now has three in the last
+screenful. A line **split** in two keeps its block under the second half (the
+anchor is the line's end), and a fold that newly hides the caret's line moves
+the caret to the fold's first line.
 
 **Theme.** A block takes the editor's palette (base, text, alternate base for its
 header), so a dark editor has dark blocks; a named theme (D1) sets that palette
@@ -4569,7 +4583,10 @@ it said. Nothing else is needed from here.
 
 **B3. Markdown** is the `markdown` block kind above. **B4.** A read-only
 `markdown` part (a `QTextBrowser`, links raising `on <part>.link` with
-`qt.link(win, part)` answering the target), for a preview pane.
+`qt.link()` answering the target while the handler runs, as
+`qt.gutter_click` does), for a preview pane. Built with the blocks: content
+is set through QTextEdit's own `markdown` property, and a press on a link is
+reported and never followed (the part's text measured unchanged after two).
 
 ### C. Figures as PNG: `qt.render_svg(svg, file, { width, height, scale })`
 

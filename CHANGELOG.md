@@ -16,6 +16,39 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Studio's notebook, part 2: blocks, folds, a markdown part (2026-11-10)
+
+- **`qt.blocks(win, part, items)`** (§0.38 A, B3): content shown between a
+  `source`'s lines -- `text`, `table`, `image` (PNG or SVG, by path or bytes)
+  and `markdown` -- replacing the whole set, reconciled by `id` so an unchanged
+  block keeps its widget. **None of it is document text**: plainText, the undo
+  stack, the modified flag, the revision, the caret and the line count do not
+  move (a C++ probe linking the real backend measures each). A block follows
+  its line through edits, stays under the second half of a split line, moves
+  with a line joined onto the one above, and is dropped when its line is
+  deleted or emptied. `max_height`, `collapsed` and `covers` (drawn over its
+  line rather than under it); `qt.blocks(win, part)` reads back what Qt holds
+  now, line included. Blocks follow the editor's palette, so a dark editor's
+  are dark.
+- **The `block` event** on a `source`: a click on a block, its collapse
+  control, or a link in a markdown block (never followed); `qt.block_event()`
+  answers `{ id, action, target }`, and `qt.block_press` drives it.
+- **`qt.fold(win, part, ranges)`** (B2): folds that keep their first line and
+  hide the rest, layout only, anchored through edits; a fold that hides the
+  caret's line moves the caret to its first line.
+- **A `markdown` window word** (B4): a read-only rendered-prose part, set with
+  `qt.set(win, part, "markdown", text)`; a link is the `link` event, read with
+  `qt.link()`, and never navigates. `qt.link_press` drives it.
+- **Found while building it:** QPlainTextEdit recomputes its scrollbar's range
+  only when the line count changes, so with blocks in the text the end of the
+  document could be unreachable (`caret_to(40)` scrolled six lines and stopped
+  short). The layout now announces a size change on every relayout.
+- `tests/run_qt_notebook.sh` grows a blocks tier (55 checks), the C++ probe
+  (20 checks), block pixels (an SVG image block drawn; a dark editor's block not
+  a white box) and valgrind over both fixtures. 17 perturbations, each red; one
+  that first stayed green (anchoring by the line's start rather than its end)
+  produced the split-line check.
+
 ### Studio's notebook, part 1: comments, figures, themes (2026-11-10)
 
 Asked for by gBASIC Studio (docs/qt_gui_design.md §0.38): a `.bas` file that

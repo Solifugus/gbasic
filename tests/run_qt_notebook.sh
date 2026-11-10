@@ -18,7 +18,19 @@
 #     gray-themed editors are the theme's background. qt.capture's own text
 #     has subpixel colour fringes, which is printed, not asserted: a known
 #     limit for print figures, reported to Studio.
-#   VALGRIND, over the figures fixture.
+#   BLOCKS (A, B2, B3) -- tests/qt_notebook/blocks_test.bas: every kind, read
+#     back from Qt (line, height, visible, collapsed, covers); anchoring through
+#     edits (typed above, below, a line joined, deleted, emptied, the text
+#     replaced whole); replace-all; folds, their anchoring and the caret; the
+#     block event by real presses (click, collapse, link); refusals by name.
+#     Floor 55 checks. Pixels: the SVG image block drawn, a dark editor's
+#     block not a white box.
+#   PROBE -- tests/qt/blocks_probe.cpp links the real backend for the hard
+#     requirement gBASIC cannot see: undo stack, modified flag, revision, caret
+#     and line count unchanged by blocks and folds; copying across a block; a
+#     click below a gap and the Down key; the scrollbar's end; an unchanged
+#     block keeping its widget. Floor 20 checks.
+#   VALGRIND, over the figures and blocks fixtures.
 #
 # Skips without Qt in the build; the pixel tier without python3's PIL.
 . "$(dirname "$0")/portable.sh"
@@ -82,12 +94,40 @@ printf -- '-- figures and themes\n'
 figs_ran=0
 run_fixture figures_test 25 "$work/figs" && figs_ran=1
 
+printf -- '-- blocks, folds and the block event\n'
+mkdir -p "$work/blocks"
+blocks_ran=0
+run_fixture blocks_test 55 "$work/blocks" && blocks_ran=1
+
+# THE HARD REQUIREMENT, which gBASIC cannot see: the undo stack, the modified
+# flag, the revision, the caret, copying across a block, a click below a gap,
+# the Down key, the scrollbar's end, and an unchanged block keeping its widget.
+printf -- '-- probe: blocks are not text (C++, the real backend)\n'
+if ! command -v g++ >/dev/null 2>&1; then
+    printf 'SKIP probe (no C++ compiler: the hard requirement was not measured)\n'
+elif ! g++ -std=c++17 -fPIC -Iinclude -Isrc/modules -o "$work/bprobe" \
+        tests/qt/blocks_probe.cpp src/modules/qt_backend.o \
+        $(pkg-config --cflags --libs Qt6Widgets) \
+        $(pkg-config --libs Qt6Svg 2>/dev/null) \
+        $(pkg-config --libs KF6SyntaxHighlighting 2>/dev/null \
+          || echo -lKF6SyntaxHighlighting) 2>"$work/cxx.err"; then
+    head -8 "$work/cxx.err"
+    fail "the blocks probe did not build"
+elif QT_QPA_PLATFORM=offscreen timeout -k 5 60 "$work/bprobe" >"$work/bprobe.out" 2>/dev/null &&
+     grep -q '^checks [0-9]* bad 0$' "$work/bprobe.out" &&
+     [ "$(sed -n 's/^checks \([0-9]*\) bad 0$/\1/p' "$work/bprobe.out")" -ge 20 ]; then
+    printf 'PASS probe (%s)\n' "$(tail -1 "$work/bprobe.out")"
+else
+    grep -v '^ok' "$work/bprobe.out" | head -10
+    fail "probe (floor 20 checks, none bad)"
+fi
+
 printf -- '-- pixels\n'
 if [ "$figs_ran" != 1 ]; then
     printf 'SKIP pixels (the fixture did not finish, so there are no pictures)\n'
 elif ! python3 -c 'import PIL' 2>/dev/null; then
     printf 'SKIP pixels (no python3 PIL: the pixels were not measured)\n'
-elif o=$(python3 -I - "$work/figs" 2>&1 <<'EOF'
+elif o=$(python3 -I - "$work/figs" $([ "$blocks_ran" = 1 ] && echo "$work/blocks") 2>&1 <<'EOF'
 import sys
 from PIL import Image
 d = sys.argv[1]
@@ -126,6 +166,14 @@ print("note: qt.capture's subpixel fringes in the gray editor: %d pixels" % sum(
 th = Image.open(d + "/themes.png").convert("RGB")
 dark = sum(1 for p in th.get_flattened_data() if p[0] < 0x90)
 check("themes: text was drawn (dark pixels exist)", dark > 20, dark)
+if len(sys.argv) > 2:
+    b = sys.argv[2]
+    k = Image.open(b + "/kinds.png").convert("RGB")
+    nblue = sum(1 for p in k.get_flattened_data() if p == blue)
+    check("blocks: the SVG image block is drawn, its blue in the capture", nblue > 200, nblue)
+    dk = Image.open(b + "/dark.png").convert("RGB")
+    whites = sum(1 for p in dk.get_flattened_data() if min(p) > 225)
+    check("blocks: a dark editor's block is not a white box", whites < 40, whites)
 print("checks: %d" % checks)
 sys.exit(1 if bad else 0)
 EOF
@@ -147,6 +195,15 @@ if vg_available; then
         fail "valgrind objected"
     else
         printf 'PASS valgrind tests/qt_notebook/figures_test.bas (access)\n'
+    fi
+    mkdir -p "$work/vgblocks"
+    QT_ENABLE_REGEXP_JIT=0 QT_QPA_PLATFORM=offscreen GBASIC_SYNTAX_PATH="$work/kate" \
+        vg_run_access_only ./gbasic tests/qt_notebook/blocks_test.bas "$work/vgblocks" >/dev/null 2>"$work/vgb"
+    if [ "$?" = "$VG_EXIT" ]; then
+        grep -E "Invalid|uninitialised" "$work/vgb" | head -5
+        fail "valgrind objected to the blocks fixture"
+    else
+        printf 'PASS valgrind tests/qt_notebook/blocks_test.bas (access)\n'
     fi
 else
     printf 'SKIP valgrind (not installed)\n'
