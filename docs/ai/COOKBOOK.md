@@ -258,13 +258,13 @@ for error handling, `ERRORS.md`.
 
 ## Dates, durations, calendars
 
-- **UTC** — `now("UTC")`. NOT `to_zone(now(), "UTC")`, which is a no-op that
-  returns local time unchanged: `to_zone` reads its input as already-UTC.
-  → `examples/datetime_zone_test.bas`
-- **An instant from a datetime** — `epoch(dt, zone)`. Bare `epoch(dt)` and
-  `number(dt)` read the value as LOCAL, so they are wrong for anything
-  converted; `epoch()` with no argument is the current instant.
-  → `examples/datetime_zone_test.bas`
+- **UTC** — `now()`. Every instant gBASIC makes is UTC (since 2026-11-10):
+  `now()`, `from_epoch`, file times; `epoch(dt)` and `number(dt)` read UTC.
+  → `tests/run_utc_clock.sh`
+- **A time for a person** — `to_zone(dt, "local")` (this machine) or
+  `to_zone(dt, "Europe/Berlin")`; `now("local")` for the wall clock. Civil
+  time from elsewhere goes on the timeline with `epoch(dt, zone)` or
+  `from_zone(dt, zone)`. → `examples/datetime_zone_test.bas`
 - **Exit status** — `exit(code)`, 0-255, unwinds out of everything. Wider
   values are refused, not truncated. → `tests/run_core.sh`
 

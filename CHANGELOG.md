@@ -16,6 +16,44 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### BREAKING: every instant is UTC (2026-11-10)
+
+- **`now()` returns UTC**, and so do `from_epoch(n)`, `file_mtime(f)` and a
+  directory entry's `modified`. **`epoch(dt)`, `number(dt)` and
+  `set_mtime(f, dt)` read a datetime as UTC**, and **`zone_offset(dt)`** is
+  the system zone's offset at the instant `dt`. All of them were the system's
+  LOCAL time, while `{datetime}"…-05:00"` was converted to UTC; a program
+  holding both was wrong by the machine's offset and nothing said so. Matthew's
+  ruling: store UTC, convert at the edges. Civil values (dates, calendar
+  rules, all-day values) are unchanged.
+- **`"local"` is a zone name** for the system's own zone, in `now`,
+  `to_zone`, `from_zone`, `zone_offset`, `zone_resolve` and `epoch(dt, zone)`.
+  `to_zone(dt, "local")` is how a stored time is shown to a person here;
+  `now("local")` is the wall clock; `{day}= now("local")` is today on this
+  machine's calendar (`{day}= now()` is today in UTC).
+- **`pg` sends a datetime parameter with `+00`**, so a `timestamptz` column
+  stores the same instant whatever the session's zone; a `timestamp` column
+  ignores the offset (both measured against PostgreSQL in America/New_York).
+- **`mail.compose` takes `zone:`** for the zone its Date header is written in
+  (default `"local"`), and `mail.format_date(when [, zone])` reads `when` as
+  UTC. A date read by `mail.parse` now goes through `compose` unmoved.
+- **What to check in a program:** anything that shows `now()` or a file time
+  to a person (it now reads UTC; use `to_zone(..., "local")`); `{day}= now()`
+  used as "today" (it is UTC's today); and anything that stored `now()` as
+  text before this change and compares it with `now()` after (the stored
+  values are local, by the old offset). `epoch(now())`, `epoch()`, and
+  durations between two `now()`s are unaffected.
+- New suite `tests/run_utc_clock.sh`: the same program under five TZ settings
+  (UTC, New York, Kolkata, Chatham +13:45, St John's -03:30), the system
+  offset held to Python's zoneinfo, file times to `stat`, a block that must
+  print identical bytes in every zone and whose instants are Python's, a
+  source tripwire that local time is read only by the zone helpers, and
+  valgrind. Six perturbations (each piece put back to local, `"local"`
+  refused) each went red.
+- **Rebaselined, deliberately:** `examples/datetime_zone_test` (its checks
+  pinned the old local reading; they now pin UTC and `"local"`, 8 checks to
+  9) and `tests/smtp/refusals.out` (compose's field list names `zone`).
+
 ### Reading a received message: `mail.parse` (book gap G59, 2026-11-10)
 
 - **`mail.parse(raw)` reads a message's bytes** into its headers (unfolded,
@@ -42,11 +80,9 @@ reader sees.
   quoted-printable line is deleted, so `= ` ending a line is a soft break
   (RFC 2045 6.7; binascii keeps both); a two-digit year 50-99 is 19xx
   (RFC 5322 4.3; Python makes 50-68 20xx).
-- **A zone question, not changed:** `mail.compose` reads its `date` as the
-  system's civil time (as `now()` is, and as documented), while `parse`
-  answers UTC, as `{datetime}` reads a text with an offset. A date read by
-  `parse` and handed to `compose` is shifted by the machine's offset. Recorded
-  in DOGFOOD for a ruling.
+- **A zone question, ruled the same day:** `mail.compose` read its `date` as
+  the system's civil time while `parse` answers UTC. Matthew ruled that every
+  instant is UTC (the entry above), and compose now agrees.
 - New suite `tests/run_mail_parse.sh`: by hand from the RFCs (135 checks,
   every problem parse can report), and Python's `email` package reading the
   same bytes for 1200 messages made per run (half written byte by byte, half

@@ -594,18 +594,15 @@ day — so assume you will hit them too.
   together, invoked as a method -- drags otherwise-private wiring into the
   caller purely for reachability. Not needed now.
 
-- **`to_zone(now(), "UTC")` is a NO-OP, not a conversion (fixed by addition
-  2026-08-28).** A gBASIC datetime carries no zone; it is civil wall-clock
-  text. `to_zone` reads its input as ALREADY UTC and renders it in the target,
-  so handing it a local value returns that value unchanged — silently wrong by
-  your offset, with a UTC label on it. Use **`now("UTC")`**.
-
-- **`number(dt)` and `epoch(dt)` read a datetime as LOCAL.** That is right for
-  `now()` and wrong for anything you converted: `number(from_zone(now(), zone))`
-  — the documented route to UTC — is off by the offset, because a UTC civil
-  value is being read as local. Use **`epoch(dt, zone)`** and say which zone the
-  value is in. An audit trail built the other way stores timestamps hours out
-  and nothing reports it.
+- **`now()` is UTC, not your wall clock** *(since 2026-11-10)*. So are
+  `from_epoch(n)`, `file_mtime(f)` and a directory entry's `modified`; and
+  `epoch(dt)`, `number(dt)` and `set_mtime` read a datetime as UTC. Store
+  that. To show a person a time, convert at that edge: `to_zone(dt, "local")`
+  or a named zone, or `now("local")` for the wall clock. `{day}= now()` is
+  today's date in UTC, which after 19:00 in New York is tomorrow; use
+  `{day}= now("local")` for this machine's calendar. (Before 2026-11-10 all of
+  these were LOCAL while `{datetime}` read an offset as UTC, and mixing them
+  was wrong by the machine's offset.)
 
 - **A program can set its own exit status: `exit(code)`** (2026-08-28). It
   unwinds out of any function, loop or block — `stop` that names a status.

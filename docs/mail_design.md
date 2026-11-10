@@ -156,12 +156,12 @@ person would read. Its decisions:
   words in a display name (RFC 2047 6.2), trailing white space on a
   quoted-printable line (RFC 2045 6.7), and two-digit years 50-68
   (RFC 5322 4.3).
-* **Dates are instants in UTC**, as `{datetime}` reads a text with an offset,
-  with the writer's offset beside them (`date_offset`). gBASIC's datetime has
-  no zone, `now()` is the system's civil time, and `compose` writes its `date`
-  as civil time, so a parsed date handed to `compose` moves by the machine's
-  offset. That is recorded rather than changed: it is a question about what a
-  zoneless datetime means, and the answer belongs to the datetime design.
+* **Dates are instants in UTC**, as every instant in gBASIC is (ruled
+  2026-11-10), with the writer's offset beside them (`date_offset`). `compose`
+  reads its `date` as UTC too and writes the header in `zone:` (default the
+  system's), so a parsed date goes back out unmoved. Until that ruling
+  `compose` read `date` as local time and the round trip moved by the
+  machine's offset, which is how the question was found.
 * **Quotation is a convention.** `mail.own_text` cuts at the first line
   starting `>`, an `On … wrote:` line or `-----Original Message-----`, says
   which, and names unquoted lines below the cut, since a reply written between

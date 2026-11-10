@@ -121,16 +121,24 @@ library mail
         return string(n)
     end function
 
-    ' RFC 5322 date-time. The offset is the datetime's own, so a message sent at
-    ' 09:00 local says 09:00 and names the zone rather than silently shifting.
-    function format_date(when)
+    ' RFC 5322 date-time. `when` is an instant in UTC, as now() is; it is
+    ' written as the clock in `zone` read it, with that zone's offset, so a
+    ' message sent at 09:00 local says 09:00 and names its offset. `zone` is an
+    ' IANA name, "UTC", or "local" (the system's own, the default).
+    '
+    ' Until 2026-11-10 `when` was read as LOCAL civil time, as now() was then,
+    ' and a date read from an offset (UTC) came out shifted by the machine's
+    ' offset (DOGFOOD, G59).
+    function format_date(when, zone = "local")
         ' weekday is ISO: 1 = Monday .. 7 = Sunday. A Sunday-first table read
         ' with it is right for Saturday alone, which is exactly the kind of
         ' coincidence that hides an off-by-one until a Tuesday.
         days = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         months = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                   "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"]
-        offset = floor(zone_offset(when).total_seconds / 60)   ' minutes east of UTC
+        civil = to_zone(when, zone)
+        offset = floor((civil - when).total_seconds / 60)   ' minutes east of UTC
+        when = civil
         sign = "+"
         if offset < 0 then
             sign = "-"
@@ -272,7 +280,7 @@ library mail
             error "mail.compose expects a record"
         end if
         known = ["from", "to", "cc", "bcc", "reply_to", "subject", "body",
-                 "html", "attachments", "headers", "date"]
+                 "html", "attachments", "headers", "date", "zone"]
         for each field in keys(message)
             if not contains(known, field) then
                 error ("mail.compose: unknown field '" + field + "'; expected one of "
@@ -354,7 +362,11 @@ library mail
             append(headers, "Reply-To: " + format_address("reply_to", message.reply_to))
         end if
         append(headers, "Subject: " + encode_word(subject))
-        append(headers, "Date: " + format_date(when))
+        zone = "local"
+        if has(message, "zone") then
+            zone = message.zone
+        end if
+        append(headers, "Date: " + format_date(when, zone))
         append(headers, "Message-ID: " + message_id)
         append(headers, "MIME-Version: 1.0")
 

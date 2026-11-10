@@ -17,6 +17,6 @@ refused  a space inside the address: mail.compose: to has a space inside the add
 refused  an unclosed angle bracket: mail.compose: to has '<' without a closing '>': Bee <b@example.com
 ACCEPTED a closed one (the control)
 -- shape
-refused  a misspelled field: mail.compose: unknown field 'bodyy'; expected one of from, to, cc, bcc, reply_to, subject, body, html, attachments, headers, date
+refused  a misspelled field: mail.compose: unknown field 'bodyy'; expected one of from, to, cc, bcc, reply_to, subject, body, html, attachments, headers, date, zone
 refused  an attachment with no content: mail.compose: each attachment needs a name and content
 ACCEPTED an attachment with one (the control)

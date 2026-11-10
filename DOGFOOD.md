@@ -13857,9 +13857,11 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   a parsed date handed to compose must be converted first
   (`d + zone_offset(d)` gives civil time near enough, `to_zone` exactly).
   tests/mail/parse_test.bas pins compose's reading by name.
-- **Status:** open, a question for Matthew: which zone a zoneless datetime
-  means where it meets the outside (compose's `date`, and anything else that
-  writes an offset). Changing compose moves every composed message's Date.
+- **Status: RESOLVED 2026-11-10** by Matthew's ruling, "The default is UTC":
+  every instant gBASIC makes or reads is UTC (now(), from_epoch, file times,
+  epoch(dt), number(dt), set_mtime, zone_offset(dt)), "local" names the
+  system's zone at the edges, compose takes `zone:`, and pg sends `+00`.
+  Held by tests/run_utc_clock.sh under five TZ settings.
 
 ## 2026-11-10 — CC — while: G59, emitting mail.parse's records as JSON
 

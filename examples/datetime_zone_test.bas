@@ -1,15 +1,16 @@
 ' Zones, instants, and the trap between them.
 '
-' A gBASIC datetime carries NO ZONE -- it is civil wall-clock text. So every
-' conversion between a datetime and an instant has to get a zone from
-' somewhere, and the two halves of the API used to get it from different
-' places: `to_zone` reads its input as already-UTC, while `number`/`epoch` read
-' it as local. Both are defensible alone; together they let a program ask for
-' UTC, be handed local time, and label it UTC.
+' A gBASIC datetime carries NO ZONE, so the language fixes one: a datetime that
+' stands for a moment is UTC (since 2026-11-10). now(), from_epoch() and file
+' times answer UTC; epoch(dt) and number(dt) read UTC; and the zone is chosen
+' at the edge that shows a person a time -- to_zone(dt, zone), now(zone), with
+' "local" naming the system's own. Before, now()/epoch(dt)/number(dt) were
+' LOCAL while to_zone read its input as UTC, so a program could ask for UTC,
+' be handed local time, and label it UTC.
 '
 ' This fixture pins the shapes that are checkable WITHOUT knowing the machine's
-' zone -- relationships, not wall-clock digits. tests/run_core.sh asserts the
-' actual clock against `date`, which is the part only the world can answer.
+' zone -- relationships, not wall-clock digits. tests/run_utc_clock.sh runs a
+' fuller program under five TZ settings.
 
 results = []
 
@@ -22,32 +23,24 @@ function check(label, expected, actual)
     return false
 end function
 
-' `epoch()` is the instant. Reading the LOCAL civil value back as local, and
-' the UTC civil value back as UTC, must land on that same instant -- that is
-' the whole consistency claim, and it holds wherever this runs.
+' `epoch()` is the instant, and now() read back is that instant: no zone
+' needed, because now() is UTC and epoch(dt) reads UTC.
 e = epoch()
-l = now()
-u = now("UTC")
-append(results, check("epoch(local) is the current instant", true, abs(epoch(l) - e) <= 2))
-append(results, check("epoch(utc, UTC) is the SAME instant", true, abs(epoch(u, "UTC") - e) <= 2))
+u = now()
+l = now("local")
+append(results, check("epoch(now()) is the current instant", true, abs(epoch(u) - e) <= 2))
+append(results, check("epoch(now(\"UTC\"), \"UTC\") is the SAME instant", true, abs(epoch(now("UTC"), "UTC") - e) <= 2))
 
-' The trap, stated so it cannot quietly change. `number` and `epoch` read a
-' datetime the same way -- as LOCAL -- so on the UTC value they agree with each
-' other and BOTH disagree with the truth by exactly the local UTC offset. On a
-' UTC machine the offset is zero and these are equal; anywhere else the gap is
-' the bug, and it is the same gap either way you measure it.
+' `number` and `epoch` read a datetime the same way, and that way is UTC: the
+' zone form naming "UTC" agrees exactly. (Before 2026-11-10 both were off by
+' the local offset here.)
 append(results, check("number(dt) and epoch(dt) read a value the same way", number(u), epoch(u)))
-' The offset is the local zone's AT u's civil time, read as local. Taken at l
-' instead (the local "now"), it differs by an hour for the few hours around a
-' daylight-saving change, when u and l fall on opposite sides of it -- which is
-' how this check failed on 2026-10-31 at 23:30 EDT, three and a half hours
-' before the change, with nothing wrong in the interpreter.
-off = zone_offset(u)
-append(results, check("...and both are off by the local offset", epoch(u) - epoch(u, "UTC"), 0 - (off.hours * 3600 + off.minutes * 60)))
+append(results, check("...and both read it as UTC", 0, epoch(u) - epoch(u, "UTC")))
 
-' `to_zone` is not a conversion FROM local. Feeding it a local value returns
-' that value unchanged -- the no-op that reads like a conversion.
-append(results, check("to_zone(local, UTC) returns the input unchanged", string(l), string(to_zone(l, "UTC"))))
+' The local wall clock is an edge: now("local") read back in "local" is the
+' same instant, and to_zone(..., "local") is the conversion to it.
+append(results, check("now(\"local\") read in \"local\" is the instant", true, abs(epoch(l, "local") - e) <= 2))
+append(results, check("to_zone(now(), \"local\") read in \"local\" is now()", epoch(u), epoch(to_zone(u, "local"), "local")))
 
 ' Two named zones that are never equal to each other: Tokyo has no DST and is
 ' always ahead of UTC by 9 hours.

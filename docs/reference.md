@@ -3564,7 +3564,8 @@ Fields, all optional but `from` and at least one recipient:
 | `subject`, `body`, `html` | text; `html` makes the message `multipart/alternative` |
 | `attachments` | array of `{ name:, content:, type: }` |
 | `headers` | a record of extra headers |
-| `date` | a datetime; defaults to `now()` |
+| `date` | a datetime, an instant in UTC; defaults to `now()` |
+| `zone` | the zone the `Date` header is written in: an IANA name, `"UTC"`, or `"local"` (the default) |
 
 Returns `{ from, recipients, message_id, text }` — `recipients` is the
 **envelope**, so it includes `bcc`, and `text` is the message, where `bcc`
@@ -3595,7 +3596,7 @@ that reason:
 | `mail.wrap_base64(text)` | base64, wrapped at 76 columns. |
 | `mail.address_parts(field, address)` | `{ name, address }` from either spelling; raises, naming `field`, if it is not an address. |
 | `mail.format_address(field, address)` | the header form, with the display name encoded if it needs it. |
-| `mail.format_date(when)` | a datetime as an RFC 5322 `Date`, using the system's own offset. Byte-identical to python's `email.utils.format_datetime` across all seven weekdays. |
+| `mail.format_date(when [, zone])` | a UTC datetime as an RFC 5322 `Date`, written as the clock in `zone` (default `"local"`) reads it, with that zone's offset. Byte-identical to python's `email.utils.format_datetime` across all seven weekdays. |
 
 ### `mail.parse(raw)`
 
@@ -3652,9 +3653,8 @@ does not decode, a multipart with no closing boundary, nesting past 32, a
 `Date` with no zone, a word in `To` that is not an address. A text that cannot
 be decoded is `unknown`, never a guess; its bytes are in the part's `body`.
 
-`mail.compose` writes its `date` as the system's civil time, the way `now()`
-is; `parse` answers UTC. A date read by `parse` and handed to `compose` is
-shifted by the machine's offset unless it is converted first.
+Both sides are UTC, so a date read by `parse` goes through `compose`
+unmoved.
 
 | | |
 |---|---|
@@ -7104,8 +7104,9 @@ csrf_token = secure_token(43)
 
 ### Current Time
 
-**`now()`** - Returns the current local time as a second-precision `datetime`
-value. It takes no arguments. Because `datetime` values support duration
+**`now()`** - Returns the current time **in UTC** as a second-precision
+`datetime` value. It takes no arguments. *(UTC since 2026-11-10; it was the
+system's local time before. See "Every instant is UTC" below.)* Because `datetime` values support duration
 arithmetic and exact comparison, `now()` is the primitive for expiration and
 deadline logic; everything else (a date-only "today", relative windows) derives
 from it via durations and the date/time lenses.
@@ -7113,7 +7114,8 @@ from it via durations and the date/time lenses.
 ```basic
 deadline = now() + 8 hours
 expired = now() > deadline          ' false until the deadline passes
-today{day}= now()                   ' truncate to date precision via the day lens
+today{day}= now()                   ' today's date in UTC
+here{day}= now("local")             ' today's date on this machine's calendar
 ```
 
 There is intentionally no `today()` builtin: `today` is too common an
@@ -7121,20 +7123,26 @@ identifier to reserve, and the date is derivable from `now()` and the `{day}=`
 truncation lens as shown above.
 
 **`now(zone)`** returns the current civil time in a named IANA zone —
-`now("UTC")`, `now("Asia/Tokyo")`. An unknown name is refused.
+`now("Asia/Tokyo")` — and **`now("local")`** in the system's own zone (`TZ`,
+or `/etc/localtime`). An unknown name is refused.
 
-**A gBASIC datetime carries no zone.** It is civil wall-clock text, and every
-conversion to an instant has to get a zone from somewhere. That makes one
-mistake very easy to write and impossible to see:
-`stamp = to_zone(now(), "UTC")` is **wrong** — it returns local time unchanged.
-`to_zone` reads its input as *already UTC* and renders it in the target zone,
-so handing it a local value gives that value straight back: a no-op that reads
-like a conversion and is wrong by your offset. Use `now("UTC")`.
+**Every instant is UTC** *(since 2026-11-10)*. A gBASIC datetime carries no
+zone, so the language fixes one: a datetime that stands for a moment is in
+UTC. `now()`, `from_epoch(n)`, `file_mtime(f)` and a directory entry's
+`modified` all answer UTC; `epoch(dt)`, `number(dt)` and `set_mtime(f, dt)`
+read their datetime as UTC; a text with an offset (`"…T07:52:00-05:00"`) is
+converted to UTC on the way in; and the `pg` module sends a datetime
+parameter with `+00`, so a `timestamptz` column stores the same moment.
+Store UTC, and convert at the edge that shows a person a time:
+`to_zone(dt, "Europe/Berlin")`, `to_zone(dt, "local")`, or
+`dt + zone_offset(dt)`. Civil values with no moment in them — a due date, a
+holiday, "14:00 every Thursday in Chicago" — stay zoneless and are never
+converted (docs/datetime_design.md §9).
 
-The same asymmetry bites the other way. `number(dt)` and `epoch(dt)` read a
-datetime as **local**, so `number(from_zone(now(), zone))` — the documented
-route to UTC — is wrong by the offset too, because a UTC civil value is being
-read as local. State the zone: `epoch(dt, zone)`.
+*Before 2026-11-10* every one of those was the system's LOCAL time, while a
+text with an offset was converted to UTC. A program holding both was wrong by
+the machine's offset with nothing to show it, and a test run in one zone could
+not see it. `tests/run_utc_clock.sh` runs under five.
 
 **ISO 8601 INPUT** *(since 2026-10-03)*. A `datetime` reads the `T` separator
 and a zone designator, so a timestamp off a web API parses as it stands:
@@ -7261,14 +7269,14 @@ because "could not parse" alone cannot tell you whether the data is wrong or
 your list is short.
 
 **`epoch()`** returns the current instant as Unix seconds. **`epoch(dt)`**
-places a civil datetime on the timeline by reading it as **local**;
-**`epoch(dt, zone)`** reads it as civil in that zone, which is the only correct
-way to get an instant from a value that is not local:
+places a datetime on the timeline by reading it as **UTC** *(since 2026-11-10;
+it read local before)*; **`epoch(dt, zone)`** reads it as civil time in that
+zone, for a value that came from somewhere in local time:
 
 ```basic
-utc   = now("UTC")
-stamp = epoch(utc, "UTC")           ' == epoch(), the real instant
-wrong = number(utc)                 ' off by your UTC offset
+stamp = epoch(now())                ' == epoch(), the real instant
+wall  = now("local")                ' this machine's clock
+same  = epoch(wall, "local")        ' == epoch() too
 ```
 
 DST gaps and repeats resolve by the same policy `from_zone` uses, so both doors
@@ -7351,12 +7359,12 @@ the earlier instant; the spring-forward gap → shifted forward);
 `zone_resolve` returns `{kind, utc, earlier, later}` with `kind` one of
 `unique`/`ambiguous`/`nonexistent` so callers can choose their own policy.
 
-`zone_offset(dt)` with no zone answers the **system's** offset for that
-wall-clock time, as a duration. The two-argument form asks "what if this were
-in that zone"; naming the local zone is the one thing a caller cannot do for
-itself, and without this a program can read the wall clock and has no way to
-say what it is offset from — an RFC 5322 `Date`, an ISO 8601 offset and a
-zone-stamped log line are all unwritable.
+`zone_offset(dt)` with no zone answers the **system's** offset at the instant
+`dt` (UTC), as a duration, so `dt + zone_offset(dt)` is this machine's wall
+clock then. *(Before 2026-11-10 it read `dt` as local wall-clock time.)* The
+two-argument form asks "what if this civil time were in that zone". Any of
+these builtins takes `"local"` as the zone: the system's own, which is the one
+zone a program cannot otherwise name.
 Unknown zones raise (a typo must not become quietly-UTC arithmetic), and
 all-day values raise (`… an all-day value has no instant`). Worked example:
 recipe 11 of `docs/datetime_cookbook.md`.
@@ -9363,7 +9371,7 @@ File metadata and atomic replacement:
   `integer` column takes it *(2026-11-09; it was inexact)*. Takes a path string or a file reference. A directory has
   no content size and raises; a missing path raises with the OS reason.
 - `file_mtime(f)` — the file's last-modification time as a `datetime`, from
-  `stat`, in local time. **Second resolution:** gBASIC's `datetime` has no
+  `stat`, in UTC *(since 2026-11-10; local time before)*. **Second resolution:** gBASIC's `datetime` has no
   sub-second field, so any nanosecond part of the filesystem timestamp is
   dropped rather than fabricated. Takes a path string or a file reference; works for
   directories too (a directory's mtime is a real change signal). A missing path

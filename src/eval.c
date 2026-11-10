@@ -2556,16 +2556,17 @@ static Value value_datetime(DateTime datetime) {
  * conversion fails. st_mtime is whole seconds since the epoch and gBASIC's
  * DateTime has second precision, so any sub-second st_mtim.tv_nsec is
  * intentionally dropped -- we do not fabricate precision the value model
- * cannot hold. Local time, mirroring from_epoch().
+ * cannot hold. UTC, as every instant gBASIC makes is (now(), from_epoch()):
+ * the zone is chosen at the edge that shows it, with to_zone or now(zone).
  *
  * SHARED BY `file_mtime` AND THE DIRECTORY ENTRY'S `modified` FIELD. The two
  * answer the same question by two routes, and two copies of this construction
  * are two things that can disagree about the zone or the precision -- the
  * failure shape run_exact.sh records for `sort` and `=` having each been given
  * exactness separately. */
-static Value value_datetime_from_epoch_local(time_t raw) {
+static Value value_datetime_from_epoch_utc(time_t raw) {
     struct tm local;
-    if (!gb_localtime(&raw, &local)) {
+    if (!gb_gmtime(&raw, &local)) {
         return value_unknown();
     }
     DateTime dt = {0};
@@ -2664,11 +2665,6 @@ static void format_number(char *buf, size_t bufsize, double v) {
     }
 }
 
-/* Convert a datetime to Unix epoch seconds. Datetimes are local wall-clock
- * (now() uses localtime), so mktime() interprets the fields as local time and
- * yields the same instant epoch() reports. Missing calendar parts (year/month/
- * day-only precisions) default to the start of the period; a time-only value has
- * no date and cannot be placed on the timeline (*ok = 0). */
 /* ---------------------------------------------------------------------------
  * Timezone edges (docs/datetime_design.md §9): UTC for the timeline, CIVIL
  * time for the calendar, zone names at the edges. These builtins are the
@@ -2687,7 +2683,28 @@ static void format_number(char *buf, size_t bufsize, double v) {
  * typo like "America/Chigaco" into quietly-UTC arithmetic -- the exact class
  * of plausible wrong answer this design refuses everywhere else. */
 
+/* "local" names the system's own zone (TZ, or /etc/localtime): what a
+ * datetime must be converted to for a person at this machine, now that every
+ * instant gBASIC makes is UTC. It is not an IANA name, so it collides with
+ * none. */
+static int zone_is_local(const char *zone) {
+    return zone && strcmp(zone, "local") == 0;
+}
+
+/* The system zone's offset from UTC, in seconds, at UTC instant `raw`. */
+static int zone_local_offset_at(time_t raw, int *offset) {
+    struct tm l;
+    if (!gb_localtime(&raw, &l)) {
+        return -1;
+    }
+    *offset = (int)((long long)gb_timegm(&l) - (long long)raw);
+    return 0;
+}
+
 static int zone_name_valid(const char *zone) {
+    if (zone_is_local(zone)) {
+        return 1;
+    }
     if (!zone || !zone[0] || zone[0] == '/') {
         return 0;
     }
@@ -2740,11 +2757,15 @@ static int zone_check(const char *zone, char *message, size_t size) {
 }
 
 #ifndef _WIN32
+/* "local" leaves TZ as the process has it; zone_pop then puts back what
+ * was there, which is the same thing. */
 static char *zone_push(const char *zone) {
     const char *cur = getenv("TZ");
     char *saved = cur ? copy_string(cur) : NULL;
-    gb_setenv("TZ", zone);
-    tzset();
+    if (!zone_is_local(zone)) {
+        gb_setenv("TZ", zone);
+        tzset();
+    }
     return saved;
 }
 
@@ -2759,6 +2780,16 @@ static void zone_pop(char *saved) {
 }
 #endif
 
+#ifdef _WIN32
+/* gb_zone_offset asks ICU by name; "local" is the C runtime's own zone. */
+static int zone_offset_at(const char *zone, long long instant, int *offset) {
+    if (zone_is_local(zone)) {
+        return zone_local_offset_at((time_t)instant, offset);
+    }
+    return gb_zone_offset(zone, instant, offset);
+}
+#endif
+
 /* The civil fields of UTC instant `raw` in `zone`. Returns 1 on success.
  * POSIX: the TZ dance above. Windows: the zone's offset at that instant, from
  * Windows' ICU, added to the instant -- exact, since an offset is a property
@@ -2766,7 +2797,7 @@ static void zone_pop(char *saved) {
 static int zone_localtime(const char *zone, time_t raw, struct tm *out) {
 #ifdef _WIN32
     int offset = 0;
-    if (gb_zone_offset(zone, (long long)raw, &offset) != 0) {
+    if (zone_offset_at(zone, (long long)raw, &offset) != 0) {
         return 0;
     }
     time_t shifted = raw + (time_t)offset;
@@ -2828,8 +2859,8 @@ static int zone_resolve_instants(DateTime dt, const char *zone,
                                  long long *later) {
     long long naive = zone_timegm(dt);
     int before = 0, after = 0;
-    if (gb_zone_offset(zone, naive - 86400, &before) != 0 ||
-        gb_zone_offset(zone, naive + 86400, &after) != 0) {
+    if (zone_offset_at(zone, naive - 86400, &before) != 0 ||
+        zone_offset_at(zone, naive + 86400, &after) != 0) {
         *chosen = *earlier = *later = naive;   /* unreachable for a known zone */
         return 0;
     }
@@ -2838,7 +2869,7 @@ static int zone_resolve_instants(DateTime dt, const char *zone,
     int valid[2] = { 0, 0 };
     for (int i = 0; i < 2; i++) {
         int got = 0;
-        valid[i] = gb_zone_offset(zone, cand[i], &got) == 0 && got == want[i];
+        valid[i] = zone_offset_at(zone, cand[i], &got) == 0 && got == want[i];
     }
     if (before == after) {
         valid[1] = 0;                           /* one offset: one candidate */
@@ -2928,26 +2959,20 @@ static DateTime zone_civil_from_epoch_utc(long long epoch, DateTimePrecision pre
     return dt;
 }
 
+/* A datetime on the timeline, read as UTC -- the zone every instant gBASIC
+ * makes is in (now(), from_epoch(), file times). It read LOCAL until
+ * 2026-11-10, when now() did too; a value converted from a text with an
+ * offset was UTC all along, so the two disagreed by the machine's offset and
+ * nothing said so (mail.parse's Date handed to mail.compose). Missing calendar
+ * parts (year- or month-precision) default to the start of the period; a
+ * time-only value has no date (*ok = 0). */
 static double datetime_to_epoch(DateTime dt, int *ok) {
     if (dt.time_only) {
         *ok = 0;
         return 0;
     }
-    struct tm tm = {0};
-    tm.tm_year = dt.year - 1900;
-    tm.tm_mon = (dt.month >= 1 ? dt.month : 1) - 1;
-    tm.tm_mday = dt.day >= 1 ? dt.day : 1;
-    tm.tm_hour = dt.hour;
-    tm.tm_min = dt.minute;
-    tm.tm_sec = dt.second;
-    tm.tm_isdst = -1;
-    time_t t = gb_mktime(&tm);   /* any year; Windows' mktime stops at 1970 */
-    if (t == (time_t)-1) {
-        *ok = 0;
-        return 0;
-    }
     *ok = 1;
-    return (double)t;
+    return (double)zone_timegm(dt);
 }
 
 static Value value_duration(Duration duration) {
@@ -7473,7 +7498,7 @@ static Value datetime_field_value(DateTime dt, const char *name) {
 static Value zone_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     char message[192];
-    /* `zone_offset(dt)` -- the SYSTEM's offset for that wall-clock time. A
+    /* `zone_offset(dt)` -- the SYSTEM's offset at the instant dt (UTC). A
      * datetime carries no zone, so without this a program can read the wall
      * clock and has no way to say what it is offset from: an RFC 5322 Date,
      * an ISO 8601 offset and a zone-stamped log line are all unwritable. The
@@ -7499,17 +7524,19 @@ static Value zone_eval_call(AstExpr *expr) {
                                 1003, "datetime");
             return value_null();
         }
-        struct tm tm;
-        zone_fill_tm(local_dt, &tm);
-        tm.tm_isdst = -1;
-        time_t instant = gb_mktime(&tm);
-        if (instant == (time_t)-1) {
+        /* The datetime is an instant in UTC (as every one gBASIC makes is,
+         * since 2026-11-10); the answer is the system zone's offset AT that
+         * instant, so `dt + zone_offset(dt)` is the clock on this machine's
+         * wall. It read `dt` as local wall-clock time before, when now() was
+         * local. An offset at an instant is never ambiguous, so no DST policy
+         * is needed in this direction. */
+        int offset = 0;
+        if (zone_local_offset_at((time_t)zone_timegm(local_dt), &offset) != 0) {
             runtime_error_raise("zone_offset could not place that datetime on the timeline",
                                 1003, "datetime");
             return value_null();
         }
-        return value_duration(duration_from_totals(0,
-                              zone_timegm(local_dt) - (long long)instant));
+        return value_duration(duration_from_totals(0, (long long)offset));
     }
     if (expr->as.call.args.count != 2) {
         snprintf(message, sizeof(message), "%s expects a datetime and a zone name", name);
@@ -11803,8 +11830,8 @@ static Value eval_file_call(AstExpr *expr) {
 
         /* file_mtime: st_mtime is whole seconds since the epoch. gBASIC's DateTime
          * has second precision, so any sub-second st_mtim.tv_nsec is intentionally
-         * dropped (we do not fabricate precision the value model can't hold). Local
-         * time, mirroring from_epoch(). Works for any stat-able path, directories
+         * dropped (we do not fabricate precision the value model can't hold). UTC,
+         * as from_epoch() is. Works for any stat-able path, directories
          * included (a directory's mtime is a meaningful change signal).
          * Read through gb_file_mtime, NOT st.st_mtime: on Windows the C runtime
          * shifts that field whenever TZ differs from the system zone. */
@@ -11822,7 +11849,7 @@ static Value eval_file_call(AstExpr *expr) {
             return value_null();
         }
         value_free(file_value);
-        Value when = value_datetime_from_epoch_local(raw);
+        Value when = value_datetime_from_epoch_utc(raw);
         if (when.kind == VALUE_UNKNOWN) {
             runtime_error_raise("file_mtime could not convert the file time",
                                 1004,
@@ -13510,7 +13537,7 @@ static Value make_dir_entry(const char *path, const char *name,
          * which is the correction `file_mtime` already carries. */
         time_t raw;
         if (gb_file_mtime(path, &raw) == 0) {
-            *fields[4].value = value_datetime_from_epoch_local(raw);
+            *fields[4].value = value_datetime_from_epoch_utc(raw);
         } else {
             *fields[4].value = value_unknown();
         }
@@ -27695,9 +27722,15 @@ static char *pg_datetime_text(DateTime datetime) {
                  datetime.month,
                  datetime.day);
     } else {
+        /* "+00": the value is an instant in UTC (as every one gBASIC makes
+         * is, since 2026-11-10). A timestamptz column reads a text with no
+         * offset in the SESSION's zone, so without it the instant moved by
+         * that zone's offset; a timestamp column ignores the offset, so the
+         * civil fields land as they are. Both measured against PostgreSQL
+         * with the session in America/New_York. */
         snprintf(buffer,
                  sizeof(buffer),
-                 "%04d-%02d-%02d %02d:%02d:%02d",
+                 "%04d-%02d-%02d %02d:%02d:%02d+00",
                  datetime.year,
                  datetime.month,
                  datetime.day,
@@ -34346,9 +34379,17 @@ static Value eval_call(AstExpr *expr) {
 #endif
     }
 
-    /* `now()` is LOCAL civil time; `now(zone)` is civil time in a named zone.
+    /* `now()` is UTC; `now(zone)` is civil time in a named zone, and
+     * `now("local")` is the system's own.
      *
-     * The zone form exists because there was no way to obtain UTC at all. The
+     * UTC SINCE 2026-11-10 (Matthew: "The default is UTC"): store UTC, convert
+     * at the edges. It was LOCAL before, as were from_epoch(), epoch(dt) and
+     * file times, while a datetime read from a text with an offset was UTC --
+     * so a program holding both was wrong by the machine's offset with
+     * nothing to show it. The whole family moved together; a test run under
+     * several TZ settings (tests/run_utc_clock.sh) holds it.
+     *
+     * The zone form exists because there was once no way to obtain UTC. The
      * obvious-looking `to_zone(now(), "UTC")` is a NO-OP -- `to_zone` reads its
      * input as already-UTC and renders it in the target, so handing it a local
      * value returns that value unchanged, silently wrong by the offset. And the
@@ -34393,7 +34434,7 @@ static Value eval_call(AstExpr *expr) {
             converted = zone_localtime(zone_arg, raw, &local);
             free(zone_arg);
         } else {
-            converted = gb_localtime(&raw, &local) != NULL;
+            converted = gb_gmtime(&raw, &local) != NULL;
         }
         if (!converted) {
             runtime_error_raise("could not convert the current time", 1003, "clock");
@@ -34412,17 +34453,14 @@ static Value eval_call(AstExpr *expr) {
     }
 
     /* `epoch()` is the current instant. `epoch(dt)` places a civil datetime on
-     * the timeline reading it as LOCAL, and `epoch(dt, zone)` reads it as civil
-     * in that zone.
+     * the timeline reading it as UTC (since 2026-11-10; it read LOCAL before,
+     * see now()), and `epoch(dt, zone)` reads it as civil in that zone.
      *
-     * The zone form closes a real trap. A gBASIC datetime carries no zone, so
-     * turning one into an instant needs one from somewhere -- and `number(dt)`
-     * silently supplies LOCAL. That is right for `now()` and wrong for anything
-     * converted: `number(from_zone(now(), here))` is the documented way to get
-     * UTC and its epoch is off by the offset, because the value is UTC civil
-     * text being read as local. An audit trail built that way stores timestamps
-     * hours in the future and nothing says so. `epoch(dt, "UTC")` states the
-     * zone the value is in, which is the only thing that can make it correct. */
+     * The zone form came first, to close a trap the LOCAL reading made:
+     * `number(from_zone(now(), here))` read UTC civil text as local and stored
+     * timestamps hours in the future. With UTC the default the plain form is
+     * right for every instant gBASIC makes; the zone form is for civil time
+     * that came from somewhere else. */
     if (strcmp(expr->as.call.name, "epoch") == 0) {
         if (expr->as.call.args.count > 2) {
             runtime_error_raise("epoch expects no arguments, a datetime, or a datetime and a zone name",
@@ -34571,9 +34609,10 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("from_epoch expects an integer number of seconds", 1003, "invalid argument");
             return value_null();
         }
+        /* UTC, as now() is (2026-11-10). */
         time_t raw = (time_t)sd;
         struct tm local;
-        if (!gb_localtime(&raw, &local)) {
+        if (!gb_gmtime(&raw, &local)) {
             runtime_error_raise("could not convert the given epoch time", 1003, "clock");
             return value_null();
         }

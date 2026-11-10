@@ -291,12 +291,15 @@ program main(args)
     check("to and cc", [m.to, m.cc], [[{ name: "Anna", address: "a@example.com" }], [{ name: "", address: "c@example.com" }]])
     check("bcc is nowhere", contains(sent.text, "secret"), false)
     check("subject", m.subject, "Łódź order")
-    ' compose writes its `date` as the system's civil time (its fields, and
-    ' zone_offset's offset); parse answers the instant in UTC, as {datetime}
-    ' reads a text with an offset. So the two meet through the offset:
+    ' Both sides are UTC instants (since 2026-11-10; compose read `date` as
+    ' local civil time before, and this came back shifted by the offset).
     sent_at = {datetime}"2027-04-06T07:52:00-05:00"
-    check("date: compose's civil time, as an instant", m.date = sent_at - zone_offset(sent_at), true)
-    check("date_offset: back to the writer's clock", m.date + m.date_offset = sent_at, true)
+    check("date: the instant compose was given", m.date = sent_at, true)
+    check("date_offset: the system zone's offset then", m.date_offset = zone_offset(sent_at), true)
+    tokyo = mail.parse(mail.compose({ from: "a@b.example", to: "c@d.example", body: "x", date: sent_at,
+                                     zone: "Asia/Tokyo" }).text)
+    check("compose's zone: written as Tokyo's clock", mail.header(tokyo, "date"), "Tue, 06 Apr 2027 21:52:00 +0900")
+    check("and the same instant", tokyo.date = sent_at, true)
     check("message id", m.message_id, sent.message_id)
     check("text (base64)", m.text, "Dzień dobry\nline two\n")
     check("html", m.html, "<p>Dzień</p>\n")
