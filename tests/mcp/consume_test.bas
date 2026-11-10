@@ -54,6 +54,17 @@ check("naming the tool", r.name, "get_balance")
 
 ' A tool that failed on the far side is an error RESULT here, not a raise:
 ' the call reached the server and the server answered.
+' ---- content blocks from the far side (§0.38 D2) ----
+hp = mcp.connect({ transport: "stdio", command: "./gbasic",
+                   args: ["--line-buffered", "tests/mcp/picture_server.bas"], expect: ["picture"] })
+pr = mcp.call(hp, "picture", {})
+check("a result with an image keeps its text as content", pr.content, "a picture")
+check("and every block, an image decoded to its bytes",
+      [pr.blocks[0], pr.blocks[1]["type"], hex_encode(pr.blocks[1].bytes), pr.blocks[1].mime_type],
+      [{ type: "text", text: "a picture" }, "image", "89504e4700ff0a0d", "image/png"])
+check("a text-only result has no blocks field, the shape it always had", has(r, "blocks"), false)
+mcp.disconnect(hp)
+
 b = mcp.call(h, "boom", {})
 check("a tool that failed remotely is an error result", b.is_error, true)
 check("carrying what the far side said", contains(b.content, "the tool raised"), true)

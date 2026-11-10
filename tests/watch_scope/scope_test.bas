@@ -190,7 +190,7 @@ end function
     unwatch(h)
     check("and unwatching it does nothing", count(watchers()), 0)
     check("a watch on a global from a function is refused", contains(refusal("global"),
-          "1003 a watch in a function watches that function's own variables or an event source (timer, inbox, http, net), and `glob` is neither"), true)
+          "1003 a watch in a function watches that function's own variables or an event source (timer, inbox, http, net, stdin), and `glob` is neither"), true)
     check("a local copy of it is watched", watches_a_local_copy(), 1)
     ' since increment 2 an event source is watched from a function, while it waits
     check("a watch on an event source from a function is accepted", refusal("timer"), "accepted")

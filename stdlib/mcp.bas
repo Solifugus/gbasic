@@ -121,10 +121,81 @@ library mcp
         return { tools: out }
     end function
 
+    ' ---- content blocks (Studio, docs/qt_gui_design.md §0.38 D2) -----------
+    '
+    ' A tool's result is one text block unless the tool says otherwise. To
+    ' answer an image as well as text -- Studio's `capture` tool returns a
+    ' picture of a window -- it returns mcp.content([...]) of these blocks,
+    ' and they go out as MCP's own content array:
+    '
+    '   return mcp.content([mcp.text("the window"), mcp.image(png, "image/png")])
+    '
+    ' A wrapper rather than "any record with a content field", because a tool
+    ' whose ordinary answer happens to have a `content` field must not have
+    ' it read as blocks.
+    function text(t)
+        if not is_string(t) then
+            error "mcp.text expects text, not " + type(t)
+        end if
+        b = {}
+        b["type"] = "text"
+        b["text"] = t
+        return b
+    end function
+
+    function image(bytes, mime_type)
+        if not is_string(bytes) then
+            error "mcp.image expects the image's bytes as a string, not " + type(bytes)
+        end if
+        if not is_string(mime_type) or not starts_with(mime_type, "image/") then
+            error "mcp.image expects a mime type such as \"image/png\", not " + string(mime_type)
+        end if
+        b = {}
+        b["type"] = "image"
+        b["data"] = base64_encode(bytes)
+        b["mimeType"] = mime_type
+        return b
+    end function
+
+    function content(blocks)
+        if not is_array(blocks) or count(blocks) = 0 then
+            error "mcp.content expects an array of blocks made by mcp.text and mcp.image"
+        end if
+        for each b, i in blocks
+            ok = is_record(b)
+            if ok then
+                ok = has(b, "type")
+            end if
+            if ok then
+                ok = (b["type"] = "text" and has(b, "text")) or (b["type"] = "image" and has(b, "data") and has(b, "mimeType"))
+            end if
+            if not ok then
+                error "mcp.content: block " + string(i + 1) + " is not one mcp.text or mcp.image made"
+            end if
+        next
+        r = {}
+        r["mcp_content"] = blocks
+        return r
+    end function
+
+    function _is_content(v)
+        if not is_record(v) then
+            return false
+        end if
+        return has(v, "mcp_content") and count(keys(v)) = 1
+    end function
+
     ' A record result is also STRUCTURED CONTENT (MCP 2025-06-18), so a
     ' client can use it without parsing the text; the text block stays, for
-    ' a client that predates it (Transward §7.7).
+    ' a client that predates it (Transward §7.7). A result made by
+    ' mcp.content is its blocks, as given.
     function _call_result(part)
+        if _is_content(part.content) then
+            r = {}
+            r["content"] = part.content.mcp_content
+            r["isError"] = part.is_error
+            return r
+        end if
         block = {}
         block["type"] = "text"
         block["text"] = string(part.content)
@@ -1348,14 +1419,28 @@ library mcp
             r["is_error"] = true
             return r
         end if
-        text = ""
+        said = ""
         failed = false
+        ' Every block as the server sent it, an image's data decoded to its
+        ' bytes. Kept only when there is a block that is not text, so a
+        ' text-only result keeps the shape tools.dispatch returns (§0.38 D2).
+        blocks = []
+        other = false
         if is_record(reply.result) then
             if is_array(reply.result.content) then
                 for each block in reply.result.content
                     if is_record(block) then
                         if has(block, "text") then
-                            text = text + string(block.text)
+                            said = said + string(block.text)
+                            append(blocks, { type: "text", text: string(block.text) })
+                        else if has(block, "type") and has(block, "data") then
+                            other = true
+                            got = try base64_decode(string(block.data))
+                            b = { type: string(block["type"]), bytes: got, mime_type: default(block["mimeType"], unknown) }
+                            if is_nothing(got) then
+                                b.bytes = unknown
+                            end if
+                            append(blocks, b)
                         end if
                     end if
                 end for
@@ -1364,8 +1449,11 @@ library mcp
                 failed = reply.result.isError
             end if
         end if
-        r["content"] = text
+        r["content"] = said
         r["is_error"] = failed
+        if other then
+            r["blocks"] = blocks
+        end if
         return r
     end function
 

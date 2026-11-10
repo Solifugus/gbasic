@@ -1143,6 +1143,7 @@ static long net_socket_id(NetSocket *s);
 static void net_socket_retain(NetSocket *s);
 static Value net_eval_call(AstExpr *expr);
 static void timer_bind_global(void);
+static void stdin_bind_global(void);
 static int timer_loop_active(void);
 static int timer_loop_service(void);
 static long timer_poll_timeout_ms(long tick_ms);
@@ -7922,7 +7923,7 @@ static int watcher_trigger_delivery(const char *path, Env *frame) {
  * function may watch these, since `wait until` keeps it alive while the loop
  * runs (§4). Every other global is still refused. */
 static int watcher_is_loop_source(const char *root) {
-    static const char *const sources[] = { "timer", "inbox", "http", "net" };
+    static const char *const sources[] = { "timer", "inbox", "http", "net", "stdin" };
     for (size_t i = 0; i < sizeof sources / sizeof sources[0]; i++) {
         if (strcmp(root, sources[i]) == 0) {
             return 1;
@@ -7952,7 +7953,7 @@ static int watcher_register(AstStmt *stmt) {
             if (!own) {
                 snprintf(message, sizeof message,
                          "a watch in a function watches that function's own variables or an event source "
-                         "(timer, inbox, http, net), and `%s` is neither (assign it before the watch); a watch "
+                         "(timer, inbox, http, net, stdin), and `%s` is neither (assign it before the watch); a watch "
                          "on any other global belongs at the top level of the program block", root);
                 runtime_error_raise(message, 1003, "watcher");
                 return 0;
@@ -7995,6 +7996,11 @@ static int watcher_register(AstStmt *stmt) {
      * the watcher's first firing reads a name that does not exist. */
     if (watcher_matches_change(stmt, "inbox.messages")) {
         inbox_bind_global();
+    }
+    /* And standard input (§0.38 D3): the watch declares the program wants its
+     * lines delivered, so `stdin` exists before the body first reads it. */
+    if (watcher_matches_change(stmt, "stdin.lines")) {
+        stdin_bind_global();
     }
     /* Same reason as the inbox: a watch on `timer.ticks` is what declares the
      * program wants delivery, and the body must not read a name that does not
@@ -21318,6 +21324,153 @@ static int inbox_loop_service(void) {
     return watcher_trigger_delivery("inbox.messages", NULL);
 }
 
+/* --- standard input in the event loop (Qt design §0.38 D3) ----------------
+ *
+ * `input()` BLOCKS, and so does anything else that reads a line: under
+ * `qt.run()` a program reading its stdin that way stops Qt's loop, and a
+ * visible window stops painting while it waits. Studio's `./studio mcp` reads
+ * an MCP client's requests from stdin, so it could only run offscreen; with
+ * this a person can watch an AI drive the window.
+ *
+ * `watch w(stdin.lines)` puts descriptor 0 in the loop's poll set. What is
+ * ready is read without blocking, cut into lines (the line break removed, a
+ * CR before it too), and each complete line is appended to `stdin.lines` and
+ * delivered ON ITS OWN, so a handler sees one line per firing. At end of input
+ * a last unterminated line is delivered, `stdin.closed` becomes true, one more
+ * delivery says so, and descriptor 0 leaves the poll set -- so a program with
+ * nothing else to wait for ends.
+ *
+ * Reads go straight to the descriptor, past stdio's buffer: a program that
+ * has already called `input()` may have lines sitting in that buffer that this
+ * will never see, so the two are not to be mixed. */
+static int stdin_source_eof = 0;
+static char *stdin_source_partial = NULL;
+static size_t stdin_source_partial_len = 0;
+
+static int stdin_events_watched(void) {
+    for (size_t i = 0; i < watcher_count; i++) {
+        if (watchers[i].active &&
+            watcher_matches_change(watchers[i].stmt, "stdin.lines")) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void stdin_bind_global(void) {
+    if (env_find_in_frame(&global_env, "stdin")) {
+        return;
+    }
+    RecordField *fields = calloc(2, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    fields[0].name = field_name_new("lines");
+    fields[0].value = cell_alloc();
+    fields[1].name = field_name_new("closed");
+    fields[1].value = cell_alloc();
+    if (!fields[0].value || !fields[1].value) {
+        abort();
+    }
+    *fields[0].value = value_array(NULL, 0);
+    *fields[1].value = value_bool(0);
+    Value record = value_record(fields, 2);
+    Symbol *items = realloc(global_env.items, sizeof(Symbol) * (global_env.count + 1));
+    if (!items) {
+        abort();
+    }
+    global_env.items = items;
+    global_env.items[global_env.count].name = copy_string("stdin");
+    memset(&global_env.items[global_env.count].lock, 0, sizeof(TypeLock));
+    global_env.items[global_env.count].value = record;
+    global_env.count++;
+}
+
+static int stdin_loop_active(void) {
+    return !stdin_source_eof && stdin_events_watched();
+}
+
+/* Append one line to `stdin.lines` and deliver it. 0 when a watcher raised. */
+static int stdin_deliver_line(const char *text, size_t len) {
+    Symbol *symbol = env_find_in_frame(&global_env, "stdin");
+    if (!symbol || symbol->value.kind != VALUE_RECORD) {
+        return 1;
+    }
+    RecordField *lines = record_find(&symbol->value, "lines");
+    if (!lines || lines->value->kind != VALUE_ARRAY) {
+        return 1;
+    }
+    if (len > 0 && text[len - 1] == '\r') {
+        len--;
+    }
+    Value ignored = append_to_array_ref(lines->value, value_string_n(text, len), 0);
+    value_free(ignored);
+    return watcher_trigger_delivery("stdin.lines", NULL);
+}
+
+/* Read what descriptor 0 has ready (the poll said so, so this does not
+ * block) and deliver each complete line. */
+static int stdin_loop_service(void) {
+    char buffer[65536];
+    ssize_t got = read(0, buffer, sizeof buffer);
+    if (got < 0) {
+        if (errno == EINTR || errno == EAGAIN) {
+            return 1;
+        }
+        got = 0;   /* an unreadable stdin is the end of it */
+    }
+    if (got == 0) {
+        stdin_source_eof = 1;
+        if (stdin_source_partial_len > 0) {
+            int ok = stdin_deliver_line(stdin_source_partial, stdin_source_partial_len);
+            free(stdin_source_partial);
+            stdin_source_partial = NULL;
+            stdin_source_partial_len = 0;
+            if (!ok) {
+                return 0;
+            }
+        }
+        Symbol *symbol = env_find_in_frame(&global_env, "stdin");
+        if (symbol && symbol->value.kind == VALUE_RECORD) {
+            RecordField *closed = record_find(&symbol->value, "closed");
+            if (closed && closed->value) {
+                value_free(*closed->value);
+                *closed->value = value_bool(1);
+            }
+        }
+        return watcher_trigger_delivery("stdin.lines", NULL);
+    }
+    char *joined = realloc(stdin_source_partial, stdin_source_partial_len + (size_t)got);
+    if (!joined) {
+        abort();
+    }
+    memcpy(joined + stdin_source_partial_len, buffer, (size_t)got);
+    size_t total = stdin_source_partial_len + (size_t)got;
+    size_t start = 0;
+    for (size_t i = 0; i < total; i++) {
+        if (joined[i] == '\n') {
+            if (!stdin_deliver_line(joined + start, i - start)) {
+                free(joined);
+                stdin_source_partial = NULL;
+                stdin_source_partial_len = 0;
+                return 0;
+            }
+            start = i + 1;
+        }
+    }
+    size_t rest = total - start;
+    if (rest > 0) {
+        memmove(joined, joined + start, rest);
+        stdin_source_partial = joined;
+        stdin_source_partial_len = rest;
+    } else {
+        free(joined);
+        stdin_source_partial = NULL;
+        stdin_source_partial_len = 0;
+    }
+    return 1;
+}
+
 /* --- the clock in the event loop ------------------------------------------
  *
  * Every other source the loop polls is REQUEST-, REPLY- or TRANSFER-DRIVEN:
@@ -21778,7 +21931,8 @@ static int aux_loop_sources_active(void) {
     if (webserver_term_requested) {
         return 0;
     }
-    return http_loop_active() || inbox_loop_active() || timer_loop_active() || net_loop_active();
+    return http_loop_active() || inbox_loop_active() || timer_loop_active() || net_loop_active() ||
+           stdin_loop_active();
 }
 static int webserver_term_installed = 0;
 
@@ -23595,14 +23749,16 @@ static int webserver_loop_iterate(int *idle) {
     /* `net`'s watched sockets (docs/networking_design.md P1): their
      * descriptors join this same poll, after everything else. */
     int net_wants_loop = aux_ok && net_loop_active();
+    /* Standard input's lines (§0.38 D3): descriptor 0, while it is open. */
+    int stdin_wants_loop = aux_ok && stdin_loop_active();
     if (descriptor_count == 0 && !http_wants_loop && !inbox_wants_loop &&
-        !timer_wants_loop && !net_wants_loop) {
+        !timer_wants_loop && !net_wants_loop && !stdin_wants_loop) {
         *idle = 1;
         return 0;
     }
     size_t inbox_fd_count = inbox_wants_loop ? mailbox_poll_count(&root_mailbox) : 0;
     size_t net_max = net_wants_loop ? net_poll_count() : 0;
-    struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + inbox_fd_count + net_max + 2,
+    struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + inbox_fd_count + net_max + 3,
                                     sizeof(struct pollfd));
     NetSocket **net_who = net_max ? calloc(net_max, sizeof(NetSocket *)) : NULL;
     if (!pollfds) {
@@ -23644,6 +23800,12 @@ static int webserver_loop_iterate(int *idle) {
         net_fd_count = net_collect_fds(&pollfds[net_slot], net_who, net_max);
         polled += net_fd_count;
     }
+    size_t stdin_slot = polled;
+    if (stdin_wants_loop) {
+        pollfds[stdin_slot].fd = 0;
+        pollfds[stdin_slot].events = POLLIN;
+        polled++;
+    }
     long tick_ms = http_wants_loop ? http_poll_timeout_ms(50) : 50;
     if (timer_wants_loop) {
         tick_ms = timer_poll_timeout_ms(tick_ms);
@@ -23674,6 +23836,14 @@ static int webserver_loop_iterate(int *idle) {
         if (!inbox_loop_service()) {
             free(pollfds);
         free(net_who);
+            return 1;
+        }
+    }
+    if (stdin_wants_loop && ready > 0 &&
+        (pollfds[stdin_slot].revents & (POLLIN | POLLHUP | POLLERR))) {
+        if (!stdin_loop_service()) {
+            free(pollfds);
+            free(net_who);
             return 1;
         }
     }

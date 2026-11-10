@@ -4603,12 +4603,20 @@ window and no display under `offscreen`.
   searched on the same path as definitions, so `<path>/themes/*.theme` works),
   as well as `dark` and `light`; an unknown name is refused, listing the near
   miss, as `language:` is.
-- **D2. `mcp`: content blocks and dispatch by name.** A tool's result may be
-  `{ content: [...] }` with `text` and `image` blocks (`{ type: "image", data,
-  mime_type }`), passed through as MCP's own result shape; and a toolset may name
-  one `dispatch:` function that receives `(name, args)` for every tool, so a
-  gate that reads the tool's name needs no closure.
+- **D2. `mcp`: content blocks and dispatch by name.** *Built as:* a tool
+  returns `mcp.content([mcp.text(...), mcp.image(bytes, "image/png")])`, sent as
+  MCP's own content array; a wrapper, so an ordinary record with a `content`
+  field is not misread. `mcp.call` adds `blocks` (images decoded to bytes) when
+  a reply holds a non-text block. **Dispatch by name already existed**, found on
+  reading `tools.dispatch`: since 2026-11-06 (Transward §7.2) a tool's `fn` is
+  called as a method of its entry, so `this.name` is the tool's name and one
+  function serves every tool. No `dispatch:` option was added; Studio's gate
+  can read `this.name`.
 - **D3. Lines from standard input inside the event loop**: `watch w(stdin.lines)`,
-  one delivery per complete line, the source closing at end of input. Under
-  `qt.run()` sources are socket notifiers already (§0.31), so a visible window
-  keeps painting while a line is awaited.
+  one delivery per complete line, `stdin.closed` at end of input. *Built as:*
+  descriptor 0 joins the loop's poll set; under `qt.run()` gBASIC's loop is run
+  by Qt's timer pump, so it is served there too -- measured, a window took a
+  line and a 0.1-second timer fired at least 8 times in the 1.5 s a line was
+  awaited. A handler's own `take_first` re-fires its watcher once with the list
+  empty, so a count of firings is twice the lines; one line per delivery is
+  measured as "no firing ever found two".

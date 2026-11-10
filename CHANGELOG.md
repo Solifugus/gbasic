@@ -16,6 +16,24 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Studio's notebook, part 3: mcp content blocks, stdin in the loop (2026-11-10)
+
+- **`mcp.content([mcp.text(t), mcp.image(bytes, mime_type)])`** (§0.38 D2):
+  a tool answers an image as well as text, sent as MCP's own content array;
+  `mcp.call` adds `blocks`, images decoded to bytes, when a reply holds a block
+  that is not text (a text-only result keeps its shape). Dispatch by name was
+  already there: a tool's `fn` runs as a method of its entry, so `this.name`
+  names the tool.
+- **`watch w(stdin.lines)`** (§0.38 D3): standard input's lines delivered by
+  the event loop, one per delivery, with `stdin.closed` at the end, so a program
+  waiting for its input keeps serving everything else -- under `qt.run()`, a
+  window keeps working. New suite `tests/run_stdin_lines.sh` (a python3 driver
+  is the oracle: 3,000 lines of every kind, a slow writer, a window driven from
+  stdin while a timer fires); 7 perturbations, each red.
+- **Reworded, deliberately:** the refusal of a watch in a function on a global
+  lists `stdin` among the event sources; tests/watch_scope/scope_test.bas and
+  the golden tests/negative_watch_named_scope.err pin it and were updated.
+
 ### Studio's notebook, part 2: blocks, folds, a markdown part (2026-11-10)
 
 - **`qt.blocks(win, part, items)`** (§0.38 A, B3): content shown between a

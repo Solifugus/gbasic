@@ -55,6 +55,18 @@ function boom(args)
     return "unreached"
 end function
 
+function content_field(args)
+    return { content: [1, 2] }
+end function
+
+function picture(args)
+    return mcp.content([mcp.text("a picture"), mcp.image(from_bytes([137, 80, 78, 71, 0, 255]), "image/png")])
+end function
+
+function declared_but_blocks(args)
+    return mcp.content([mcp.text("not the declared record")])
+end function
+
 ts = tools.define("bank", [
     { name: "get_balance", describe: "Read an account balance.",
       params: [ { name: "id", type: "string", describe: "the account id", required: true } ],
@@ -69,6 +81,14 @@ ts = tools.define("bank", [
       params: [], reads: [], mutates: [], fn: shared },
     { name: "second_of_two", describe: "The other.",
       params: [], reads: [], mutates: [], fn: shared }
+])
+
+pics = tools.define("pics", [
+    { name: "picture", describe: "Answer text and an image.",
+      params: [], reads: [], mutates: [], fn: picture },
+    { name: "typed", describe: "Declares an output record.",
+      params: [], reads: [], mutates: [], fn: declared_but_blocks,
+      output: [ { name: "n", type: "number", describe: "a number", required: true } ] }
 ])
 
 plain = { name: "bank-mcp", version: "1.0.0" }
@@ -482,6 +502,38 @@ check("and a mapping within its ceiling is accepted", is_nothing(ok2), true)
 ok3 = mcp.check_options({ name: "s", version: "1",
                           principal: { user: "alice", groups: ["a","b"] }, max_groups: 2 })
 check("exactly at the ceiling is accepted", is_nothing(ok3), true)
+
+' ---- content blocks (Studio, §0.38 D2) --------------------------------
+' A tool answers an image as well as text by returning mcp.content; the
+' blocks go out as MCP's own content array, an image as base64 with its type.
+pic = reply(pics, plain, { jsonrpc: "2.0", id: 90, method: "tools/call", params: { name: "picture", arguments: {} } })
+check("content blocks go out as given: two of them", count(pic.result.content), 2)
+check("the text block", pic.result.content[0], { type: "text", text: "a picture" })
+check("the image block's type and mime type", [pic.result.content[1]["type"], pic.result.content[1].mimeType], ["image", "image/png"])
+check("its data is the bytes, base64 (a NUL and 0xFF among them)", pic.result.content[1].data, base64_encode(from_bytes([137, 80, 78, 71, 0, 255])))
+check("no structuredContent for blocks", has(pic.result, "structuredContent"), false)
+check("not an error", pic.result.isError, false)
+ty = reply(pics, plain, { jsonrpc: "2.0", id: 91, method: "tools/call", params: { name: "typed", arguments: {} } })
+check("a tool that declares an output record and answers blocks is an error result", ty.result.isError, true)
+on error goto next
+x = mcp.image(42, "image/png")
+check("mcp.image refuses what is not bytes", contains(error.message, "mcp.image expects the image's bytes"), true)
+error.clear()
+x = mcp.image("abc", "png")
+check("and a type that is not image/...", contains(error.message, "mime type such as"), true)
+error.clear()
+x = mcp.content([])
+check("mcp.content refuses no blocks", contains(error.message, "mcp.content expects an array of blocks"), true)
+error.clear()
+x = mcp.content([{ type: "video", data: "x" }])
+check("and a block mcp.text or mcp.image did not make", contains(error.message, "block 1 is not one mcp.text or mcp.image made"), true)
+error.clear()
+on error stop
+' an ordinary record with a `content` field is NOT read as blocks
+plainrec = reply(tools.define("p", [{ name: "rec", describe: "A record with a content field.", params: [], reads: [], mutates: [],
+                                       fn: content_field }]), plain,
+                 { jsonrpc: "2.0", id: 92, method: "tools/call", params: { name: "rec", arguments: {} } })
+check("a record that merely has a content field is still one text block", plainrec.result.content[0]["type"], "text")
 
 print "checks: " + string(tally.checks)
 print "mismatches: " + string(tally.mismatches)

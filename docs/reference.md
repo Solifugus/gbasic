@@ -770,8 +770,8 @@ end function
 ```
 
 In a function, a watch may also watch an event source (`timer.ticks`,
-`inbox.messages`, `http.events`, `net.events`, or a server held in one of its
-locals). Anything else is refused (`1003`, naming it): another global (a
+`inbox.messages`, `http.events`, `net.events`, `stdin.lines`, or a server held
+in one of its locals). Anything else is refused (`1003`, naming it): another global (a
 function cannot assign one, and it changes only while no function runs), or a
 variable not yet assigned. A named watcher's handle that outlives its function
 names a watch that has ended: reading its fields raises, and `unwatch` of it
@@ -4350,6 +4350,40 @@ An upgraded connection has **no idle timeout** unless `idle:` sets one, since
 a quiet WebSocket is ordinary; a program that wants liveness pings. In a worker
 pool a WebSocket belongs to the worker that accepted it. Extensions
 (`permessage-deflate`) are not offered.
+
+## Standard input in the event loop: `watch(stdin.lines)`
+
+`input()` blocks, so a program that reads its standard input that way serves
+nothing else while it waits; under `qt.run()` its window stops painting.
+*After 0.10.0* (Qt design §0.38 D3), a watch on `stdin.lines` puts standard
+input in the event loop instead:
+
+```basic
+program main(args)
+    watch w(stdin.lines)
+        while count(stdin.lines) > 0
+            line = take_first(stdin.lines)
+            print "read " + line
+        end while
+        if stdin.closed then
+            print "end of input"
+        end if
+    end watch
+end program
+```
+
+What is ready is read without blocking and cut into lines; each line (its
+line break and a CR before it removed) is appended to `stdin.lines` and
+delivered **on its own**. At end of input a last unterminated line is
+delivered, `stdin.closed` becomes `true`, one more delivery says so, and
+standard input leaves the loop, so a program with nothing else to wait for
+ends. Under `qt.run()` the window keeps working while a line is awaited.
+**Do not mix it with `input()`**: this reads the descriptor directly, so lines
+`input()` has already buffered are never seen here.
+
+Tested by `tests/run_stdin_lines.sh` (lines of every kind, a slow writer whose
+lines must each come back before the next is written, and a window under
+`qt.run()` driven from standard input while a timer keeps firing).
 
 ## Timer Module
 
