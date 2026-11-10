@@ -13811,3 +13811,30 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   bytes, what its cost needs. Held by `examples/crypto_kdf_test.bas` (n=65536,
   r=8 against Python's `hashlib.scrypt`) and
   `tests/negative_scrypt_over_memory` (1 PiB, refused naming it).
+
+## 2026-11-10 — CC — while: G58, embedding fonts in gpdf
+
+- **Type:** bug
+- **Severity:** medium (a wrong title, silently)
+- **What:** gpdf wrote `title`, `author`, `subject` and `creator` as WinAnsi
+  bytes, but the Info dictionary's strings are PDFDocEncoding, which differs
+  from WinAnsi at 0x80-0x9F (and leaves 0xAD undefined). A document titled
+  `Price €9 — net` showed `Price •9 Š net` in pdfinfo, and in any reader's
+  document properties. Nothing refused it: both encodings accept the bytes.
+- **Workaround:** none in a program; a title without those characters.
+- **Status: FIXED 2026-11-10**: such strings, and any WinAnsi cannot write,
+  go as UTF-16BE with a byte order mark. Held by `tests/run_gpdf_font.sh`
+  (semantics: the `€` title goes as UTF-16; text: pdfinfo reads a Polish title).
+
+## 2026-11-10 — CC — while: G58, writing the TrueType reader in gBASIC
+
+- **Type:** surprise
+- **Severity:** low (a parse error at once, naming the word)
+- **What:** `use` and `step` are reserved words, so the natural names for a
+  font's usage record and a stride through a name table did not parse
+  (`'use' is a reserved word and cannot be used as a name`). The message is
+  good; the surprise is the words. `use` is the legacy spelling of `load`, and
+  `step` belongs to the counted `for`.
+- **Workaround:** `usage` and `stride`.
+- **Status:** open, by design: both are keywords. Recorded so the next person
+  writing a binary-format reader knows to reach for other names.

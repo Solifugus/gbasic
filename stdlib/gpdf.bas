@@ -4,7 +4,8 @@
 ' gpdf -- PDF documents, written from the specification.
 '
 ' PHASE 1: the document, the core-14 fonts, measured text and word wrap.
-' Written clean from ISO 32000 rather than ported from anything, so the
+' Then tables, images, SVG charts, and (2026-11-10, book gap G58) TrueType
+' fonts embedded subset to the glyphs drawn. Written clean from ISO 32000 rather than ported from anything, so the
 ' licence is ours to set and the defects are ours to find.
 '
 ' THREE DECISIONS SHAPE EVERYTHING ELSE.
@@ -21,9 +22,10 @@
 '    substituting -- a question mark, a bullet, the low byte -- which puts a
 '    wrong customer name on an invoice that has already been posted. This
 '    project has met that failure in other people's I/O (FreeTDS silently
-'    swallowing Japanese text) and will not ship it. Embedded fonts are a
-'    later phase; when they land the refusal narrows, and nothing a caller
-'    wrote has to change.
+'    swallowing Japanese text) and will not ship it. Embedded fonts have
+'    landed and the refusal narrowed, as planned, with nothing a caller wrote
+'    having to change: in a font from gpdf.font_file, what is refused is a
+'    character it has no glyph for, or one from a script needing shaping.
 '
 ' 3. OFFSETS ARE COUNTED IN BYTES, NEVER CODEPOINTS. The cross-reference table
 '    stores the byte offset of every object, and `len` counts codepoints, so
@@ -81,7 +83,9 @@ library gpdf
                  images: [],
                  font: "Helvetica",
                  font_size: 12,
-                 fonts_used: [] }
+                 fonts_used: [],
+                 embedded: {},
+                 glyphs: {} }
     end function
 
     ' A page is a content stream plus the state a caller cares about. Pages are
@@ -102,16 +106,36 @@ library gpdf
 
     ' ---- fonts and measurement -------------------------------------------
 
-    function set_font(doc, name, size)
-        w = gpdf_metrics.widths(name)
-        if is_unknown(w) then
-            error ("gpdf.set_font: '" + string(name) + "' is not a core-14 font (" +
-                   join(gpdf_metrics.fonts(), ", ") + "). Embedded fonts are a later phase.")
-        end if
+    ' `font` is a core-14 name, a font value from gpdf.font_file, or the name
+    ' of a font value this document was already given.
+    function set_font(doc, font, size)
         if not is_number(size) or size <= 0 then
             error "gpdf.set_font: size must be a positive number of points"
         end if
         out = doc
+        name = font
+        if is_record(font) then
+            if _default(font, "kind", "") != "truetype" then
+                error "gpdf.set_font: a font record must be one gpdf.font_file returned"
+            end if
+            name = font.name
+            if has(out.embedded, name) then
+                if out.embedded[name].file != font.file or byte_count(out.embedded[name].raw) != byte_count(font.raw) then
+                    error ("gpdf.set_font: this document already has a font called '" + name + "' (" +
+                           out.embedded[name].file + "), and " + font.file + " is another; give one of " +
+                           "them another name with gpdf.font_file's `name:`")
+                end if
+            else
+                out.embedded[name] = font
+                out.glyphs[name] = { cid_of: {}, gids: [ 0 ], text: [ "" ] }
+            end if
+        else
+            if is_unknown(gpdf_metrics.widths(name)) and not has(out.embedded, string(name)) then
+                error ("gpdf.set_font: '" + string(name) + "' is not a core-14 font (" +
+                       join(gpdf_metrics.fonts(), ", ") + ") or a font this document was given. " +
+                       "A TrueType font is read with gpdf.font_file(path).")
+            end if
+        end if
         out.font = name
         out.font_size = size
         if not contains(out.fonts_used, name) then
@@ -124,11 +148,30 @@ library gpdf
     ' function wrapping, centring and right-alignment are all built on, and the
     ' one that decides whether a column overflows -- so it measures the SAME
     ' bytes that will be written, after the WinAnsi conversion, rather than the
-    ' caller's UTF-8.
+    ' caller's UTF-8. `font` is a core-14 name or a font value from
+    ' gpdf.font_file, whose widths are its glyphs' advances.
     function text_width(font, size, text)
+        if is_record(font) then
+            s = string(text)
+            n = len(s)
+            total = 0
+            i = 0
+            while i < n
+                ch = mid(s, i, 1)
+                known = font.common[ch]
+                if is_unknown(known) then
+                    total = total + _advance(font, _glyph_or_refuse(font, ch, i, n, "gpdf.text_width"))
+                else
+                    total = total + known[1]
+                end if
+                i = i + 1
+            end while
+            return total * size / font.upem
+        end if
         w = gpdf_metrics.widths(font)
         if is_unknown(w) then
-            error "gpdf.text_width: '" + string(font) + "' is not a core-14 font"
+            error ("gpdf.text_width: '" + string(font) + "' is not a core-14 font; for an " +
+                   "embedded one pass the value gpdf.font_file returned")
         end if
         enc = to_winansi(text, "gpdf.text_width")
         total = 0
@@ -139,6 +182,15 @@ library gpdf
             i = i + 1
         end while
         return total * size / 1000
+    end function
+
+    ' A name in a document resolved to what measures it: the font value for an
+    ' embedded font, the name itself for a core-14 one.
+    function _face(doc, font)
+        if is_string(font) and has(doc.embedded, font) then
+            return doc.embedded[font]
+        end if
+        return font
     end function
 
     ' ---- encoding --------------------------------------------------------
@@ -155,10 +207,10 @@ library gpdf
             b = _winansi_byte(ch)
             if b < 0 then
                 error (whose + ": '" + ch + "' (U+" + _u(code(ch)) +
-                       ") cannot be written in WinAnsi, which is the only encoding this " +
-                       "phase supports. It is character " + string(i + 1) + " of " +
-                       string(n) + ". Embedded fonts are a later phase; nothing is " +
-                       "substituted, because a wrong character on a posted document is " +
+                       ") cannot be written in WinAnsi, the core-14 fonts' encoding. " +
+                       "It is character " + string(i + 1) + " of " + string(n) + ". A " +
+                       "TrueType font that has it can be embedded (gpdf.font_file); nothing " +
+                       "is substituted, because a wrong character on a posted document is " +
                        "worse than a refusal.")
             end if
             out = out + from_bytes([b])
@@ -171,9 +223,12 @@ library gpdf
     ' the character gives its UTF-8 BYTES, which look like a codepoint and are
     ' not one -- U+D092 for a letter that is really U+0412.
     function _u(n)
-        h = upper(hex_encode(from_bytes([ floor(n / 256), n - 256 * floor(n / 256) ])))
-        while len(h) > 4 and left(h, 1) = "0"
-            h = mid(h, 1, len(h) - 1)
+        digits = "0123456789ABCDEF"
+        h = ""
+        v = n
+        while v > 0
+            h = mid(digits, mod(v, 16), 1) + h
+            v = floor(v / 16)
         end while
         while len(h) < 4
             h = "0" + h
@@ -184,8 +239,19 @@ library gpdf
     ' Can every character be written? Answers a BOOLEAN rather than raising, so
     ' an application can check a customer's name at the point it is entered
     ' instead of at the point a document is produced.
-    function representable(text)
+    function representable(text, font = "Helvetica")
         s = string(text)
+        if is_record(font) then
+            i = 0
+            while i < len(s)
+                cp = code(mid(s, i, 1))
+                if cp < 32 or (cp >= 127 and cp < 160) or _needs_shaping(cp) then return false
+                g = _glyph(font, cp)
+                if g = 0 or g >= font.glyphs then return false
+                i = i + 1
+            end while
+            return true
+        end if
         i = 0
         while i < len(s)
             if _winansi_byte(mid(s, i, 1)) < 0 then
@@ -259,6 +325,315 @@ library gpdf
         return m
     end function
 
+    ' ---- embedded fonts (book gap G58, 2026-11-10) ------------------------
+    '
+    ' A TrueType font read from a file, so a document can write what WinAnsi
+    ' cannot: a customer in Łódź, İzmir or Новосибирск. The font goes into the
+    ' PDF SUBSET to the glyphs the document drew, as a CID font (Type0 over
+    ' CIDFontType2, Identity-H) whose CIDs are the subset's own glyph numbers,
+    ' with a ToUnicode map so the text extracts and searches as written.
+    '
+    ' THE REFUSALS KEEP THEIR SHAPE. A character the font has no glyph for is
+    ' refused by name, as WinAnsi's are, and so is one from a script that
+    ' needs shaping (Arabic joins, Hebrew runs right to left, Indic scripts
+    ' reorder): drawn one glyph at a time those print a wrong word, which is
+    ' the failure the refusal exists to prevent. Kerning is not applied, so
+    ' a measured width is the sum of the advances, which is what is drawn.
+    '
+    ' Fonts with PostScript (CFF) outlines, usually `.otf`, are refused by
+    ' name: this phase subsets TrueType outlines only.
+
+    ' gpdf.font_file(path, options) -> a font value, read once and usable in
+    ' any number of documents: `gpdf.set_font(d, f, 11)`. Options: `name`, the
+    ' name a document knows it by (default the font's PostScript name), and
+    ' `index`, which font of a collection (.ttc) to read (default 0).
+    function font_file(path, options = unknown)
+        opts = _options(options, [ "name", "index" ], "gpdf.font_file")
+        whose = "gpdf.font_file: " + string(path)
+        f {file}= path
+        raw = read(f)
+        size = byte_count(raw)
+        if size < 12 then
+            error whose + " is " + string(size) + " bytes, too short to be a font"
+        end if
+        at = 0
+        if byte_slice(raw, 0, 4) = "ttcf" then
+            n = unpack(">I", raw, 8)[0]
+            idx = _default(opts, "index", 0)
+            if not is_number(idx) or idx != floor(idx) or idx < 0 or idx >= n then
+                error whose + " is a collection of " + string(n) + " fonts; `index` must be a whole number from 0 to " + string(n - 1)
+            end if
+            at = unpack(">I", raw, 12 + 4 * idx)[0]
+        else
+            if has(opts, "index") then
+                error whose + " holds one font, not a collection (.ttc), so it takes no `index`"
+            end if
+        end if
+        kind = byte_slice(raw, at, 4)
+        if kind = "OTTO" then
+            error (whose + " has PostScript (CFF) outlines; this phase embeds fonts with " +
+                   "TrueType outlines, usually a .ttf file")
+        end if
+        if kind != from_bytes([0, 1, 0, 0]) and kind != "true" then
+            error whose + " is not a TrueType or OpenType font (it begins " + hex_encode(byte_slice(raw, 0, 4)) + ")"
+        end if
+        ntables = unpack(">H", raw, at + 4)[0]
+        if at + 12 + 16 * ntables > size then
+            error whose + " is cut short: its table directory runs past the end of the file"
+        end if
+        tables = {}
+        i = 0
+        while i < ntables
+            r = unpack(">4s I I I", raw, at + 12 + 16 * i)
+            if r[2] + r[3] > size then
+                error whose + " is cut short: its '" + r[0] + "' table runs past the end of the file"
+            end if
+            tables[r[0]] = { offset: r[2], length: r[3] }
+            i = i + 1
+        end while
+        if not has(tables, "glyf") and has(tables, "CFF ") then
+            error (whose + " has PostScript (CFF) outlines; this phase embeds fonts with " +
+                   "TrueType outlines, usually a .ttf file")
+        end if
+        for each t in [ "head", "hhea", "maxp", "hmtx", "loca", "glyf", "cmap" ]
+            if not has(tables, t) then
+                error whose + " has no '" + t + "' table, which a TrueType font needs"
+            end if
+        end for
+
+        h = tables.head.offset
+        if unpack(">I", raw, h + 12)[0] != 0x5F0F3CF5 then
+            error whose + ": its 'head' table does not carry the TrueType magic number"
+        end if
+        upem = unpack(">H", raw, h + 18)[0]
+        bbox = unpack(">h h h h", raw, h + 36)
+        long_loca = unpack(">h", raw, h + 50)[0] = 1
+        hh = tables.hhea.offset
+        ascent = unpack(">h", raw, hh + 4)[0]
+        descent = unpack(">h", raw, hh + 6)[0]
+        nhm = unpack(">H", raw, hh + 34)[0]
+        nglyphs = unpack(">H", raw, tables.maxp.offset + 4)[0]
+        if upem = 0 or nhm = 0 or nhm > nglyphs then
+            error (whose + ": its head, hhea and maxp tables disagree (" + string(upem) + " units per em, " +
+                   string(nhm) + " metrics for " + string(nglyphs) + " glyphs)")
+        end if
+
+        cap = ascent
+        weight = 400
+        if has(tables, "OS/2") then
+            o = tables["OS/2"].offset
+            fs_type = unpack(">H", raw, o + 8)[0]
+            ' fsType: 0x0002 is "restricted licence embedding", which forbids
+            ' putting the font in a document at all; 0x0200 is bitmap only.
+            if band(fs_type, 0x0002) != 0 and band(fs_type, 0x000C) = 0 then
+                error whose + ": its licence forbids embedding it (OS/2 fsType " + string(fs_type) + ", restricted)"
+            end if
+            if band(fs_type, 0x0200) != 0 then
+                error whose + ": its licence allows embedding its bitmaps only (OS/2 fsType " + string(fs_type) + ")"
+            end if
+            weight = unpack(">H", raw, o + 4)[0]
+            if unpack(">H", raw, o)[0] >= 2 and tables["OS/2"].length >= 90 then
+                cap = unpack(">h", raw, o + 88)[0]
+            end if
+        end if
+        italic = 0
+        fixed = false
+        if has(tables, "post") then
+            p = tables.post.offset
+            italic = unpack(">i", raw, p + 4)[0] / 65536
+            fixed = unpack(">I", raw, p + 12)[0] != 0
+        end if
+
+        name = _default(opts, "name", _ps_name(raw, tables))
+        if not is_string(name) or name = "" then
+            error whose + " names no PostScript name; give it one with `name:`"
+        end if
+        if not is_unknown(gpdf_metrics.widths(name)) then
+            error (whose + " is called '" + name + "', which is a core-14 font's name; " +
+                   "give it another with `name:` so the two cannot be confused")
+        end if
+        font = { kind: "truetype", name: name, file: string(path), raw: raw,
+                 tables: tables, upem: upem, bbox: bbox, ascent: ascent,
+                 descent: descent, cap_height: cap, italic: italic, fixed: fixed,
+                 weight: weight, glyphs: nglyphs, long_loca: long_loca,
+                 metrics: nhm, cmap: _cmap(raw, tables.cmap, whose), common: {} }
+        ' The glyph and advance of each character of the commonest scripts
+        ' (Latin through Extended-A, Greek, Cyrillic), found once here rather
+        ' than by a search per character drawn or measured: a 1000-row table
+        ' took 5.9 s against Helvetica's 1.55 s before this, 2026-11-10.
+        common = {}
+        for each r in [ [ 0x20, 0x7E ], [ 0xA0, 0x17F ], [ 0x370, 0x3FF ], [ 0x400, 0x4FF ] ]
+            cp = r[0]
+            while cp <= r[1]
+                g = _glyph(font, cp)
+                if g != 0 and g < nglyphs then
+                    common[chr(cp)] = [ g, _advance(font, g) ]
+                end if
+                cp = cp + 1
+            end while
+        end for
+        font.common = common
+        return font
+    end function
+
+    ' The PostScript name (name ID 6), as PDF wants a name: letters, digits
+    ' and - or _ only. Mac Roman (platform 1) is bytes; Windows (platform 3)
+    ' is UTF-16BE, whose ASCII is every second byte.
+    function _ps_name(raw, tables)
+        if not has(tables, "name") then return ""
+        at = tables.name.offset
+        hdr = unpack(">H H H", raw, at)
+        i = 0
+        while i < hdr[1]
+            r = unpack(">H H H H H H", raw, at + 6 + 12 * i)
+            if r[3] = 6 then
+                s = byte_slice(raw, at + hdr[2] + r[5], r[4])
+                stride = 1
+                first = 0
+                if r[0] = 3 or r[0] = 0 then
+                    stride = 2
+                    first = 1
+                end if
+                out = ""
+                j = first
+                while j < byte_count(s)
+                    b = byte_at(s, j)
+                    if (b >= 48 and b <= 57) or (b >= 65 and b <= 90) or (b >= 97 and b <= 122) or b = 45 or b = 95 then
+                        out = out + from_bytes([b])
+                    end if
+                    j = j + stride
+                end while
+                if out != "" then return out
+            end if
+            i = i + 1
+        end while
+        return ""
+    end function
+
+    ' The Unicode character map, chosen and read once: format 12 (all of
+    ' Unicode) if the font has one, else format 4 (the Basic Multilingual
+    ' Plane). Glyphs are looked up from it per character, never expanded
+    ' into a table of every character the font has.
+    function _cmap(raw, t, whose)
+        at = t.offset
+        n = unpack(">H", raw, at + 2)[0]
+        best = -1
+        best_rank = 0
+        i = 0
+        while i < n
+            r = unpack(">H H I", raw, at + 4 + 8 * i)
+            sub = at + r[2]
+            fmt = unpack(">H", raw, sub)[0]
+            unicode = r[0] = 0 or (r[0] = 3 and (r[1] = 1 or r[1] = 10))
+            rank = 0
+            if unicode and fmt = 12 then rank = 2
+            if unicode and fmt = 4 then rank = 1
+            if rank > best_rank then
+                best = sub
+                best_rank = rank
+            end if
+            i = i + 1
+        end while
+        if best < 0 then
+            error whose + " has no Unicode character map (cmap format 4 or 12), so no character can be found in it"
+        end if
+        if best_rank = 2 then
+            ngroups = unpack(">I", raw, best + 12)[0]
+            g = unpack(">" + string(3 * ngroups) + "I", raw, best + 16)
+            starts = []
+            ends = []
+            gids = []
+            i = 0
+            while i < ngroups
+                append(starts, g[3 * i])
+                append(ends, g[3 * i + 1])
+                append(gids, g[3 * i + 2])
+                i = i + 1
+            end while
+            return { format: 12, starts: starts, ends: ends, gids: gids }
+        end if
+        segs = unpack(">H", raw, best + 6)[0] / 2
+        ends = unpack(">" + string(segs) + "H", raw, best + 14)
+        starts = unpack(">" + string(segs) + "H", raw, best + 16 + 2 * segs)
+        deltas = unpack(">" + string(segs) + "H", raw, best + 16 + 4 * segs)
+        ranges_at = best + 16 + 6 * segs
+        ranges = unpack(">" + string(segs) + "H", raw, ranges_at)
+        return { format: 4, starts: starts, ends: ends, deltas: deltas,
+                 ranges: ranges, ranges_at: ranges_at }
+    end function
+
+    ' The glyph for codepoint `cp`, or 0 (the font's "missing" glyph).
+    function _glyph(font, cp)
+        m = font.cmap
+        lo = 0
+        hi = count(m.ends) - 1
+        while lo < hi
+            mid_at = floor((lo + hi) / 2)
+            if m.ends[mid_at] < cp then
+                lo = mid_at + 1
+            else
+                hi = mid_at
+            end if
+        end while
+        if lo > hi or cp < m.starts[lo] or cp > m.ends[lo] then return 0
+        if m.format = 12 then
+            return m.gids[lo] + cp - m.starts[lo]
+        end if
+        if m.ranges[lo] = 0 then
+            return mod(cp + m.deltas[lo], 65536)
+        end if
+        addr = m.ranges_at + 2 * lo + m.ranges[lo] + 2 * (cp - m.starts[lo])
+        if addr + 2 > byte_count(font.raw) then return 0
+        g = unpack(">H", font.raw, addr)[0]
+        if g = 0 then return 0
+        return mod(g + m.deltas[lo], 65536)
+    end function
+
+    ' A glyph's advance in font units.
+    function _advance(font, gid)
+        i = gid
+        if i >= font.metrics then i = font.metrics - 1
+        return unpack(">H", font.raw, font.tables.hmtx.offset + 4 * i)[0]
+    end function
+
+    ' Scripts drawn wrongly one glyph at a time, left to right: joined
+    ' (Arabic, Syriac, N'Ko), right to left (Hebrew, Thaana), or reordered
+    ' and shaped (the Indic scripts, Tibetan, Myanmar, Khmer and their
+    ' neighbours).
+    function _needs_shaping(cp)
+        if cp < 0x0590 then return false
+        for each r in [ [0x0590, 0x08FF], [0x0900, 0x0DFF], [0x0F00, 0x109F],
+                        [0x1780, 0x18AF], [0x1900, 0x1AFF], [0x1B00, 0x1C4F],
+                        [0xA800, 0xA8FF], [0xA980, 0xAAFF], [0xABC0, 0xABFF],
+                        [0xFB1D, 0xFDFF], [0xFE70, 0xFEFF], [0x10A00, 0x10A5F],
+                        [0x11000, 0x1124F], [0x1E900, 0x1E95F] ]
+            if cp >= r[0] and cp <= r[1] then return true
+        end for
+        return false
+    end function
+
+    ' The glyph for one character in an embedded font, or a refusal naming it.
+    function _glyph_or_refuse(font, ch, i, n, whose)
+        known = font.common[ch]
+        if not is_unknown(known) then return known[0]
+        cp = code(ch)
+        where = " It is character " + string(i + 1) + " of " + string(n) + "."
+        if cp < 32 or (cp >= 127 and cp < 160) then
+            error whose + ": character U+" + _u(cp) + " is a control character, which no font draws." + where
+        end if
+        if _needs_shaping(cp) then
+            error (whose + ": '" + ch + "' (U+" + _u(cp) + ") is from a script whose letters join, " +
+                   "reorder or run right to left, which needs shaping that gpdf does not do; " +
+                   "drawn one glyph at a time it would print a wrong word." + where)
+        end if
+        g = _glyph(font, cp)
+        if g = 0 or g >= font.glyphs then
+            error (whose + ": '" + ch + "' (U+" + _u(cp) + ") is not in the font " + font.name +
+                   " (" + font.file + "); nothing is substituted." + where)
+        end if
+        return g
+    end function
+
     ' ---- drawing ---------------------------------------------------------
 
     ' Write one line at the current cursor and move down. `leading` defaults to
@@ -286,11 +661,38 @@ library gpdf
         if count(doc.pages) = 0 then
             error "gpdf.text: there is no page yet -- call gpdf.add_page first"
         end if
-        enc = to_winansi(s, "gpdf.text")
         out = doc
+        shown = ""
+        if has(out.embedded, out.font) then
+            ' Two bytes per glyph, the subset's own glyph number (its CID),
+            ' given in order of first use. The character each stands for is
+            ' kept for the ToUnicode map.
+            font = out.embedded[out.font]
+            usage = out.glyphs[out.font]
+            str = string(s)
+            n = len(str)
+            hex = []
+            k = 0
+            while k < n
+                ch = mid(str, k, 1)
+                g = _glyph_or_refuse(font, ch, k, n, "gpdf.text")
+                key = string(g)
+                if not has(usage.cid_of, key) then
+                    usage.cid_of[key] = count(usage.gids)
+                    append(usage.gids, g)
+                    append(usage.text, ch)
+                end if
+                append(hex, pack(">H", [ usage.cid_of[key] ]))
+                k = k + 1
+            end while
+            out.glyphs[out.font] = usage
+            shown = "<" + upper(hex_encode(join(hex, ""))) + ">"
+        else
+            shown = "(" + _escape(to_winansi(s, "gpdf.text")) + ")"
+        end if
         i = count(out.pages) - 1
         body = ("BT /F" + string(_font_index(out, out.font)) + " " + _num(out.font_size) +
-                " Tf 1 0 0 1 " + _num(x) + " " + _num(y) + " Tm (" + _escape(enc) + ") Tj ET" + chr(10))
+                " Tf 1 0 0 1 " + _num(x) + " " + _num(y) + " Tm " + shown + " Tj ET" + chr(10))
         out.pages[i].content = out.pages[i].content + body
         return out
     end function
@@ -372,7 +774,7 @@ library gpdf
     function paragraph(doc, width, s)
         out = doc
         leading = out.font_size * 1.2
-        for each line in wrap(out.font, out.font_size, width, s)
+        for each line in wrap(_face(out, out.font), out.font_size, width, s)
             if out.cursor.y < out.margin then
                 out = add_page(out)
             end if
@@ -452,7 +854,7 @@ library gpdf
             height = leading
             for each c in cols
                 txt = _cell_text(row, c)
-                lines = wrap(body_font, body_size, c.width - 2 * pad, txt)
+                lines = wrap(_face(out, body_font), body_size, c.width - 2 * pad, txt)
                 append(cells, lines)
                 if count(lines) * leading > height then
                     height = count(lines) * leading
@@ -536,7 +938,7 @@ library gpdf
             j = 0
             while j < count(lines)
                 line = lines[j]
-                w = text_width(out.font, out.font_size, line)
+                w = text_width(_face(out, out.font), out.font_size, line)
                 tx = x + pad
                 if align = "right" then
                     tx = x + c.width - pad - w
@@ -971,7 +1373,7 @@ library gpdf
         ' core-14 widths everything else uses -- which is why the metrics layer
         ' had to come first for this to be possible at all.
         anchor = _default(a, "text-anchor", "start")
-        w = text_width(font, size, label)
+        w = text_width(_face(out, font), size, label)
         if anchor = "middle" then tx = tx - w / 2
         if anchor = "end" then tx = tx - w
         ' `dominant-baseline: middle` centres on the x-height; 0.36em is the
@@ -1253,7 +1655,7 @@ library gpdf
         i = 0
         while i < total
             label = replace(replace(fmt, "{n}", string(i + 1)), "{total}", string(total))
-            w = text_width(font, size, label)
+            w = text_width(_face(out, out.font), size, label)
             pg = out.pages[i]
             y = _default(opts, "y", out.margin / 2)
             x = out.margin
@@ -1328,7 +1730,24 @@ library gpdf
         ' a contents object, then the fonts, then the images, then info.
         first_page_obj = 3
         font_obj = first_page_obj + npages * 2
-        image_obj = font_obj + count(fonts)
+        ' A core font is one object; an embedded one is five (see _embedded).
+        font_refs = []
+        font_objs = []
+        next_obj = font_obj
+        for each f in fonts
+            append(font_refs, next_obj)
+            if has(doc.embedded, f) then
+                for each o in _embedded(doc, f, next_obj)
+                    append(font_objs, o)
+                    next_obj = next_obj + 1
+                end for
+            else
+                append(font_objs, "<< /Type /Font /Subtype /Type1 /BaseFont /" + f +
+                                  " /Encoding /WinAnsiEncoding >>")
+                next_obj = next_obj + 1
+            end if
+        end for
+        image_obj = next_obj
         info_obj = image_obj + count(doc.images)
 
         objs = []
@@ -1349,7 +1768,7 @@ library gpdf
             fres = ""
             j = 0
             while j < count(fonts)
-                fres = fres + "/F" + string(j + 1) + " " + string(font_obj + j) + " 0 R"
+                fres = fres + "/F" + string(j + 1) + " " + string(font_refs[j]) + " 0 R"
                 if j < count(fonts) - 1 then fres = fres + " "
                 j = j + 1
             end while
@@ -1377,9 +1796,8 @@ library gpdf
             i = i + 1
         end while
 
-        for each f in fonts
-            append(objs, "<< /Type /Font /Subtype /Type1 /BaseFont /" + f +
-                         " /Encoding /WinAnsiEncoding >>")
+        for each o in font_objs
+            append(objs, o)
         end for
 
         ' Each image is an XObject whose stream is the file's own compressed
@@ -1395,10 +1813,10 @@ library gpdf
         end for
 
         info = "<< /Producer (gBASIC gpdf)"
-        if doc.title != "" then info = info + " /Title (" + _escape(to_winansi(doc.title, "gpdf.render")) + ")"
-        if doc.author != "" then info = info + " /Author (" + _escape(to_winansi(doc.author, "gpdf.render")) + ")"
-        if doc.subject != "" then info = info + " /Subject (" + _escape(to_winansi(doc.subject, "gpdf.render")) + ")"
-        if doc.creator != "" then info = info + " /Creator (" + _escape(to_winansi(doc.creator, "gpdf.render")) + ")"
+        if doc.title != "" then info = info + " /Title " + _info_text(doc.title)
+        if doc.author != "" then info = info + " /Author " + _info_text(doc.author)
+        if doc.subject != "" then info = info + " /Subject " + _info_text(doc.subject)
+        if doc.creator != "" then info = info + " /Creator " + _info_text(doc.creator)
         ' NO CLOCK. A document given no `created` carries no CreationDate at
         ' all, which is honest; inventing one would make the bytes unstable and
         ' a golden meaningless.
@@ -1430,6 +1848,309 @@ library gpdf
                      " /Root 1 0 R /Info " + string(info_obj) + " 0 R >>" + chr(10))
         out = out + "startxref" + chr(10) + string(xref_at) + chr(10) + "%%EOF" + chr(10)
         return out
+    end function
+
+    ' A document-information string. Info strings are PDFDocEncoding, NOT
+    ' WinAnsi: the two agree on ASCII and Latin-1 but not on 0x80-0x9F, where
+    ' WinAnsi's Euro is PDFDoc's bullet, and PDFDoc leaves 0xAD undefined.
+    ' Until 2026-11-10 titles went as WinAnsi, so "Price €9 — net" showed
+    ' in a reader's document properties as "Price •9 Š net" (measured with
+    ' pdfinfo). Those bytes, and anything WinAnsi cannot write, now go as
+    ' UTF-16BE with its byte order mark, which is how PDF writes any script.
+    function _info_text(s)
+        t = string(s)
+        if representable(t) then
+            enc = to_winansi(t, "gpdf.render")
+            high = false
+            i = 0
+            while i < byte_count(enc)
+                b = byte_at(enc, i)
+                if (b >= 128 and b < 160) or b = 173 then high = true
+                i = i + 1
+            end while
+            if not high then return "(" + _escape(enc) + ")"
+        end if
+        return "<FEFF" + upper(hex_encode(transcode(t, "utf-8", "utf-16be"))) + ">"
+    end function
+
+    ' The five objects an embedded font is, numbered from `first`: the Type0
+    ' font a page names, its CIDFontType2 descendant with every glyph's width,
+    ' the font descriptor, the subset font program, and the ToUnicode map.
+    function _embedded(doc, name, first)
+        font = doc.embedded[name]
+        usage = doc.glyphs[name]
+        sub = _subset(font, usage.gids)
+        tag = _subset_tag(sub.gids)
+        base = tag + "+" + font.name
+        scale = 1000 / font.upem
+
+        widths = []
+        for each g in sub.gids
+            append(widths, _num(_advance(font, g) * scale))
+        end for
+
+        flags = 4
+        if font.fixed then flags = flags + 1
+        if font.italic != 0 then flags = flags + 64
+        fd = ("<< /Type /FontDescriptor /FontName /" + base + " /Flags " + string(flags) +
+              " /FontBBox [" + _num(font.bbox[0] * scale) + " " + _num(font.bbox[1] * scale) + " " +
+              _num(font.bbox[2] * scale) + " " + _num(font.bbox[3] * scale) + "]" +
+              " /ItalicAngle " + _num(font.italic) + " /Ascent " + _num(font.ascent * scale) +
+              " /Descent " + _num(font.descent * scale) + " /CapHeight " + _num(font.cap_height * scale) +
+              " /StemV " + string(_stem_v(font.weight)) + " /FontFile2 " + string(first + 3) + " 0 R >>")
+
+        return [ "<< /Type /Font /Subtype /Type0 /BaseFont /" + base + " /Encoding /Identity-H" +
+                 " /DescendantFonts [" + string(first + 1) + " 0 R] /ToUnicode " + string(first + 4) + " 0 R >>",
+                 "<< /Type /Font /Subtype /CIDFontType2 /BaseFont /" + base +
+                 " /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >>" +
+                 " /FontDescriptor " + string(first + 2) + " 0 R /CIDToGIDMap /Identity" +
+                 " /W [0 [" + join(widths, " ") + "]] >>",
+                 fd,
+                 _stream(doc, sub.program, " /Length1 " + string(byte_count(sub.program))),
+                 _stream(doc, _to_unicode(usage.text), "") ]
+    end function
+
+    function _stream(doc, data, extra)
+        body = data
+        filter = ""
+        if doc.compress then
+            body = compress(data)
+            filter = " /Filter /FlateDecode"
+        end if
+        return ("<< /Length " + string(byte_count(body)) + filter + extra + " >>" + chr(10) +
+                "stream" + chr(10) + body + chr(10) + "endstream")
+    end function
+
+    ' The usual estimate of a stem's width from the weight class; readers use
+    ' it only to embolden or hint, and a font program carries no such number.
+    function _stem_v(weight)
+        return floor(10 + 220 * (weight - 50) / 900 + 0.5)
+    end function
+
+    ' Six capital letters naming this subset, as PDF requires, taken from the
+    ' glyphs it holds: the same glyphs give the same tag, so the bytes stay
+    ' reproducible, and two different subsets of one font differ.
+    function _subset_tag(gids)
+        h = 7
+        for each g in gids
+            h = mod(h * 31 + g + 1, 308915776)
+        end for
+        out = ""
+        i = 0
+        while i < 6
+            out = out + from_bytes([ 65 + mod(h, 26) ])
+            h = floor(h / 26)
+            i = i + 1
+        end while
+        return out
+    end function
+
+    ' CID -> the character it was drawn for, so text extracts as written.
+    function _to_unicode(text)
+        lines = [ "/CIDInit /ProcSet findresource begin", "12 dict begin", "begincmap",
+                  "/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def",
+                  "/CMapName /Adobe-Identity-UCS def", "/CMapType 2 def",
+                  "1 begincodespacerange", "<0000> <FFFF>", "endcodespacerange" ]
+        entries = []
+        i = 1
+        while i < count(text)
+            append(entries, "<" + upper(hex_encode(pack(">H", [ i ]))) + "> <" +
+                            upper(hex_encode(transcode(text[i], "utf-8", "utf-16be"))) + ">")
+            i = i + 1
+        end while
+        ' At most 100 entries to a block, as the CMap format requires.
+        at = 0
+        while at < count(entries)
+            n = count(entries) - at
+            if n > 100 then n = 100
+            append(lines, string(n) + " beginbfchar")
+            j = 0
+            while j < n
+                append(lines, entries[at + j])
+                j = j + 1
+            end while
+            append(lines, "endbfchar")
+            at = at + n
+        end while
+        for each l in [ "endcmap", "CMapName currentdict /CMap defineresource pop", "end", "end" ]
+            append(lines, l)
+        end for
+        return join(lines, chr(10)) + chr(10)
+    end function
+
+    ' ---- the subset font program -----------------------------------------
+    '
+    ' A new TrueType font holding only the glyphs drawn, renumbered in order of
+    ' first use (glyph 0 stays the missing glyph), plus every glyph a drawn
+    ' COMPOSITE glyph is built from: 'ł' in many fonts is an 'l' and a stroke,
+    ' and leaving the 'l' out prints only the stroke. The tables are the nine
+    ' ISO 32000 names for an embedded TrueType program (9.9): glyf, head,
+    ' hhea, hmtx, loca, maxp and, where the font has them, cvt, fpgm and prep,
+    ' which the hinting instructions need. cmap is not among them: the
+    ' document reaches glyphs by number (CIDToGIDMap /Identity).
+    function _subset(font, drawn)
+        raw = font.raw
+        gids = []
+        new_of = {}
+        for each g in drawn
+            new_of[string(g)] = count(gids)
+            append(gids, g)
+        end for
+        ' Components are added as they are found, so the walk reaches a
+        ' component's own components too.
+        datas = []
+        k = 0
+        while k < count(gids)
+            data = _glyph_data(font, gids[k])
+            if byte_count(data) >= 10 and unpack(">h", data, 0)[0] < 0 then
+                at = 10
+                more = true
+                while more
+                    c = unpack(">H H", data, at)
+                    key = string(c[1])
+                    if not has(new_of, key) then
+                        if c[1] >= font.glyphs then
+                            error ("gpdf.render: " + font.file + " is damaged: glyph " + string(gids[k]) +
+                                   " is built from glyph " + string(c[1]) + ", and the font has " +
+                                   string(font.glyphs))
+                        end if
+                        new_of[key] = count(gids)
+                        append(gids, c[1])
+                    end if
+                    data = byte_slice(data, 0, at + 2) + pack(">H", [ new_of[key] ]) + byte_slice(data, at + 4)
+                    size = 4
+                    if band(c[0], 0x0001) != 0 then
+                        size = size + 4
+                    else
+                        size = size + 2
+                    end if
+                    if band(c[0], 0x0008) != 0 then size = size + 2
+                    if band(c[0], 0x0040) != 0 then size = size + 4
+                    if band(c[0], 0x0080) != 0 then size = size + 8
+                    at = at + size
+                    more = band(c[0], 0x0020) != 0
+                end while
+            end if
+            append(datas, data)
+            k = k + 1
+        end while
+
+        glyf = []
+        loca = []
+        hmtx = []
+        off = 0
+        k = 0
+        while k < count(gids)
+            d = datas[k]
+            while mod(byte_count(d), 4) != 0
+                d = d + from_bytes([ 0 ])
+            end while
+            append(loca, off)
+            append(glyf, d)
+            off = off + byte_count(d)
+            append(hmtx, pack(">H h", [ _advance(font, gids[k]), _lsb(font, gids[k]) ]))
+            k = k + 1
+        end while
+        append(loca, off)
+
+        t = font.tables
+        n = count(gids)
+        head = byte_slice(raw, t.head.offset, 54)
+        head = byte_slice(head, 0, 8) + pack(">I", [ 0 ]) + byte_slice(head, 12, 38) + pack(">h h", [ 1, 0 ])
+        hhea = byte_slice(raw, t.hhea.offset, 36)
+        hhea = byte_slice(hhea, 0, 34) + pack(">H", [ n ])
+        maxp = byte_slice(raw, t.maxp.offset, t.maxp.length)
+        maxp = byte_slice(maxp, 0, 4) + pack(">H", [ n ]) + byte_slice(maxp, 6)
+
+        parts = { head: head, hhea: hhea, maxp: maxp,
+                  loca: pack(">" + string(count(loca)) + "I", loca),
+                  glyf: join(glyf, ""), hmtx: join(hmtx, "") }
+        for each extra in [ "cvt ", "fpgm", "prep" ]
+            if has(t, extra) then
+                parts[extra] = byte_slice(raw, t[extra].offset, t[extra].length)
+            end if
+        end for
+        return { gids: gids, program: _sfnt(parts) }
+    end function
+
+    ' One glyph's outline bytes, empty for a glyph with no outline (a space).
+    function _glyph_data(font, g)
+        t = font.tables
+        if font.long_loca then
+            o = unpack(">I I", font.raw, t.loca.offset + 4 * g)
+        else
+            o = unpack(">H H", font.raw, t.loca.offset + 2 * g)
+            o = [ o[0] * 2, o[1] * 2 ]
+        end if
+        if o[1] <= o[0] then return ""
+        if o[1] > t.glyf.length then
+            error "gpdf.render: " + font.file + " is damaged: glyph " + string(g) + " runs past its glyf table"
+        end if
+        return byte_slice(font.raw, t.glyf.offset + o[0], o[1] - o[0])
+    end function
+
+    ' A glyph's left side bearing: from its full metric, or from the bare
+    ' bearings that follow the metrics for the glyphs past numberOfHMetrics.
+    function _lsb(font, g)
+        at = font.tables.hmtx.offset
+        if g < font.metrics then
+            return unpack(">h", font.raw, at + 4 * g + 2)[0]
+        end if
+        return unpack(">h", font.raw, at + 4 * font.metrics + 2 * (g - font.metrics))[0]
+    end function
+
+    ' A font file from its tables: the directory, tables in tag order each
+    ' padded to four bytes, every table's checksum, and head's adjustment,
+    ' which makes the whole file sum to 0xB1B0AFBA.
+    function _sfnt(parts)
+        tags = sort(keys(parts))
+        n = count(tags)
+        p2 = 1
+        e = 0
+        while p2 * 2 <= n
+            p2 = p2 * 2
+            e = e + 1
+        end while
+        dir = [ pack(">I H H H H", [ 0x00010000, n, p2 * 16, e, n * 16 - p2 * 16 ]) ]
+        body = []
+        off = 12 + 16 * n
+        for each tag in tags
+            d = parts[tag]
+            len_d = byte_count(d)
+            while mod(byte_count(d), 4) != 0
+                d = d + from_bytes([ 0 ])
+            end while
+            append(dir, pack(">4s I I I", [ tag, _checksum(d), off, len_d ]))
+            append(body, d)
+            off = off + byte_count(d)
+        end for
+        file = join(dir, "") + join(body, "")
+        adjust = mod(0xB1B0AFBA - _checksum(file), 4294967296)
+        ' The adjustment goes in at byte 8 of head, found by adding up the
+        ' padded tables before it.
+        at = 12 + 16 * n
+        for each tag in tags
+            if tag = "head" then break
+            at = at + byte_count(parts[tag]) + mod(4 - mod(byte_count(parts[tag]), 4), 4)
+        end for
+        return byte_slice(file, 0, at + 8) + pack(">I", [ adjust ]) + byte_slice(file, at + 12)
+    end function
+
+    ' The sum of a table's big-endian 32-bit words, modulo 2^32. `d` is
+    ' already a multiple of four bytes long.
+    function _checksum(d)
+        total = 0
+        at = 0
+        while at < byte_count(d)
+            n = floor((byte_count(d) - at) / 4)
+            if n > 4096 then n = 4096
+            for each w in unpack(">" + string(n) + "I", d, at)
+                total = total + w
+            end for
+            total = mod(total, 4294967296)
+            at = at + 4 * n
+        end while
+        return total
     end function
 
     ' Each xref entry is exactly 20 bytes: 10 digits, a space, 5 digits, a

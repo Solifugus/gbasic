@@ -6008,7 +6008,9 @@ and not yet acted on; see `docs/qt_gui_design.md` §0.4.
 `load gpdf` — pure gBASIC, written from ISO 32000. The document, the core-14
 fonts, measured text and word wrap; then tables that flow across pages
 (`gpdf.table`), images copied rather than re-encoded (`gpdf.image`) and a
-`chart` SVG placed as PDF vectors (`gpdf.svg`). Embedded fonts are not built.
+`chart` SVG placed as PDF vectors (`gpdf.svg`), and TrueType fonts embedded
+subset to the glyphs a document draws (`gpdf.font_file`), for text the core
+fonts cannot write.
 
 ```basic
 when {datetime}= "2026-01-01 12:00:00"
@@ -6033,10 +6035,11 @@ same trap the xlsx writer avoids by fixing ZIP mod-times. `created:` takes a
 datetime; a document given none carries **no** `CreationDate` at all, which is
 honest, where an invented one is not.
 
-**An unrepresentable character is refused by name, never substituted.** Phase 1
-is WinAnsi, so it cannot write Cyrillic or CJK. The alternative to refusing is
+**An unrepresentable character is refused by name, never substituted.** The
+core fonts are WinAnsi, so they cannot write Polish, Turkish, Cyrillic or CJK;
+an embedded font writes what it has glyphs for. The alternative to refusing is
 putting some *other* character on a document that has already been posted, and
-the refusal names the character, its codepoint and its position. `representable(text)`
+the refusal names the character, its codepoint and its position. `representable(text [, font])`
 answers a boolean instead, so an application can check a customer's name where
 it is entered rather than where a document is produced.
 
@@ -6050,12 +6053,13 @@ has to repair it.
 |---|---|
 | `gpdf.document(options)` | `size` (a name from `gpdf.sizes()` or `{width,height}` in points), `margin`, `title`, `author`, `subject`, `creator`, `created`, `compress` |
 | `gpdf.add_page(doc)` / `gpdf.page_count(doc)` | pages |
-| `gpdf.set_font(doc, name, size)` | one of the core 14; anything else is refused by name |
+| `gpdf.set_font(doc, font, size)` | one of the core 14 by name, a font value from `gpdf.font_file`, or the name of one the document was already given |
+| `gpdf.font_file(path [, options])` | a TrueType font read from its file, a value usable in any number of documents — see below |
 | `gpdf.text(doc, s)` / `gpdf.text_at(doc, x, y, s)` | draw a line |
 | `gpdf.paragraph(doc, width, s)` | wrapped text, adding pages as it runs out of room |
-| `gpdf.wrap(font, size, width, s)` | the lines, without drawing them |
+| `gpdf.wrap(font, size, width, s)` | the lines, without drawing them; `font` is a core name or a font value |
 | `gpdf.text_width(font, size, s)` | points — what wrapping and alignment are built on |
-| `gpdf.representable(s)` / `gpdf.to_winansi(s, whose)` | encoding |
+| `gpdf.representable(s [, font])` / `gpdf.to_winansi(s, whose)` | encoding: WinAnsi, or the glyphs a font value has |
 | `gpdf.image(doc, path, x, y, options)` | a PNG or JPEG, copied not re-encoded — see below |
 | `gpdf.svg(doc, svg, x, y, options)` | a `chart` SVG as PDF vectors — see below |
 | `gpdf.table(doc, rows, spec)` | a table that flows across pages — see below |
@@ -6063,6 +6067,51 @@ has to repair it.
 | `gpdf.rule(doc, x1, y, x2, thickness)` | a horizontal line |
 | `gpdf.sizes()` | the named page sizes |
 | `gpdf.render(doc)` / `gpdf.save(doc, path)` | bytes, or `nothing` (the file is written; `file_size(path)` is its size) |
+
+### Embedded fonts
+
+*(added 2026-11-10; book gap G58)* A customer in Łódź, İzmir or Новосибирск
+has a name the core fonts cannot write. `gpdf.font_file` reads a TrueType font,
+and a document set in it carries the font **subset** to the glyphs it drew:
+
+```basic
+body = gpdf.font_file("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+d = gpdf.document({ title: "Zakład Mechaniczny Łódź", created: when })
+d = gpdf.add_page(d)
+d = gpdf.set_font(d, body, 11)
+d = gpdf.text(d, "Zakład Mechaniczny Łódź")
+' ask before drawing, where the name is entered
+if not gpdf.representable(customer.name, body) then
+    print "this font cannot write " + customer.name
+end if
+```
+
+- **A font value is read once** and used in any number of documents: a run of
+  statements reads the file once, not once a statement. Options: `name`, what
+  documents call it (default its PostScript name; one calling itself a core
+  name such as `Helvetica` must be given another), and `index`, which font of
+  a collection (`.ttc`) to read (default 0).
+- **Everything that measures accepts it**: `text_width`, `wrap`, `paragraph`,
+  `table` (and its `heading_font`), `number_pages` (`font:`) and `svg` text.
+  A width is the sum of the glyphs' advances, which is what is drawn; kerning
+  is not applied.
+- **In the PDF** it is a Type0 font over a CIDFontType2 (Identity-H), the
+  subset's own glyph numbers as CIDs in order of first use, with every glyph a
+  composite glyph is built from, a width for each, and a ToUnicode map, so the
+  text extracts and searches as written. The subset is named by six capitals
+  taken from the glyphs it holds, so the bytes stay reproducible.
+- **Refused by name:** a character the font has no glyph for (nothing is
+  substituted); a character from a script that needs **shaping** — Arabic and
+  its relatives join, Hebrew runs right to left, the Indic scripts and their
+  neighbours reorder — because drawn one glyph at a time it prints a wrong word;
+  a control character; a font with PostScript (CFF) outlines, usually `.otf`
+  (only TrueType outlines are subset); and a font whose licence forbids
+  embedding (OS/2 `fsType` restricted, or bitmap only).
+- **Document information** (`title`, `author`, `subject`, `creator`) is
+  written in UTF-16 when WinAnsi cannot carry it, so a title in any script reads
+  correctly in a reader's document properties. This also mended a defect: Info
+  strings are PDFDocEncoding, which disagrees with WinAnsi at 0x80-0x9F, so a
+  title of `Price €9 — net` used to read as `Price •9 Š net`.
 
 ### Tables that flow across pages
 

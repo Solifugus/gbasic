@@ -16,6 +16,33 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Embedded fonts in gpdf (book gap G58, 2026-11-10)
+
+- **`gpdf.font_file(path [, { name, index }])` reads a TrueType font**, and
+  `gpdf.set_font(d, font, size)` sets text in it. The PDF carries the font
+  subset to the glyphs drawn (and every glyph a composite is built from) as a
+  Type0/CIDFontType2 font with a ToUnicode map, so a statement can name a
+  customer in Łódź, İzmir or Новосибирск and the text extracts as written.
+  `text_width`, `wrap`, `paragraph`, `table`, `number_pages` and `svg` text all
+  measure with it; `representable(s, font)` asks the font.
+- **Refused by name, as WinAnsi's characters are:** a character the font has no
+  glyph for; one from a script that needs shaping (Arabic, Hebrew, the Indic
+  scripts and their neighbours), which drawn a glyph at a time prints a wrong
+  word; a control character; CFF (`.otf`) outlines; and a licence that forbids
+  embedding. Kerning is not applied.
+- **The WinAnsi refusal's wording changed** to point at `gpdf.font_file`
+  instead of saying embedded fonts are a later phase. No golden pins it.
+- **Document information strings mended.** `title`, `author`, `subject` and
+  `creator` went into the PDF as WinAnsi bytes, but the Info dictionary is
+  PDFDocEncoding, which differs at 0x80-0x9F: a title `Price €9 — net` read as
+  `Price •9 Š net` in a reader's document properties (pdfinfo, measured). Such
+  strings, and any WinAnsi cannot write, now go as UTF-16BE.
+- New suite `tests/run_gpdf_font.sh`: a fixture font made per run by fontTools,
+  each drawn glyph's outline, advance, bearing and width held to the original
+  font after mupdf rewrites the PDF, every codepoint U+0000-U+2FFF looked up
+  through cmap formats 4 and 12 against fontTools, three readers, and
+  pdftotext giving back what was asked for.
+
 ### scrypt is allowed the memory its cost needs (Transward §12.1, 2026-11-10)
 
 - **`scrypt` at the recommended `n = 65536, r = 8, p = 1` raised** "scrypt
@@ -31,7 +58,7 @@ reader sees.
 - **`disk_space(p)` answers `{ total, free, available }`** for the filesystem
   holding `p`, in exact integer bytes. `available` is what an unprivileged
   writer may still use, and `free` also counts root's reserve. A capacity
-  monitor ran `df` once a path a sweep for this, and there is no `df` on
+  monitor ran `df` once per path per sweep for this, and there is no `df` on
   Windows.
 
 ### A readable worksheet, and zip.write (book gap G55, 2026-11-09)
