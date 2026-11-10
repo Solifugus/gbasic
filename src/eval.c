@@ -29826,10 +29826,18 @@ static int process_parse_options(Value *opts, const char *label, ProcLaunch *out
  * exec is distinguishable from a real exit 127). On success returns the pid and
  * fills the out_fd/err_fd outputs. Returns -1 and sets launch_errno on exec
  * failure, or -2 on a pipe/fork failure. */
+/* out_to / err_to: where the child's fd 1 / fd 2 go. PROC_TO_PIPE (the
+ * default) is a pipe the parent reads; PROC_TO_INHERIT leaves the parent's own;
+ * an fd >= 0 (opened by the caller, close-on-exec) is dup'd onto it. The pipe
+ * is made either way, so the parent's end simply reads end-of-file when the
+ * stream went elsewhere, and process.read answers "" for it. */
+#define PROC_TO_PIPE (-1)
+#define PROC_TO_INHERIT (-2)
 static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
                             const int *share_fds, size_t share_count,
                             int *out_fd, int *err_fd, int *launch_errno,
-                            int want_stdin, int *in_fd, long long memory_limit) {
+                            int want_stdin, int *in_fd, long long memory_limit,
+                            int out_to, int err_to) {
     int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1}, exec_pipe[2] = {-1, -1};
     int in_pipe[2] = {-1, -1};
     *launch_errno = 0;
@@ -29860,7 +29868,10 @@ static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
     if (pid == 0) {
         proc_arm_parent_death(launcher_pid);
         setpgid(0, 0);
-        if (dup2(out_pipe[1], STDOUT_FILENO) < 0 || dup2(err_pipe[1], STDERR_FILENO) < 0 ||
+        int out_src = out_to >= 0 ? out_to : out_pipe[1];
+        int err_src = err_to >= 0 ? err_to : err_pipe[1];
+        if ((out_to != PROC_TO_INHERIT && dup2(out_src, STDOUT_FILENO) < 0) ||
+            (err_to != PROC_TO_INHERIT && dup2(err_src, STDERR_FILENO) < 0) ||
             (in_pipe[0] >= 0 && dup2(in_pipe[0], STDIN_FILENO) < 0)) {
             int e = errno;
             ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
@@ -30314,7 +30325,8 @@ static Value process_do_start(AstExpr *expr) {
     size_t share_count = 0;
     {
         static const char *const allowed[] = {
-            "command", "args", "cwd", "env", "listen_fds", "timeout", "stdin", "limits"
+            "command", "args", "cwd", "env", "listen_fds", "timeout", "stdin", "limits",
+            "stdout", "stderr"
         };
         if (!process_reject_unknown(&opts, "process.start", allowed,
                                     sizeof(allowed) / sizeof(allowed[0]))) {
@@ -30420,6 +30432,71 @@ static Value process_do_start(AstExpr *expr) {
         }
     }
 
+    /* `stdout:` / `stderr:` -- where the child's output goes (2026-11-09). A
+     * detached child whose stderr is a pipe nobody reads any more had no way to
+     * be given an fd 2 that cannot break (Transward; DOGFOOD 2026-11-09). A bare
+     * string other than the three words is refused rather than taken as a
+     * path, so a file named `null` is not mistaken for the device: a file is
+     * given as a file, {file}"run.log", and is appended to. */
+    int stream_to[2] = { PROC_TO_PIPE, PROC_TO_PIPE };
+    {
+        static const char *const names[2] = { "stdout", "stderr" };
+        for (int k = 0; k < 2; k++) {
+            RecordField *sf = record_find(&opts, names[k]);
+            if (!sf) {
+                continue;
+            }
+            char why[640];
+            why[0] = '\0';
+            Value *v = sf->value;
+            if (v->kind == VALUE_STRING && strcmp(v->as.string, "pipe") == 0) {
+                stream_to[k] = PROC_TO_PIPE;
+            } else if (v->kind == VALUE_STRING && strcmp(v->as.string, "inherit") == 0) {
+#ifdef _WIN32
+                /* the Windows launch is process.run's and takes no redirect, so
+                 * this is refused rather than accepted and not applied */
+                snprintf(why, sizeof why, "process.start: options.%s is not available on Windows", names[k]);
+#else
+                stream_to[k] = PROC_TO_INHERIT;
+#endif
+            } else if (v->kind == VALUE_STRING && strcmp(v->as.string, "null") == 0) {
+#ifdef _WIN32
+                snprintf(why, sizeof why, "process.start: options.%s is not available on Windows", names[k]);
+#else
+                stream_to[k] = open("/dev/null", O_WRONLY | O_CLOEXEC);
+                if (stream_to[k] < 0) {
+                    snprintf(why, sizeof why, "process.start: options.%s: could not open /dev/null: %s",
+                             names[k], strerror(errno));
+                }
+#endif
+            } else if (v->kind == VALUE_FILE) {
+#ifdef _WIN32
+                snprintf(why, sizeof why, "process.start: options.%s is not available on Windows", names[k]);
+#else
+                stream_to[k] = open(v->as.file_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+                if (stream_to[k] < 0) {
+                    snprintf(why, sizeof why, "process.start: options.%s: could not open '%.400s': %s",
+                             names[k], v->as.file_path, strerror(errno));
+                }
+#endif
+            } else {
+                snprintf(why, sizeof why,
+                         "process.start: options.%s must be \"pipe\" (the default), \"null\", "
+                         "\"inherit\", or a file such as {file}\"run.log\" (appended to)", names[k]);
+            }
+            if (why[0]) {
+                for (int j = 0; j < 2; j++) {
+                    if (stream_to[j] >= 0) {
+                        close(stream_to[j]);
+                    }
+                }
+                free(launch.argv);
+                value_free(opts);
+                return process_raise(why);
+            }
+        }
+    }
+
 #ifdef _WIN32
     /* Everything above -- options, refusals, env validation -- is shared with
      * POSIX; only the launch differs, and it is process.run's launch. */
@@ -30460,7 +30537,12 @@ static Value process_do_start(AstExpr *expr) {
     int out_fd = -1, err_fd = -1, in_fd = -1, launch_errno = 0;
     pid_t pid = process_launch(launch.argv, launch.cwd, launch.env, share_fds, share_count,
                                &out_fd, &err_fd, &launch_errno, want_stdin, &in_fd,
-                               memory_limit);
+                               memory_limit, stream_to[0], stream_to[1]);
+    for (int j = 0; j < 2; j++) {
+        if (stream_to[j] >= 0) {
+            close(stream_to[j]);     /* the child has its own copy now */
+        }
+    }
     if (pid == -2) {
         free(launch.argv);
         value_free(opts);

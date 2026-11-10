@@ -13711,3 +13711,25 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Status: FIXED 2026-11-09**: matches are compared as files
   (`same_file_path`, already used for a library's identity). Held by
   `tests/run_pdf.sh` (its loads warn nothing) and `tests/run_library_depth.sh`.
+
+## 2026-11-09 — Transward (relayed by CC) — while: a detached child printed a note 2102
+
+- **Type:** bug
+- **Severity:** high (a diagnostic can kill the program)
+- **What:** a note on stderr after the pipe's reader has gone kills the
+  process by SIGPIPE. Measured on 4da5e243: a program that has started no
+  webserver or `net` connection, writing one line with `print to error` after
+  its reader closed the pipe, exited -13, and the next statement never ran. A
+  webserver or the `net` module sets SIGPIPE to SIG_IGN, so a serve worker
+  survives; a plain detached child does not. Transward met the risk as a
+  note 2102 printed partway through a detached run (a library loaded `from` a
+  path is the author's own, so a function named like a builtin notes once,
+  when it is registered). `process.start` offers no way to give a child an fd 2
+  that cannot break, and Transward builds no shell strings, so it had no
+  defence but removing every source of output.
+- **Workaround:** Transward renamed its two functions named like builtins.
+- **Status: FIXED 2026-11-09** (Matthew: both): a broken pipe that is not
+  stdout no longer kills the process (stdout keeps dying by SIGPIPE, so
+  `gbasic prog | head` ends quietly as before), and `process.start` takes
+  `stdout:` and `stderr:` ("pipe", "null", "inherit", or a file). Held by
+  `tests/run_stderr.sh` and `tests/run_process.sh`.

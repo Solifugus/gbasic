@@ -75,6 +75,7 @@ positive_cases=(
     plat_proc_interleave
     plat_proc_bytes
     plat_proc_actor
+    plat_proc_streams
 )
 
 for name in "${positive_cases[@]}"; do

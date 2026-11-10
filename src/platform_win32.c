@@ -1709,6 +1709,10 @@ void gb_stdout_line_buffered(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
 }
 
+/* See the header: Windows has no SIGPIPE, and a write to a closed pipe fails. */
+void gb_pipe_guard_install(void) {
+}
+
 /* See the header: LF out, on every platform. */
 void gb_stdio_binary(void) {
     _setmode(_fileno(stdout), _O_BINARY);

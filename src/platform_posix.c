@@ -19,6 +19,7 @@
 #include <limits.h>
 #include <stdint.h>
 #include <signal.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -419,6 +420,35 @@ long gb_stack_limit_kb(void) {
 
 void gb_stdout_line_buffered(void) {
     setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
+}
+
+/* See the header. poll, signal and raise are async-signal-safe. A pipe's write
+ * end polls POLLERR once its reader has gone; a terminal or a live pipe polls
+ * nothing, and a file never raises SIGPIPE. */
+static void gb_sigpipe_handler(int sig) {
+    int saved = errno;
+    struct pollfd p;
+    p.fd = STDOUT_FILENO;
+    p.events = 0;
+    p.revents = 0;
+    if (poll(&p, 1, 0) == 1 && (p.revents & (POLLERR | POLLHUP))) {
+        signal(sig, SIG_DFL);
+        raise(sig);              /* blocked until this returns, then delivered */
+    }
+    errno = saved;
+}
+
+void gb_pipe_guard_install(void) {
+    struct sigaction sa;
+    struct sigaction old;
+    if (sigaction(SIGPIPE, NULL, &old) == 0 && old.sa_handler == SIG_IGN) {
+        return;                  /* started ignoring it: keep that */
+    }
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = gb_sigpipe_handler;
+    sa.sa_flags = SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGPIPE, &sa, NULL);
 }
 
 void gb_stdio_binary(void) {

@@ -1008,6 +1008,9 @@ int main(int argc, char **argv) {
     /* Before ANY output, including an actor's: on Windows stdout starts in text
      * mode and would turn every "\n" into "\r\n". See include/platform.h. */
     gb_stdio_binary();
+    /* Before any output too: a diagnostic on a broken stderr must not kill
+     * the program (include/platform.h). */
+    gb_pipe_guard_install();
 
     if (argc >= 4 && strcmp(argv[1], "--actor") == 0) {
         return run_actor_mode(argc, argv);

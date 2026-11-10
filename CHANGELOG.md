@@ -16,6 +16,19 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### A broken stderr no longer kills a program; process.start's stdout: and stderr: (2026-11-09)
+
+- **A diagnostic can no longer kill a program.** With SIGPIPE at its default,
+  a warning or note written to a stderr whose reader had gone killed the
+  process (exit -13, mid-run). Transward met the risk in a detached child.
+  Now only a broken *stdout* ends a program by SIGPIPE, so `| head` behaves as
+  before. A write to stderr, or to a child's stdin, fails instead, and the
+  program goes on.
+- **`process.start` takes `stdout:` and `stderr:`**: `"pipe"` (the default),
+  `"null"`, `"inherit"`, or a file such as `{file}"run.log"`, which is
+  appended to. A bare string other than those words is refused. On Windows
+  only `"pipe"` is taken.
+
 ### Reading a PDF: `pdf` (book gap G54, 2026-11-09)
 
 - **`stdlib/pdf.bas`** reads a PDF's pages over poppler's programs, the

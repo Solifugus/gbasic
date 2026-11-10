@@ -651,6 +651,18 @@ void gb_stdin_binary(void);
  * that asked for the flag. */
 void gb_stdout_line_buffered(void);
 
+/* A BROKEN PIPE KILLS ONLY THROUGH STDOUT (2026-11-09). With SIGPIPE at its
+ * default, a write to any pipe whose reader has gone kills the process, so one
+ * diagnostic on a detached child's stderr ended the program mid-run (measured:
+ * exit -13, the next statement never ran). This installs a handler that asks
+ * whether STDOUT is the broken pipe: if it is, the default is restored and the
+ * signal raised again, so `gbasic prog | head` still ends quietly by SIGPIPE as
+ * a command-line program should; if not, the write fails with EPIPE and the
+ * program goes on (stderr, a child's stdin). A handler rather than SIG_IGN, so
+ * a child started by exec gets the default back, as it always had. Windows has
+ * no SIGPIPE, and this does nothing there. */
+void gb_pipe_guard_install(void);
+
 /* HOW MUCH C STACK THIS PROCESS HAS, in KB, or 0 when it cannot be known.
  *
  * WHY THE RUNTIME NEEDS TO ASK. Two things here recurse per level of a nested

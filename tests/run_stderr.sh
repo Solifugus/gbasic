@@ -107,4 +107,48 @@ else
     printf 'SKIP plat_stderr_memory (valgrind not installed)\n'
 fi
 
+# A BROKEN PIPE KILLS ONLY THROUGH STDOUT (2026-11-09; DOGFOOD 2026-11-09). A
+# diagnostic on a stderr whose reader had gone killed the program by SIGPIPE
+# (measured: exit -13, the next statement never ran), which in a detached
+# child is a note ending a run. Now the stderr write fails and the program
+# goes on; stdout keeps the default, so a program whose stdout reader has
+# gone (`| head`) still dies by SIGPIPE, quietly, as before. The shell cannot
+# tell a death by signal from an exit of 128+n, so python3 reads the status
+# (as run_lock_signal.sh does). A marker file is the evidence the program
+# went on, since its stdout is the thing being cut.
+if command -v python3 >/dev/null 2>&1; then
+    bp=$(mktemp -d)
+    printf 'sleep(1)\nprint to error "a note"\nwarning("a warning")\nwrite("%s/lived", "yes")\nprint "out"\n' "$bp" >"$bp/err.bas"
+    printf 'sleep(1)\nfor i = 1 to 20000\n    print "line " + string(i)\nnext\nwrite("%s/lived2", "yes")\n' "$bp" >"$bp/out.bas"
+    bp_res=$(python3 -I - "$PWD/gbasic" "$bp" <<'PY'
+import subprocess, sys, os
+g, d = sys.argv[1], sys.argv[2]
+p = subprocess.Popen([g, d + "/err.bas"], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+p.stderr.close()
+out = p.stdout.read()
+rc = p.wait()
+print("err", rc, os.path.exists(d + "/lived"), out.decode().strip())
+p = subprocess.Popen([g, d + "/out.bas"], stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+p.stdout.close()
+rc = p.wait()
+print("out", rc, os.path.exists(d + "/lived2"))
+PY
+)
+    rm -rf "$bp"
+    case "$bp_res" in
+        "err 0 True out"*)
+            printf 'PASS a broken stderr fails the write, and the program goes on\n' ;;
+        *)
+            printf 'FAIL a broken stderr: %s\n' "$(printf '%s' "$bp_res" | head -1)"; status=1 ;;
+    esac
+    case "$bp_res" in
+        *"out -13 False"*)
+            printf 'PASS a broken stdout still ends the program by SIGPIPE\n' ;;
+        *)
+            printf 'FAIL a broken stdout: %s\n' "$(printf '%s' "$bp_res" | tail -1)"; status=1 ;;
+    esac
+else
+    printf 'SKIP broken pipes (no python3 to read a death by signal; nothing measured)\n'
+fi
+
 exit "$status"

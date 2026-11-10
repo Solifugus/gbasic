@@ -6566,6 +6566,29 @@ Returns as soon as the child is launched. A child that cannot be launched **rais
 — exactly as with `process.run`, so it stays distinguishable from a child that ran
 and exited nonzero. `type(h)` is `"process"`.
 
+**`stdout:` and `stderr:`** *(2026-11-09)* say where the child's output goes:
+- **`"pipe"`** (the default): the parent reads it with `process.read`.
+- **`"null"`**: thrown away.
+- **`"inherit"`**: the parent's own stream.
+- **a file**, such as `{file}"run.log"`: appended to, and created if absent.
+
+A stream sent elsewhere reads as `""` from `process.read`. A bare string other
+than the three words is refused, so a file named `null` is never mistaken for
+the device. A file that cannot be opened raises naming it. On Windows only
+`"pipe"` is taken.
+
+This is how a detached child gets an output that cannot break. A child whose
+stderr is a pipe nobody reads any more no longer dies writing to it. gBASIC
+itself survives that write (below), but another program may not.
+
+**A broken pipe kills a gBASIC program only through stdout** *(2026-11-09)*.
+A write to stdout after its reader has gone still ends the program by
+SIGPIPE, so `gbasic prog | head` ends quietly, as a command-line program
+should. A write to any other pipe fails instead, and the program goes on:
+stderr, where a warning or `print to error` lands, and a child's stdin. It used
+to be killed there too. Measured on a detached child: one note on a broken
+stderr ended it, exit -13, mid-run.
+
 **`limits: { memory: bytes }`** *(Unreleased; gdash's GDASH-16 B1)* runs the child
 under that memory limit, set before `exec` so it binds the program and not
 the caller: POSIX `RLIMIT_DATA` (the heap and private anonymous memory, not the
