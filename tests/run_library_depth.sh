@@ -253,4 +253,31 @@ got="$( (cd "$vend" && GBASIC_PATH="$OLDPWD/stdlib" "$OLDPWD/gbasic" p.bas 2>/de
 [ "$got" = "Sunday" ] || fail "with no vendored copy it did not fall through to the stdlib: [$got]"
 tier_pass 'precedence: beside the loader, then libs/<name>/<name>.bas, then the stdlib'
 
+# ONE FILE IS ONE MATCH, and a library found on GBASIC_PATH is not looked for
+# again in the installed stdlib (2026-11-09, met writing stdlib/pdf.bas, which
+# loads `ocr` by name). A sibling found beside the loading library and again on
+# GBASIC_PATH under another spelling was reported "ALSO FOUND and not used:"
+# naming the same file; and since the list did not grow, the installed stdlib
+# was searched too and its copy reported the same way. The installed stdlib is
+# made here: a copy of the binary in <prefix>/bin finds <prefix>/share/gbasic/
+# stdlib, and that holds a DECOY `b` that must be neither used nor named.
+tier_ok=1
+two="$work/two"
+mkdir -p "$two/sl" "$two/inst/bin" "$two/inst/share/gbasic/stdlib"
+printf 'library a\n    load b\n    function f()\n        return b.g()\n    end function\nend library\n' >"$two/sl/a.bas"
+printf 'library b\n    function g()\n        return "SIBLING"\n    end function\nend library\n' >"$two/sl/b.bas"
+printf 'library b\n    function g()\n        return "DECOY"\n    end function\nend library\n' >"$two/inst/share/gbasic/stdlib/b.bas"
+printf 'load a\nprint a.f()\n' >"$two/prog.bas"
+cp "$gb" "$two/inst/bin/gbasic"
+got="$( (cd "$two" && GBASIC_PATH="sl:$two/sl" "$gb" prog.bas 2>&1) || true )"
+[ "$got" = "SIBLING" ] || fail "one file on GBASIC_PATH under two spellings was not one match: [$got]"
+got="$( (cd "$two" && GBASIC_PATH="sl" inst/bin/gbasic prog.bas 2>&1) || true )"
+[ "$got" = "SIBLING" ] || fail "a sibling found on GBASIC_PATH still consulted the installed stdlib: [$got]"
+# the control: with nothing on GBASIC_PATH, that installed stdlib IS found
+mkdir -p "$two/d"
+printf 'load b\nprint b.g()\n' >"$two/d/direct.bas"
+got="$( (cd "$two/d" && env -u GBASIC_PATH ../inst/bin/gbasic direct.bas 2>&1) || true )"
+[ "$got" = "DECOY" ] || fail "the made install layout's stdlib was not found at all, so the check above proves nothing: [$got]"
+tier_pass 'one file is one match, and a library GBASIC_PATH found is not looked for in the installed stdlib'
+
 exit $status

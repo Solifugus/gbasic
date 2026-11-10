@@ -58,8 +58,9 @@ The first release stores what `gsql_design.md` §3.4 decided (Matthew, 2026-10-2
 | `time` | a time-only value |
 | `datetime` | a date-time that is not time-only, at hour precision or finer |
 | `record` | a record whose fields, at any depth, hold numbers, strings, booleans, money, date-times, records, arrays or absences |
+| `duration` | a duration, field for field; never in a key or index *(2026-11-08, `gsql_duration_design.md`)* |
 
-**What is refused, everywhere, including inside a record:** durations (no single sort order, `gsql_storage_design.md` §3.2), files, directories, functions, regexes and actors (process-bound, §3.4). Arrays are refused **as a column's value** (§3.4) and accepted **inside a record**, which §3.5 allows.
+**What is refused, everywhere, including inside a record:** ~~durations (no single sort order, `gsql_storage_design.md` §3.2),~~ *(stored since 2026-11-08, in a `duration` column or a record)* files, directories, functions, regexes and actors (process-bound, §3.4). Arrays are refused **as a column's value** (§3.4) and accepted **inside a record**, which §3.5 allows.
 
 **A date-time is matched exactly, never coerced** (§9: no implicit casts): a `date` column refuses a datetime and a `datetime` column refuses a date. A year-or-month-precision value fits neither, and is refused rather than placed in one.
 

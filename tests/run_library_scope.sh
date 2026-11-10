@@ -214,6 +214,54 @@ else
     fail "'on warning stop' does NOT escalate a note into an error"
 fi
 
+printf 'TIER a statement at a library'"'"'s top level is refused\n'
+# DOGFOOD row 7 (2026-11-07; fixed 2026-11-09). A library's body is
+# declarations, and anything else there was skipped in silence: a `print`
+# printed nothing, `counter = 5` left the function reading it with "undefined
+# variable", a `watch` registered nothing. Each is now refused AT ITS LINE in
+# the library's file, before the program runs, and the library's functions are
+# not registered. Each case is one statement placed after a function, so a
+# refusal that fired on the function instead would point at the wrong line.
+mkdir -p "$scratch/top"
+top_case() {   # name, statement, its line in the library, a hint the message must hold
+    printf 'library tl\n    function get()\n        return 1\n    end function\n    %b\nend library\n' "$2" >"$scratch/top/tl.bas"
+    printf 'load tl\nprogram main()\n    print "PROGRAM RAN"\n    print tl.get()\nend program\n' >"$scratch/top/m.bas"
+    out=$( (cd "$scratch/top" && "$OLDPWD/gbasic" m.bas 2>&1); echo "exit=$?")
+    if printf '%s' "$out" | grep -q "^runtime error at \./tl\.bas:5:5: library tl: this statement is at the top level of the library, where it would never run" &&
+       printf '%s' "$out" | grep -qF "$4" &&
+       ! printf '%s' "$out" | grep -q 'PROGRAM RAN\|LIBRARY TOP' &&
+       printf '%s' "$out" | grep -q 'exit=1$'; then
+        pass "$1 is refused at tl.bas:5:5, and the program does not run"
+    else
+        fail "$1"; printf '%s\n' "$out" | head -3
+    fi
+}
+top_case "an assignment" 'counter = 5' 5 'and return the value from it'
+top_case "a print" 'print "LIBRARY TOP"' 5 'Put it in a function the program calls'
+top_case "a watch" 'watch counter\n        print "LIBRARY TOP"\n    end watch' 5 'a watch belongs in the function'
+top_case "a dotted function" 'function o.f()\n        return 2\n    end function' 5 'attach it inside a function'
+top_case "an if" 'if true then\n        print "LIBRARY TOP"\n    end if' 5 'Put it in a function the program calls'
+# the neighbour: a library of declarations only loads and answers
+printf 'library tl\n    load xml\n    function get()\n        return 1\n    end function\n    export modifier halved for assign\n        return value / 2\n    end modifier\nend library\n' >"$scratch/top/tl.bas"
+out=$( (cd "$scratch/top" && "$OLDPWD/gbasic" m.bas 2>&1) )
+if [ "$out" = $'PROGRAM RAN\n1' ]; then
+    pass "a library of load, function and modifier still loads and answers"
+else
+    fail "a library of declarations still loads"; printf '%s\n' "$out" | head -3
+fi
+# and every library in stdlib/ is declarations only, so each still loads
+bad=""
+for f in stdlib/*.bas; do
+    n=$(basename "$f" .bas)
+    printf 'load %s\nprint "ok"\n' "$n" >"$scratch/top/s.bas"
+    [ "$(GBASIC_PATH=stdlib timeout 20 ./gbasic "$scratch/top/s.bas" 2>&1 | tail -1)" = ok ] || bad="$bad $n"
+done
+if [ -z "$bad" ]; then
+    pass "every stdlib library still loads"
+else
+    fail "stdlib libraries refused:$bad"
+fi
+
 printf 'TIER valgrind\n'
 if vg_available; then
     if ( cd tests && GBASIC_PATH=. vg_run ../gbasic library_scope_test.bas ) \

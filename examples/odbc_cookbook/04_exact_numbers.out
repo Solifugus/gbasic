@@ -3,7 +3,7 @@ id exact  : 9007199254740993
 id number : 9007199254740993   <- exact, since 0.7.1
 
 amount    : 12345678901234.5678 (string)
-amount num: 12345678901234.568   <- a digit gone, silently
+amount num: 12345678901234.5678   <- exact, since exact decimals
 
 money in, text out: 1234.56
 

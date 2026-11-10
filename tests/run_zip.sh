@@ -17,7 +17,15 @@
 #      file. An archive with one unsafe name writes nothing; a file already
 #      there is refused unless replace: true. Self-checking; every answer is
 #      written there by hand.
-#   3. VALGRIND, over both.
+#   3. WRITING (zip.write, gap G55) -- tests/make_zip_write_cases.py chooses
+#      20 archives' members (names in UTF-8 and ASCII, folders, empty, NUL
+#      bytes, data that deflates and data that does not); tests/zip/write.bas
+#      writes them; tests/zip/check_written.py reads each back with zipfile
+#      (names in order, bytes, CRCs, 1980-01-01, no extra fields), and
+#      `unzip -t` tests each. tests/zip/write_test.bas: refusals each before a
+#      byte is written, the same members giving the same bytes, and a
+#      workbook's part edited and put back (when the build has xlsx).
+#   4. VALGRIND, over all of them.
 #
 # Skips without python3, or when the build has no zlib.
 . "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
@@ -102,11 +110,50 @@ else
     status=1
 fi
 
+printf -- '-- writing\n'
+mkdir -p "$work/w" "$work/wt"
+ks=$(seq 0 19 | tr '\n' ' ')
+xl=""
+printf 'x = xlsx.new()\n' >"$work/xprobe.bas"
+"$root/gbasic" "$work/xprobe.bas" >/dev/null 2>&1 && xl=xlsx
+# shellcheck disable=SC2086
+if python3 -I "$root/tests/make_zip_write_cases.py" "$work/w" 20261109 &&
+   timeout 120 "$root/gbasic" "$root/tests/zip/write.bas" "$work/w" $ks 2>"$work/err.txt" && [ ! -s "$work/err.txt" ]; then
+    # shellcheck disable=SC2086
+    cw=$(python3 -I "$root/tests/zip/check_written.py" "$work/w" $ks 2>&1)
+    ut=0
+    for k in $ks; do unzip -tq "$work/w/case_$k.zip" >/dev/null 2>&1 || ut=1; done
+    if [ "$(printf '%s\n' "$cw" | tail -1)" = "mismatches: 0" ] && [ "$(printf '%s\n' "$cw" | sed -n 's/^members: //p')" -ge 100 ] &&
+       [ $ut = 0 ]; then
+        printf 'PASS zipfile reads every written member as chosen (%s), and unzip -t passes all 20\n' \
+            "$(printf '%s\n' "$cw" | head -1)"
+    else
+        printf 'FAIL the written archives differ from what was chosen (unzip -t failed: %s)\n%s\n' "$ut" "$cw"
+        status=1
+    fi
+else
+    printf 'FAIL tests/zip/write.bas\n'
+    head -5 "$work/err.txt"
+    status=1
+fi
+wt=$(timeout 60 "$root/gbasic" "$root/tests/zip/write_test.bas" "$work/wt" $xl 2>&1)
+if [ "$(printf '%s\n' "$wt" | tail -1)" = "mismatches: 0" ] &&
+   [ "$(printf '%s\n' "$wt" | sed -n 's/^checks: //p')" -ge "$([ -n "$xl" ] && echo 19 || echo 17)" ]; then
+    printf 'PASS tests/zip/write_test.bas (%s%s)\n' "$(printf '%s\n' "$wt" | head -1)" \
+        "$([ -n "$xl" ] || echo '; no xlsx in this build, so no workbook was put back')"
+else
+    printf 'FAIL tests/zip/write_test.bas\n%s\n' "$wt"
+    status=1
+fi
+
 if vg_available; then
     rm -rf "$work/cases/out" "$work/cases/slip"
+    rm -rf "$work/wt" && mkdir -p "$work/wt"
     if (cd "$work/cases" && vg_run "$root/gbasic" "$root/tests/zip/zip_test.bas" >/dev/null 2>"$work/vg.txt") &&
        (cd "$work/cases" && vg_run "$root/gbasic" "$root/tests/zip/list.bas" plain.zip cp437.zip stream.zip \
-            random_0.zip >/dev/null 2>>"$work/vg.txt"); then
+            random_0.zip >/dev/null 2>>"$work/vg.txt") &&
+       vg_run "$root/gbasic" "$root/tests/zip/write_test.bas" "$work/wt" $xl >/dev/null 2>>"$work/vg.txt" &&
+       vg_run "$root/gbasic" "$root/tests/zip/write.bas" "$work/w" 0 1 2 >/dev/null 2>>"$work/vg.txt"; then
         printf 'PASS valgrind\n'
     else
         printf 'FAIL valgrind\n'

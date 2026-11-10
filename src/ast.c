@@ -131,11 +131,12 @@ static AstExpr *ast_expr_new(AstExprKind kind) {
     return expr;
 }
 
-AstExpr *ast_number(double value, long long exact, int is_exact) {
+AstExpr *ast_number(double value, long long exact, int is_exact, int scale) {
     AstExpr *expr = ast_expr_new(AST_EXPR_NUMBER);
     expr->as.num.value = value;
     expr->as.num.exact = exact;
     expr->as.num.is_exact = is_exact;
+    expr->as.num.scale = scale;
     return expr;
 }
 
@@ -720,6 +721,14 @@ AstStmt *ast_unwatch(AstExpr *expr) {
     return stmt;
 }
 
+AstStmt *ast_wait(AstExpr *condition, AstExpr *limit) {
+    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    stmt->kind = AST_STMT_WAIT;
+    stmt->as.wait.condition = condition;
+    stmt->as.wait.limit = limit;
+    return stmt;
+}
+
 AstStmt *ast_without_watchers(AstStmtList body) {
     AstStmt *stmt = xmalloc(sizeof(*stmt));
     stmt->kind = AST_STMT_WITHOUT_WATCHERS;
@@ -1136,6 +1145,17 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         printf("Body\n");
         for (size_t i = 0; i < stmt->as.with_lock.body.count; i++) {
             dump_stmt(stmt->as.with_lock.body.items[i], indent + 2);
+        }
+        break;
+    case AST_STMT_WAIT:
+        printf("WaitUntil\n");
+        dump_indent(indent + 1);
+        printf("Condition\n");
+        dump_expr(stmt->as.wait.condition, indent + 2);
+        if (stmt->as.wait.limit) {
+            dump_indent(indent + 1);
+            printf("Limit\n");
+            dump_expr(stmt->as.wait.limit, indent + 2);
         }
         break;
     case AST_STMT_DO_LOOP:
@@ -1588,6 +1608,12 @@ static void free_stmt(AstStmt *stmt) {
         break;
     case AST_STMT_UNWATCH:
         ast_free_expr(stmt->as.unwatch_expr);
+        break;
+    case AST_STMT_WAIT:
+        ast_free_expr(stmt->as.wait.condition);
+        if (stmt->as.wait.limit) {
+            ast_free_expr(stmt->as.wait.limit);
+        }
         break;
     case AST_STMT_WITHOUT_WATCHERS:
         ast_free_program(stmt->as.without_watchers);

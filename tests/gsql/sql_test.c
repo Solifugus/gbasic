@@ -50,6 +50,41 @@ static void render(GsqlBuf *o, const unsigned char *v, size_t n) {
         v3_put(o, v[1] ? "TRUE" : "FALSE", v[1] ? 4 : 5);
         return;
     case SER_NUMBER: {
+        if (v[1] == 2) {
+            /* an exact decimal: its digits, and `d` to mark it, since its
+               digits alone would read as the double the corpus writes `2.5` */
+            uint64_t raw = 0;
+            for (int k = 0; k < 8; k++) {
+                raw |= (uint64_t)v[3 + k] << (8 * k);
+            }
+            long long m = (long long)raw;
+            unsigned long long mag = m < 0 ? 0ULL - (unsigned long long)m : (unsigned long long)m;
+            char digits[24];
+            snprintf(digits, sizeof digits, "%llu", mag);
+            size_t len = strlen(digits), scale = v[2];
+            size_t at = 0;
+            if (m < 0) {
+                b[at++] = '-';
+            }
+            if (len <= scale) {
+                b[at++] = '0';
+                b[at++] = '.';
+                for (size_t z = len; z < scale; z++) {
+                    b[at++] = '0';
+                }
+                memcpy(b + at, digits, len);
+                at += len;
+            } else {
+                memcpy(b + at, digits, len - scale);
+                at += len - scale;
+                b[at++] = '.';
+                memcpy(b + at, digits + len - scale, scale);
+                at += scale;
+            }
+            b[at++] = 'd';
+            v3_put(o, b, at);
+            return;
+        }
         uint64_t bits = 0;
         for (int k = 0; k < 8; k++) {
             bits |= (uint64_t)v[2 + k] << (8 * k);

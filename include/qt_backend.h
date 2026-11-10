@@ -599,6 +599,68 @@ int gb_qt_capture(void *window, const char *name, double scale, char **png,
                   long *len, int *width, int *height, char *err,
                   size_t err_size);
 
+/* AN SVG AS A PNG (§0.38 C): `svg` (len bytes) drawn by QtSvg into an image
+ * `width` x `height` logical pixels (0 for the SVG's own size) at `scale`
+ * device pixels per pixel, on white, no alpha. 1 with the bytes (caller frees)
+ * and the size in pixels; 0 refused, with the reason in `err`. Needs no
+ * window, but needs the application (gb_qt_begin). */
+int gb_qt_render_svg(const char *svg, long svg_len, int width, int height,
+                     double scale, char **png, long *len, int *out_width,
+                     int *out_height, char *err, size_t err_size);
+
+/* NAMED SYNTAX THEMES (§0.38 D1): 1 when KSyntaxHighlighting knows a theme
+ * called `name` (on the syntax search path too), 0 when it does not, -1 when
+ * this build has no KSyntaxHighlighting. gb_qt_theme_names answers every name,
+ * one per line (caller frees), or NULL without it. */
+int gb_qt_theme_known(const char *name);
+char *gb_qt_theme_names(void);
+
+/* BLOCKS BETWEEN A `source`'s LINES, AND FOLDS (§0.38 A, B2). One item per
+ * block; `text` holds a text or markdown block's text, an image's path, or
+ * (image_bytes) the image's bytes. A table's `cells` are its column names and
+ * then each row's cells, all as text. Set replaces the whole set, reconciled
+ * by id; get answers what Qt holds now (strings caller-freed). */
+typedef struct {
+    const char *id;
+    const char *kind;          /* "text" | "table" | "image" | "markdown" */
+    const char *title;
+    int line;                  /* 1-based */
+    const char *text;
+    long text_len;
+    int image_bytes;
+    const char *format;        /* "png" | "svg" | NULL */
+    int columns, rows, more_rows;
+    const char *const *cells;
+    int max_height, collapsed, covers;
+} GbQtBlockItem;
+
+typedef struct {
+    char *id;
+    char *kind;
+    int line, height, visible, collapsed, covers;
+} GbQtBlockInfo;
+
+int gb_qt_blocks_set(void *window, const char *name, const GbQtBlockItem *items,
+                     int count, char *err, size_t err_size);
+int gb_qt_blocks_get(void *window, const char *name, GbQtBlockInfo *out,
+                     int max, char *err, size_t err_size);
+int gb_qt_fold_set(void *window, const char *name, const int *from,
+                   const int *to, int count, char *err, size_t err_size);
+int gb_qt_fold_get(void *window, const char *name, int *from, int *to, int max,
+                   char *err, size_t err_size);
+/* The `block` event being handled: 1 with the block's id, the action
+ * ("click", "collapse", "link") and a link's target (NULL otherwise), all
+ * caller-freed; 0 outside a `block` handler. */
+int gb_qt_block_event(char **id, char **action, char **target);
+/* The target of the link being handled in a `markdown` part's `link`
+ * handler (caller frees), or NULL outside one (§0.38 B4). */
+char *gb_qt_link_event(void);
+int gb_qt_link_press(void *window, const char *name, const char *target,
+                     char *err, size_t err_size);
+int gb_qt_block_press(void *window, const char *name, const char *id,
+                      const char *action, const char *target, char *err,
+                      size_t err_size);
+
 int gb_qt_scrolled(void *window, const char *name, double *at, char *err,
                    size_t err_size);
 int gb_qt_scroll_to(void *window, const char *name, double at, char *err,
@@ -881,6 +943,8 @@ void gb_qt_gutter_painted(int *lines, int *marks, int *first);
 
 char *gb_qt_highlight_language(void *window, const char *name);
 char *gb_qt_highlight_file(void *window, const char *name);
+/* The name of the theme the part's highlighter holds (§0.38 D1), or NULL. */
+char *gb_qt_highlight_theme(void *window, const char *name);
 
 /* ---- DIALOGS (docs/qt_gui_design.md §0.15) ---------------------------------
  *

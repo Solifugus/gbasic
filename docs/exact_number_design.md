@@ -170,7 +170,8 @@ correction to how this section was first written — it enumerated operations, a
 an enumeration is a list a new builtin silently stays off. A function that
 **picks** a value preserves its exactness; one that **calculates** is exact when
 both operands are exact and the answer is an integer the runtime holds; and an
-inexact operand never yields an exact answer. Stated that way it predicts
+inexact operand never yields an exact answer (except `floor`, `ceil` and
+`round` to no places, decided 2026-11-09, below). Stated that way it predicts
 `min`/`max`, `median`, `percentile`, `sort` and the counting builtins without any
 of them having been in the increment's own list.
 
@@ -412,6 +413,23 @@ gBASIC spells integer division, so making `floor` always exact would make intege
 division exact, which is a claim about `/` that this design has twice decided
 against. It would also need a range guard, `floor(1e300)` having no `int64`. Left
 as it is, recorded here so that changing it is a decision rather than a drift.
+
+**DECIDED 2026-11-09 (Matthew), the other way.** `floor`, `ceil`, and `round` to
+no places answer an **exact** integer from an inexact or decimal operand, up to
+2^53, past which a double is not every integer and the answer stays a double
+(the range guard above). The need was measured, not supposed: Transward could not
+store `file_size(path)`, nor `floor` or `round` of it, in a G-SQL `integer`
+column, which refuses an inexact number, and the only way through was
+`number(string(x))`. A separate verb was the alternative, and was rejected as one
+more thing to remember. **The cost this paragraph named is real and accepted:**
+`floor(a / b)` is now exact although `/` is not, so with operands past 2^53,
+whose quotient as a double can be one out, the answer is a wrong integer marked
+exact. Below 2^53 the double quotient of two integers floors to the true one:
+measured in Python, 2.2 million pairs under 2^53, random and adversarial
+(`a = k*b - 1`, the case where rounding up would cross an integer), gave no
+wrong floor; the adversarial pairs at 2^54 gave 15,238 wrong of 19,998.
+`file_size` became exact at the same time, as a count (`builtin_len_value`'s
+rule).
 
 **Increment 4 shipped 2026-10-23** as `serialize` version 3, which is also the
 portable value encoding G-SQL's rows and protocol use

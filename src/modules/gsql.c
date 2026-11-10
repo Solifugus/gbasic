@@ -414,6 +414,83 @@ static GsqlHv *gsql_h_call(void *ctx, const char *name, GsqlHv *const *args, siz
     return gsql_apply(source, vs, n, err);
 }
 
+/* A duration's text as gBASIC prints it, which is its literal syntax: an integer
+ * then a unit, repeated, each unit once (docs/gsql_duration_design.md §5). Each
+ * number lands in its OWN field, so '24 hours' is 24 hours rather than 1 day and
+ * the printed form reads back as the very fields it was printed from. 1 when it
+ * reads; otherwise 0, with `why` saying what did not. */
+static int gsql_duration_text(const char *t, Duration *d, char *why, size_t cap) {
+    static const char *const units[] = { "year", "month", "week", "day", "hour", "minute", "second" };
+    int *fields[] = { &d->years, &d->months, &d->weeks, &d->days, &d->hours, &d->minutes, &d->seconds };
+    int seen[7] = { 0 };
+    memset(d, 0, sizeof *d);
+    const char *p = t;
+    int parts = 0;
+    for (;;) {
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        if (!*p) {
+            break;
+        }
+        const char *num = p;
+        if (*p == '-' || *p == '+') {
+            p++;
+        }
+        if (!isdigit((unsigned char)*p)) {
+            snprintf(why, cap, "expected a whole number at '%.40s'", num);
+            return 0;
+        }
+        long long n = 0;
+        while (isdigit((unsigned char)*p)) {
+            n = n * 10 + (*p++ - '0');
+            if (n > INT32_MAX) {
+                snprintf(why, cap, "a part is past the largest amount a duration field holds");
+                return 0;
+            }
+        }
+        if (*p == '.' || *p == ',') {
+            snprintf(why, cap, "a part is not a whole number, and each part of a duration is");
+            return 0;
+        }
+        if (*num == '-') {
+            n = -n;
+        }
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        const char *word = p;
+        while (isalpha((unsigned char)*p)) {
+            p++;
+        }
+        size_t wl = (size_t)(p - word);
+        int u = -1;
+        for (int k = 0; k < 7; k++) {
+            size_t ul = strlen(units[k]);
+            if ((wl == ul || (wl == ul + 1 && word[ul] == 's')) && strncmp(word, units[k], ul) == 0) {
+                u = k;
+            }
+        }
+        if (u < 0) {
+            snprintf(why, cap, "'%.*s' is not a unit (year, month, week, day, hour, minute, second)",
+                     (int)(wl ? wl : 1), wl ? word : p);
+            return 0;
+        }
+        if (seen[u]) {
+            snprintf(why, cap, "%ss are given twice", units[u]);
+            return 0;
+        }
+        seen[u] = 1;
+        *fields[u] = (int)n;
+        parts++;
+    }
+    if (!parts) {
+        snprintf(why, cap, "the text is empty (no duration is '0 seconds')");
+        return 0;
+    }
+    return 1;
+}
+
 static GsqlHv *gsql_h_cast(void *ctx, const GsqlHv *v, int kind, const char *currency, GsqlError *err) {
     (void)ctx;
     const Value *args[1] = { &v->v };
@@ -491,6 +568,24 @@ static GsqlHv *gsql_h_cast(void *ctx, const GsqlHv *v, int kind, const char *cur
         }
         return r;
     }
+    case GSQL_COL_DURATION: {
+        if (v->v.kind == VALUE_DURATION) {
+            return gsql_hv(value_copy(v->v));
+        }
+        if (!is_text) {
+            gsql_host_fail(err, GSQL_EXPRESSION, "CAST to DURATION takes a duration's text, such as '90 seconds', "
+                           "and this value is %s", builtin_type_name(v->v));
+            return NULL;
+        }
+        Value d = {0};
+        d.kind = VALUE_DURATION;
+        char why[160];
+        if (!gsql_duration_text(v->v.as.string, &d.as.duration, why, sizeof why)) {
+            gsql_host_fail(err, GSQL_EXPRESSION, "'%.80s': %s", v->v.as.string, why);
+            return NULL;
+        }
+        return gsql_hv(d);
+    }
     default:
         gsql_host_fail(err, GSQL_MISUSE, "CAST to an unknown kind");
         return NULL;
@@ -529,9 +624,35 @@ static void gsql_h_release(void *ctx, GsqlHv *v) {
     free(v);
 }
 
+/* Storing text into a DATE column reads it as {date} does, at the precision it
+ * was written, and refuses a time of day the date would lose: the column says
+ * what it holds, and a time dropped in silence is data lost (gdash A7, Matthew's
+ * ruling 2026-11-07). Midnight loses nothing. CAST still takes the date. */
+static GsqlHv *gsql_h_assign(void *ctx, const GsqlHv *v, int kind, const char *currency, GsqlError *err) {
+    if (kind == GSQL_COL_DATE && v->v.kind == VALUE_STRING) {
+        const Value *args[1] = { &v->v };
+        GsqlHv *r = gsql_apply("{date}sql_a", args, 1, err);
+        if (!r) {
+            return NULL;
+        }
+        DateTime d = r->v.as.datetime;
+        int timed = r->v.kind == VALUE_DATETIME && !d.time_only && d.precision > PREC_DAY &&
+                    (d.hour || d.minute || d.second);
+        gsql_h_release(ctx, r);
+        if (timed) {
+            /* TYPE, where a cast that fails is EXPRESSION: store_convert words it */
+            gsql_host_fail(err, GSQL_TYPE,
+                           "has a time of day (%02d:%02d:%02d), which a date would lose; CAST(... AS DATE) "
+                           "takes its date", d.hour, d.minute, d.second);
+            return NULL;
+        }
+    }
+    return gsql_h_cast(ctx, v, kind, currency, err);
+}
+
 static const GsqlHost gsql_interpreter_host = {
     NULL, gsql_h_load, gsql_h_store, gsql_h_kind, gsql_h_truth, gsql_h_op, gsql_h_field,
-    gsql_h_call, gsql_h_cast, gsql_h_order, gsql_h_copy, gsql_h_release, gsql_h_warning
+    gsql_h_call, gsql_h_cast, gsql_h_order, gsql_h_copy, gsql_h_release, gsql_h_warning, gsql_h_assign
 };
 
 const GsqlHost *gb_gsql_host(void) {
@@ -2922,6 +3043,83 @@ static Value gsql_eval_restore(AstExpr *expr) {
     return out;
 }
 
+/* gsql.space(path or connection): what a database's directory holds, in
+ * bytes, as { total, logs, tables } (gdash B3, 2026-11-08). Read from the
+ * directory, not asked of the owner, so it answers for a closed database
+ * without starting one. `tables` is the sorted and blob files, `logs` the
+ * logs, and `total` every file the database owns: those, the manifest and
+ * the lock and lease files. Sizes are each file's length, not the blocks it
+ * takes. A database the program has open holds up to two memtables of logs
+ * (64 MB at the default); a closed one, after the owner's flush, none. */
+static Value gsql_eval_space(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        gsql_module_refuse("gsql.space expects a database's directory or a gsql connection");
+        return value_null();
+    }
+    Value v = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(v);
+        return value_null();
+    }
+    char *dir = NULL;
+    char msg[600];
+    if (v.kind == VALUE_GSQL_CONNECTION) {
+        dir = copy_string(v.as.gsql_connection->path);
+    } else if (v.kind == VALUE_STRING && !memchr(v.as.string, 0, string_length(v.as.string))) {
+        dir = copy_string(v.as.string);
+    } else {
+        snprintf(msg, sizeof msg, "gsql.space expects a database's directory or a gsql connection, not %s",
+                 v.kind == VALUE_STRING ? "text holding a NUL byte" : value_kind_name(v.kind));
+        value_free(v);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    value_free(v);
+    GbDir *d = gb_opendir(dir);
+    if (!d) {
+        snprintf(msg, sizeof msg, "gsql.space: could not read %.400s (%s)", dir, strerror(errno));
+        free(dir);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    long long total = 0, logs = 0, tables = 0;
+    int manifest = 0;
+    const char *name;
+    while ((name = gb_readdir(d)) != NULL) {
+        /* the database's own names, as gs_db_owned has them */
+        if (strncmp(name, "db", 2) != 0 || (name[2] && name[2] != '.' && name[2] != '-')) {
+            continue;
+        }
+        char *p = join_path(dir, name);
+        struct stat st;
+        if (p && gb_stat(p, &st) == 0 && S_ISREG(st.st_mode)) {
+            size_t n = strlen(name);
+            total += (long long)st.st_size;
+            if (strcmp(name, "db") == 0) {
+                manifest = 1;
+            } else if (strncmp(name, "db.log.", 7) == 0) {
+                logs += (long long)st.st_size;
+            } else if ((n > 4 && strcmp(name + n - 4, ".sst") == 0) || (n > 5 && strcmp(name + n - 5, ".blob") == 0)) {
+                tables += (long long)st.st_size;
+            }
+        }
+        free(p);
+    }
+    gb_closedir(d);
+    if (!manifest) {
+        snprintf(msg, sizeof msg, "gsql.space: %.400s is not a G-SQL database (it has no manifest, db)", dir);
+        free(dir);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    free(dir);
+    Value out = value_record(NULL, 0);
+    record_set(&out, "total", value_number_exact(total));
+    record_set(&out, "logs", value_number_exact(logs));
+    record_set(&out, "tables", value_number_exact(tables));
+    return out;
+}
+
 static Value gsql_eval_call(AstExpr *expr) {
     const char *fn = expr->as.call.name;
     if (strcmp(fn, "connect") == 0) return gsql_eval_connect(expr);
@@ -2938,6 +3136,7 @@ static Value gsql_eval_call(AstExpr *expr) {
     if (strcmp(fn, "backup") == 0) return gsql_eval_backup(expr);
     if (strcmp(fn, "dump") == 0) return gsql_eval_dump(expr);
     if (strcmp(fn, "restore") == 0) return gsql_eval_restore(expr);
+    if (strcmp(fn, "space") == 0) return gsql_eval_space(expr);
     char message[256];
     module_unknown_verb(message, sizeof(message), "gsql", fn);
     gsql_module_refuse(message);

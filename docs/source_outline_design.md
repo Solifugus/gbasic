@@ -89,6 +89,12 @@ survives. Consequence: **comments cannot participate in structural anchoring via
 parser.** Any comment/marker-based anchoring would require a separate raw-text scan
 (explicitly out of scope for a parser/outline facility).
 
+*Superseded 2026-11-10 (Qt design §0.38 B1):* the lexer's comment reader now takes
+an optional recorder, and `source_comments(text)` parses with it attached, so the
+comments are the parser's own and no raw-text scan is needed. There is still no
+COMMENT token; the outline is unchanged. Its corpus tier found the lexer counting a
+modifier's `{` twice, which put every column after `{name}` one to the right.
+
 ### 1.5 The parser has NO error recovery — it aborts at the first error
 
 This is the single most consequential finding.

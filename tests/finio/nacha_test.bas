@@ -561,6 +561,49 @@ check("and the other two are not recognised", count(report.unknown), 2)
 check("the directory holds only data, so this count cannot drift",
       count(report.files), 8)
 
+' ---- finio.render: a record written from the layout reading uses (G45) ---
+' The oracle is the reader's own bytes: every record of payroll.ach, rendered
+' from its fields' raw text with the layout that read it, must be the record.
+rendered_ok = 0
+rendered_n = 0
+for each r in doc.records
+    if r.kind != "padding" and r.kind != "unknown" then
+        lay = finio_nacha.layout_for(r.kind)
+        if r.kind = "addenda" then
+            lay = finio_nacha.addenda_layout_for(r.raw)
+        end if
+        vals = {}
+        for each f in lay
+            vals[f.concept] = r.fields[f.concept].raw
+        end for
+        rendered_n = rendered_n + 1
+        if finio.render(lay, vals) = r.raw then
+            rendered_ok = rendered_ok + 1
+        end if
+    end if
+end for
+check("G45 every record renders back to its own bytes", rendered_ok, rendered_n)
+check("G45   and there were records to render", rendered_n > 5, true)
+function render_refusal(lay, vals)
+    on error goto next
+    r = finio.render(lay, vals)
+    e = error
+    if e then
+        return e.message
+    end if
+    return "rendered"
+end function
+ed = finio_nacha.layout_for("entry_detail")
+short = {}
+for each f in ed
+    short[f.concept] = repeat("0", f.length)
+end for
+short.amount = "123"
+check("G45 a value of the wrong width is refused, not padded", contains(render_refusal(ed, short), "'amount' is 10 bytes and the value given is 3"), true)
+short.amount = "0000000123"
+short.surplus = "x"
+check("G45 a concept the layout lacks is refused", contains(render_refusal(ed, short), "'surplus' is not a concept"), true)
+
 print ""
 print "checks: " + string(tally.checks)
 print "mismatches: " + string(tally.mismatches)

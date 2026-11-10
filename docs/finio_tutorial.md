@@ -226,12 +226,12 @@ end program
     FISERV-ZEROFILE.ach   10 records,  issues 2
 ok  NACHA_SAMPLE_TEL_REVERSAL.ach   10 records,  issues 0
     adv.ach   10 records,  issues 5
-    cor-example.ach   10 records,  issues 1
+ok  cor-example.ach   10 records,  issues 0
     extended-ascii.ach   20 records,  issues 1
 ok  gl-debit.ach   10 records,  issues 0
     ppd-debit.ach   10 records,  issues 2
 
-2 of 10 validate completely clean; 20 issues in all
+3 of 10 validate completely clean; 19 issues in all
 
 what kind of thing is wrong:
   record_length   6
@@ -240,7 +240,7 @@ what kind of thing is wrong:
   file_batch_count   2
   batch_credit_total   1
   unsupported_batch_kind   1
-  unknown_transaction_code   3
+  unknown_transaction_code   2
   file_credit_total   1
   non_ascii   1
 ```
@@ -505,12 +505,11 @@ what this adapter could not explain, across the whole drop:
   unsupported_batch_kind 280   seen 1x in adv.ach
   unknown_transaction_code 81   seen 1x in adv.ach
   unknown_transaction_code 82   seen 1x in adv.ach
-  unknown_transaction_code 21   seen 1x in cor-example.ach
   non_ascii 95   seen 1x in extended-ascii.ach
 
 the review queue a year from now, ranked:
-  aba.nacha  rank 7
-    review is due, and 5 kind(s) of thing this adapter could not explain have been seen 5 time(s)
+  aba.nacha  rank 6
+    review is due, and 4 kind(s) of thing this adapter could not explain have been seen 4 time(s)
 
 Nothing here modifies an adapter. A check produces WORK, never a
 patch: a process that edited the reader would silently change how a

@@ -576,7 +576,7 @@ end for
 The design and its evidence are `docs/csv_design.md`; the suite is
 `tests/run_csv.sh`.
 
-#### The members of a ZIP file — `zip.members(f)`, `zip.read(f, name)`, `zip.extract(f, folder)`
+#### The members of a ZIP file — `zip.members(f)`, `zip.read(f, name)`, `zip.extract(f, folder)`, `zip.write(f, members)`
 
 Needs no `load`, and only zlib in the build. Partners often send several files
 in one ZIP:
@@ -612,6 +612,28 @@ end for
   drive letter, an empty component, a symbolic link, and two members of one
   name are refused, each naming the member. A file already there is refused
   unless `replace: true`.
+- **`zip.write(f, members)`** writes a ZIP holding `members`, a list of
+  `{ name, data }` in archive order, `data` being the bytes as text. A name
+  ending in `/` is a folder and holds no data. Each member is deflated, or
+  stored when deflating would not shrink it. **The same members give the same
+  bytes**: every member is dated 1980-01-01 00:00 and carries no extra fields,
+  so two archives can be compared. It writes only what `zip.extract` would
+  take: an unsafe name, two members of one name, a name that is not UTF-8, and
+  anything needing ZIP64 are refused before a byte is written. A file already
+  at `f` is replaced. To change one part of a workbook, read every member,
+  change the one, and write them all:
+
+```basic
+parts = []
+for each m in zip.members({file}"report.xlsx")
+    body = zip.read({file}"report.xlsx", m.name)
+    if m.name = "xl/worksheets/sheet1.xml" then
+        body = replace(body, "<v>41</v>", "<v>42</v>")
+    end if
+    append(parts, { name: m.name, data: body })
+end for
+zip.write({file}"report2.xlsx", parts)
+```
 
 The suite is `tests/run_zip.sh`, whose answers come from Python's `zipfile`.
 
@@ -723,9 +745,73 @@ off; unwatching an already-off handle is a quiet no-op. Re-declaring
 `watch name(...)` while `name` is bound to a live watcher **replaces** it —
 setup code is safe to re-run without stacking duplicate watchers.
 `watchers()` returns the live handles, so a watcher is recoverable even when
-no variable holds it any more. Named watchers may only be declared at top
-level; watcher values cannot be encoded or sent to another actor. The
-anonymous `watch(...)` form is unchanged.
+no variable holds it any more. Watcher values cannot be encoded or sent to
+another actor.
+
+**A watch belongs to the scope that declares it** (*since 0.11.0*;
+`docs/watch_scope_design.md`). At the top level it lives for the program. In a
+function it watches that function's own variables, its body runs in that call
+and sees its parameters and locals, and it ends when the function returns, by
+any exit, a raise included. Each call has its own watch, and a callee's local
+of the same name is the callee's:
+
+```basic
+function tally(items)
+    total = 0
+    seen = []
+    watch(total)
+        append(seen, total)     ' writes this call's `seen`
+    end watch
+    for each it in items
+        total = total + it
+    end for
+    return seen                 ' tally([5, 7]) is [0, 5, 12]
+end function
+```
+
+In a function, a watch may also watch an event source (`timer.ticks`,
+`inbox.messages`, `http.events`, `net.events`, `stdin.lines`, or a server held
+in one of its locals). Anything else is refused (`1003`, naming it): another global (a
+function cannot assign one, and it changes only while no function runs), or a
+variable not yet assigned. A named watcher's handle that outlives its function
+names a watch that has ended: reading its fields raises, and `unwatch` of it
+does nothing.
+
+**`wait until <condition> [for <limit>]`** (*since 0.11.0*) runs the event loop
+from where it is written until the condition is true, so a function can keep
+its watches alive while events arrive. Events are delivered to the watches of
+every scope still running (the program's, and each function's on the way down),
+and the condition is checked again after each pass of the loop:
+
+```basic
+function count_ticks(n)
+    seen = 0
+    t = timer.every(0.1)
+    watch(timer.ticks)
+        while count(timer.ticks) > 0
+            ev = take_first(timer.ticks)
+            seen = seen + 1
+        end while
+    end watch
+    wait until seen >= n for 10 seconds
+    timer.cancel(t)
+    return seen
+end function
+```
+
+- **`for <limit>`** is a duration or a number of seconds. When it passes with
+  the condition still false, the wait raises (`1003`). A month is refused, having
+  no fixed length.
+- **A wait that nothing could end raises** rather than hanging: no server
+  listening, no transfer, no live timer, and no watched inbox or socket.
+- **A wait inside a watch body** works, so a function that waits may be called
+  from one. Past 16 such waits inside one another it raises, since a wait cannot
+  be skipped: the code after it relies on its condition.
+- **`wait` is a keyword only before `until`**, so `wait` stays usable as a
+  variable or a record key.
+- At the top level a wait is the same, which is how a program can wait for a
+  condition before going on rather than leaving everything to the loop after
+  the `program` block.
 
 During one active watcher-drain cycle, a watcher that is already pending is
 not enqueued again. It executes once and reads the latest live state. Separate
@@ -1474,6 +1560,10 @@ needs a rate.
 - **A refusal names the lock:** `qty is locked to number by qty:number at line
   1, and this value does not convert: ...`. The old value is kept.
 - **`nothing` and `unknown` are allowed**, as in a typed G-SQL column.
+- **A `date` lock refuses a time of day** (*since 0.11.0*), as a G-SQL `date`
+  column does: `d:date = at` with `at` at 14:20 is refused, naming the time,
+  where it used to take the date in silence. Midnight converts, and
+  `{date}at` takes the date when that is what is meant.
 - **A compound assignment converts a text operand first**, because `42 + "1"`
   is `421`: with `n:number = 42`, `n += "1"` is 43. Other operands go in as
   written, so `d += 3 days` on a locked date is date arithmetic.
@@ -1874,7 +1964,12 @@ column, a config file, a loop over `money.currencies()`) could not construct a
 value at all; the workaround was an `if` chain with one branch per currency.
 Same parse path and same refusals as the modifier, so excess precision past the
 storage scale is rejected exactly as `{USD}=` rejects it, and a historical
-currency is refused for new values.
+currency is refused for new values. **A refusal's `error.details` says which**
+(*since 0.11.0*), for `money.of` and the modifier alike: `{ kind: "places",
+allowed, found }`, `{ kind: "range" }`, or `{ kind: "text" }`, so a program can
+turn "this price has seven decimals" into a data outcome without matching the
+message. **Money negates** (`-amount`, *since 0.11.0*), exactly and in its own
+currency.
 
 ```basic
 m = money.of("KWD", "1234.5678")   ' three minor-unit digits, per KWD
@@ -2037,6 +2132,15 @@ end program
 ```
 
 If a `program` block exists, only that program executes. If no `program` block exists, top-level statements are treated as an implicit program.
+
+**A library's body is declarations**: `load`, `function`, `modifier`,
+`database` and `sql` (*since 2026-11-09*). Loading a library runs none of its
+code, so any other statement at the top of a `library` block is refused when
+it is loaded, at its own line, before the program runs. That includes an
+assignment, a `print`, a `watch`, and a `function obj.f()` attached to a
+value. They used to be skipped in silence, so `counter = 5` there left a
+function reading `counter` with "undefined variable". State a library needs
+comes from a function that returns it.
 
 **`load` is a declaration, and either position works** (*since 0.1.0*). Write it
 at the top level or inside the `program` block; both are registered before
@@ -2674,7 +2778,7 @@ SQLite type mapping:
 | SQLite storage class | gBASIC value | Notes |
 | --- | --- | --- |
 | `NULL` | `nothing` | Database null is absence |
-| `INTEGER` | number | Large integers may lose precision in gBASIC's floating-point number type |
+| `INTEGER` | number | **exact**, all 64 bits (*since 0.11.0*; past 2^53 it came back as the nearest double, `9007199254740993` as `...992`) |
 | `REAL` | number | Stored as a gBASIC number |
 | `TEXT` | string | No date/time guessing is applied |
 | `BLOB` | runtime error | Native blob values are future work |
@@ -2824,6 +2928,17 @@ The module provides:
   `STATE` before it runs, naming its line. A restore that fails part way keeps
   the batches before the failure.
 
+- `gsql.space(dir)` (or `connection.space()`) — what a database's directory
+  holds, in bytes: `{ total, logs, tables }`. `tables` is the sorted and blob
+  files, `logs` the logs, and `total` every file the database owns (those, the
+  manifest, and the lock and lease files). It is read from the directory, not
+  asked of the owner, so it answers for a closed database without starting
+  one. Sizes are file lengths, not blocks. **The bound:** while a database is
+  open its logs can reach two memtables (64 MB at the default) beyond its
+  tables; once it is closed and its owner has stopped, the logs are empty and
+  `total` is the tables plus under a kilobyte. A directory with no manifest
+  (`db`) is refused.
+
 Parameters are a **record** for `:name` placeholders and an **array** for `$1`,
 `$2`, … . Values cross unchanged in both directions: an exact integer stays
 exact past 2^53, money keeps its currency, a date stays a date, and SQL `NULL`
@@ -2872,7 +2987,14 @@ number written in digits *(after 0.10.0)*, with spaces around it trimmed:
 column). It refuses a decimal in text (`'2.5'`, `' 2.5'`) or as a number, and
 anything else, each with its reason. A number column takes text that is a number
 written plainly, decimals and exponents included (`'2.5'`, `'1e3'`), trimmed the
-same way (`docs/gsql_store_conversion_design.md` §1a). If the owner exits, the
+same way (`docs/gsql_store_conversion_design.md` §1a). A `duration` column
+*(after 0.10.0)* holds a duration as given, field for field (`24 hours` stays
+`24 hours`), and reads text in the form a duration prints in (`'1 month 14
+days'`, as `CAST(... AS DURATION)` does); a number is refused, having no unit.
+It is never keyed: a primary key, `UNIQUE`, an index, `GROUP BY` and `DISTINCT`
+refuse it, since `1 month` has no order against `31 days`, so keep its
+`total_seconds` in a number column to find or sort by length
+(`docs/gsql_duration_design.md`). If the owner exits, the
 request in flight fails with `LOST` and nothing is retried; the next call
 starts a new owner. An owner whose database another machine has taken writes
 nothing more and exits, so its clients see `LOST`, and their next call is
@@ -3007,7 +3129,13 @@ The module provides:
 
 - `pg.connect(config_record)`
 - `connection.close()` (`pg.close`)
-- `connection.query(sql[, params])` (`pg.query`)
+- `connection.query(sql[, params[, { max_rows: n }]])` (`pg.query`). With
+  `max_rows` *(Unreleased; gdash's GDASH-16 B2)* the rows are read in libpq's
+  single-row mode, and one past the cap **cancels the query and raises**,
+  `details: { code: "MAX_ROWS", max_rows }`, rather than answering part of
+  it: measured, a capped million-row query peaked at 33 MB where the whole
+  one took 655. In a transaction the cancel aborts it, as any error does in
+  PostgreSQL. Pass `[]` for no parameters.
 - `connection.exec(sql[, params])` (`pg.exec`)
 - `connection.begin()` (`pg.begin`)
 - `connection.commit()` (`pg.commit`)
@@ -3101,7 +3229,12 @@ The module provides:
 
 - `odbc.connect(connection_string)`
 - `connection.close()` (`odbc.close`)
-- `connection.query(sql[, params])` (`odbc.query`) → array of records
+- `connection.query(sql[, params[, { max_rows: n }]])` (`odbc.query`) → array of
+  records. `max_rows` raises on the row past the cap, as `pg.query`'s does
+  (`MAX_ROWS`), closing the cursor there. It saves gBASIC's own cost of the
+  rows; a driver that buffers its whole result underneath still holds it
+  (measured on the SQLite3 ODBC driver: 158 MB capped against 678 for a
+  million rows, the rest being the driver's).
 - `connection.exec(sql[, params])` (`odbc.exec`) → `{command, rows_affected}`
 - `connection.begin()` (`odbc.begin`)
 - `connection.commit()` (`odbc.commit`)
@@ -3329,6 +3462,12 @@ Use `json_encode`, **not** `encode`, for anything leaving gBASIC: `encode` emits
 gBASIC dialect (`nothing`/`unknown` instead of `null`) that other JSON parsers
 reject. See "Four serializers, four jobs".
 
+A response whose body parses as JSON carries it as `json`. **When the server
+says the body is JSON (its `content-type` names json) and it does not parse,
+the response carries `json_error`** (*since 0.11.0*), the reason and the byte,
+so the failure is seen where it happens rather than later as "the answer is
+not what I expected".
+
 Use `webclient.request` for custom headers:
 
 ```basic
@@ -3393,6 +3532,7 @@ outgoing requests only. Incoming requests use the separate WebServer module.
 Sending email is two pieces, and the split is deliberate: `mail` builds the
 message and is ordinary gBASIC, `smtp` speaks to the relay and is native. See
 [mail_design.md](mail_design.md) for why each refusal lives where it does.
+`mail.parse` reads a received message, below.
 
 ```basic
 program main( args )
@@ -3424,7 +3564,8 @@ Fields, all optional but `from` and at least one recipient:
 | `subject`, `body`, `html` | text; `html` makes the message `multipart/alternative` |
 | `attachments` | array of `{ name:, content:, type: }` |
 | `headers` | a record of extra headers |
-| `date` | a datetime; defaults to `now()` |
+| `date` | a datetime, an instant in UTC; defaults to `now()` |
+| `zone` | the zone the `Date` header is written in: an IANA name, `"UTC"`, or `"local"` (the default) |
 
 Returns `{ from, recipients, message_id, text }` — `recipients` is the
 **envelope**, so it includes `bcc`, and `text` is the message, where `bcc`
@@ -3455,7 +3596,75 @@ that reason:
 | `mail.wrap_base64(text)` | base64, wrapped at 76 columns. |
 | `mail.address_parts(field, address)` | `{ name, address }` from either spelling; raises, naming `field`, if it is not an address. |
 | `mail.format_address(field, address)` | the header form, with the display name encoded if it needs it. |
-| `mail.format_date(when)` | a datetime as an RFC 5322 `Date`, using the system's own offset. Byte-identical to python's `email.utils.format_datetime` across all seven weekdays. |
+| `mail.format_date(when [, zone])` | a UTC datetime as an RFC 5322 `Date`, written as the clock in `zone` (default `"local"`) reads it, with that zone's offset. Byte-identical to python's `email.utils.format_datetime` across all seven weekdays. |
+
+### `mail.parse(raw)`
+
+A received message's bytes (CRLF or LF line ends), read. *After 0.10.0* (book
+gap G59).
+
+```basic
+program main( args )
+    load mail
+    m = mail.parse("From: Anna <anna@example.com>\nSubject: =?utf-8?B?xYHDs2TFug==?= order\n" +
+                   "Date: Tue, 6 Apr 2027 07:52:00 -0500\n\nTwo pallets, please.\n")
+    print m.from.name + ": " + m.subject      ' Anna: Łódź order
+    print m.date                               ' 2027-04-06 12:52:00
+    print m.text                               ' Two pallets, please.
+end program
+```
+
+| field | |
+|---|---|
+| `headers` | every header in order, as `{ name, value }`: unfolded, RFC 2047 encoded words decoded |
+| `from` | the first mailbox, `{ name, address }`, or `unknown` |
+| `to`, `cc`, `reply_to` | arrays of `{ name, address }`; groups are opened, comments dropped |
+| `subject` | decoded; `""` when there is none |
+| `date` | the instant in UTC, as `{datetime}` reads a text with an offset; `unknown` when it cannot be read |
+| `date_offset` | the writer's offset, a duration: `m.date + m.date_offset` is their clock |
+| `message_id`, `in_reply_to`, `references` | as written; the last two are arrays of `<id>` |
+| `type` | the message's own content type |
+| `parts` | every leaf part, depth first (below) |
+| `text`, `text_part` | the text a person would read, and the path of the part it came from |
+| `html`, `html_part` | the same for HTML |
+| `attachments` | the parts whose disposition is `attachment`, or that carry a filename |
+| `problems` | a sentence for everything that could not be read, naming the part |
+
+Each part is `{ path, type, params, charset, disposition, filename, encoding,
+content_id, headers, body, text, flowed, message }`. `path` numbers parts as
+IMAP does (`"1"`, `"2.1"`); `body` is the bytes with the transfer encoding
+(base64, quoted-printable) undone; `text` is a `text/*` part's body in UTF-8
+with its line ends read as LF, or `unknown`; `message` is a
+`message/rfc822` part read as a message of its own. A filename may be written
+the RFC 2231 way, in sections or with a charset, or as encoded words; it comes
+back as text.
+
+Which part is `text` is the rule Python's `email` package applies in
+`get_body`: the first `text/plain` that is not an attachment, depth first,
+reading only the start of a `multipart/related`. A `format=flowed` text
+(RFC 3676) is unflowed in `m.text`, and kept as sent in the part.
+
+**A received message is someone else's text**, so `parse` raises only when
+given something that is not a string. Everything else that is wrong is a
+sentence in `problems` and the rest of the message is still read: a charset
+gBASIC does not read (it reads `us-ascii`, `utf-8`, `iso-8859-1`,
+`windows-1252` and `utf-16`), bytes that are not their charset, base64 that
+does not decode, a multipart with no closing boundary, nesting past 32, a
+`Date` with no zone, a word in `To` that is not an address. A text that cannot
+be decoded is `unknown`, never a guess; its bytes are in the part's `body`.
+
+Both sides are UTC, so a date read by `parse` goes through `compose`
+unmoved.
+
+| | |
+|---|---|
+| `mail.header(m, name)` | the first header of a message or part with that name, in any case, or `unknown` |
+| `mail.headers_named(m, name)` | every one, in order (`Received`) |
+| `mail.unflow(text [, delsp])` | RFC 3676 `format=flowed` read: soft breaks joined, space-stuffing removed, quote depths kept apart |
+| `mail.own_text(text)` | `{ text, quoted, by, line, uncertain }`: the text above the first line that begins a quotation (`>`, an `On … wrote:` line, or `-----Original Message-----`). It is a convention, not a fact about who wrote what, so `by` names the convention and `uncertain` names unquoted lines below the cut. |
+
+Tested by `tests/run_mail_parse.sh`: by hand from the RFCs, and against
+Python's `email` package over 1200 messages made per run.
 
 ### `smtp.send(config, message)`
 
@@ -4142,6 +4351,40 @@ a quiet WebSocket is ordinary; a program that wants liveness pings. In a worker
 pool a WebSocket belongs to the worker that accepted it. Extensions
 (`permessage-deflate`) are not offered.
 
+## Standard input in the event loop: `watch(stdin.lines)`
+
+`input()` blocks, so a program that reads its standard input that way serves
+nothing else while it waits; under `qt.run()` its window stops painting.
+*After 0.10.0* (Qt design §0.38 D3), a watch on `stdin.lines` puts standard
+input in the event loop instead:
+
+```basic
+program main(args)
+    watch w(stdin.lines)
+        while count(stdin.lines) > 0
+            line = take_first(stdin.lines)
+            print "read " + line
+        end while
+        if stdin.closed then
+            print "end of input"
+        end if
+    end watch
+end program
+```
+
+What is ready is read without blocking and cut into lines; each line (its
+line break and a CR before it removed) is appended to `stdin.lines` and
+delivered **on its own**. At end of input a last unterminated line is
+delivered, `stdin.closed` becomes `true`, one more delivery says so, and
+standard input leaves the loop, so a program with nothing else to wait for
+ends. Under `qt.run()` the window keeps working while a line is awaited.
+**Do not mix it with `input()`**: this reads the descriptor directly, so lines
+`input()` has already buffered are never seen here.
+
+Tested by `tests/run_stdin_lines.sh` (lines of every kind, a slow writer whose
+lines must each come back before the next is written, and a window under
+`qt.run()` driven from standard input while a timer keeps firing).
+
 ## Timer Module
 
 Periodic work on the event loop. Needs no `load` — there is no optional
@@ -4265,6 +4508,14 @@ The module provides:
 `port` must be an integer from 0 through 65535. Port `0` requests an
 operating-system-assigned ephemeral port, which is exposed through
 `server.port`.
+
+`server.tls` is `true` when this listener terminates TLS and `false` when it
+serves plain HTTP (*since 0.11.0*). It is read from the socket's own state,
+not from the options asked for, so a program that must not run without TLS
+can check it: `if not h.tls then error "refusing to serve without TLS"`.
+`web.serve`'s answer is that record, so it carries the flag too. Under
+`workers: N` the supervisor's held socket is plain (each worker terminates
+TLS), and `serve` does not return while the pool runs.
 
 `options` is a record accepting `address` (the local address to bind), `hold`,
 `timeout`, and `tls` (*all since 0.1.0-rc4*):
@@ -4766,8 +5017,14 @@ routes and static fallback (a stream route answers with its opening head);
 `source_outline` shows the block, its sites and every route.
 
 Three primitives shipped with the block and are general:
-`process.self()` → `{ interpreter, script, args }` (how a program launches
-another copy of itself); `webserver.on_request(server, fn, context)` /
+`process.self()` → `{ interpreter, script, args, pid, started, uid, user }` (how
+a program launches another copy of itself, and *since 0.11.0* its own process
+id, when it started as epoch seconds, and the user it acts as; a spawned actor
+is a process of its own and answers its own); `process.alive(pid)` (whether a
+process with that id exists now) and `process.info(pid)` → `{ pid, alive,
+started, command }`, so a pid recorded by an earlier run can be told from a
+reused one by its start time and command line (`unknown` where the platform
+does not say; on Linux they come from `/proc`); `webserver.on_request(server, fn, context)` /
 `webserver.on_drain(server, fn, context)` (native per-request dispatch —
 `fn(context, request)`, return value delivered as the response); and
 `webserver.stopping()` (true once SIGTERM asked this process to stop
@@ -4857,19 +5114,60 @@ names carry the unit. Use `byte_slice`. On an ASCII document the two agree and
 `mid` appears to work; on the first accented character they part company and
 `mid` returns a plausible slice of the wrong text, with nothing raised.
 
+**`content_start` and `content_end`** (*since 0.11.0*) give the element's
+**content**, between its tags (an empty range at the element's end when it is
+self-closing), and **`attribute_bytes`** gives each attribute's **value**,
+inside its quotes and as written, entities not decoded: `{ ccy: { byte_start,
+byte_end } }`. So a value's lineage can name the bytes of the value itself
+rather than of the markup around it. Every position is an exact integer, so a
+G-SQL `integer` column takes it.
+
 Ranges are collected by a second pass over the source, so they cost another
 parse — paid only when `positions` is asked for.
 - `xml.parse_html(text)` — lenient HTML parse for real-world markup.
 
 Navigation (a *path* is a `/`-separated chain of child element names):
 
-- `node.find(path)` (`xml.find`) — the first matching descendant, or `unknown`.
-- `node.find_all(path)` (`xml.find_all`) — an array of all matches (empty when none).
+- `node.find(path)` (`xml.find`) — the first match, or `unknown` when nothing matched. Check a find that may miss with `is_unknown` before reading it.
+- `node.find_all(path)` (`xml.find_all`) — every element the path reaches, in document order (empty when none). Each step is taken from every element the step before reached, so `find_all(d, "s/n")` is the `n` under each `s`, and `find` answers the first of them.
 - `node.attr(name[, default])` (`xml.attr`) — an attribute value as a string; returns
   `default` (or `unknown`) when the attribute is absent.
-- `node.text()` (`xml.text`) — the node's text content.
+- `node.text()` (`xml.text`) — the node's text content, trimmed. Given `unknown`, which is what a missed find answers, it raises rather than answering `""`. It also raises for anything that is not an element or a text child.
 - `xml.encode(node[, pretty])` — serialize a node back to an XML string; pass
   `true` to pretty-print.
+- `xml.canonicalize(text[, options])` — the canonical bytes of a document, or
+  of one element of it, as XML-DSig signs them: Exclusive XML Canonicalization
+  1.0 by default, Canonical XML 1.0 with `exclusive: false`. It takes the
+  **source text**, never a tree from `xml.parse`, which has already dropped
+  comments and merged CDATA. Options:
+  - `id` — the element whose `ID` attribute (or the unprefixed attribute
+    `id_attribute` names, such as `AssertionID`) is this value.
+  - `element`, `namespace` — the element of that local name (in that
+    namespace URI), inside the `id` element when both are given: how a
+    signature's `ds:SignedInfo`, which has no ID, is reached.
+  - `exclude_signature: true` — the enveloped-signature transform: the chosen
+    element's own `ds:Signature` child is left out (not one further down).
+  - `signed_info: true` *(after 0.10.0)* — the `ds:SignedInfo` of that same
+    signature: the `id` element's own `ds:Signature` child (the root element's
+    with no `id`). When a Response and its Assertion are both signed, the
+    Response's subtree holds two SignedInfos and `element` refuses as
+    ambiguous; this names the Response's. Refused when the element has no
+    `ds:Signature` child or more than one, when that signature holds anything
+    but one `ds:SignedInfo`, and beside `element` or `exclude_signature`.
+  - `inclusive_prefixes` — the `InclusiveNamespaces PrefixList`, as an array or
+    as its space-separated text; `#default` is the default namespace.
+  - `comments` — keep comments (default `false`).
+
+  Refused, each by name: a document with a DTD (SAML forbids one, and
+  `xml.parse` drops a declared entity in silence, so the two could disagree
+  about the signed text); an `id` held by more than one element, and an
+  `element` matched more than once, which is how a signature is wrapped round
+  other content; an element holding two `ds:Signature` children with
+  `exclude_signature`; an unknown option. Verifying a SAML signature is then
+  ordinary code: the digest is `sha256` of the canonical element with
+  `exclude_signature`, and `rsa_verify` checks the canonical `SignedInfo`
+  (`{ id: X, signed_info: true }`)
+  against `x509_parse(cert).public_key` (`tests/run_xml_sign.sh`, TIER signed).
 
 Streaming reader, for documents too large to hold as a tree — it walks the file
 forward without materializing the whole document:
@@ -4972,12 +5270,13 @@ end program
 | `win.shortcuts(part)` (`qt.shortcuts`) | **every** shortcut a menu or toolbar item answers to, as a list of texts (a button's single one, too). `qt.read(..., "shortcut")` reports only the first, so this is how both of `["Ctrl++", "Ctrl+="]` are checked |
 | `qt.wheel()` | the wheel event **being handled** — `{ dy, dx, dy_exact, dx_exact, ctrl, shift, alt }`, with `dy` in **notches** rather than Qt's 120-unit delta and **positive meaning away from you** (Qt's sign, and the opposite of GTK's). `dy` is whole notches, and a sub-notch turn is rounded **away from zero** so its sign survives; `dy_exact` is the same turn **unrounded** (a quarter-notch is `0.25`), for a program that accumulates a trackpad's small deltas rather than counting each as a notch. Refuses outside a wheel handler, since there is no sensible record to hand back and a program asking in the wrong place would otherwise read zeros and act on them |
 | `qt.swallow()` | claim the event being handled, so the view does not also act on it. Not optional for a zoom: Ctrl+wheel scrolls a `source` *faster* than a plain wheel, so a handler that zooms without claiming leaves the editor jumping about while it resizes. Refuses when nothing is in flight rather than being a silent no-op |
+| `qt.render_svg(svg, file)`, `qt.render_svg(svg, file, { width, height, scale })` | draws SVG text into a PNG file with QtSvg, for a figure: on white, no alpha, at its own size (the SVG's `width`/`height` or `viewBox`) unless given one (whole pixels, 1 to 20000; one alone keeps the aspect ratio), at `scale:` device pixels per pixel (above 0, at most 8). Needs no window. Answers `{ file, width, height }`; the same SVG gives the same bytes on one machine (fonts differ across machines). The options are closed and refused by name; text that is not SVG is refused. *After 0.10.0* (§0.38 C) |
 | `win.capture(file)`, `win.capture(file, { part, scale })` (`qt.capture`) | writes the window, or one named `part:` of it, to a PNG file, drawn at `scale:` device pixels per pixel (above 0, at most 8; default 1). It works offscreen, and answers `{ file, width, height }` in pixels written. The file is a path string or a `{file}`, written as `write` writes. A focused editor's caret is drawn steady and pending layout is applied first, so the same window gives the same file. An unknown part is refused with the window's parts listed; so are a menu item and a part that is not showing. Byte-identical across machines is not promised (fonts differ) |
 | `win.has_icon(part)` (`qt.has_icon`) | whether a part has an icon. It exists because a QIcon has **no text form** — measured, a button carrying a real image and one carrying nothing both read back as `""` — so `win.read(part, "icon")` (`qt.read`) **refuses** and names this instead, an empty answer for a property that *is* set being a wrong answer rather than no answer. A part that cannot carry one (a `text`, a `table`) is refused, naming its kind |
 | `win.scrolled(part)` (`qt.scrolled`) | how far a part is scrolled, or **`unknown`** for one that does not scroll — a different claim from *scrolled to nowhere*, since a `button` has no position where a `source` at the top has position 0. A `QAbstractScrollArea` reaches its scrollbar by a method, so this is the only route to it |
 | `win.scroll_to(part, position)` (`qt.scroll_to`) | put it back, which is how *"reopen the editor where I left it"* is written. A part that does not scroll is refused by name rather than succeeding and doing nothing; the range is Qt's own, so a position past the end is clamped |
 | `qt.can_highlight()` | whether this build can highlight a `source` at all. **Answers rather than raising**, like `qt.can_display`, because a program asking is choosing what to offer — and a build without KSyntaxHighlighting still edits text perfectly well |
-| `win.highlighting(part)` (`qt.highlighting`) | what is **actually** highlighting a `source`: `{ language, file }`, or `unknown` when nothing is. It reports the **file** as well as the language because a definition the user installed in their own home *shadows* the one gBASIC ships and reports the identical name — which of the two wins is the machine's business, but being unable to see it would not be. A missing definition is warning **2115**, never a raise: the editor still works, and an absent definition still colours every line with the theme's ordinary text, so there is nothing on screen to notice |
+| `win.highlighting(part)` (`qt.highlighting`) | what is **actually** highlighting a `source`: `{ language, file, theme }`, or `unknown` when nothing is; `theme` is the name of the theme the highlighter holds (`"dark"` answers the theme it resolved to, `"Breeze Dark"`). It reports the **file** as well as the language because a definition the user installed in their own home *shadows* the one gBASIC ships and reports the identical name — which of the two wins is the machine's business, but being unable to see it would not be. A missing definition is warning **2115**, never a raise: the editor still works, and an absent definition still colours every line with the theme's ordinary text, so there is nothing on screen to notice |
 | `win.caret(part)` (`qt.caret`) | where the caret is in a `source` or a `memo` — `{ line, column, selecting }`, **1-based** — or **`unknown`** for a part that is not a text editor. The numbering is the one gBASIC's diagnostics, `source_outline` and `qt.mark` all use, so a `line:column` from any of them goes straight into `qt.caret_to` with no arithmetic. `selecting` is there because a caret inside a selection is one end of a range, and a bare line and column would be an ambiguous reading |
 | `win.caret_to(part, line, column)` (`qt.caret_to`) | put it there, which is how *"stopped at line 7 — show me why"* is written. A **line past the end is refused**, naming the document's real length: a program placing the caret where a diagnostic said is working from a model of the document, and clamping would put it on the wrong line and look like it worked. A **column** past the end of its own line clamps, landing where End would — that case is ordinary rather than a stale model |
 | `win.select_text(part, line, column, line2, column2)` (`qt.select_text`) | select a range in a `source` or a `memo`, which is how find shows the current match; the caret ends at the second position. Positions are **caret positions**, 1-based like `qt.caret`, so `1, 1` to `1, 4` covers three characters, and **columns count codepoints**, as `len` and `regex` do, so a match found in gBASIC goes straight in. A line past the end is refused with the real length, a column past its line clamps, and a range that ends before it starts is refused *(after 0.10.0)* |
@@ -4989,6 +5288,12 @@ end program
 | `win.marks(part, category)` (`qt.marks`) | that category's lines, as a list. **What was set, never what is currently drawable**: a program may mark line 40 and then shorten the document, and a read filtered to the lines still in the file would disagree with the write for a reason the caller cannot see. The drawing is the widget's business; the list is the program's |
 | `win.gutter(part)` (`qt.gutter`) | what that `source`'s margin is — `{ line_numbers, marks, width }` — or **`unknown`** for one that has none, since `width: 0` would say a margin exists and is empty. The `width` follows the **digit count**, so a thousand-line document reserves more than a nine-line one |
 | `win.gutter_press(part, line)` (`qt.gutter_press`) | press the margin beside a line, which is what makes a `gutter` handler drivable without a person — `qt.right_click`'s and `qt.scroll`'s shape. A line that is **not on screen** is refused, because a mouse cannot land there |
+| `win.blocks(part, items)` (`qt.blocks`) | show content **between a `source`'s lines** without it being text: each item `{ id, line, kind, content, title, max_height, collapsed, covers }` is drawn under its 1-based line (or, with `covers: true`, over it), and **replaces the whole set**, reconciled by `id` so an unchanged block keeps its widget. Kinds: `text` (monospace, whitespace kept), `table` (`{ columns, rows }`, at most 1,000 rows shown, then a line saying how many more), `image` (a path, a `{file}`, or `{ bytes, format: "png" \| "svg" }`) and `markdown` (CommonMark and GitHub's tables and lists; a link raises the `block` event and never navigates). `max_height` (20-2000, default 240) caps it, past which it scrolls inside or, an image, is scaled down; `collapsed` (Studio's to set) shows only its header. **None of it is document text**: plainText, the caret, the undo stack, the modified flag and the line numbers do not move (tests/qt/blocks_probe.cpp, linking the real backend). A block **follows its line through edits**: typed lines above move it, a line split in two keeps it under the second half, a line joined onto the one above takes it along, and a line **deleted or emptied drops it**. Replacing the whole text drops them all. An unknown field or kind is refused with its near miss; a line past the end names how many lines there are. *After 0.10.0* (§0.38 A) |
+| `win.blocks(part)` (`qt.blocks`) | what Qt holds now: `[{ id, kind, line, height, visible, collapsed, covers }]`, the line its anchor is on **after any edits** and `visible` whether it is on screen, so a fixture proves anchoring from Qt rather than from what it sent |
+| `win.fold(part, ranges)` (`qt.fold`) | fold lines: `ranges` is `[{ from, to }]`, **replacing** every fold; each **keeps its first line** and hides the rest, as an editor's folding does, and moves with its lines through edits. Hiding is layout, not text: plainText and the undo stack do not move, and copying a selection across a fold copies the folded lines. A fold that hides the caret's line moves the caret to the fold's first line. `win.fold(part)` reads back the ranges Qt holds now. Prose in place of a comment is a fold over the comment with a `markdown` block on its first line that `covers` it. *After 0.10.0* (§0.38 B2) |
+| `qt.block_event()` | inside an `on <part>.block` handler, the event being handled: `{ id, action, target }`, `action` being `"click"` (the block's body), `"collapse"` (its collapse control, which changes nothing by itself: the program re-sends the block collapsed) or `"link"` (a link in a markdown block, `target` its address). `unknown` outside a handler |
+| `win.block_press(part, id, action [, target])` (`qt.block_press`) | a real press on a block's body, its collapse control or a markdown link's text, which is how a fixture drives the `block` handler as a person would. A block or link that is not there is refused |
+| `markdown name()` (a window word), `win.set(part, "markdown", text)` | a **read-only rendered-prose part**, for a preview pane: a QTextBrowser showing CommonMark and GitHub's tables, lists and task lists, set through Qt's own `markdown` property. A link **does not navigate**: pressing it is the part's `link` event, and `qt.link()` in an `on <part>.link` handler answers its target (`unknown` outside one). `win.link_press(part, target)` (`qt.link_press`) presses a link's own text for a fixture; a link that is not there is refused. *After 0.10.0* (§0.38 B4) |
 | `qt.gutter_click()` | which line the margin click being handled was on: `{ line }`, or **`unknown`** outside a handler — a different claim from *line 0*. Takes no arguments, because a handler here takes none and the event is asked for instead, the rule `qt.wheel()` and `principal()` already follow |
 | `win.dock(name)` (`qt.dock`) | what that dock pane is doing — `{ area, floating, visible, tabbed_with }` — or **`unknown`** for a name that is not a pane. The `area` is asked of the **window**, not of anything remembered when it was built, because a remembered position agrees with a placement that was wrong; `tabbed_with` counts the panes sharing its tab group, which only the window can answer |
 | `win.layout()` (`qt.layout`) | the window's whole dock and toolbar arrangement as **text** to keep — which area each pane is in, their order, which tab is raised, what is floating and how big. **Base64**, because Qt's own blob is not valid UTF-8 and the obvious thing to do with it is store it, through `encode` or `persist`, both of which write JSON. It is Qt's format, not ours: keep it, do not read it — `qt.dock` is what answers questions |
@@ -5463,8 +5768,12 @@ end column
 `language:` names a **definition**, never a file extension, and that is
 load-bearing rather than fussy: `*.bas` is claimed by FreeBASIC at the same
 priority as gBASIC, so a lookup by extension picks FreeBASIC — with no error,
-and plausibly, FreeBASIC being a near neighbour. `theme:` is `"light"` or
-`"dark"`, and is **declared** rather than inferred because `qt.theme` sets a
+and plausibly, FreeBASIC being a near neighbour. `theme:` is `"light"`,
+`"dark"`, or the **name of a KSyntaxHighlighting theme** *(after 0.10.0)*:
+one it ships (`"Breeze Light"`, `"Solarized Dark"`, `"Printing"`) or one in
+`themes/*.theme` on the syntax search path, as a print theme a program ships
+would be. An unknown name is refused, with the near miss when there is one and
+otherwise the names there are. It is **declared** rather than inferred because `qt.theme` sets a
 stylesheet and a stylesheet does not move Qt's palette, so a dark application
 with an inferred theme would get light highlighting on a dark background.
 A `theme:` with **no `language:`** gives a plain editor the theme's background
@@ -5552,6 +5861,22 @@ The filter sits on the margin itself, so an ordinary press in the text is still
 an ordinary caret move, and it is installed **only where a handler was
 declared**. A `gutter` handler on a `source` with no margin is refused at load
 time, naming the option that would give it one.
+
+**Blocks between the lines** (*after 0.10.0*, §0.38): a run's output, a
+table, a figure or rendered prose shown under the line that produced it, with
+the source still the only thing being edited. A click on a block, its collapse
+control or a link in it is the `block` event:
+
+<!--fragment: a handler block, which lives inside a `window` declaration-->
+```basic
+on code.block
+    e = qt.block_event()        ' { id, action, target }
+    if e.action = "collapse" then
+        g.collapsed[e.id] = not default(g.collapsed[e.id], false)
+        show_results()          ' re-sends the blocks, this one collapsed
+    end if
+end on
+```
 
 **Not there yet:** completion (the data exists in `source_outline` and
 `gbasic-lsp`; the popup is a `QCompleter`, another object attached to a widget,
@@ -5814,7 +6139,9 @@ and not yet acted on; see `docs/qt_gui_design.md` §0.4.
 `load gpdf` — pure gBASIC, written from ISO 32000. The document, the core-14
 fonts, measured text and word wrap; then tables that flow across pages
 (`gpdf.table`), images copied rather than re-encoded (`gpdf.image`) and a
-`chart` SVG placed as PDF vectors (`gpdf.svg`). Embedded fonts are not built.
+`chart` SVG placed as PDF vectors (`gpdf.svg`), and TrueType fonts embedded
+subset to the glyphs a document draws (`gpdf.font_file`), for text the core
+fonts cannot write.
 
 ```basic
 when {datetime}= "2026-01-01 12:00:00"
@@ -5824,7 +6151,7 @@ d = gpdf.set_font(d, "Helvetica-Bold", 18)
 d = gpdf.text(d, "Invoice 1041")
 d = gpdf.set_font(d, "Helvetica", 11)
 d = gpdf.paragraph(d, 400, long_text)     ' wraps, and adds pages as needed
-n = gpdf.save(d, "invoice.pdf")
+gpdf.save(d, "invoice.pdf")
 ```
 
 A document is a **value**: `add_page`, `set_font`, `text` and `paragraph` each
@@ -5839,10 +6166,11 @@ same trap the xlsx writer avoids by fixing ZIP mod-times. `created:` takes a
 datetime; a document given none carries **no** `CreationDate` at all, which is
 honest, where an invented one is not.
 
-**An unrepresentable character is refused by name, never substituted.** Phase 1
-is WinAnsi, so it cannot write Cyrillic or CJK. The alternative to refusing is
+**An unrepresentable character is refused by name, never substituted.** The
+core fonts are WinAnsi, so they cannot write Polish, Turkish, Cyrillic or CJK;
+an embedded font writes what it has glyphs for. The alternative to refusing is
 putting some *other* character on a document that has already been posted, and
-the refusal names the character, its codepoint and its position. `representable(text)`
+the refusal names the character, its codepoint and its position. `representable(text [, font])`
 answers a boolean instead, so an application can check a customer's name where
 it is entered rather than where a document is produced.
 
@@ -5856,19 +6184,65 @@ has to repair it.
 |---|---|
 | `gpdf.document(options)` | `size` (a name from `gpdf.sizes()` or `{width,height}` in points), `margin`, `title`, `author`, `subject`, `creator`, `created`, `compress` |
 | `gpdf.add_page(doc)` / `gpdf.page_count(doc)` | pages |
-| `gpdf.set_font(doc, name, size)` | one of the core 14; anything else is refused by name |
+| `gpdf.set_font(doc, font, size)` | one of the core 14 by name, a font value from `gpdf.font_file`, or the name of one the document was already given |
+| `gpdf.font_file(path [, options])` | a TrueType font read from its file, a value usable in any number of documents — see below |
 | `gpdf.text(doc, s)` / `gpdf.text_at(doc, x, y, s)` | draw a line |
 | `gpdf.paragraph(doc, width, s)` | wrapped text, adding pages as it runs out of room |
-| `gpdf.wrap(font, size, width, s)` | the lines, without drawing them |
+| `gpdf.wrap(font, size, width, s)` | the lines, without drawing them; `font` is a core name or a font value |
 | `gpdf.text_width(font, size, s)` | points — what wrapping and alignment are built on |
-| `gpdf.representable(s)` / `gpdf.to_winansi(s, whose)` | encoding |
+| `gpdf.representable(s [, font])` / `gpdf.to_winansi(s, whose)` | encoding: WinAnsi, or the glyphs a font value has |
 | `gpdf.image(doc, path, x, y, options)` | a PNG or JPEG, copied not re-encoded — see below |
 | `gpdf.svg(doc, svg, x, y, options)` | a `chart` SVG as PDF vectors — see below |
 | `gpdf.table(doc, rows, spec)` | a table that flows across pages — see below |
 | `gpdf.number_pages(doc, options)` | `Page 3 of 7` on every page |
 | `gpdf.rule(doc, x1, y, x2, thickness)` | a horizontal line |
 | `gpdf.sizes()` | the named page sizes |
-| `gpdf.render(doc)` / `gpdf.save(doc, path)` | bytes, or bytes written |
+| `gpdf.render(doc)` / `gpdf.save(doc, path)` | bytes, or `nothing` (the file is written; `file_size(path)` is its size) |
+
+### Embedded fonts
+
+*(added 2026-11-10; book gap G58)* A customer in Łódź, İzmir or Новосибирск
+has a name the core fonts cannot write. `gpdf.font_file` reads a TrueType font,
+and a document set in it carries the font **subset** to the glyphs it drew:
+
+```basic
+body = gpdf.font_file("/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf")
+d = gpdf.document({ title: "Zakład Mechaniczny Łódź", created: when })
+d = gpdf.add_page(d)
+d = gpdf.set_font(d, body, 11)
+d = gpdf.text(d, "Zakład Mechaniczny Łódź")
+' ask before drawing, where the name is entered
+if not gpdf.representable(customer.name, body) then
+    print "this font cannot write " + customer.name
+end if
+```
+
+- **A font value is read once** and used in any number of documents: a run of
+  statements reads the file once, not once a statement. Options: `name`, what
+  documents call it (default its PostScript name; one calling itself a core
+  name such as `Helvetica` must be given another), and `index`, which font of
+  a collection (`.ttc`) to read (default 0).
+- **Everything that measures accepts it**: `text_width`, `wrap`, `paragraph`,
+  `table` (and its `heading_font`), `number_pages` (`font:`) and `svg` text.
+  A width is the sum of the glyphs' advances, which is what is drawn; kerning
+  is not applied.
+- **In the PDF** it is a Type0 font over a CIDFontType2 (Identity-H), the
+  subset's own glyph numbers as CIDs in order of first use, with every glyph a
+  composite glyph is built from, a width for each, and a ToUnicode map, so the
+  text extracts and searches as written. The subset is named by six capitals
+  taken from the glyphs it holds, so the bytes stay reproducible.
+- **Refused by name:** a character the font has no glyph for (nothing is
+  substituted); a character from a script that needs **shaping** — Arabic and
+  its relatives join, Hebrew runs right to left, the Indic scripts and their
+  neighbours reorder — because drawn one glyph at a time it prints a wrong word;
+  a control character; a font with PostScript (CFF) outlines, usually `.otf`
+  (only TrueType outlines are subset); and a font whose licence forbids
+  embedding (OS/2 `fsType` restricted, or bitmap only).
+- **Document information** (`title`, `author`, `subject`, `creator`) is
+  written in UTF-16 when WinAnsi cannot carry it, so a title in any script reads
+  correctly in a reader's document properties. This also mended a defect: Info
+  strings are PDFDocEncoding, which disagrees with WinAnsi at 0x80-0x9F, so a
+  title of `Price €9 — net` used to read as `Price •9 Š net`.
 
 ### Tables that flow across pages
 
@@ -6106,7 +6480,10 @@ Password-based key derivation — turning a **passphrase** into key bytes:
 - `scrypt(password, salt, n, r, p, length)` — scrypt (RFC 7914). `n` is the CPU
   and memory cost and must be a **power of two greater than 1**; `r` is the block
   size and `p` the parallelisation. Memory-hard, so prefer it when you can afford
-  the memory.
+  the memory: it is allowed exactly what its cost needs, `128 × r × (n + p + 2)`
+  bytes (64 MiB at the recommended `n = 65536, r = 8`), and a cost the machine
+  cannot give is refused, naming how much it asked for, rather than derived
+  with less.
 
 ```basic
 salt = random_bytes(16)                                  ' store this beside the ciphertext
@@ -6167,6 +6544,18 @@ For SSH and other protocols that carry their own key formats (since 0.11.0,
   PKCS#8 (encrypted too) and public keys as PKCS#1 or SubjectPublicKeyInfo.
 - `rsa_to_pem(key)` — PKCS#8 for a private key, SubjectPublicKeyInfo for a
   public one, unencrypted.
+- `x509_parse(cert)` — what an X.509 certificate says, from PEM text or DER
+  bytes: `{ subject, issuer, not_before, not_after, serial, fingerprint_sha256,
+  der, key_type, public_key }`. Names are RFC 2253 text, as `openssl x509
+  -nameopt RFC2253` prints them; the dates are datetimes in UTC; `serial` and
+  `fingerprint_sha256` are big-endian bytes (`hex_encode` for text). `key_type`
+  is `rsa` (`public_key` is `{ n, e }`, as `rsa_verify` takes), `ec` (`{ curve,
+  public }`, as `ecdsa_verify` takes), `ed25519` (the 32 bytes `ed25519_verify`
+  takes), or `ec_other` or `other` with `public_key` unknown. It **checks
+  nothing**: not the signature, the dates or a chain, which are the caller's
+  decisions (a SAML identity provider's certificate is often self-signed and
+  pinned by metadata). Refused: text with no certificate, and DER with bytes
+  after the certificate.
 - `aes_ctr(key, counter, data)` — AES in counter mode (`aes128-ctr`,
   `aes256-ctr`); `key` is 16, 24 or 32 bytes and `counter` a 16-byte block.
   Answers `{ data, counter }`, where `counter` is the next block's, so packets
@@ -6381,6 +6770,56 @@ because bounding a run is now the caller's job (`process.wait` or `process.stop`
 Returns as soon as the child is launched. A child that cannot be launched **raises**
 — exactly as with `process.run`, so it stays distinguishable from a child that ran
 and exited nonzero. `type(h)` is `"process"`.
+
+**`stdout:` and `stderr:`** *(2026-11-09)* say where the child's output goes:
+- **`"pipe"`** (the default): the parent reads it with `process.read`.
+- **`"null"`**: thrown away.
+- **`"inherit"`**: the parent's own stream.
+- **a file**, such as `{file}"run.log"`: appended to, and created if absent.
+
+A stream sent elsewhere reads as `""` from `process.read`. A bare string other
+than the three words is refused, so a file named `null` is never mistaken for
+the device. A file that cannot be opened raises naming it. On Windows only
+`"pipe"` is taken.
+
+This is how a detached child gets an output that cannot break. A child whose
+stderr is a pipe nobody reads any more no longer dies writing to it. gBASIC
+itself survives that write (below), but another program may not.
+
+**A broken pipe kills a gBASIC program only through stdout** *(2026-11-09)*.
+A write to stdout after its reader has gone still ends the program by
+SIGPIPE, so `gbasic prog | head` ends quietly, as a command-line program
+should. A write to any other pipe fails instead, and the program goes on:
+stderr, where a warning or `print to error` lands, and a child's stdin. It used
+to be killed there too. Measured on a detached child: one note on a broken
+stderr ended it, exit -13, mid-run.
+
+**`limits: { memory: bytes }`** *(Unreleased; gdash's GDASH-16 B1)* runs the child
+under that memory limit, set before `exec` so it binds the program and not
+the caller: POSIX `RLIMIT_DATA` (the heap and private anonymous memory, not the
+address space, which for a gbasic linked with Qt is much larger than what it
+uses), and no core dump, since a child killed by its own limit would write one
+about the limit's size. A child that runs past it fails an allocation; what
+it does then is its own runtime's, and **a gBASIC child dies by SIGABRT**
+(`signal` 6). The kernel keeps no record that a limit was hit, so the status of
+a limited child gains the evidence rather than a verdict: **`memory_limit`**,
+as given, and **`peak_memory`**, its peak resident bytes when it was reaped
+(`unknown` before). A child with no limit has the status it always had. An
+unknown limit is refused by name; `limits` is refused on Windows. **A limit too
+small to start the program in** fails differently: measured on a build linking
+Qt (86 shared libraries), gbasic under 3.5 MB never runs, the dynamic loader
+failing to map a library, and exits **127** with signal 0; from 4 MB it starts.
+The floor depends on the build and its libraries, so a test forcing the
+out-of-memory path wants a margin (16 MB and a child that grows), and checks
+`signal = 6` rather than "not success".
+
+```basic
+h = process.start({ command: "gbasic", args: ["refresh.bas"], limits: { memory: 500000000 } })
+s = process.wait(h)
+if s.signal = 6 and s.peak_memory > s.memory_limit / 2 then
+    print "the refresh ran out of its memory"
+end if
+```
 
 **`handle.poll()`** → `{running, exit_code, signal, success}`. Never blocks.
 
@@ -6597,7 +7036,12 @@ port = default(env("GBASIC_SITE_PORT"), "8080")
 
 **`default(value, fallback)`** (*since 0.1.0-rc9*) - `value`, unless there
 isn't one: returns `fallback` when `value` is `unknown` **or** `nothing`, and
-`value` otherwise.
+`value` otherwise. **A missing field counts too** (*since 0.11.0*):
+`default(r.candidates, [])` on a record without `candidates` answers `[]`,
+where it used to raise `unknown record field`, since `default` is where a
+caller says "this may be absent". That holds for a field of a name or of a
+field chain (`r.a.b`); everywhere else `.field` stays strict, so a misspelling
+still fails.
 
 Both absences count, deliberately — the two commonest producers of "no result"
 split across them (`env(name)` yields `unknown` when unset, `find(...)` yields
@@ -6721,8 +7165,9 @@ csrf_token = secure_token(43)
 
 ### Current Time
 
-**`now()`** - Returns the current local time as a second-precision `datetime`
-value. It takes no arguments. Because `datetime` values support duration
+**`now()`** - Returns the current time **in UTC** as a second-precision
+`datetime` value. It takes no arguments. *(UTC since 2026-11-10; it was the
+system's local time before. See "Every instant is UTC" below.)* Because `datetime` values support duration
 arithmetic and exact comparison, `now()` is the primitive for expiration and
 deadline logic; everything else (a date-only "today", relative windows) derives
 from it via durations and the date/time lenses.
@@ -6730,7 +7175,8 @@ from it via durations and the date/time lenses.
 ```basic
 deadline = now() + 8 hours
 expired = now() > deadline          ' false until the deadline passes
-today{day}= now()                   ' truncate to date precision via the day lens
+today{day}= now()                   ' today's date in UTC
+here{day}= now("local")             ' today's date on this machine's calendar
 ```
 
 There is intentionally no `today()` builtin: `today` is too common an
@@ -6738,20 +7184,26 @@ identifier to reserve, and the date is derivable from `now()` and the `{day}=`
 truncation lens as shown above.
 
 **`now(zone)`** returns the current civil time in a named IANA zone —
-`now("UTC")`, `now("Asia/Tokyo")`. An unknown name is refused.
+`now("Asia/Tokyo")` — and **`now("local")`** in the system's own zone (`TZ`,
+or `/etc/localtime`). An unknown name is refused.
 
-**A gBASIC datetime carries no zone.** It is civil wall-clock text, and every
-conversion to an instant has to get a zone from somewhere. That makes one
-mistake very easy to write and impossible to see:
-`stamp = to_zone(now(), "UTC")` is **wrong** — it returns local time unchanged.
-`to_zone` reads its input as *already UTC* and renders it in the target zone,
-so handing it a local value gives that value straight back: a no-op that reads
-like a conversion and is wrong by your offset. Use `now("UTC")`.
+**Every instant is UTC** *(since 2026-11-10)*. A gBASIC datetime carries no
+zone, so the language fixes one: a datetime that stands for a moment is in
+UTC. `now()`, `from_epoch(n)`, `file_mtime(f)` and a directory entry's
+`modified` all answer UTC; `epoch(dt)`, `number(dt)` and `set_mtime(f, dt)`
+read their datetime as UTC; a text with an offset (`"…T07:52:00-05:00"`) is
+converted to UTC on the way in; and the `pg` module sends a datetime
+parameter with `+00`, so a `timestamptz` column stores the same moment.
+Store UTC, and convert at the edge that shows a person a time:
+`to_zone(dt, "Europe/Berlin")`, `to_zone(dt, "local")`, or
+`dt + zone_offset(dt)`. Civil values with no moment in them — a due date, a
+holiday, "14:00 every Thursday in Chicago" — stay zoneless and are never
+converted (docs/datetime_design.md §9).
 
-The same asymmetry bites the other way. `number(dt)` and `epoch(dt)` read a
-datetime as **local**, so `number(from_zone(now(), zone))` — the documented
-route to UTC — is wrong by the offset too, because a UTC civil value is being
-read as local. State the zone: `epoch(dt, zone)`.
+*Before 2026-11-10* every one of those was the system's LOCAL time, while a
+text with an offset was converted to UTC. A program holding both was wrong by
+the machine's offset with nothing to show it, and a test run in one zone could
+not see it. `tests/run_utc_clock.sh` runs under five.
 
 **ISO 8601 INPUT** *(since 2026-10-03)*. A `datetime` reads the `T` separator
 and a zone designator, so a timestamp off a web API parses as it stands:
@@ -6878,14 +7330,14 @@ because "could not parse" alone cannot tell you whether the data is wrong or
 your list is short.
 
 **`epoch()`** returns the current instant as Unix seconds. **`epoch(dt)`**
-places a civil datetime on the timeline by reading it as **local**;
-**`epoch(dt, zone)`** reads it as civil in that zone, which is the only correct
-way to get an instant from a value that is not local:
+places a datetime on the timeline by reading it as **UTC** *(since 2026-11-10;
+it read local before)*; **`epoch(dt, zone)`** reads it as civil time in that
+zone, for a value that came from somewhere in local time:
 
 ```basic
-utc   = now("UTC")
-stamp = epoch(utc, "UTC")           ' == epoch(), the real instant
-wrong = number(utc)                 ' off by your UTC offset
+stamp = epoch(now())                ' == epoch(), the real instant
+wall  = now("local")                ' this machine's clock
+same  = epoch(wall, "local")        ' == epoch() too
 ```
 
 DST gaps and repeats resolve by the same policy `from_zone` uses, so both doors
@@ -6895,7 +7347,10 @@ give the same answer.
 function, loop or block — `stop` that also names a status. The code must be a
 whole number 0–255; a wider value is **refused** rather than truncated, because
 the kernel keeps only the low byte and `exit(256)` would silently report
-success from a program that meant to fail.
+success from a program that meant to fail. It ends the program **from any
+depth**: before 0.11.0, a bare `exit(70)` in a function two calls deep let that
+function's next statements run, and its caller's, the status still 70 (book
+gap G63), and a statement run that way could print a stray `nothing` (G48).
 
 **Datetime fields.** Components come out as *numbers* via dot access — the
 lenses truncate, the fields extract, and no global names are spent on it:
@@ -6949,7 +7404,11 @@ two are never blurred: equality canonicalises within each family
 (`1 week = 7 days`, `1 year = 12 months`, but `1 month = 30 days` is
 **false**); ordering is defined only between exact durations — comparing a
 month-bearing duration with `<`/`>` raises, as does scaling its months by a
-non-integer. Refusals, not guesses: a month has no fixed length.
+non-integer. Refusals, not guesses: a month has no fixed length. A duration
+holds whole seconds, so a scaling that lands between two is refused as well:
+`(1 second) * 2.5` raises, and `(1 second) * round(n)` is the way round it.
+`(1 hour) / 3` is 20 minutes. `-d` negates each field, so `-(90 minutes)` is
+`-90 minutes`, equal to `0 seconds - d`.
 
 **Timezone edges** — `to_zone(dt, zone)`, `from_zone(dt, zone)`,
 `zone_offset(dt, zone)`, `zone_offset(dt)`, `zone_resolve(dt, zone)`, with IANA names
@@ -6961,12 +7420,12 @@ the earlier instant; the spring-forward gap → shifted forward);
 `zone_resolve` returns `{kind, utc, earlier, later}` with `kind` one of
 `unique`/`ambiguous`/`nonexistent` so callers can choose their own policy.
 
-`zone_offset(dt)` with no zone answers the **system's** offset for that
-wall-clock time, as a duration. The two-argument form asks "what if this were
-in that zone"; naming the local zone is the one thing a caller cannot do for
-itself, and without this a program can read the wall clock and has no way to
-say what it is offset from — an RFC 5322 `Date`, an ISO 8601 offset and a
-zone-stamped log line are all unwritable.
+`zone_offset(dt)` with no zone answers the **system's** offset at the instant
+`dt` (UTC), as a duration, so `dt + zone_offset(dt)` is this machine's wall
+clock then. *(Before 2026-11-10 it read `dt` as local wall-clock time.)* The
+two-argument form asks "what if this civil time were in that zone". Any of
+these builtins takes `"local"` as the zone: the system's own, which is the one
+zone a program cannot otherwise name.
 Unknown zones raise (a typo must not become quietly-UTC arithmetic), and
 all-day values raise (`… an all-day value has no instant`). Worked example:
 recipe 11 of `docs/datetime_cookbook.md`.
@@ -7450,7 +7909,16 @@ count({})                      ' 0
 
 **Conversion function differences:**
 - `string(value)` - canonical string conversion for any value
-- `encode(value)` - gBASIC's **JSON-like dialect** for structured data (see below)
+- `encode(value)` - gBASIC's **JSON-like dialect** for structured data (see below).
+  **It is not JSON whenever a value is `nothing` or `unknown`**: it writes
+  them as those bare words, which no JSON parser accepts. For anything another
+  program reads, use `json_encode`, which writes `null` and refuses what JSON
+  cannot hold.
+- `json_decode(text)` (*since 0.11.0*) - **RFC 8259 and nothing else**, nested:
+  `null` is `nothing`, and gBASIC's own notation (`{kind: "repair"}`,
+  `nothing`, `unknown`, `inf`), a key written twice, text after the value and a
+  NUL are refused, naming the byte. The reader for untrusted text that must be
+  JSON, such as a model's reply; `decode` reads the dialect as well.
 - `decode(text)` - parses JSON *and* the dialect back into values; **raises** on
   malformed input. An integer that fits 64 bits comes back **exact**
   *(0.8.1)*, so `decode(encode(x))` is `x`; before that `encode` wrote every
@@ -7556,6 +8024,27 @@ The **wire** parser is unaffected and stays strict: a JSON request or response
 body cannot carry `inf`, `nan`, `nothing` or `unknown`, because RFC 8259 has no
 syntax for them. `json_encode` refuses non-finite values for the same reason,
 and `json_encodable` answers `false` for them.
+
+**`source_comments(text)` — the comments the parser read.** *(after 0.10.0;
+Qt design §0.38 B1)* Every comment run in a source text, as
+`{ start_line, end_line, start_column, start_offset, end_offset, text, raw,
+trailing }`, inside `{ ok, comments, diagnostics }` (the shape `source_outline`
+answers). Consecutive comment-only lines at the same column are one run; a
+comment after code on its line is a run of its own with `trailing: true`.
+`text` has one `'` removed from each line, so a marker of the caller's own
+(`''`) is still there; `raw` keeps every quote. Lines are 1-based and columns
+are bytes, as every diagnostic's are (a byte-order mark is not counted).
+
+The text is **parsed**, with the lexer's own comment reader recording, so a `'`
+the parser reads as something else -- inside a string, inside an `sql` body --
+is not a comment. A text that does not parse answers `ok: false`, the
+diagnostics, and the comments read before the error.
+
+```basic
+r = source_comments("' Rates\n' are read here\nx = \"it's\"  ' after code\n")
+print r.comments[0].text        ' " Rates\n are read here"
+print r.comments[1].trailing    ' true
+```
 
 **`try_decode(text)` — decode that reports failure as a value.** `decode` raises
 on malformed input. That raise *is* catchable — see **Errors** — but a raise
@@ -8137,7 +8626,7 @@ Lua 5.3's rather than an invention.
 ```basic
 print 9007199254740992 + 1                      ' 9007199254740993
 print 9007199254740993 = 9007199254740992.0     ' false
-print 0.1 + 0.2                                 ' 0.30000000000000004, unchanged
+print 0.1 + 0.2                                 ' 0.3, an exact decimal (below)
 print 6 / 3                                     ' 2, inexact
 ```
 
@@ -8152,7 +8641,7 @@ arithmetic.
 value fits a 64-bit integer; *(since 0.7.1)* **`number("…")` and `{number}`
 on decimal integer text** that fits one; and *(since 0.8.1)* the **counting
 builtins** — `len`, `count`, `byte_count`, a found index from `find`, and
-`epoch` — whose answers are integers by nature, plus **`decode`, `try_decode`
+`epoch`, `file_size`, and an error's or warning's `code`, `line` and `column` (and a trace frame's) — whose answers are integers by nature, plus **`decode`, `try_decode`
 and a JSON HTTP body**, so `decode(encode(x))` is `x`. That round trip did not
 hold before 0.8.1: `encode` wrote all the digits and `decode` read back a double,
 so a value could be written to a file and could not be read from it.
@@ -8160,13 +8649,16 @@ so a value could be written to a file and could not be read from it.
 **How it travels, and the rule is one sentence** *(completed in 0.8.1)*: a
 function that **picks** a value preserves its exactness, and one that
 **calculates** is exact when both operands are exact and the answer is an integer
-the runtime holds. An inexact operand never yields an exact answer.
+the runtime holds. An inexact operand yields an exact answer only from the three
+functions whose answer is whole: `floor`, `ceil`, and `round` to no places, which
+are exact up to 2⁵³ *(2026-11-09)*.
 
 | | |
 |---|---|
 | picks | `min`, `max`, `median` of an odd count, `percentile`/`quantile` landing on a data point, and `sort`, which now **orders** two exact integers that round to the same double |
 | calculates, exactly | `+` `-` `*`, unary minus, `sum` (the fold of `+`), `pow` with a non-negative exponent, `mod` |
 | the identity on an integer | `abs`, `floor`, `ceil`, `round`, `sign` |
+| whole, so exact from any number | `floor`, `ceil`, `round` to no places (to 2⁵³) |
 | never exact | `/`, `mean`, an even `median`, an interpolated `percentile` — all of them divide — and the roots, logarithms and transcendentals |
 
 Text is judged the way a literal is, with one difference worth knowing: only
@@ -8176,7 +8668,7 @@ reaching `number()` relies on a C library quirk that nothing here documents.
 
 **What is inexact, each by decision rather than omission:**
 
-- a literal with a decimal point, and **a literal in exponent notation** — `1e16`
+- **a literal in exponent notation** — `1e16`
   is integral and exactly representable, and the notation still says
   *approximately this magnitude*; `number("10000000000000000")` asks for the
   integer. The same reading applies to *text*, so `number("1e16")` is inexact
@@ -8217,6 +8709,65 @@ Memory cost is zero and `tests/run_exact.sh` asserts it: the numeric member is 2
 bytes and `DateTime` in the same union is 32, so `sizeof(Value)` does not move —
 which matters because a `Value` is every array element and every record field.
 
+#### Exact decimals
+
+*(Unreleased; `docs/exact_decimal_design.md`)* A number **written or read with
+a decimal point** is exact too: its digits, held as an integer and a count of
+places (up to 18), where it used to be the nearest double.
+
+```basic
+print 6331.475 - 2182.855                       ' 4148.62 (was 4148.620000000001)
+print 0.1 + 0.2 = 0.3                           ' true (was false)
+print number("412.34") - number("412.3350")     ' 0.005
+print sqrt(0.01) = 0.1                          ' true, still: see comparison
+```
+
+- **Where it comes from:** a literal with a point and no exponent (`0.1`,
+  `6331.475`, `2.0`), and decimal text through `number("…")`, `{number}`, a
+  typed `x:number` lock, and `decode`/`json_decode`. That text door is where a
+  `pg` or `odbc` `numeric` arrives, so `number(row.qty)` is exact now.
+- **`+`, `-` and `*` stay exact**, and so do `sum`, `abs`, `round` (in the
+  digits, half away from zero: `round(2.675, 2)` is `2.68`, where the double
+  rounded down), `floor`, `ceil`, `pow` to a whole power (`pow(1.05, 3)` is
+  `1.157625`), the picks (`min`, `max`, `sort`) and a `for` counter with a
+  decimal step: `for x = 0 to 1 step 0.1` ends on exactly `1`.
+- **Division and functions are the double**, as `6 / 3` is for integers.
+- **A decimal never becomes the exact integer by itself.** `2.0` and `1.5 * 2`
+  are exact and print as `2` and `3`, and they equal `2` and `3`, but every
+  path that asks for an *integer* — integer overflow, a typed integer column —
+  treats them as it treated `2.0` before. That keeps `x * 1.0` from changing
+  what those paths answer. To ask for a double, write an exponent: `x * 1e0`.
+- **Comparison:** exact against exact (integer or decimal) is mathematical, so
+  `0.1 < 0.10000000000000001` is `true`. **Exact against inexact compares as
+  doubles**, so `sqrt(0.01) = 0.1` stays `true`: the root is the nearest double
+  to 0.1, and comparing it exactly against an exact 0.1 would change every
+  computed-against-literal test a program makes.
+- **When the digits do not fit** (past 18 places, or past an `int64` of
+  digits) the answer is the double it always was. That is **silent** when only
+  far fractional digits go — a compounding product needs more places with
+  every step — and warns **2112** when the value is at 2^53 or past it, where
+  whole digits can go too, as integer overflow does.
+- **Printing** shows the digits (`4148.62`); a decimal and the double it used to
+  be print alike up to 15 significant digits.
+- **Sent to a database as its digits** *(increment 3)*: a decimal or an exact
+  integer **parameter** reaches `pg` as its own digits (it was `%.17g` of the
+  double, so `0.1` arrived in a `numeric` as `0.10000000000000001`), `odbc`
+  declares a decimal `SQL_DECIMAL` with its scale as it does money, and
+  `sqlite` binds an exact integer as an integer (it bound a double, so 2^53 + 1
+  was stored as 2^53). A decimal into SQLite is a REAL, as SQLite has no
+  decimal; pass `string(x)` to a TEXT column to keep the digits. Reading is
+  unchanged: `numeric` and `DECIMAL` still arrive as exact text, and
+  `number(row.qty)` is exact.
+- **Saved and stored as its digits** *(increment 2)*: `serialize` and the actor
+  wire carry a decimal exactly (exactness byte 2, its scale and mantissa), a
+  G-SQL `number` column holds one, SQL literals with a point are decimals, and
+  `dump` writes a decimal as its digits and a double with an exponent
+  (`1e-1`), so a restore gives back each as it was. An integer column still
+  refuses `2.0`. A G-SQL **index** keys a decimal by its nearest double, so
+  two decimals that differ only past 17 digits share a key: answers through
+  the index stay right, but a UNIQUE index refuses the pair (DOGFOOD live row
+  9). `-0.0` stays a double so its sign survives.
+
 **Number literals.** Decimal (`42`, `3.14`), hexadecimal (`0xFF`), and
 **scientific notation** *(since 0.2.3)* — `1e20`, `6.02e23`, `1.5e-3`, `2E10`,
 with an optional sign on the exponent. At least one digit must follow the `e`,
@@ -8241,7 +8792,10 @@ units that exist. `number("1e20")` still builds a value from text.
 - `round(number [, places])` — round to a number of decimal places. `places`
   is optional and defaults to 0, so `round(3.7)` is `4`. Rounding an exact
   integer to any number of decimal places is that integer *(0.8.1)*. Halves round away from
-  zero: `round(2.5)` is `3` and `round(-2.5)` is `-3`.
+  zero: `round(2.5)` is `3` and `round(-2.5)` is `-3`. To no places the answer is
+  an exact integer, as `floor`'s and `ceil`'s always are, up to 2⁵³, beyond which a
+  double is not every integer *(2026-11-09)*. So `round(x)` is the way to make a
+  whole inexact number exact, as a G-SQL `integer` column requires.
 - `compare(a, operator, b)` — compare two values using an operator named as a
   string (the general form behind the comparison operators and modifiers).
 
@@ -8621,10 +9175,12 @@ and the other two were taken for the array verb and refused.
   end-of-file.
 - `lock(f)` / `unlock(f)` — advisory locks (see `with lock`). **`lock` waits.**
   If another process holds the lock the call blocks until that process releases
-  it or dies — measured at 2.91 seconds against a holder that held for three —
-  and there is **no non-blocking form**, so a program cannot ask whether a file
-  is in use without committing to wait for the answer. A lock held by something
-  that never finishes is therefore a hang with no diagnostic. Reading is
+  it or dies — measured at 2.91 seconds against a holder that held for three.
+  **`lock(f, { wait: false })` never waits** (*since 0.11.0*): it answers `true`
+  if it took the lock and `false` if another process holds it, so a scheduler
+  steps around a running job rather than queueing behind it, and the lock still
+  goes when its holder dies. Without it, a lock held by something that never
+  finishes is a hang with no diagnostic. Reading is
   unaffected: the lock is advisory, so `read` ignores it. Taking a lock
   installs a cleanup handler for `SIGINT`, `SIGTERM` and `SIGHUP`, and
   **that does not change how the process dies**: after releasing, it re-raises
@@ -8636,7 +9192,20 @@ and the other two were taken for the array verb and refused.
 
 **What a file says about itself, and changing it** *(since 0.11.0)*:
 
-- `permissions(p)` -> `{ mode, readable, writable, executable }`. **Two
+- `disk_space(p)` -> `{ total, free, available }`, the filesystem holding `p`
+  (a file or a folder, as a path, `{file}` or `{dir}`), in exact integer bytes.
+  **`available` is what an unprivileged writer may still use, and is the one
+  that fills first for a service account.** `free` also counts the space a
+  filesystem keeps back for root (ext4 keeps 5%), so on such a filesystem
+  `available` is below `free`. A path that is not there raises, naming it.
+  POSIX reads `statvfs(3)`; Windows `GetDiskFreeSpaceExW`, whose `available`
+  is what this user's quota leaves. The suite is `tests/run_disk_space.sh`,
+  held against Python's `os.statvfs` and `df`.
+- `permissions(p)` -> `{ mode, readable, writable, executable, owner, owner_name,
+  group, group_name }`. `owner` and `group` (*since 0.11.0*) are the numeric ids
+  and their names, `unknown` where the platform does not say (Windows) or an id
+  has no name here; set beside `process.self().uid`, they say whose `0600` it
+  is. **Two
   different questions, both answered, because conflating them is the classic
   bug.** `mode` is what the **file** says — the permission bits as text,
   `"0640"`. `readable` / `writable` / `executable` are what **this process** can
@@ -8877,14 +9446,14 @@ Listing a directory — two functions, and the difference matters:
 
 File metadata and atomic replacement:
 
-- `file_size(f)` — the file's size in bytes as a number, from `stat`
+- `file_size(f)` — the file's size in bytes as an exact integer, from `stat`
   (metadata only, not a read). This is the binary byte count, so it counts
   embedded NULs and is unaffected by text length; a zero-byte file returns `0`.
-  Numbers hold integers exactly up to 2⁵³ (8 PiB), well beyond any real file, so
-  there is no practical truncation. Takes a path string or a file reference. A directory has
+  A size is a count, so it is exact as `len` and `byte_count` are, and a G-SQL
+  `integer` column takes it *(2026-11-09; it was inexact)*. Takes a path string or a file reference. A directory has
   no content size and raises; a missing path raises with the OS reason.
 - `file_mtime(f)` — the file's last-modification time as a `datetime`, from
-  `stat`, in local time. **Second resolution:** gBASIC's `datetime` has no
+  `stat`, in UTC *(since 2026-11-10; local time before)*. **Second resolution:** gBASIC's `datetime` has no
   sub-second field, so any nanosecond part of the filesystem timestamp is
   dropped rather than fabricated. Takes a path string or a file reference; works for
   directories too (a directory's mtime is a real change signal). A missing path
@@ -8914,6 +9483,11 @@ File metadata and atomic replacement:
 
 Path questions about what is really there:
 
+- `runtime()` -> `{ version, build, stdlib }` (*since 0.11.0*) — which gBASIC is
+  running this: `version` and `build` are what `gbasic --version` prints, split
+  (`build` is empty for a release), and `stdlib` is where a `load` looks first.
+  So a program recording what read each file can say so without being handed
+  `--version` in an environment variable.
 - `platform()` -> `"linux"`, `"windows"`, `"macos"` or `"posix"`
   *(since 0.11.0)* — which platform this binary was **built** for. It answers
   what the build knows: there is one body per platform file and each returns its
@@ -9076,6 +9650,7 @@ other one is pure gBASIC over the core and works on any build.
 | `mcp` | libcurl |
 | `mdna` | libcurl, libxml2 |
 | `ownership` | libxml2 |
+| `pdf` | libxml2 |
 | `retrieval` | libpq |
 | `screener` | libsqlite3 |
 <!--LIBNEEDS:end-->
@@ -10140,7 +10715,17 @@ whole program without needing a call site.
   `{ concept:, offset:, length: }` (offsets are **0-based**; published format
   guides number the same positions from 1, so a layout transcribed straight out
   of one is off by one everywhere), held **once per format** rather than per
-  record, and `finio.concepts(lay)` lists its names.
+  record, and `finio.concepts(lay)` lists its names. `finio.render(lay,
+  values)` (*since 0.11.0*) writes one record from the same layout: every
+  concept given as text of exactly its field's width, a value too short or too
+  long **refused, never padded or cut**, so a payer originating its own file
+  uses the layouts reading does. `finio_nacha.addenda_layout_for(raw)` picks
+  the addenda layout by type code (05, 98 for a notification of change, 99 for
+  a return), and return and NOC transaction codes (21, 26, 31, 36, 41, 46, 51,
+  56) have a direction. A camt entry reads `debtor`, `creditor`, `remittance`
+  (the `Ustrd` lines), `referred_documents` and `account_servicer_ref`, its
+  `counterparty` is chosen by direction (the debtor on a credit), and
+  `TxDtls` content it does not interpret is a loss note.
   **A location is a value with a `kind`**, and that is a correction Phase 1
   shipped without: §4 asked for "a generic source-location abstraction" from the
   beginning, and every location `finio` could make was
@@ -10324,6 +10909,15 @@ whole program without needing a call site.
   `layout_file_control()`; `finio_nacha.record_length()` is 94. Each covers all
   94 bytes with no gap and no overlap, which `finio.coverage` asserts rather
   than the addition being trusted.
+  An addenda is read by its type code (*since 0.11.0*):
+  `finio_nacha.addenda_layout_for(raw)` answers `layout_addenda()` for 05,
+  `layout_addenda_return()` for 99 (return reason, original trace, date of
+  death, original receiving DFI, information, trace) and `layout_addenda_noc()`
+  for 98 (change code, original trace, original receiving DFI, corrected data,
+  trace), and `unknown` for any other, which is then a loss note rather than a
+  record read with another type's layout. `finio_nacha.return_codes()` lists
+  the return and notification-of-change transaction codes (21, 26, 31, 36, 41,
+  46, 51, 56), which are in `credit_codes()` or `debit_codes()` by direction.
   **One revision, named `unresolved`, and that is the honest answer.** The
   Operating Rules are revised every year; the record layout has outlived twenty
   of those revisions and a file does not say which produced it, so naming a
@@ -10772,7 +11366,13 @@ whole program without needing a call site.
   `"stamp"` (path, size and modified time, which the listing already carries, so
   it costs nothing) or `"content"` (sha256, which **loads the whole file**:
   measured at just over twice the file in resident memory, refused above
-  `max_hash:` and refused outright on a build without libcrypto). `ready:` says
+  `max_hash:` and refused outright on a build without libcrypto), or
+  `"path+content"` (*since 0.11.0*): sameness by path, with the file's sha256
+  recorded when it is taken, so `repeats` gives each repeat `same_content`,
+  `true` for the same bytes sent again and `false` for the name re-sent with
+  different bytes. That is the rule for extracts named by their period, where
+  `"content"` makes two empty days one file and `"path"` cannot tell a resend
+  from a re-extract. `ready:` says
   when a file has finished arriving — `"renamed"`, `"sentinel"` (take `x` once
   `x.done` appears) or `{ stable_for: 30 seconds }`, which is **a probability
   and not a guarantee**: measured, a file's size held still across consecutive
@@ -10831,8 +11431,9 @@ whole program without needing a call site.
   asserts that difference, implementing the rewrite in the tier as a second
   implementation. The per-file cost is still **linear in the ledger** whichever
   way it is written, because a ledger is a value and `taken` writes to a copy —
-  which is what `purge` bounds. One run at a time: `open` takes a lock, and
-  since `lock` has no non-blocking form a second run **waits**.
+  which is what `purge` bounds. One run at a time: `open` takes a lock that
+  waits, so a second run **waits** for the first (`lock(f, { wait: false })` is
+  there for a caller that would rather step around one).
 - `filetree` — a directory as a value tree, with expand/collapse state carried
   in the nodes. `filetree.visible_count(nodes)` counts currently-visible rows,
   and `filetree.dump(nodes)` renders the visible tree as deterministic,
@@ -10908,6 +11509,16 @@ whole program without needing a call site.
   the first, and `safe_name(s)` is the identifier validator — identifiers cannot
   be bound as parameters, so they are **refused rather than escaped**.
   `to_table(df, db, table, options)` creates and loads a SQLite table.
+  *After 0.10.0:* `schema(df)` gives each column `{ name, column, type, kind }`,
+  where `kind` is the gBASIC kind every value shares, in G-SQL's words (`date`,
+  `datetime`, `time`, `duration`, `money(USD)`, `money` for several currencies,
+  `boolean`, `number`, `text`; mixed or empty is `text`; `column_kind(values)`
+  decides it for one column and `value_kind(v)` for one value, `other` for a
+  value no typed column holds), and
+  `gsql_create_sql(table, df)` writes a G-SQL `CREATE TABLE` from it, with no
+  key, to read and change before running. A whole number is `number`, not
+  `integer`, because a G-SQL integer column refuses an inexact value even when
+  it is whole. `type`, the SQLite type, is unchanged.
   `to_gsql(df, db, table, options)` loads an **existing** G-SQL table, whose
   declared types and constraints are the contract, and answers `{ok, message,
   table, rows, refused, columns, sql}`: each row the table refuses is listed
@@ -11099,8 +11710,15 @@ whole program without needing a call site.
   (each with `text`, `confidence` and a box), plus `rotation`,
   `rotation_confidence`, `script`, `script_confidence` and `skew`. Options are
   `{ languages:, psm:, min_confidence: }` and an unknown one is refused by name.
-  `ocr.grid(page)` lays the page out as text; `ocr.skew_of(words)` and
-  `ocr.max_skew()` are the measure and the threshold it refuses past.
+  `ocr.grid(page [, { max_skew: }])` lays the page out as text, always with a
+  space between words (*since 0.11.0*, so two words the engine split are not
+  run back into one); `ocr.grid_lines(page)` gives the same lines as the words
+  placed on them, each with its `index` into `page.words` and its `column`, so a
+  value can be attributed to the words it is made of. `ocr.skew_of(words)` and
+  `ocr.max_skew()` are the measure and the default threshold it refuses past;
+  it also refuses a page whose skew, across the words' span, drifts more than
+  half its median line pitch, where a row starts to carry the next row's
+  figures (measured on real invoices at 2.2 degrees).
 
   **It never returns a bare string, never silently drops a low-confidence word,
   and corrects nothing.** Each is a refusal with a measurement behind it. Plain
@@ -11133,9 +11751,63 @@ whole program without needing a call site.
   and `ari_discover` infers a specification from — so this is a front door to
   machinery that already exists rather than a new pipeline.
 
+- `pdf` — **reading a PDF** (`docs/pdf_read_design.md`, *since 2026-11-09*).
+  Pure gBASIC over poppler's programs (`pdfinfo`, `pdftotext`, `pdftohtml`,
+  `pdfimages`, the poppler-utils package), which are run rather than linked:
+  poppler is GPL. `pdf.available()` says whether they are installed, and every
+  other verb raises naming the package without them.
+
+  `pdf.info(path)` is `{ ok, why, pages, title, producer, creator, encrypted,
+  sizes }`, with one `{ width, height, rotation }` per page in points.
+  `pdf.read_page(path, n [, options])` reads page `n` (from 1) as a **page**:
+  `{ ok, why, n, how, width, height, rotation, words, images, text_layer,
+  text_layer_set_aside, skew }`. Words are `ocr.read_page`'s shape (`text`,
+  `left`, `top`, `width`, `height`, `block`, `paragraph`, `line`,
+  `confidence`), so **`ocr.grid` lays out a PDF page as it lays out a scan**.
+  Words and `images` (`left`, `top`, `width`, `height`, `pixels_wide`,
+  `pixels_high`) are in points from the top-left corner. `pdf.read(path [,
+  options])` is `{ ok, why, pages }`, every page in order.
+  `pdf.text(path, n)` is the page's own text laid out as printed.
+  `pdf.image(path, n, index, dir)` writes that page's `index`-th picture
+  (from 0) into `dir` as it is stored, a JPEG staying a JPEG, and answers its
+  path. Its order is the PDF's, which may differ from `images`'.
+  `pdf.option_names()` is `["ocr", "languages"]`, and an unknown option is
+  refused by name.
+
+  **Every page says how it was read** in `how`:
+  - `text`: the PDF's own text. Its `confidence` is `unknown`, since nothing
+    measured it.
+  - `scan`: one picture the size of the page, read only when asked.
+  - `ocr`: a scan read with `{ ocr: true }`, through `ocr`, its words scaled
+    to the page's points with the engine's confidence and `skew`.
+  - `blank`.
+
+  **OCR is never automatic.** A producer's text and an engine's guess are
+  different evidence, and OCR costs seconds a page.
+
+  **The awkward pages:**
+  - A **searchable scan** (a page picture with a text layer over it) answers
+    the layer's words with `text_layer: true`. Read with `ocr: true`, it has
+    `text_layer_set_aside: true`, the layer's origin being unknown.
+  - **Small pictures** on a text page (a logo, a stamp) are listed and never
+    read; take one out with `pdf.image` and give it to `ocr`.
+  - **Two page-sized pictures**, or small pictures with no text, are refused
+    as a value (`ok: false`, `why`).
+  - **A damaged file** is `ok: false` with poppler's own words, such as
+    *"Couldn't find trailer dictionary"*, so a batch meets it as an ordinary
+    case. A page number out of range raises.
+
+  Not measured, so not promised: an encrypted file, a page rotated by
+  `/Rotate`, and a font with no Unicode map, whose wrong text poppler gives
+  and this passes on.
+
 - `ari_advisor` — **Phase 4: the optional LLM advisor** (design §11). A
   *separate* library, because `llm` needs libcurl and a program that discovers a
-  specification should not carry an HTTP client it never calls.
+  specification should not carry an HTTP client it never calls. Its prompt
+  names no domain of its own (*since 0.11.0*, `prompt_version: ari-advisor-2`;
+  it called every report a banking report), and the option `domain:` is a
+  sentence saying what the report is. `adopt` rewrites the field's
+  declaration in `proposal.spec` as well as in `fields`.
 
   `evidence(proposal [, options])` builds the bounded package that leaves the
   machine. It is built from the **proposal**, never the report, so a value the

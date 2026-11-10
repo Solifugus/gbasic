@@ -223,6 +223,112 @@ static void blob_space(const char *base, GsqlIo *io) {
     E->close(db);
 }
 
+/* A dataset swapped in again and again (gdash's GDASH-16 B3): a staging tree
+ * is loaded and replaces the live one, each round. Each flush then holds
+ * several rounds -- the live one and the ones it replaced -- so no file is
+ * all dead and sweep_dead cannot drop it, and the space came back only when
+ * the level-0 trigger happened to compact. With the trigger high enough never
+ * to fire, measured 2026-11-08: the sorted files held 10.27x one round's
+ * rows without dead_start and 2.32x with it, under SWAP_SPACE_BOUND. A
+ * reader held across a swap still reads the rows it began with. lsm only. */
+#define SWAP_SPACE_BOUND 3.0
+typedef struct { GsqlIo *io; const char *dir; uint64_t bytes; unsigned files; } SstSum;
+static int sst_sum(void *ctx, const char *name) {
+    SstSum *b = ctx;
+    size_t n = strlen(name);
+    if (n < 4 || strcmp(name + n - 4, ".sst")) return 0;
+    char p[900];
+    snprintf(p, sizeof p, "%s/%s", b->dir, name);
+    GsqlFile *f;
+    uint64_t sz = 0;
+    if (gsql_io_open(b->io, p, GSQL_IO_READ_ONLY, &f) == 0) {
+        gsql_io_size(f, &sz);
+        gsql_io_close(f);
+    }
+    b->bytes += sz;
+    b->files++;
+    return 0;
+}
+
+static void swap_space(const char *base, GsqlIo *io) {
+    if (strcmp(E->name, "lsm")) return;
+    char path[600];
+    snprintf(path, sizeof path, "%s.swapspace", base);
+    /* a memtable of about two and a half rounds, and a level-0 trigger no
+       twelve rounds reach, so only dead_start can give the space back */
+    GsOptions o = {1, 512, 0, io, 400000, 64, 0, 0, NULL};
+    GsStore *db;
+    int rc = E->open(path, &o, &db);
+    CHECK(rc == GS_OK, "opening the swap-space store answered %s", gs_status_name(rc));
+    if (rc) return;
+    enum { ROWS = 1000, VAL = 100, ROUNDS = 12 };
+    unsigned char v[VAL];
+    GsTxn *held = NULL;
+    for (unsigned round = 1; round <= ROUNDS && rc == GS_OK; round++) {
+        GsTxn *w;
+        E->begin_write(db, &w);
+        E->tree_create(w, gss("stage"));
+        for (unsigned k = 0; k < ROWS; k++) {
+            char kb[16];
+            int kn = snprintf(kb, sizeof kb, "r%05u", k);
+            memset(v, 'a' + (int)(round % 26), sizeof v);
+            snprintf((char *)v, 16, "%04u-%05u", round, k);
+            E->put(w, gss("stage"), gsb(kb, (size_t)kn), gsb(v, sizeof v), 0);
+        }
+        rc = E->commit(w, 1, NULL);
+        if (rc) break;
+        E->begin_write(db, &w);
+        if (round == 1) E->tree_create(w, gss("live"));
+        E->tree_replace(w, gss("live"), gss("stage"));
+        rc = E->commit(w, 1, NULL);
+        if (round == 3 && rc == GS_OK) E->begin_read(db, &held);
+        if (round == 6 && held) {
+            unsigned wrong = 0;
+            for (unsigned k = 0; k < ROWS; k++) {
+                char key[16], want[16];
+                int kn = snprintf(key, sizeof key, "r%05u", k);
+                snprintf(want, sizeof want, "%04u-%05u", 3u, k);
+                GsBytes got;
+                if (E->get(held, gss("live"), gsb(key, (size_t)kn), &got) != GS_OK || got.n != VAL || memcmp(got.p, want, 10)) wrong++;
+            }
+            CHECK(wrong == 0, "a reader held from round 3 read %u of %u rows wrong at round 6", wrong, (unsigned)ROWS);
+            E->abort(held);
+            held = NULL;
+        }
+    }
+    CHECK(rc == GS_OK, "a swap answered %s", gs_status_name(rc));
+    /* a few small commits, the way an application goes on after a refresh,
+       which is what gives a compaction its budget */
+    for (unsigned i = 0; i < 50 && rc == GS_OK; i++) {
+        GsTxn *w;
+        E->begin_write(db, &w);
+        if (i == 0) E->tree_create(w, gss("note"));
+        E->put(w, gss("note"), gss("n"), gsb(&i, sizeof i), 0);
+        rc = E->commit(w, 1, NULL);
+    }
+    CHECK(E->sync(db, NULL) == GS_OK, "sync after the swaps");
+    unsigned wrong = 0;
+    GsTxn *r;
+    E->begin_read(db, &r);
+    for (unsigned k = 0; k < ROWS; k++) {
+        char key[16], want[16];
+        int kn = snprintf(key, sizeof key, "r%05u", k);
+        snprintf(want, sizeof want, "%04u-%05u", (unsigned)ROUNDS, k);
+        GsBytes got;
+        if (E->get(r, gss("live"), gsb(key, (size_t)kn), &got) != GS_OK || got.n != VAL || memcmp(got.p, want, 10)) wrong++;
+    }
+    E->abort(r);
+    CHECK(wrong == 0, "after %u swaps %u of %u live rows read wrong", (unsigned)ROUNDS, wrong, (unsigned)ROWS);
+    SstSum ss = {io, path, 0, 0};
+    CHECK(gsql_io_list(io, path, sst_sum, &ss) == 0, "listing the swap-space store");
+    double amp = (double)ss.bytes / (ROWS * (VAL + 6));
+    if (getenv("GS_SHOW_SPACE")) fprintf(stderr, "swap_space: %u sorted files, %llu bytes, %.2fx one round\n", ss.files, (unsigned long long)ss.bytes, amp);
+    CHECK(amp <= SWAP_SPACE_BOUND, "after %u swaps the sorted files are %.2fx one round's rows, over %.2f", (unsigned)ROUNDS, amp,
+          SWAP_SPACE_BOUND);
+    CHECK(E->check(db, print_report, NULL) == GS_OK, "check after the swaps");
+    E->close(db);
+}
+
 /* More sorted files than the process may hold open, every one of them read.
  * 2.C kept a file open from its first read until it was deleted, so a store
  * of N files needed N descriptors: about 16,000 at 1 TB against a default
@@ -848,6 +954,97 @@ static void flushed_handoff(const char *base, GsqlIo *io) {
         rc = E->open(path, &o, &db);
         CHECK(rc == GS_OK && count_keys(db) == total + 1 && has_key(db, "after"), "%s: the commit after the handoff survives",
               flushed ? "flushed" : "plain");
+        if (rc == GS_OK) E->close(db);
+    }
+}
+
+/* What a closed store leaves of its logs (gdash's GDASH-16 B3, second half).
+ * A close kept the log in use at its high-water size and a spare beside it:
+ * after 3 MB of commits into a 4 MB memtable, measured 2026-11-08, 4.3 MB in two
+ * logs after a flush and close against 0 here. Closed unflushed, the log is
+ * cut only past its last record, and every commit replays; flushed, the logs
+ * are nothing, a tree dropped just before the flush stays dropped, and power
+ * losses after the close lose nothing. lsm only. */
+#define CLOSED_LOG_BOUND (64u << 10)
+typedef struct { GsqlIo *io; const char *dir; uint64_t bytes; unsigned files; } LogSum;
+static int log_sum(void *ctx, const char *name) {
+    LogSum *b = ctx;
+    if (!strstr(name, ".log.")) return 0;
+    char p[900];
+    snprintf(p, sizeof p, "%s/%s", b->dir, name);
+    GsqlFile *f;
+    uint64_t sz = 0;
+    if (gsql_io_open(b->io, p, GSQL_IO_READ_ONLY, &f) == 0) {
+        gsql_io_size(f, &sz);
+        gsql_io_close(f);
+    }
+    b->bytes += sz;
+    b->files++;
+    return 0;
+}
+
+static void closed_logs(const char *base, GsqlIo *io) {
+    if (strcmp(E->name, "lsm") || !E->flush) return;
+    enum { COMMITS = 30, PER = 100, VAL = 1000 };
+    static unsigned char v[VAL];
+    for (int flushed = 0; flushed < 2; flushed++) {
+        char path[600];
+        snprintf(path, sizeof path, "%s.closedlogs%d", base, flushed);
+        GsOptions o = {1, 512, 0, io, 4u << 20, 0, 0, 0, NULL};
+        GsStore *db;
+        int rc = E->open(path, &o, &db);
+        CHECK(rc == GS_OK, "opening the closed-logs store answered %s", gs_status_name(rc));
+        if (rc) return;
+        for (unsigned c = 0; c < COMMITS && rc == GS_OK; c++) {
+            GsTxn *w;
+            E->begin_write(db, &w);
+            if (c == 0) { E->tree_create(w, gss("t")); E->tree_create(w, gss("gone")); }
+            for (unsigned i = 0; i < PER; i++) {
+                char kb[16];
+                int kn = snprintf(kb, sizeof kb, "k%05u", c * PER + i);
+                memset(v, 'a' + (int)(c % 26), sizeof v);
+                E->put(w, gss(c % 2 ? "t" : "gone"), gsb(kb, (size_t)kn), gsb(v, sizeof v), 0);
+            }
+            rc = E->commit(w, c % 3 == 0, NULL);
+        }
+        CHECK(rc == GS_OK, "the closed-logs commits answered %s", gs_status_name(rc));
+        if (flushed) {
+            GsTxn *w;
+            E->begin_write(db, &w);
+            E->tree_drop(w, gss("gone"));
+            rc = E->commit(w, 0, NULL);
+            CHECK(rc == GS_OK, "dropping a tree answered %s", gs_status_name(rc));
+            CHECK(E->flush(db) == GS_OK, "flush before the close");
+        }
+        CHECK(E->close(db) == GS_OK, "close the closed-logs store");
+        LogSum ls = {io, path, 0, 0};
+        CHECK(gsql_io_list(io, path, log_sum, &ls) == 0, "listing the closed-logs store");
+        if (getenv("GS_SHOW_SPACE")) fprintf(stderr, "closed_logs %s: %u logs, %llu bytes\n", flushed ? "flushed" : "plain", ls.files, (unsigned long long)ls.bytes);
+        if (flushed) CHECK(ls.bytes <= CLOSED_LOG_BOUND, "flushed and closed, the logs take %llu bytes, over %u", (unsigned long long)ls.bytes, CLOSED_LOG_BOUND);
+        else CHECK(ls.bytes >= (uint64_t)COMMITS * PER * VAL / 2, "closed unflushed, the logs take %llu bytes, under the commits' %u",
+                   (unsigned long long)ls.bytes, COMMITS * PER * VAL / 2);
+        int want = COMMITS / 2 * PER;
+        if (!real_fs && flushed) power_check(io, path, want, "after a flushed close");
+        o.create = 0;
+        rc = E->open(path, &o, &db);
+        CHECK(rc == GS_OK, "reopening the closed-logs store answered %s", gs_status_name(rc));
+        if (rc) return;
+        GsStats st;
+        E->stats(db, &st);
+        if (!flushed) CHECK(st.replayed >= COMMITS, "closed unflushed, the open replayed %llu records, want %u", (unsigned long long)st.replayed, (unsigned)COMMITS);
+        CHECK(count_keys(db) == want, "%s: %d of %d rows after the reopen", flushed ? "flushed" : "plain", count_keys(db), want);
+        GsTxn *r;
+        GsBytes got;
+        E->begin_read(db, &r);
+        rc = E->get(r, gss("gone"), gss("k00000"), &got);
+        E->abort(r);
+        if (flushed) CHECK(rc != GS_OK, "a tree dropped before the flushed close came back (%s)", gs_status_name(rc));
+        else CHECK(rc == GS_OK, "an undropped tree's row reads %s", gs_status_name(rc));
+        CHECK(put_kv(db, "after", "x", 0, 1) == GS_OK, "a commit after the closed-logs reopen");
+        CHECK(E->check(db, print_report, NULL) == GS_OK, "check after the closed-logs reopen");
+        E->close(db);
+        rc = E->open(path, &o, &db);
+        CHECK(rc == GS_OK && count_keys(db) == want + 1, "%s: the commit after the reopen survives", flushed ? "flushed" : "plain");
         if (rc == GS_OK) E->close(db);
     }
 }
@@ -1988,10 +2185,12 @@ int main(int argc, char **argv) {
     directory_rules(path, io);
     many_files(path, io, real);
     blob_space(path, io);
+    swap_space(path, io);
     frozen_reads(path, io);
     lost_twin(path, io);
     real_fs = real;
     flushed_handoff(path, io);
+    closed_logs(path, io);
     crc_agreement();
     empty_footprint(path, io);
     sorted_load(path, io);

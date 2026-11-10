@@ -157,7 +157,8 @@ for label in \
     'bigint beyond 2\^53 survives exactly' \
     'and converting it is exact now' \
     'an exact decimal survives to the last digit' \
-    'a fractional decimal still cannot convert' \
+    'and converting it is exact now too' \
+    'a decimal past an int64 of digits still cannot convert' \
     'and is byte-identical, not merely the right length' \
     'money keeps its cents through a bound parameter' \
     'pasted, the payload matches every row' \
@@ -176,6 +177,38 @@ do
         fail "asserted: $label"
     fi
 done
+
+printf 'TIER bytes and fractions (book gaps G49, G47)\n'
+# A binary column comes back as its BYTES, where the whole query was refused
+# (a rowversion made `select *` fail); and a timestamp's fraction, cut to the
+# whole second, is warned (2123), where it was cut in silence. The control is a
+# timestamp with no fraction, which must say nothing.
+cat >"$work/bytes.bas" <<'BYTES'
+load odbc
+db = odbc.connect(env("GBASIC_ODBC_CONNECTION"))
+odbc.exec(db, "create table g49 (b blob, ts timestamp, whole timestamp)")
+odbc.exec(db, "insert into g49 values (x'00ff10', '2027-03-15 10:00:00.75', '2027-03-15 10:00:01')")
+r = odbc.query(db, "select b, ts from g49")
+print string(byte_count(r[0].b)) + " " + string(byte_at(r[0].b, 0)) + " " + string(byte_at(r[0].b, 1)) + " " + string(byte_at(r[0].b, 2))
+print r[0].ts
+w = odbc.query(db, "select whole from g49")
+odbc.exec(db, "drop table g49")
+odbc.close(db)
+BYTES
+if [[ "$GBASIC_ODBC_CONNECTION" == *"Driver=SQLite3"* ]]; then
+    ./gbasic "$work/bytes.bas" >"$work/bytes.out" 2>"$work/bytes.err"; rc=$?
+    if [ "$rc" = 0 ] && [ "$(sed -n 1p "$work/bytes.out")" = "3 0 255 16" ] &&
+       [ "$(sed -n 2p "$work/bytes.out")" = "2027-03-15 10:00:00" ] &&
+       [ "$(command grep -c '\[2123\]' "$work/bytes.err")" = 1 ] &&
+       command grep -q 'column `ts` has fractional seconds' "$work/bytes.err"; then
+        pass "a blob is its bytes (a NUL among them); a cut fraction is warned once, a whole second not at all"
+    else
+        cat "$work/bytes.out" "$work/bytes.err" | sed 's/^/       /'
+        fail "binary bytes and fraction warning (rc $rc)"
+    fi
+else
+    printf 'SKIP bytes and fractions (the fixture is written for the SQLite3 ODBC driver)\n'
+fi
 
 printf 'TIER refusals (live connection)\n'
 run_fixture tests/odbc_refusal_test.bas 13 'odbc_refusal_test'
@@ -485,6 +518,37 @@ else
         head -12 "$work/p2"
         fail "the dirty probe failed for some reason other than the defect it plants"
     fi
+fi
+
+printf 'TIER max_rows (gdash GDASH-16 B2)\n'
+# A cap that RAISES past itself, with the details a program decides on, and
+# the memory it saves measured by the kernel (process.start's peak_memory):
+# a capped million-row query against the same query uncapped. Measured on the
+# SQLite3 ODBC driver 111 MB against 582: what is left is the DRIVER, which
+# buffers its whole result, and no fetch-side cap reaches below it.
+if [[ "$GBASIC_ODBC_CONNECTION" == *"Driver=SQLite3"* ]]; then
+    mr="$(timeout 120 ./gbasic tests/max_rows/max_rows_test.bas odbc "$GBASIC_ODBC_CONNECTION" 2>&1)"
+    if printf '%s\n' "$mr" | grep -q '^MISMATCH' || [ "$(printf '%s\n' "$mr" | grep -c '^ok ')" -lt 9 ]; then
+        printf '%s\n' "$mr" | sed 's/^/       /'
+        fail "max_rows semantics"
+    else
+        pass "max_rows: the cap answered, one past it raised MAX_ROWS, options refused by name"
+    fi
+    q='with recursive c(x) as (select 1 union all select x + 1 from c where x < 1000000) select x, printf('"'"'%050d'"'"', x) as pad from c'
+    printf 'load odbc\ndb = odbc.connect(env("GBASIC_ODBC_CONNECTION"))\nr = try odbc.query(db, "%s", [], { max_rows: 1000 })\nprint error.details.code\n' "$q" > "$work/mrc.bas"
+    printf 'load odbc\ndb = odbc.connect(env("GBASIC_ODBC_CONNECTION"))\nr = odbc.query(db, "%s")\nprint len(r)\n' "$q" > "$work/mru.bas"
+    printf 'for each f in ["mrc", "mru"]\n    h = process.start({ command: "./gbasic", args: ["%s/" + f + ".bas"], limits: { memory: 8000000000 } })\n    s = process.wait(h)\n    print f + " " + trim(process.read(h).stdout) + " " + string(s.peak_memory)\nend for\n' "$work" > "$work/mrm.bas"
+    mm="$(timeout 120 ./gbasic "$work/mrm.bas" 2>&1)"
+    capped="$(printf '%s\n' "$mm" | sed -n 's/^mrc MAX_ROWS //p')"
+    whole="$(printf '%s\n' "$mm" | sed -n 's/^mru 1000000 //p')"
+    if [ -n "$capped" ] && [ -n "$whole" ] && [ $((capped * 2)) -lt "$whole" ]; then
+        pass "max_rows: a capped million-row query peaked at $((capped / 1000000)) MB, the whole one at $((whole / 1000000)) MB"
+    else
+        printf '       %s\n' "$mm"
+        fail "max_rows did not keep the rows past the cap out of memory"
+    fi
+else
+    printf '  SKIP max_rows (written for the SQLite3 ODBC driver)\n'
 fi
 
 printf '\n%d checks, %d failed\n' "$checks" "$failures"

@@ -47,7 +47,7 @@ program main(args)
   ' 0.1 + 0.2 is not 0.3 in binary floating point. Under the old %g, and under
   ' %.15g, this printed as 0.3 -- the format hiding a value the program really
   ' held. It is deliberately shown.
-  print(shows("point-one plus point-two", 0.1 + 0.2, "0.30000000000000004"))
+  print(shows("point-one plus point-two", 1e-1 + 2e-1, "0.30000000000000004"))
   print(shows("third", 1 / 3, "0.3333333333333333"))
   print(shows("two thirds", 2 / 3, "0.6666666666666666"))
 

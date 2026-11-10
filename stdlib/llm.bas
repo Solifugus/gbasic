@@ -445,18 +445,81 @@ library llm
     ' The parts of a message, whichever shape it arrived in. A legacy
     ' { role, content: "..." } message reads as a single text part, so code
     ' written against the canonical shape works on an old transcript.
+    '
+    ' A PROVIDER-SHAPED TURN READS AS ITS PARTS TOO (book gap G60): run_tools
+    ' keeps each turn as the provider sent it, an OpenAI assistant turn with
+    ' `tool_calls`, a `role: "tool"` turn per result, Anthropic content blocks,
+    ' and this read the first as one text part and the blocks as nothing, so
+    ' the tool calls a caller of the loop wanted to show were lost. Each part
+    ' keeps `raw`, the provider's own block.
     function parts_of(msg)
         if _is_canonical(msg) then
             return msg.parts
         end if
-        if is_record(msg) then
-            if has(msg, "content") then
-                if is_string(msg.content) then
-                    return [ text(msg.content) ]
-                end if
+        if not is_record(msg) then
+            return []
+        end if
+        out = []
+        c = _field(msg, "content")
+        if _field(msg, "role") = "tool" then
+            ' OpenAI: one result per turn, named by the call it answers
+            body = c
+            if not is_string(body) then
+                body = json_encode(c)
+            end if
+            r = tool_result(_field(msg, "tool_call_id"), body, false)
+            r.raw = msg
+            return [ r ]
+        end if
+        if is_string(c) then
+            if c != "" then
+                append(out, text(c))
             end if
         end if
-        return []
+        if is_array(c) then
+            ' Anthropic: content blocks
+            for each b in c
+                t = _field(b, "type")
+                if t = "text" then
+                    append(out, { kind: "text", text: _field(b, "text"), raw: b })
+                end if
+                if t = "tool_use" then
+                    append(out, { kind: "tool_call", id: _field(b, "id"), name: _field(b, "name"),
+                                  args: _field(b, "input"), raw: b })
+                end if
+                if t = "tool_result" then
+                    rc = _field(b, "content")
+                    if is_array(rc) then
+                        joined = ""
+                        for each rb in rc
+                            if _field(rb, "type") = "text" then
+                                joined = joined + _field(rb, "text")
+                            end if
+                        end for
+                        rc = joined
+                    end if
+                    append(out, { kind: "tool_result", id: _field(b, "tool_use_id"), content: rc,
+                                  is_error: _field(b, "is_error") = true, raw: b })
+                end if
+            end for
+        end if
+        tc = _field(msg, "tool_calls")
+        if is_array(tc) then
+            ' OpenAI: an assistant turn's calls
+            for each call in tc
+                fn = _field(call, "function")
+                a = _call_args(_field(fn, "arguments"))
+                part = { kind: "tool_call", id: _field(call, "id"), name: _field(fn, "name"),
+                         args: {}, raw: call }
+                if a.ok then
+                    part.args = a.value
+                else
+                    part.args_error = a.message
+                end if
+                append(out, part)
+            end for
+        end if
+        return out
     end function
 
     function text_of(msg)
@@ -603,10 +666,18 @@ library llm
         if is_array(tc) then
             for each call in tc
                 fn = _field(call, "function")
-                parts = append(parts, { kind: "tool_call", id: _field(call, "id"),
-                                        name: _field(fn, "name"),
-                                        args: _call_args(_field(fn, "arguments")),
-                                        raw: call })
+                ' THE ARGUMENTS, NOT THE DECODE'S RESULT (book gap G60): `args`
+                ' was `{ ok: true, value: {...} }`, and `to_wire` would send
+                ' that record as the call's input. A refusal is kept beside.
+                a = _call_args(_field(fn, "arguments"))
+                part = { kind: "tool_call", id: _field(call, "id"),
+                         name: _field(fn, "name"), args: {}, raw: call }
+                if a.ok then
+                    part.args = a.value
+                else
+                    part.args_error = a.message
+                end if
+                parts = append(parts, part)
             end for
         end if
         return { role: "assistant", parts: parts }

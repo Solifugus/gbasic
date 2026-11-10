@@ -239,8 +239,14 @@ int gb_mkdir(const char *path, int mode);
  * the range they cover and `with lock(f)` writes the very file it locks --
  * covering the contents made that write fail (measured; see platform_win32.c).
  * A byte no data reaches makes the lock advisory, as flock is. Returns 0 / -1. */
-enum { GB_LOCK_RELEASE = 0, GB_LOCK_EXCLUSIVE = 1 };
+/* GB_LOCK_TRY takes the lock only if nobody holds it: -1 with errno
+ * EWOULDBLOCK when another process does (book gap G42). */
+enum { GB_LOCK_RELEASE = 0, GB_LOCK_EXCLUSIVE = 1, GB_LOCK_TRY = 2 };
 int gb_flock(int fd, int op);
+/* When a process started (book gap G64), as epoch seconds, or -1 where the platform does
+ * not say (read from /proc on Linux). Two answers that differ for one pid mean
+ * the pid was reused. */
+long long gb_process_started(long pid);
 
 /* realpath(path, NULL): the canonical absolute path of an EXISTING file, with
  * every symlink resolved, malloc'd; NULL if it cannot be resolved. web.static's
@@ -282,8 +288,28 @@ typedef struct {
     int readable;
     int writable;
     int executable;   /* 1 yes, 0 no, -1 unknown */
+    /* WHO the bits are about (book gap G65): the owning user and group, ids
+       and names; -1 and "" where the platform does not say (Windows) or the
+       id has no name on this machine */
+    long owner_id;
+    long group_id;
+    char owner_name[64];
+    char group_name[64];
 } GbPermissions;
 int gb_permissions(const char *path, GbPermissions *out);
+/* The space on the filesystem holding `path` (Transward §11.1), in bytes:
+ * `total` its size, `free` what is not in use, `available` what an
+ * unprivileged writer may still use -- below `free` where the filesystem
+ * keeps a reserve for root (ext4's 5%), and the one that fills first for a
+ * service account. statvfs(3) on POSIX (f_blocks, f_bfree, f_bavail, each
+ * times f_frsize); GetDiskFreeSpaceExW on Windows, given the folder holding
+ * `path` when it is a file, whose `available` is what this user's quota
+ * leaves. 0, or -1 with errno set (ENOENT for a path that is not there). */
+int gb_disk_space(const char *path, unsigned long long *total, unsigned long long *free_bytes,
+                  unsigned long long *available);
+/* This process's user, the one access(2) answers for: its id and name, or -1
+ * and "" where the platform does not say. */
+long gb_current_user(char *name, size_t cap);
 
 /* chmod(path, mode). POSIX honours every bit.
  *
@@ -634,6 +660,18 @@ void gb_stdin_binary(void);
  * once), the same bytes, at the cost of more writes -- paid only by a program
  * that asked for the flag. */
 void gb_stdout_line_buffered(void);
+
+/* A BROKEN PIPE KILLS ONLY THROUGH STDOUT (2026-11-09). With SIGPIPE at its
+ * default, a write to any pipe whose reader has gone kills the process, so one
+ * diagnostic on a detached child's stderr ended the program mid-run (measured:
+ * exit -13, the next statement never ran). This installs a handler that asks
+ * whether STDOUT is the broken pipe: if it is, the default is restored and the
+ * signal raised again, so `gbasic prog | head` still ends quietly by SIGPIPE as
+ * a command-line program should; if not, the write fails with EPIPE and the
+ * program goes on (stderr, a child's stdin). A handler rather than SIG_IGN, so
+ * a child started by exec gets the default back, as it always had. Windows has
+ * no SIGPIPE, and this does nothing there. */
+void gb_pipe_guard_install(void);
 
 /* HOW MUCH C STACK THIS PROCESS HAS, in KB, or 0 when it cannot be known.
  *

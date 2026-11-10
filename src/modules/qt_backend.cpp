@@ -110,6 +110,12 @@
 #include <QLabel>
 #include <QLineEdit>
 #include <QPlainTextEdit>
+#include <QPlainTextDocumentLayout>
+#include <QTextBrowser>
+#include <QToolButton>
+#include <QCryptographicHash>
+#include <QFile>
+#include <QSet>
 #include <QMetaMethod>
 #include <QMetaObject>
 #include <QPushButton>
@@ -121,6 +127,9 @@
 
 #include <QGuiApplication>
 #include <QBuffer>
+#if HAVE_QT_SVG
+#include <QSvgRenderer>
+#endif
 #include <QImage>
 #include <QImageWriter>
 #include <fcntl.h>
@@ -807,6 +816,68 @@ private:
     GbQtSourceEdit *m_owner;
 };
 
+/* ---- BLOCKS BETWEEN THE LINES OF A `source`, AND FOLDS (§0.38 A, B2) ------
+ *
+ * Asked for by Studio: run results under the section that produced them, and
+ * marked comments shown as prose, with the source file still the only thing
+ * the author edits. THE HARD REQUIREMENT IS THAT NONE OF IT IS TEXT: plainText,
+ * the caret, the undo stack, the modified flag and the line numbers must not
+ * move when blocks are set, changed or cleared.
+ *
+ * SO A BLOCK IS LAYOUT, NOT DOCUMENT. The editor's document has a
+ * QPlainTextDocumentLayout subclass (GbQtBlockLayout) whose blockBoundingRect
+ * adds a block's height under its line, and the block itself is a child widget
+ * of the viewport, placed in that gap. Measured first, with an offscreen probe
+ * (29 checks): nothing in the document moves, a click and the Down key land on
+ * the right line, copying across a block copies only code, and the scrollbar's
+ * end still reaches the last line. QTextBlockFormat margins were not used:
+ * they are formatting, and go through the undo stack.
+ *
+ * ANCHORED BY TWO CURSORS, one at the line's start and one at its end, which Qt
+ * moves with every edit. Typing above moves a block with its line; joining its
+ * line onto the one above (Backspace at its start) moves it with its text; and
+ * deleting the line, or emptying it, makes the two cursors meet and DROPS the
+ * block -- what it showed belonged to code that is gone. Studio re-sends the
+ * whole set on every redraw, so a block that still applies comes back.
+ *
+ * A FOLD keeps its first line and hides the rest (QTextBlock::setVisible, which
+ * is layout state: plainText, undo and the modified flag were measured
+ * unchanged). Giving the gap to a HIDDEN line was measured first and fails --
+ * Qt lays out and paints a hidden line at zero height whatever the layout
+ * says -- so prose in place of a comment is a block that COVERS its own line
+ * (`covers: true`), which also works for a fold at line 1. */
+
+
+class GbQtSourceEdit;
+
+struct GbQtBlock {
+    QString id;
+    QString kind;
+    QString title;
+    QByteArray key;          /* what the block shows; equal key, kept widget */
+    QTextCursor start, end;  /* the line's start and end */
+    bool wasEmpty = false;   /* an empty line's cursors meet from the start */
+    bool covers = false;
+    bool collapsed = false;
+    int maxHeight = 240;
+    QFrame *frame = nullptr;
+    QWidget *body = nullptr;
+    QToolButton *toggle = nullptr;
+    int height = 0;          /* as laid out, header included */
+};
+
+class GbQtBlockLayout : public QPlainTextDocumentLayout {
+public:
+    GbQtBlockLayout(QTextDocument *d, GbQtSourceEdit *e)
+        : QPlainTextDocumentLayout(d), m_edit(e) {}
+    QRectF blockBoundingRect(const QTextBlock &b) const override;
+    QRectF baseRect(const QTextBlock &b) const {
+        return QPlainTextDocumentLayout::blockBoundingRect(b);
+    }
+private:
+    GbQtSourceEdit *m_edit;
+};
+
 /* A `source` IS THIS SUBCLASS RATHER THAN A BARE QPlainTextEdit, and that is
  * FORCED rather than preferred: everything the gutter has to know to paint a
  * line in the right place -- `firstVisibleBlock`, `blockBoundingGeometry`,
@@ -819,7 +890,33 @@ private:
  * fails, and the message names the word the author wrote. */
 class GbQtSourceEdit : public QPlainTextEdit {
 public:
-    explicit GbQtSourceEdit(QWidget *parent) : QPlainTextEdit(parent) {}
+    /* ITS OWN DOCUMENT, made with the block layout from the start (§0.38 A):
+     * QPlainTextEdit connects to a document's layout when the document is
+     * set, so the layout is chosen before, never swapped in after. */
+    explicit GbQtSourceEdit(QWidget *parent) : QPlainTextEdit(parent) {
+        QTextDocument *d = new QTextDocument(this);
+        m_blockLayout = new GbQtBlockLayout(d, this);
+        d->setDocumentLayout(m_blockLayout);
+        setDocument(d);
+    }
+    ~GbQtSourceEdit() override { qDeleteAll(m_blocks); }
+
+    /* §0.38's blocks and folds; the code is below, after source_edit_named. */
+    struct Fold { QTextCursor from, to; };
+    QVector<GbQtBlock *> m_blocks;
+    QVector<Fold> m_folds;
+    QByteArray m_blockHandler;
+    GbQtBlockLayout *m_blockLayout = nullptr;
+    bool m_blocksWired = false;
+    qreal extraFor(const QTextBlock &b, qreal base) const;
+    void fireBlock(const QString &id, const char *action, const QString &target);
+    void paintBlockFrame(GbQtBlock *k);
+    void measureBlock(GbQtBlock *k);
+    void placeBlocks();
+    void dropGoneBlocks();
+    bool applyFolds();
+    void relayoutBlocks();
+    void wireBlocks();
 
     void enableGutter(bool numbers, bool marks) {
         m_numbers = numbers;
@@ -930,6 +1027,22 @@ protected:
     void resizeEvent(QResizeEvent *ev) override {
         QPlainTextEdit::resizeEvent(ev);
         refreshGutter();
+        /* a block's height follows the width (markdown wraps, an image
+         * scales), so a resize measures them again */
+        if (!m_blocks.isEmpty()) {
+            for (GbQtBlock *k : m_blocks) {
+                measureBlock(k);
+            }
+            relayoutBlocks();
+        }
+    }
+    void changeEvent(QEvent *ev) override {
+        QPlainTextEdit::changeEvent(ev);
+        if (ev->type() == QEvent::PaletteChange) {
+            for (GbQtBlock *k : m_blocks) {
+                paintBlockFrame(k);
+            }
+        }
     }
 
 private:
@@ -1064,6 +1177,10 @@ void GbQtSourceEdit::paintGutterOn(QWidget *g, QPaintEvent *ev) {
  * arguments, so the event is ASKED FOR instead (`qt.gutter_click`). A
  * breakpoint you cannot click to set is decorative, which is why this is in the
  * same increment as the `break` category rather than after it. */
+/* THE LINK BEING HANDLED in a `markdown` part (§0.38 B4), held while its
+ * `link` handler runs, as the gutter click is. */
+static bool g_link_live = false;
+static QString g_link_target;
 static bool g_gclick_live = false;
 static int g_gclick_line = 0;
 
@@ -1971,6 +2088,19 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
          * than guessed here; a declared `options:` literal is handled above in
          * qt.c, for the fixed case where typing them out is the honest thing. */
         w = new QComboBox(host_of(p));
+    } else if (strcmp(word, "markdown") == 0) {
+        /* RENDERED PROSE, read-only (§0.38 B4): Studio's preview pane. A
+         * QTextBrowser so `qt.set(win, part, "markdown", text)` reaches
+         * QTextEdit's own `markdown` property (CommonMark and GitHub's
+         * tables, lists and task lists), and a link does NOT navigate: it is
+         * the `link` event, carrying its target (`qt.link()`). */
+        QTextBrowser *b = new QTextBrowser(host_of(p));
+        b->setOpenLinks(false);
+        b->setOpenExternalLinks(false);
+        if (label && *label && !label_placed_by_parent(word, pf != nullptr)) {
+            b->setMarkdown(QString::fromUtf8(label));
+        }
+        w = b;
     } else if (strcmp(word, "memo") == 0) {
         /* MANY LINES, which `field` is not: a QLineEdit holds one, so a
          * description, a note or a game's output log had nowhere to go
@@ -2540,6 +2670,45 @@ extern "C" int gb_qt_connect(void *window, const char *target,
      * found through the editor's own accessor rather than `findChild`, which
      * could not work: with no Q_OBJECT its metaobject is QWidget's, so a
      * search by type would match any child widget. */
+    /* `link` (§0.38 B4): a link pressed in a `markdown` part, which never
+     * navigates. The target is held while the handler runs (`qt.link()`). */
+    if (strcmp(signal, "link") == 0) {
+        QTextBrowser *tb = qobject_cast<QTextBrowser *>(w);
+        if (!tb) {
+            say(err, err_size,
+                QByteArray("`") + target + "` is not a `markdown` part, so it "
+                "has no links to press");
+            return 0;
+        }
+        QByteArray h(handler);
+        QObject::connect(tb, &QTextBrowser::anchorClicked, tb, [h](const QUrl &u) {
+            if (!g_invoke) {
+                return;
+            }
+            bool was = g_link_live;
+            QString prev = g_link_target;
+            g_link_live = true;
+            g_link_target = u.toString();
+            invoke_handler(h.constData());
+            g_link_live = was;
+            g_link_target = prev;
+        });
+        return 1;
+    }
+
+    /* `block` (§0.38 A): a click on a block, its collapse control or a link
+     * in it. The editor holds the handler; the blocks call it. */
+    if (strcmp(signal, "block") == 0) {
+        GbQtSourceEdit *se = dynamic_cast<GbQtSourceEdit *>(w);
+        if (!se) {
+            say(err, err_size,
+                QByteArray("`") + target + "` is not a `source`, so it has no "
+                "blocks to click");
+            return 0;
+        }
+        se->m_blockHandler = QByteArray(handler);
+        return 1;
+    }
     if (strcmp(signal, "gutter") == 0) {
         GbQtSourceEdit *se = dynamic_cast<GbQtSourceEdit *>(w);
         if (!se || !se->gutterWidget()) {
@@ -3657,6 +3826,84 @@ extern "C" int gb_qt_has_icon(void *window, const char *name, int *has,
  *
  * THE BYTES COME BACK rather than being written here, so the file is written
  * by the same code as `write` and fails with the same sentence. */
+/* AN SVG AS A PNG (§0.38 C), for a figure a book prints: Studio writes the
+ * author's Markdown for their publisher, and a chart.bas figure is SVG.
+ *
+ * DETERMINISTIC WITHIN A MACHINE, measured: one SVG drawn in two processes
+ * gave byte-identical PNGs. Across machines it is not promised, for the reason
+ * qt.capture's is not: text is drawn with whatever fonts are installed.
+ *
+ * ON WHITE, NO ALPHA, as qt.capture's image is: a page shows transparency as
+ * black or a checkerboard. The SVG's own size is its viewBox (QSvgRenderer's
+ * defaultSize) when no size is given; asking for one size alone keeps the
+ * aspect ratio. */
+extern "C" int gb_qt_render_svg(const char *svg, long svg_len, int width,
+                                int height, double scale, char **png,
+                                long *len, int *out_width, int *out_height,
+                                char *err, size_t err_size) {
+#if HAVE_QT_SVG
+    if (!gb_qt_begin(err, err_size)) {
+        return 0;
+    }
+    QSvgRenderer r(QByteArray(svg, (int)svg_len));
+    if (!r.isValid()) {
+        say(err, err_size, "the text is not an SVG that QtSvg can draw");
+        return 0;
+    }
+    QSize own = r.defaultSize();
+    if (own.isEmpty()) {
+        QRectF vb = r.viewBoxF();
+        own = QSize(qRound(vb.width()), qRound(vb.height()));
+    }
+    if (width <= 0 && height <= 0) {
+        width = own.width();
+        height = own.height();
+    } else if (width <= 0) {
+        width = own.height() > 0 ? qRound((double)height * own.width() / own.height()) : height;
+    } else if (height <= 0) {
+        height = own.width() > 0 ? qRound((double)width * own.height() / own.width()) : width;
+    }
+    QSize px(qRound(width * scale), qRound(height * scale));
+    if (px.width() <= 0 || px.height() <= 0) {
+        say(err, err_size, "the SVG has no size; give width and height");
+        return 0;
+    }
+    if ((long long)px.width() * px.height() > 100000000LL) {
+        say(err, err_size, "that is more than 100 million pixels; ask for a smaller width, height or scale");
+        return 0;
+    }
+    QImage img(px, QImage::Format_RGB32);
+    img.fill(Qt::white);
+    QPainter p(&img);
+    p.setRenderHint(QPainter::Antialiasing);
+    p.setRenderHint(QPainter::TextAntialiasing);
+    p.setRenderHint(QPainter::SmoothPixmapTransform);
+    r.render(&p, QRectF(0, 0, px.width(), px.height()));
+    p.end();
+    QByteArray bytes;
+    QBuffer buf(&bytes);
+    buf.open(QIODevice::WriteOnly);
+    if (!img.save(&buf, "PNG")) {
+        say(err, err_size, "the image could not be encoded as PNG");
+        return 0;
+    }
+    *png = (char *)malloc((size_t)bytes.size());
+    if (!*png) {
+        abort();
+    }
+    memcpy(*png, bytes.constData(), (size_t)bytes.size());
+    *len = bytes.size();
+    *out_width = px.width();
+    *out_height = px.height();
+    return 1;
+#else
+    (void)svg; (void)svg_len; (void)width; (void)height; (void)scale;
+    (void)png; (void)len; (void)out_width; (void)out_height;
+    say(err, err_size, "this gBASIC was built without QtSvg (Qt6Svg), which draws SVG");
+    return 0;
+#endif
+}
+
 extern "C" int gb_qt_capture(void *window, const char *name, double scale,
                              char **png, long *len, int *width, int *height,
                              char *err, size_t err_size) {
@@ -4259,6 +4506,745 @@ static GbQtSourceEdit *source_edit_named(void *window, const char *name,
     return e;
 }
 
+/* ---- the blocks' own code (§0.38 A, B2): after GbQtSourceEdit ----------- */
+
+QRectF GbQtBlockLayout::blockBoundingRect(const QTextBlock &b) const {
+    QRectF r = QPlainTextDocumentLayout::blockBoundingRect(b);
+    if (m_edit) {
+        r.setHeight(r.height() + m_edit->extraFor(b, r.height()));
+    }
+    return r;
+}
+
+/* A press on a block's body is a `click`; on a markdown block's link it is the
+ * link's (`anchorClicked` reports it), so a press on an anchor is left to it. */
+class GbQtBlockClicker : public QObject {
+public:
+    GbQtSourceEdit *edit = nullptr;
+    QString id;
+    bool eventFilter(QObject *obj, QEvent *event) override {
+        if (event->type() == QEvent::MouseButtonPress && edit) {
+            QMouseEvent *me = static_cast<QMouseEvent *>(event);
+            if (me->button() == Qt::LeftButton) {
+                QTextBrowser *tb = qobject_cast<QTextBrowser *>(obj->parent());
+                if (tb && !tb->anchorAt(me->position().toPoint()).isEmpty()) {
+                    return QObject::eventFilter(obj, event);
+                }
+                edit->fireBlock(id, "click", QString());
+            }
+        }
+        return QObject::eventFilter(obj, event);
+    }
+};
+
+/* THE EVENT BEING HANDLED, held while one `block` handler runs: the shape
+ * `qt.gutter_click` has, since a handler takes no arguments. */
+extern "C" char *gb_qt_link_event(void) {
+    return g_link_live ? dup_qbytes(g_link_target.toUtf8()) : nullptr;
+}
+
+static bool g_bevent_live = false;
+static QString g_bevent_id, g_bevent_action, g_bevent_target;
+
+void GbQtSourceEdit::fireBlock(const QString &id, const char *action,
+                               const QString &target) {
+    if (m_blockHandler.isEmpty() || !g_invoke) {
+        return;
+    }
+    bool was = g_bevent_live;
+    QString pid = g_bevent_id, pact = g_bevent_action, ptgt = g_bevent_target;
+    g_bevent_live = true;
+    g_bevent_id = id;
+    g_bevent_action = QString::fromLatin1(action);
+    g_bevent_target = target;
+    invoke_handler(m_blockHandler.constData());
+    g_bevent_live = was;
+    g_bevent_id = pid;
+    g_bevent_action = pact;
+    g_bevent_target = ptgt;
+}
+
+extern "C" int gb_qt_block_event(char **id, char **action, char **target) {
+    if (!g_bevent_live) {
+        return 0;
+    }
+    *id = dup_qbytes(g_bevent_id.toUtf8());
+    *action = dup_qbytes(g_bevent_action.toUtf8());
+    *target = g_bevent_target.isEmpty() ? nullptr : dup_qbytes(g_bevent_target.toUtf8());
+    return 1;
+}
+
+/* The extra height under line `b`: every block anchored there, stacked; a
+ * block that covers its line needs only what the line does not give it. */
+qreal GbQtSourceEdit::extraFor(const QTextBlock &b, qreal base) const {
+    if (m_blocks.isEmpty() || !b.isVisible()) {
+        return 0;
+    }
+    qreal sum = 0;
+    bool covered = false;
+    for (const GbQtBlock *k : m_blocks) {
+        if (k->end.block() != b) {
+            continue;
+        }
+        if (k->covers && !covered) {
+            covered = true;
+            sum += qMax<qreal>(0, k->height - base);
+        } else {
+            sum += k->height;
+        }
+    }
+    return sum;
+}
+
+/* The header's colour, from the editor's own base so a dark theme gets a dark
+ * header: a little lighter on a dark base, a little darker on a light one. */
+static QColor block_header_colour(const QPalette &pal) {
+    QColor base = pal.color(QPalette::Base);
+    return base.lightness() < 128 ? base.lighter(135) : base.darker(107);
+}
+
+void GbQtSourceEdit::paintBlockFrame(GbQtBlock *k) {
+    QPalette pal = palette();
+    pal.setColor(QPalette::Window, block_header_colour(pal));
+    pal.setColor(QPalette::WindowText, pal.color(QPalette::Text));
+    pal.setColor(QPalette::ButtonText, pal.color(QPalette::Text));
+    k->frame->setPalette(pal);
+    k->frame->setAutoFillBackground(true);
+}
+
+/* How tall the block is at the viewport's width: its header, and its body at
+ * its natural height up to `max_height`, past which the body scrolls (text,
+ * markdown, a table) or is scaled down (an image). */
+void GbQtSourceEdit::measureBlock(GbQtBlock *k) {
+    int width = qMax(80, viewport()->width());
+    int header = k->toggle ? k->toggle->sizeHint().height() + 2 : 0;
+    int room = qMax(header + 10, k->maxHeight) - header;
+    int natural = 0;
+    if (k->kind == "text") {
+        QPlainTextEdit *t = static_cast<QPlainTextEdit *>(k->body);
+        QFontMetrics fm(t->font());
+        natural = t->document()->blockCount() * fm.lineSpacing() +
+                  2 * (int)t->document()->documentMargin() + 6;
+    } else if (k->kind == "markdown") {
+        QTextBrowser *b = static_cast<QTextBrowser *>(k->body);
+        b->document()->setTextWidth(width - 8);
+        natural = (int)b->document()->size().height() + 6;
+    } else if (k->kind == "table") {
+        QTableWidget *t = static_cast<QTableWidget *>(k->body);
+        natural = t->horizontalHeader()->sizeHint().height() + 4;
+        for (int r = 0; r < t->rowCount(); r++) {
+            natural += t->rowHeight(r);
+        }
+        if (t->horizontalScrollBar()->maximum() > 0) {
+            natural += t->horizontalScrollBar()->sizeHint().height();
+        }
+    } else if (k->kind == "image") {
+        QLabel *l = static_cast<QLabel *>(k->body);
+        QSize own = l->property("gb_image_size").toSize();
+        QPixmap px;
+        if (own.isValid() && own.width() > 0) {
+            double s = qMin(1.0, (double)(width - 8) / own.width());
+            s = qMin(s, (double)room / qMax(1, own.height()));
+            natural = qMax(1, (int)(own.height() * s));
+        }
+    }
+    int body = qMin(natural, room);
+    k->body->setVisible(!k->collapsed);
+    if (!k->collapsed) {
+        k->body->setFixedHeight(body);
+    }
+    k->height = header + (k->collapsed ? 0 : body);
+    k->frame->setFixedSize(width, k->height);
+    if (k->kind == "image") {
+        QLabel *l = static_cast<QLabel *>(k->body);
+        QVariant src = l->property("gb_image");
+        QImage img = src.value<QImage>();
+        if (!img.isNull()) {
+            l->setPixmap(QPixmap::fromImage(img.scaled(width - 8, qMax(1, body),
+                                                       Qt::KeepAspectRatio,
+                                                       Qt::SmoothTransformation)));
+        }
+    }
+}
+
+/* Where every block sits now. Only the first visible line's geometry is
+ * trustworthy in a QPlainTextEdit (it lays out lazily and by lines); the rest
+ * is accumulated from there, which is how its own gutter example paints. */
+void GbQtSourceEdit::placeBlocks() {
+    if (m_blocks.isEmpty()) {
+        return;
+    }
+    for (GbQtBlock *k : m_blocks) {
+        k->frame->setProperty("gb_placed", false);
+    }
+    int vh = viewport()->height();
+    int vw = viewport()->width();
+    QTextBlock b = firstVisibleBlock();
+    qreal top = b.isValid() ? blockBoundingGeometry(b).translated(contentOffset()).top() : 0;
+    while (b.isValid() && top <= vh) {
+        qreal h = blockBoundingRect(b).height();
+        if (b.isVisible()) {
+            qreal base = m_blockLayout->baseRect(b).height();
+            qreal y = top + base;
+            bool covered = false;
+            for (GbQtBlock *k : m_blocks) {
+                if (k->end.block() != b) {
+                    continue;
+                }
+                qreal at;
+                if (k->covers && !covered) {
+                    covered = true;
+                    at = top;
+                    y = qMax(y, top + (qreal)k->height);
+                } else {
+                    at = y;
+                    y += k->height;
+                }
+                k->frame->setGeometry(0, (int)at, vw, k->height);
+                k->frame->setProperty("gb_placed", true);
+            }
+        }
+        top += h;
+        b = b.next();
+    }
+    for (GbQtBlock *k : m_blocks) {
+        bool placed = k->frame->property("gb_placed").toBool();
+        QRect g = k->frame->geometry();
+        k->frame->setVisible(placed && g.bottom() >= 0 && g.top() < vh);
+        if (k->covers && placed) {
+            k->frame->raise();
+        }
+    }
+}
+
+/* A block whose line was deleted, or emptied, has its two cursors meet. */
+void GbQtSourceEdit::dropGoneBlocks() {
+    for (int i = m_blocks.size() - 1; i >= 0; i--) {
+        GbQtBlock *k = m_blocks[i];
+        if (!k->wasEmpty && k->start.position() == k->end.position()) {
+            k->frame->hide();
+            k->frame->deleteLater();   /* its handler may be running */
+            delete k;
+            m_blocks.remove(i);
+        }
+    }
+}
+
+/* Hide what the folds say, and nothing else. Returns whether a line's
+ * visibility changed, which is the only time the layout must be told. */
+bool GbQtSourceEdit::applyFolds() {
+    QTextDocument *d = document();
+    QSet<int> hide;
+    for (const Fold &f : m_folds) {
+        int from = f.from.blockNumber(), to = f.to.blockNumber();
+        for (int n = from + 1; n <= to; n++) {
+            hide.insert(n);
+        }
+    }
+    bool changed = false;
+    for (QTextBlock b = d->begin(); b.isValid(); b = b.next()) {
+        bool want = !hide.contains(b.blockNumber());
+        if (b.isVisible() != want) {
+            b.setVisible(want);
+            changed = true;
+        }
+    }
+    if (changed) {
+        /* A caret on a line that is now hidden would be typed into unseen:
+         * it moves to the start of its fold's first line. Measured to leave
+         * the undo stack alone, as any caret move does. */
+        QTextCursor c = textCursor();
+        if (!c.block().isVisible()) {
+            for (const Fold &f : m_folds) {
+                int n = c.blockNumber();
+                if (n > f.from.blockNumber() && n <= f.to.blockNumber()) {
+                    QTextCursor m(f.from.block());
+                    setTextCursor(m);
+                    break;
+                }
+            }
+        }
+    }
+    return changed;
+}
+
+void GbQtSourceEdit::relayoutBlocks() {
+    QTextDocument *d = document();
+    d->markContentsDirty(0, d->characterCount());
+    /* THE SCROLLBAR'S RANGE IS RECOMPUTED ONLY WHEN THE LAYOUT SAYS ITS SIZE
+     * CHANGED, which QPlainTextDocumentLayout says only when the line count
+     * does -- and a block adds height, not lines. Measured: with blocks under
+     * lines 2-10, caret_to(40) scrolled six lines and line 40 was below the
+     * view, unreachable. Saying so here makes QPlainTextEdit walk the heights
+     * again (they include the blocks). */
+    emit m_blockLayout->documentSizeChanged(m_blockLayout->documentSize());
+    viewport()->update();
+    placeBlocks();
+}
+
+void GbQtSourceEdit::wireBlocks() {
+    if (m_blocksWired) {
+        return;
+    }
+    m_blocksWired = true;
+    connect(this, &QPlainTextEdit::updateRequest, this,
+            [this](const QRect &, int) { placeBlocks(); });
+    connect(document(), &QTextDocument::contentsChange, this,
+            [this](int, int, int) {
+                int before = m_blocks.size();
+                dropGoneBlocks();
+                bool folds = !m_folds.isEmpty() && applyFolds();
+                if (folds || before != m_blocks.size()) {
+                    relayoutBlocks();
+                } else {
+                    placeBlocks();
+                }
+            });
+}
+
+/* What a block shows, as bytes: two items with the same key show the same
+ * thing, so a replace keeps the widget (no flicker, and no cost). An image
+ * named by path is keyed by its file's bytes, so a rerun that rewrote the
+ * same file is a change. */
+static QByteArray block_key(const GbQtBlockItem *it, QByteArray *image_bytes) {
+    QByteArray key;
+    key += it->kind; key += '\x1f';
+    key += it->title ? it->title : ""; key += '\x1f';
+    key += QByteArray::number(it->max_height); key += '\x1f';
+    if (strcmp(it->kind, "table") == 0) {
+        key += QByteArray::number(it->columns); key += '\x1f';
+        key += QByteArray::number(it->rows); key += '\x1f';
+        key += QByteArray::number(it->more_rows); key += '\x1f';
+        int n = it->columns * (it->rows + 1);
+        for (int i = 0; i < n; i++) {
+            key += it->cells[i]; key += '\x1e';
+        }
+    } else if (strcmp(it->kind, "image") == 0 && !it->image_bytes) {
+        QFile f(QString::fromUtf8(it->text));
+        if (f.open(QIODevice::ReadOnly)) {
+            *image_bytes = f.readAll();
+        }
+        key += QByteArray(it->text);
+        key += '\x1f';
+        key += QCryptographicHash::hash(*image_bytes, QCryptographicHash::Sha256);
+    } else {
+        QByteArray content(it->text ? it->text : "", (int)it->text_len);
+        if (strcmp(it->kind, "image") == 0) {
+            *image_bytes = content;
+        }
+        key += content;
+    }
+    return key;
+}
+
+/* An image from its bytes: SVG drawn by QtSvg at its own size, anything else
+ * by QImage. A null image means the bytes are not one. */
+static QImage block_image(const QByteArray &bytes, const char *format,
+                          const char *path) {
+    bool svg = (format && strcmp(format, "svg") == 0) ||
+               (!format && path && QByteArray(path).toLower().endsWith(".svg")) ||
+               (!format && !path && (bytes.trimmed().startsWith("<svg") ||
+                                     bytes.trimmed().startsWith("<?xml")));
+    if (svg) {
+#if HAVE_QT_SVG
+        QSvgRenderer r(bytes);
+        if (!r.isValid()) {
+            return QImage();
+        }
+        QSize own = r.defaultSize();
+        if (own.isEmpty()) {
+            return QImage();
+        }
+        /* drawn at twice its size, so scaling it down to the block stays sharp */
+        QImage img(own * 2, QImage::Format_RGB32);
+        img.fill(Qt::white);
+        QPainter p(&img);
+        p.setRenderHint(QPainter::Antialiasing);
+        r.render(&p);
+        p.end();
+        img.setDevicePixelRatio(2);
+        return img;
+#else
+        return QImage();
+#endif
+    }
+    QImage img;
+    img.loadFromData(bytes);
+    return img;
+}
+
+/* One block's widget: a header (the collapse control and the title) over a
+ * body of its kind. Children of the viewport, so they inherit its palette. */
+static bool block_build(GbQtSourceEdit *e, GbQtBlock *k, const GbQtBlockItem *it,
+                        const QByteArray &image_bytes, char *err, size_t err_size) {
+    QFrame *frame = new QFrame(e->viewport());
+    frame->setFrameShape(QFrame::NoFrame);
+    QVBoxLayout *lay = new QVBoxLayout(frame);
+    lay->setContentsMargins(4, 0, 4, 0);
+    lay->setSpacing(0);
+    QWidget *head = new QWidget(frame);
+    QHBoxLayout *hl = new QHBoxLayout(head);
+    hl->setContentsMargins(0, 0, 0, 0);
+    hl->setSpacing(4);
+    QToolButton *toggle = new QToolButton(head);
+    toggle->setAutoRaise(true);
+    toggle->setArrowType(k->collapsed ? Qt::RightArrow : Qt::DownArrow);
+    toggle->setFocusPolicy(Qt::NoFocus);
+    QLabel *title = new QLabel(QString::fromUtf8(it->title ? it->title : ""), head);
+    hl->addWidget(toggle);
+    hl->addWidget(title, 1);
+    lay->addWidget(head);
+    QWidget *body = nullptr;
+    QFont mono = e->font();
+    if (strcmp(it->kind, "text") == 0) {
+        QPlainTextEdit *t = new QPlainTextEdit(frame);
+        t->setReadOnly(true);
+        t->setLineWrapMode(QPlainTextEdit::NoWrap);
+        t->setFont(mono);
+        t->setFrameShape(QFrame::NoFrame);
+        t->setPlainText(QString::fromUtf8(it->text ? it->text : "", (int)it->text_len));
+        body = t;
+    } else if (strcmp(it->kind, "markdown") == 0) {
+        QTextBrowser *b = new QTextBrowser(frame);
+        b->setOpenLinks(false);
+        b->setOpenExternalLinks(false);
+        b->setFrameShape(QFrame::NoFrame);
+        b->setMarkdown(QString::fromUtf8(it->text ? it->text : "", (int)it->text_len));
+        QObject::connect(b, &QTextBrowser::anchorClicked, e,
+                         [e, id = k->id](const QUrl &u) {
+                             e->fireBlock(id, "link", u.toString());
+                         });
+        body = b;
+    } else if (strcmp(it->kind, "table") == 0) {
+        QTableWidget *t = new QTableWidget(it->rows + (it->more_rows > 0 ? 1 : 0),
+                                           it->columns, frame);
+        t->setEditTriggers(QAbstractItemView::NoEditTriggers);
+        t->setFrameShape(QFrame::NoFrame);
+        t->verticalHeader()->setVisible(false);
+        QStringList heads;
+        for (int c = 0; c < it->columns; c++) {
+            heads << QString::fromUtf8(it->cells[c]);
+        }
+        t->setHorizontalHeaderLabels(heads);
+        for (int r = 0; r < it->rows; r++) {
+            for (int c = 0; c < it->columns; c++) {
+                t->setItem(r, c, new QTableWidgetItem(
+                                     QString::fromUtf8(it->cells[(r + 1) * it->columns + c])));
+            }
+        }
+        if (it->more_rows > 0) {
+            t->setSpan(it->rows, 0, 1, qMax(1, it->columns));
+            t->setItem(it->rows, 0, new QTableWidgetItem(
+                QString("%1 more row%2 not shown").arg(it->more_rows).arg(it->more_rows == 1 ? "" : "s")));
+        }
+        t->resizeColumnsToContents();
+        body = t;
+    } else if (strcmp(it->kind, "image") == 0) {
+        QImage img = block_image(image_bytes, it->format, it->image_bytes ? nullptr : it->text);
+        if (img.isNull()) {
+            delete frame;
+            say(err, err_size,
+                QByteArray("block `") + it->id + "`: " +
+                    (image_bytes.isEmpty() && !it->image_bytes
+                         ? QByteArray("the image file `") + it->text + "` could not be read"
+                         : QByteArray("its bytes are not an image Qt can read (PNG, JPEG or SVG)")));
+            return false;
+        }
+        QLabel *l = new QLabel(frame);
+        l->setAlignment(Qt::AlignLeft | Qt::AlignTop);
+        l->setProperty("gb_image", img);
+        l->setProperty("gb_image_size", img.size() / img.devicePixelRatio());
+        body = l;
+    }
+    lay->addWidget(body);
+    k->frame = frame;
+    k->body = body;
+    k->toggle = toggle;
+    GbQtBlockClicker *cl = new GbQtBlockClicker();
+    cl->edit = e;
+    cl->id = k->id;
+    QAbstractScrollArea *sa = qobject_cast<QAbstractScrollArea *>(body);
+    QWidget *target = sa ? sa->viewport() : body;
+    cl->setParent(target);
+    target->installEventFilter(cl);
+    QObject::connect(toggle, &QToolButton::clicked, e,
+                     [e, id = k->id]() { e->fireBlock(id, "collapse", QString()); });
+    e->paintBlockFrame(k);
+    frame->show();
+    return true;
+}
+
+extern "C" int gb_qt_blocks_set(void *window, const char *name,
+                                const GbQtBlockItem *items, int count,
+                                char *err, size_t err_size) {
+    GbQtSourceEdit *e = source_edit_named(window, name, err, err_size);
+    if (!e) {
+        return 0;
+    }
+    QTextDocument *d = e->document();
+    /* checked whole before anything changes, so a refusal leaves the old set.
+     * Ids are unique here as well as in qt.c: two blocks under one id would
+     * be one widget freed twice (a perturbation that let them through
+     * crashed with SIGSEGV). */
+    QSet<QString> seen;
+    for (int i = 0; i < count; i++) {
+        QString id = QString::fromUtf8(items[i].id ? items[i].id : "");
+        if (id.isEmpty() || seen.contains(id)) {
+            say(err, err_size, QByteArray("two blocks are called `") +
+                                   (items[i].id ? items[i].id : "") +
+                                   "`; an id names one block");
+            return 0;
+        }
+        seen.insert(id);
+    }
+    for (int i = 0; i < count; i++) {
+        if (items[i].line < 1 || items[i].line > d->blockCount()) {
+            say(err, err_size,
+                QByteArray("block `") + items[i].id + "` is on line " +
+                    QByteArray::number(items[i].line) + ", and `" + name + "` has " +
+                    QByteArray::number(d->blockCount()) + " line" +
+                    (d->blockCount() == 1 ? "" : "s"));
+            return 0;
+        }
+    }
+    e->wireBlocks();
+    QHash<QString, GbQtBlock *> old;
+    for (GbQtBlock *k : e->m_blocks) {
+        old.insert(k->id, k);
+    }
+    QVector<GbQtBlock *> next;
+    for (int i = 0; i < count; i++) {
+        const GbQtBlockItem *it = &items[i];
+        QByteArray image_bytes;
+        QByteArray key = block_key(it, &image_bytes);
+        QString id = QString::fromUtf8(it->id);
+        GbQtBlock *k = old.value(id, nullptr);
+        if (k && k->key != key) {
+            k->frame->hide();
+            k->frame->deleteLater();
+            delete k;
+            old.remove(id);
+            k = nullptr;
+        }
+        if (!k) {
+            k = new GbQtBlock();
+            k->id = id;
+            k->kind = QString::fromUtf8(it->kind);
+            k->key = key;
+            k->collapsed = it->collapsed != 0;
+            k->maxHeight = it->max_height;
+            if (!block_build(e, k, it, image_bytes, err, err_size)) {
+                delete k;
+                /* what was built in this call goes; the rest stays as it was */
+                for (GbQtBlock *n : next) {
+                    if (!old.contains(n->id)) {
+                        n->frame->deleteLater();
+                        delete n;
+                    }
+                }
+                return 0;
+            }
+        } else {
+            old.remove(id);
+        }
+        QTextBlock b = d->findBlockByNumber(it->line - 1);
+        k->start = QTextCursor(b);
+        k->end = QTextCursor(b);
+        k->end.setPosition(b.position() + b.length() - 1);
+        k->wasEmpty = b.length() <= 1;
+        k->covers = it->covers != 0;
+        k->collapsed = it->collapsed != 0;
+        k->toggle->setArrowType(k->collapsed ? Qt::RightArrow : Qt::DownArrow);
+        e->measureBlock(k);
+        next.append(k);
+    }
+    for (GbQtBlock *k : old) {   /* ids no longer sent */
+        k->frame->hide();
+        k->frame->deleteLater();
+        delete k;
+    }
+    e->m_blocks = next;
+    e->relayoutBlocks();
+    return 1;
+}
+
+extern "C" int gb_qt_blocks_get(void *window, const char *name,
+                                GbQtBlockInfo *out, int max, char *err,
+                                size_t err_size) {
+    GbQtSourceEdit *e = source_edit_named(window, name, err, err_size);
+    if (!e) {
+        return -1;
+    }
+    QCoreApplication::sendPostedEvents(nullptr, QEvent::LayoutRequest);
+    e->placeBlocks();
+    int n = 0;
+    for (GbQtBlock *k : e->m_blocks) {
+        if (n >= max) {
+            break;
+        }
+        out[n].id = dup_qbytes(k->id.toUtf8());
+        out[n].kind = dup_qbytes(k->kind.toUtf8());
+        out[n].line = k->end.blockNumber() + 1;
+        out[n].height = k->height;
+        out[n].visible = k->frame->isVisible() ? 1 : 0;
+        out[n].collapsed = k->collapsed ? 1 : 0;
+        out[n].covers = k->covers ? 1 : 0;
+        n++;
+    }
+    return e->m_blocks.size();
+}
+
+extern "C" int gb_qt_fold_set(void *window, const char *name, const int *from,
+                              const int *to, int count, char *err, size_t err_size) {
+    GbQtSourceEdit *e = source_edit_named(window, name, err, err_size);
+    if (!e) {
+        return 0;
+    }
+    QTextDocument *d = e->document();
+    for (int i = 0; i < count; i++) {
+        if (from[i] < 1 || to[i] < from[i] || to[i] > d->blockCount()) {
+            say(err, err_size,
+                QByteArray("the fold ") + QByteArray::number(from[i]) + " to " +
+                    QByteArray::number(to[i]) + " is not a range of `" + name +
+                    "`'s " + QByteArray::number(d->blockCount()) + " lines");
+            return 0;
+        }
+    }
+    e->wireBlocks();
+    e->m_folds.clear();
+    for (int i = 0; i < count; i++) {
+        GbQtSourceEdit::Fold f;
+        QTextBlock a = d->findBlockByNumber(from[i] - 1);
+        QTextBlock z = d->findBlockByNumber(to[i] - 1);
+        f.from = QTextCursor(a);
+        f.to = QTextCursor(z);
+        f.to.setPosition(z.position() + z.length() - 1);
+        e->m_folds.append(f);
+    }
+    e->applyFolds();
+    e->relayoutBlocks();
+    return 1;
+}
+
+extern "C" int gb_qt_fold_get(void *window, const char *name, int *from, int *to,
+                              int max, char *err, size_t err_size) {
+    GbQtSourceEdit *e = source_edit_named(window, name, err, err_size);
+    if (!e) {
+        return -1;
+    }
+    int n = 0;
+    for (const GbQtSourceEdit::Fold &f : e->m_folds) {
+        if (n < max) {
+            from[n] = f.from.blockNumber() + 1;
+            to[n] = f.to.blockNumber() + 1;
+        }
+        n++;
+    }
+    return n;
+}
+
+/* A real press and release on the text of the link to `target` in `tb`, so
+ * QTextBrowser itself decides it was a link (anchorClicked). 0 when there is
+ * no such link. */
+static bool press_link(QTextBrowser *tb, const char *target) {
+    QTextDocument *doc = tb->document();
+    QPoint at;
+    bool found = false;
+    for (QTextBlock b = doc->begin(); b.isValid() && !found; b = b.next()) {
+        for (QTextBlock::iterator f = b.begin(); !f.atEnd(); ++f) {
+            QTextFragment fr = f.fragment();
+            if (fr.charFormat().isAnchor() &&
+                fr.charFormat().anchorHref() == QString::fromUtf8(target ? target : "")) {
+                QTextCursor c(doc);
+                c.setPosition(fr.position() + qMax(0, fr.length() / 2));
+                at = tb->cursorRect(c).center();
+                found = true;
+                break;
+            }
+        }
+    }
+    if (!found) {
+        return false;
+    }
+    QWidget *on = tb->viewport();
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(at), on->mapToGlobal(QPointF(at)),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(at), on->mapToGlobal(QPointF(at)),
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(on, &press);
+    QApplication::sendEvent(on, &release);
+    return true;
+}
+
+extern "C" int gb_qt_link_press(void *window, const char *name, const char *target,
+                                char *err, size_t err_size) {
+    GbQtNode *root = (GbQtNode *)window;
+    QObject *o = root ? root->parts.value(QString::fromUtf8(name), nullptr) : nullptr;
+    QTextBrowser *tb = qobject_cast<QTextBrowser *>(o);
+    if (!tb) {
+        say(err, err_size, QByteArray("`") + name + "` is not a `markdown` part");
+        return 0;
+    }
+    if (!press_link(tb, target)) {
+        say(err, err_size, QByteArray("`") + name + "` has no link to `" +
+                               (target ? target : "") + "`");
+        return 0;
+    }
+    return 1;
+}
+
+/* DRIVING A BLOCK, for a fixture: a real press on its body, a real click on
+ * its collapse control, or a real press and release on a link's own text. */
+extern "C" int gb_qt_block_press(void *window, const char *name, const char *id,
+                                 const char *action, const char *target,
+                                 char *err, size_t err_size) {
+    GbQtSourceEdit *e = source_edit_named(window, name, err, err_size);
+    if (!e) {
+        return 0;
+    }
+    GbQtBlock *k = nullptr;
+    for (GbQtBlock *b : e->m_blocks) {
+        if (b->id == QString::fromUtf8(id)) {
+            k = b;
+        }
+    }
+    if (!k) {
+        say(err, err_size, QByteArray("`") + name + "` has no block `" + id + "`");
+        return 0;
+    }
+    if (strcmp(action, "collapse") == 0) {
+        k->toggle->click();
+        return 1;
+    }
+    QAbstractScrollArea *sa = qobject_cast<QAbstractScrollArea *>(k->body);
+    QWidget *on = sa ? sa->viewport() : k->body;
+    QPoint at(4, 4);
+    if (strcmp(action, "link") == 0) {
+        QTextBrowser *tb = qobject_cast<QTextBrowser *>(k->body);
+        if (!tb) {
+            say(err, err_size, QByteArray("block `") + id + "` is not markdown, so it has no links");
+            return 0;
+        }
+        if (!press_link(tb, target)) {
+            say(err, err_size, QByteArray("block `") + id + "` has no link to `" +
+                                   (target ? target : "") + "`");
+            return 0;
+        }
+        return 1;
+    } else if (strcmp(action, "click") != 0) {
+        say(err, err_size, QByteArray("`") + action + "` is not a block action; "
+                           "the actions are click, collapse and link");
+        return 0;
+    }
+    QMouseEvent press(QEvent::MouseButtonPress, QPointF(at), on->mapToGlobal(QPointF(at)),
+                      Qt::LeftButton, Qt::LeftButton, Qt::NoModifier);
+    QMouseEvent release(QEvent::MouseButtonRelease, QPointF(at), on->mapToGlobal(QPointF(at)),
+                        Qt::LeftButton, Qt::NoButton, Qt::NoModifier);
+    QApplication::sendEvent(on, &press);
+    QApplication::sendEvent(on, &release);
+    return 1;
+}
+
 /* ---- POSITIONS IN A TEXT EDITOR (§0.32, §0.36) ----------------------------
  *
  * COLUMNS COUNT CODEPOINTS, as `len`, `mid` and `regex` do, so a match found in
@@ -4749,8 +5735,49 @@ static KSyntaxHighlighting::Theme theme_named(QPlainTextEdit *e, const char *the
     if (theme && strcmp(theme, "light") == 0) {
         return repo()->defaultTheme(KSyntaxHighlighting::Repository::LightTheme);
     }
+    /* A THEME BY ITS NAME (§0.38 D1): "Breeze Light", "Printing", or one in
+     * <syntax path>/themes/*.theme. qt.c has already refused a name the
+     * repository does not know, so an invalid one here is not reached. */
+    if (theme && *theme) {
+        KSyntaxHighlighting::Theme t = repo()->theme(QString::fromUtf8(theme));
+        if (t.isValid()) {
+            return t;
+        }
+    }
     return repo()->themeForPalette(e->palette());
 }
+#endif
+
+extern "C" int gb_qt_theme_known(const char *name) {
+#if HAVE_KSYNTAX
+    return repo()->theme(QString::fromUtf8(name ? name : "")).isValid() ? 1 : 0;
+#else
+    (void)name;
+    return -1;
+#endif
+}
+
+extern "C" char *gb_qt_theme_names(void) {
+#if HAVE_KSYNTAX
+    QStringList names;
+    for (const KSyntaxHighlighting::Theme &t : repo()->themes()) {
+        names << t.name();
+    }
+    names.sort();
+    QByteArray bytes = names.join("\n").toUtf8();
+    char *out = (char *)malloc((size_t)bytes.size() + 1);
+    if (!out) {
+        abort();
+    }
+    memcpy(out, bytes.constData(), (size_t)bytes.size());
+    out[bytes.size()] = '\0';
+    return out;
+#else
+    return nullptr;
+#endif
+}
+
+#if HAVE_KSYNTAX
 
 /* THE EDITOR'S OWN COLOURS MUST FOLLOW THE THEME, or a dark theme paints dark
  * text on the widget's light background and the result is less readable than
@@ -4872,6 +5899,26 @@ extern "C" char *gb_qt_highlight_file(void *window, const char *name) {
 #if HAVE_KSYNTAX
     KSyntaxHighlighting::Definition def = applied_definition(window, name);
     return def.isValid() ? dup_qbytes(def.filePath().toUtf8()) : nullptr;
+#else
+    (void)window;
+    (void)name;
+    return nullptr;
+#endif
+}
+
+extern "C" char *gb_qt_highlight_theme(void *window, const char *name) {
+#if HAVE_KSYNTAX
+    QPlainTextEdit *e = source_named(window, name, nullptr, 0);
+    if (!e) {
+        return nullptr;
+    }
+    KSyntaxHighlighting::SyntaxHighlighter *hl =
+        e->findChild<KSyntaxHighlighting::SyntaxHighlighter *>(
+            QString(), Qt::FindDirectChildrenOnly);
+    if (!hl || !hl->theme().isValid()) {
+        return nullptr;
+    }
+    return dup_qbytes(hl->theme().name().toUtf8());
 #else
     (void)window;
     (void)name;

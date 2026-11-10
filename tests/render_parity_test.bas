@@ -47,7 +47,7 @@ program main(args)
     show(mode, -1)
     show(mode, 3.5)
     show(mode, 1000000)
-    show(mode, 0.1 + 0.2)
+    show(mode, 1e-1 + 2e-1)
     show(mode, 1 / 3)
 
     ' --- strings, including the byte-level awkward ones -----------------------
@@ -80,7 +80,7 @@ program main(args)
     ' Agreement is not correctness, which is why these are here.
     show(mode, [0.1])
     show(mode, [1 / 3])
-    show(mode, [0.1 + 0.2])
+    show(mode, [1e-1 + 2e-1])
     show(mode, { x: 0.1 })
     show(mode, [[0.1]])
     show(mode, { deep: { frac: 1 / 3 } })

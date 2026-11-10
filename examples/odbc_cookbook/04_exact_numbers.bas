@@ -36,7 +36,7 @@ program main(args)
   print "id number : " + string(number(row.id)) + "   <- exact, since 0.7.1"
   print ""
   print "amount    : " + row.amount + " (" + type(row.amount) + ")"
-  print "amount num: " + string(number(row.amount)) + "   <- a digit gone, silently"
+  print "amount num: " + string(number(row.amount)) + "   <- exact, since exact decimals"
 
   ' So: an integer id converts freely. A fractional amount does not -- where the
   ' loss is acceptable (a chart axis, a rough total) convert deliberately with

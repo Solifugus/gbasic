@@ -11,4 +11,4 @@ attr_missing_unknown=true
 attr_default=none
 find_miss_unknown=true
 find_all_miss_empty=0
-text_of_unknown=[]
+text_of_unknown_raises=true

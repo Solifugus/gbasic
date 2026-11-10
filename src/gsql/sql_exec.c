@@ -638,6 +638,7 @@ static const char *col_kind_word(int kind) {
     case GSQL_COL_DATE: return "a date";
     case GSQL_COL_TIME: return "a time";
     case GSQL_COL_DATETIME: return "a date-time";
+    case GSQL_COL_DURATION: return "a duration";
     default: return "that kind";
     }
 }
@@ -672,13 +673,21 @@ static GsqlHv *text_read_as(X *x, const GsqlHv *text, int kind, const char *cur,
     }
     GsqlError why;
     memset(&why, 0, sizeof why);
-    GsqlHv *c = x->h->cast(x->h->ctx, src, kind, cur, &why);
+    /* read as STORING reads it, so a date compared with text that has a time of
+       day is refused, not compared as that day (gdash A7's ruling carried to
+       comparisons, Matthew 2026-11-07): `d = '2026-01-15T10:00'` was true */
+    GsqlHv *c = x->h->assign(x->h->ctx, src, kind, cur, &why);
     if (!c) {
         size_t m = 0;
         char *shown = text_of(x, src, &m);
-        xfail(err, GSQL_EXPRESSION, pos, "%s compares %s with text that does not read as %s: '%.80s' (%.200s)",
-              sql_op_text(op), col_kind_word(kind), kind == GSQL_COL_MONEY ? "money" : col_kind_word(kind),
-              shown ? shown : "", why.message);
+        if (why.code == GSQL_TYPE) {
+            xfail(err, GSQL_EXPRESSION, pos, "%s compares %s with text that %.200s: '%.80s'", sql_op_text(op),
+                  col_kind_word(kind), why.message, shown ? shown : "");
+        } else {
+            xfail(err, GSQL_EXPRESSION, pos, "%s compares %s with text that does not read as %s: '%.80s' (%.200s)",
+                  sql_op_text(op), col_kind_word(kind), kind == GSQL_COL_MONEY ? "money" : col_kind_word(kind),
+                  shown ? shown : "", why.message);
+        }
         free(shown);
     }
     rel(x, src);
@@ -1266,6 +1275,12 @@ static int eval_into(X *x, SqlExpr *e, GsqlBuf *out) {
  * decided in one place. Everywhere else stays strict -- this is called only
  * where a value is STORED.
  *
+ * A DATE COLUMN REFUSES TEXT WITH A TIME OF DAY (gdash A7, Matthew's ruling
+ * 2026-11-07): CAST takes the date of '2026-01-15T10:00', storing does not,
+ * since the time would be lost in silence. So storing goes through the host's
+ * `assign`, which is CAST but for that; midnight loses nothing and is stored.
+ * A comparison reads text the same way (text_read_as), so it refuses too.
+ *
  * AN INTEGER COLUMN TAKES TEXT THAT IS EXACTLY AN INTEGER (Matthew's ruling
  * 2026-11-02, gbasic-books volume 3 Q1): every field `csv.records` reads is
  * text, so without this every integer column in every import needed a cast.
@@ -1282,7 +1297,15 @@ static int store_convert(X *x, int kind, const char *currency, const char *table
     int tag = out->bytes[0];
     int temporal = kind == GSQL_COL_DATE || kind == GSQL_COL_TIME || kind == GSQL_COL_DATETIME;
     int numeric = kind == GSQL_COL_INTEGER || kind == GSQL_COL_NUMBER;
-    if (!((temporal && tag == SER_STRING) || (kind == GSQL_COL_MONEY && (tag == SER_STRING || tag == SER_NUMBER)) ||
+    if (kind == GSQL_COL_DURATION && tag == SER_NUMBER) {
+        /* a number has no unit, and seconds would be the column's guess
+           (docs/gsql_duration_design.md §4) */
+        int rc = xfail(x->err, GSQL_TYPE, 0, "%s.%s is duration, and a number has no unit: give text such as "
+                       "'90 seconds', or from gBASIC a duration such as (1 second) * n", table, col);
+        gsql_error_about(x->err, table, col, NULL);
+        return rc;
+    }
+    if (!((temporal && tag == SER_STRING) || (kind == GSQL_COL_DURATION && tag == SER_STRING) || (kind == GSQL_COL_MONEY && (tag == SER_STRING || tag == SER_NUMBER)) ||
           (numeric && tag == SER_STRING))) {
         return GSQL_OK;
     }
@@ -1309,12 +1332,21 @@ static int store_convert(X *x, int kind, const char *currency, const char *table
     }
     GsqlError why;
     memset(&why, 0, sizeof why);
-    GsqlHv *c = x->h->cast(x->h->ctx, v, kind, currency, &why);
+    GsqlHv *c = x->h->assign(x->h->ctx, v, kind, currency, &why);
     rel(x, v);
+    if (!c && why.code == GSQL_TYPE) {
+        /* it read, and would lose part of itself (a date's time of day) */
+        char *t = v3_read_text(out->bytes, out->length);
+        int rc = xfail(x->err, GSQL_TYPE, 0, "%s.%s is date, and the text given, '%.80s', %s", table, col,
+                       t ? t : "", why.message);
+        gsql_error_about(x->err, table, col, NULL);
+        free(t);
+        return rc;
+    }
     if (!c) {
         const char *kw = kind == GSQL_COL_DATE ? "date" : kind == GSQL_COL_TIME ? "time"
                          : kind == GSQL_COL_DATETIME ? "datetime" : kind == GSQL_COL_INTEGER ? "integer"
-                         : kind == GSQL_COL_NUMBER ? "number" : "money";
+                         : kind == GSQL_COL_NUMBER ? "number" : kind == GSQL_COL_DURATION ? "duration" : "money";
         int rc = xfail(x->err, GSQL_TYPE, 0, "%s.%s is %s%s%s%s, and the %s given does not read as one: %.300s",
                        table, col, kind == GSQL_COL_MONEY ? "money" : kw, kind == GSQL_COL_MONEY && currency[0] ? "(" : "",
                        kind == GSQL_COL_MONEY ? currency : "", kind == GSQL_COL_MONEY && currency[0] ? ")" : "",
@@ -2151,7 +2183,7 @@ static int key_of_value(X *x, const GsqlHv *v, const SqlExpr *e, GsqlKey *key) {
         GsqlKeyStatus st = gsql_key_append(key, b.bytes, b.length, NULL, 0);
         if (st != GSQL_KEY_OK) {
             rc = xfail(x->err, GSQL_EXPRESSION, e->pos,
-                       "%s cannot be grouped or made DISTINCT: it has no single equality G-SQL can key",
+                       "%s cannot be grouped or made DISTINCT: G-SQL has no key for it",
                        tag_word(b.length ? b.bytes[0] : 0));
         }
     }
@@ -2598,7 +2630,7 @@ static int distinct_first(SqlCursor *c, const GsqlBuf *row) {
     for (size_t k = 0; k < n; k++) {
         if (gsql_key_append(&key, items[k].p, items[k].n, NULL, 0) != GSQL_KEY_OK) {
             xfail(x->err, GSQL_EXPRESSION, c->plan.out[k]->pos,
-                  "%s cannot be grouped or made DISTINCT: it has no single equality G-SQL can key",
+                  "%s cannot be grouped or made DISTINCT: G-SQL has no key for it",
                   tag_word(items[k].n ? items[k].p[0] : 0));
             gsql_key_free(&key);
             free(items);
@@ -8483,8 +8515,8 @@ static int row_key(SqlCursor *c, const SqlPlan *p, const GsqlBuf *row, GsqlKey *
     for (size_t k = 0; k < n; k++) {
         if (gsql_key_append(key, items[k].p, items[k].n, NULL, 0) != GSQL_KEY_OK) {
             int rc = xfail(&c->err, GSQL_EXPRESSION, p->s->pos,
-                           "%s cannot be compared by a UNION, INTERSECT or EXCEPT: it has no single equality "
-                           "G-SQL can key", tag_word(items[k].n ? items[k].p[0] : 0));
+                           "%s cannot be compared by a UNION, INTERSECT or EXCEPT: G-SQL has no key "
+                           "for it", tag_word(items[k].n ? items[k].p[0] : 0));
             free(items);
             return rc;
         }
@@ -8944,7 +8976,7 @@ static int rec_row_key(X *x, const GsqlBuf *row, GsqlKey *key) {
     for (long k = 0; k < n; k++) {
         if (gsql_key_append(key, items[k].p, items[k].n, NULL, 0) != GSQL_KEY_OK) {
             return xfail(x->err, GSQL_EXPRESSION, x->p->s->pos,
-                         "%s cannot be made distinct by UNION: it has no single equality G-SQL can key",
+                         "%s cannot be made distinct by UNION: G-SQL has no key for it",
                          tag_word(items[k].n ? items[k].p[0] : 0));
         }
     }
@@ -9002,7 +9034,7 @@ static int cycle_key(X *x, const SqlPlan *rp, const unsigned char *el, size_t n,
     for (size_t k = 0; k < nv; k++) {
         if (gsql_key_append(key, v[k].p, v[k].n, NULL, 0) != GSQL_KEY_OK) {
             return xfail(x->err, GSQL_EXPRESSION, x->p->s->pos,
-                         "%s cannot be watched by CYCLE: it has no single equality G-SQL can key",
+                         "%s cannot be watched by CYCLE: G-SQL has no key for it",
                          tag_word(v[k].n ? v[k].p[0] : 0));
         }
     }
@@ -9404,7 +9436,7 @@ static int dflush(Dump *d, GsqlError *err) {
 }
 
 static const char *const dump_kind_names[] = {
-    "?", "NUMBER", "INTEGER", "TEXT", "BOOLEAN", "MONEY", "DATE", "TIME", "DATETIME", "RECORD"
+    "?", "NUMBER", "INTEGER", "TEXT", "BOOLEAN", "MONEY", "DATE", "TIME", "DATETIME", "RECORD", "DURATION"
 };
 
 /* one stored value as its literal; a record through the host's `encode` */
@@ -9435,6 +9467,29 @@ static int dump_value(X *x, Dump *d, const unsigned char *v, size_t n, const cha
         gsql_buf_free(&text);
         return GSQL_OK;
     }
+    if (n && v[0] == SER_DURATION) {
+        /* its printed text, which CAST reads back field for field
+           (docs/gsql_duration_design.md §5) */
+        GsqlHv *hv = x->h->load(x->h->ctx, v, n, err);
+        GsqlHv *t = hv ? x->h->call(x->h->ctx, "string", &hv, 1, err) : NULL;
+        if (hv) {
+            rel(x, hv);
+        }
+        GsqlBuf text = {0};
+        int rc = t ? x->h->store(x->h->ctx, t, &text, err) : (err->code ? err->code : GSQL_EXPRESSION);
+        if (t) {
+            rel(x, t);
+        }
+        if (rc != GSQL_OK) {
+            gsql_buf_free(&text);
+            return rc;
+        }
+        dput(d, "CAST(");
+        sql_print_value(&d->line, text.bytes, text.length);
+        dput(d, " AS DURATION)");
+        gsql_buf_free(&text);
+        return GSQL_OK;
+    }
     if (!sql_print_value(&d->line, v, n)) {
         return xfail(err, GSQL_TYPE, 0, "DUMP TO: `%.80s.%.80s` holds %s, which has no SQL literal that reads back "
                      "as the same value", table, col, tag_word(n ? v[0] : 0));
@@ -9458,7 +9513,7 @@ static int dump_table_schema(X *x, Dump *d, GsqlTable *tb, GsqlError *err) {
             snprintf(b, sizeof b, "MONEY(%s)", c->currency);
             dput(d, b);
         } else {
-            dput(d, dump_kind_names[c->kind >= 1 && c->kind <= GSQL_COL_RECORD ? c->kind : 0]);
+            dput(d, dump_kind_names[c->kind >= 1 && c->kind <= GSQL_COL_LAST ? c->kind : 0]);
         }
         if (c->not_null && !c->gen) {
             dput(d, " NOT NULL");

@@ -1,0 +1,34 @@
+' qt.run() with a top-level timer watch, from the top level or from inside a
+' function (HANDOVER is replaced by the runner). From a function it used to
+' hang: the loop's deliveries were refused while a function frame was current.
+' A loop delivery fires every live frame's watches now (§4).
+window app( title: "L", width: 200, height: 120 )
+    column
+        text t( label: "x" )
+    end column
+end window
+function handover()
+    qt.run()
+    return nothing
+end function
+program main(args)
+    if not qt.can_display() then
+        print "NODISPLAY"
+        return
+    end if
+    seen = 0
+    qt.open(app)
+    beat = timer.every(0.05)
+    watch(timer.ticks)
+        while count(timer.ticks) > 0
+            ev = take_first(timer.ticks)
+            seen = seen + 1
+            if seen >= 2 then
+                cancelled = timer.cancel(beat)
+                qt.stop()
+            end if
+        end while
+    end watch
+    HANDOVER
+    print "TICKS " + string(seen)
+end program

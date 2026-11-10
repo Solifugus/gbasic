@@ -80,8 +80,13 @@ static int write_all(int fd, const unsigned char *p, size_t n) {
  * holds none, in the runtime directory (gsql_owner.h); tried in that order. */
 static int connect_to(const char *sock, const char *fallback) {
     int s = gsql_socket_connect(sock);
+    int full = s < 0 && errno == EAGAIN;
     if (s < 0 && fallback[0]) {
         s = gsql_socket_connect(fallback);
+        full = full || (s < 0 && errno == EAGAIN);
+    }
+    if (s < 0) {
+        errno = full ? EAGAIN : ECONNREFUSED;
     }
     return s;
 }
@@ -337,10 +342,19 @@ static void drop(GsqlClient *c) {
     gsql_reader_free(&c->rd);
 }
 
-/* Reaches an owner: connect, or start one. Bounded in attempts and time. */
+/* Reaches an owner: connect, or start one. Bounded in time: ATTEMPTS tries
+ * at once, then one every 20 ms until the client's wait has passed. Owners
+ * that come and go at linger 0 can take several tries in a row from a client,
+ * each lost in milliseconds, so a count alone gave up on a database that was
+ * there (one open in 8000 under the churn tier). */
 static int reach(GsqlClient *c, GsqlError *err) {
     GsqlError last = { GSQL_NO_OWNER, "", 0, 0, "", "", "", 0 };
-    for (int attempt = 0; attempt < ATTEMPTS; attempt++) {
+    uint64_t until = now_ms() + (c->opt.wait_ms ? c->opt.wait_ms : DEFAULT_WAIT_MS);
+    int attempt;
+    for (attempt = 0; attempt < ATTEMPTS || now_ms() < until; attempt++) {
+        if (attempt >= ATTEMPTS) {
+            pause_ms(20);
+        }
         char sock[4200], fallback[600];
         int rc = gsql_socket_path(c->db, sock, sizeof sock, &c->device, &c->inode, &last);
         int started = 0;
@@ -372,13 +386,19 @@ static int reach(GsqlClient *c, GsqlError *err) {
                 return err_set(err, last.code, "%s", last.message);
             }
         }
-        /* a busy owner lost to one that may not have bound its socket yet */
+        /* An owner says ready once bound, and busy once the winner's socket
+           answered, so only a socket too busy to accept (EAGAIN, its backlog
+           full) is worth waiting for. Anything else is an owner that has
+           gone: at linger 0 a winner leaves with its last client within
+           milliseconds of answering, and waiting 10 s for it was gdash's
+           G20-15 (docs/gsql_owner_lifetime_design.md §3). Start again. */
         uint64_t deadline = now_ms() + (c->opt.wait_ms ? c->opt.wait_ms : DEFAULT_WAIT_MS);
-        while (c->fd < 0 && now_ms() < deadline) {
+        if (c->fd < 0) {
             c->fd = connect_to(sock, fallback);
-            if (c->fd < 0) {
-                pause_ms(2);
-            }
+        }
+        while (c->fd < 0 && errno == EAGAIN && now_ms() < deadline) {
+            pause_ms(2);
+            c->fd = connect_to(sock, fallback);
         }
         if (c->fd < 0) {
             snprintf(last.message, sizeof last.message, "no owner answered on %.400s", sock);
@@ -393,7 +413,7 @@ static int reach(GsqlClient *c, GsqlError *err) {
             return err_set(err, last.code, "%s", last.message);
         }
     }
-    return err_set(err, GSQL_NO_OWNER, "no owner could be reached for %s after %d attempts: %s", c->db, ATTEMPTS,
+    return err_set(err, GSQL_NO_OWNER, "no owner could be reached for %s after %d attempts: %s", c->db, attempt,
                    last.message);
 }
 

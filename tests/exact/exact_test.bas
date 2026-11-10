@@ -16,6 +16,15 @@
 ' one digit out, and a golden would record it as expected -- which is exactly how
 ' it survived until now.
 
+' raises on its line 2, column 5 -- raised_line() names that line in the file
+function raise_coded()
+    error { message: "coded", code: 50 }
+end function
+
+function raised_line()
+    return 21
+end function
+
 function check(label, got, want)
     if string(got) = string(want) then
         print "ok   " + label
@@ -52,16 +61,18 @@ program main( args )
     check("4 = 4.0                  ", 4 = 4.0, true)
 
     print "-- what is NOT exact, and each is a decision rather than an omission"
-    ' A FRACTION, obviously. An EXPONENT literal, because the notation says
+    ' A FRACTION WAS, until exact decimals (docs/exact_decimal_design.md):
+    ' `0.5 + 0.25` is now the exact decimal 0.75, and run_exact_decimal.sh
+    ' holds that. The check below compares values, so it holds either way. An EXPONENT literal, because the notation says
     ' "approximately this magnitude" -- `number("...")` is how to ask for the
     ' integer, and this was an open decision in the design settled here.
     check("a fraction               ", 0.5 + 0.25, 0.75)
-    check("floating addition unmoved", 0.1 + 0.2, 0.30000000000000004)
+    check("floating addition unmoved", 1e-1 + 2e-1, 0.30000000000000004)
     check("an exponent literal      ", 1e16 + 1 = 10000000000000001, false)
     ' MIXED IS INEXACT: `exact + inexact` has no exact answer, and promoting the
     ' inexact side would invent precision it never had. That is also why there is
     ' no promotion matrix -- one numeric kind, one rule.
-    check("mixed falls back         ", 9007199254740992 + 1.0 = 9007199254740993, false)
+    check("mixed falls back         ", 9007199254740992 + 1e0 = 9007199254740993, false)
     ' DIVISION IS DELIBERATELY ABSENT: integer division is not integer-valued, and
     ' a rational kind is a different language.
     check("division is inexact      ", 6 / 3, 2)
@@ -209,6 +220,57 @@ program main( args )
     check("round with places        ", round(b, 2), b)
     check("sign                     ", sign(b), 1)
 
+    print "-- a whole answer is exact: floor, ceil and round of an inexact or decimal number"
+    ' Matthew, 2026-11-09: floor, ceil and round answer a whole number, and to
+    ' 2^53 a double holds each whole number, so the answer is exact. It was a
+    ' double, which a G-SQL `integer` column refuses (Transward). OBSERVED BY
+    ' ARITHMETIC: added to n = 2^53 - 2, an exact 3 gives ...993, which no double
+    ' holds; an inexact 3 gives ...992 or ...994.
+    n = 9007199254740990
+    check("floor of a double        ", floor(3.7e0) + n, 9007199254740993)
+    check("ceil of a double         ", ceil(2.1e0) + n, 9007199254740993)
+    check("round of a double        ", round(2.5e0) + n, 9007199254740993)
+    check("round of a negative      ", round(0e0 - 2.5e0) + n, 9007199254740987)
+    check("floor of a decimal       ", floor(3.7) + n, 9007199254740993)
+    check("ceil of a decimal        ", ceil(0 - 3.7) + n, 9007199254740987)
+    check("round of a decimal       ", round(2.675) + n, 9007199254740993)
+    check("round to no places, said ", round(2.5e0, 0) + n, 9007199254740993)
+    ' A DECIMAL WITH NO PLACES IS STILL A DECIMAL, and exact, so the sums above
+    ' cannot tell it from an integer; serialize records the kind, and an integer
+    ' column wants the integer
+    check("floor(3.7) is integer 3  ", serialize(floor(3.7)) = serialize(3), true)
+    check("ceil(-3.7) is integer -3 ", serialize(ceil(0 - 3.7)) = serialize(0 - 3), true)
+    check("round(2.675) is integer 3", serialize(round(2.675)) = serialize(3), true)
+    check("round(3.7e0) is integer 4", serialize(round(3.7e0)) = serialize(4), true)
+    ' the neighbours: with places the answer keeps its kind, and past 2^53 a
+    ' double is not every integer, so floor leaves it a double
+    check("round(2.675, 2) a decimal", round(2.675, 2), 2.68)
+    check("round(2.25e0, 1)          ", round(2.25e0, 1) = 2.3, true)
+    check("floor(1e300) a double     ", floor(1e300) = 1e300, true)
+    check("and its arithmetic too    ", floor(1e300) + 1 = 1e300, true)
+    ' a size is a count, exact as len and byte_count are
+    tf = temp_file()
+    write(tf, "abc")
+    check("file_size                ", file_size(tf) + n, 9007199254740993)
+    delete(tf)
+
+    print "-- an error's code, line and column are exact integers"
+    ' Transward carries a native engine's result codes as error codes into a
+    ' G-SQL integer column, which refused error.code as inexact (2026-11-09)
+    on error goto next
+    raise_coded()
+    check("error.code               ", error.code + n, 9007199254741040)
+    check("error.line               ", error.line + n, 9007199254740990 + raised_line())
+    check("error.column             ", error.column + n, 9007199254740995)
+    ' the frame's line is the call's, wherever that is; 2*line + 1 is odd, so
+    ' only an exact line gives the sum computed from its own text
+    tl = error.trace[0].line
+    check("a trace frame's line     ", 2 * tl + 1 + n, 2 * number(string(tl)) + 1 + n)
+    e = error
+    error.clear()
+    on error stop
+    check("a snapshot's code        ", e.code + n, 9007199254741040)
+
     print "-- `mod` on exact operands, which was a WRONG answer"
     check("parity of an odd integer ", mod(b, 2), 1)
     check("and of its neighbour     ", mod(b - 1, 2), 0)
@@ -330,8 +392,8 @@ program main( args )
     check("so does division         ", (b / 1) = b, false)
     ' AN INEXACT OPERAND CANNOT PRODUCE AN EXACT ANSWER, which is the half of the
     ' rule that stops exactness being invented.
-    check("mixed min is inexact     ", min([b, b + 0.0]) = b, false)
-    check("mod with an inexact side ", mod(b, 2.0) = 1, false)
+    check("mixed min is inexact     ", min([b, b + 0e0]) = b, false)
+    check("mod with an inexact side ", mod(b, 2e0) = 1, false)
     check("pow with a fraction      ", pow(2, 0.5), 1.4142135623730951)
     check("pow with a negative      ", pow(2, 0 - 1), 0.5)
     ' ROOTS AND LOGARITHMS ARE INEXACT BY NATURE and are deliberately untouched:

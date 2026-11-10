@@ -19,5 +19,6 @@ program main(args)
     s2 = chart.y(s2, ["share"])
     s2 = chart.size(s2, 240, 240)
     d = gpdf.svg(d, chart.render(s2), 320, 500, {})
-    print string(gpdf.save(d, args[0] + "/pies.pdf"))
+    gpdf.save(d, args[0] + "/pies.pdf")
+    print string(file_size(args[0] + "/pies.pdf"))
 end program

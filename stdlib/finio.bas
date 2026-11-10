@@ -203,6 +203,60 @@ function layout(fields)
     return out
 end function
 
+' `render(layout, values)` -> one fixed-width record, from the same layout a
+' reader uses (book gap G45). Origination is the payer's decision (Axiom 9),
+' so no adapter composes a file; but a payer writing its own needs exactly
+' these layouts, and a second copy of where each field goes is a second thing
+' to be wrong. EVERY CONCEPT MUST BE GIVEN, AS TEXT OF EXACTLY ITS FIELD'S
+' WIDTH: a value too short or too long is REFUSED, never padded or cut, since
+' a cut account number is a well-formed record meaning something else.
+' Formatting (zero-filling an amount, right-aligning a name) is the caller's,
+' who knows what the field means. Bytes no field covers are spaces.
+function render(lay, values)
+    if type(lay) != "array" then
+        error "finio.render expects a layout from finio.layout"
+    end if
+    if type(values) != "record" then
+        error "finio.render expects a record of values, one per concept"
+    end if
+    for each k in keys(values)
+        if not contains(concepts(lay), k) then
+            error "finio.render: '" + k + "' is not a concept of this layout"
+        end if
+    end for
+    width = 0
+    for each f in lay
+        if f.offset + f.length > width then
+            width = f.offset + f.length
+        end if
+    end for
+    slots = []
+    i = 0
+    while i < width
+        append(slots, " ")
+        i = i + 1
+    end while
+    for each f in lay
+        if not has(values, f.concept) then
+            error "finio.render: no value for '" + f.concept + "' (" + string(f.length) + " bytes at offset " + string(f.offset) + ")"
+        end if
+        v = values[f.concept]
+        if type(v) != "string" then
+            error "finio.render: '" + f.concept + "' must be text of " + string(f.length) + " bytes; format it first"
+        end if
+        if byte_count(v) != f.length then
+            error ("finio.render: '" + f.concept + "' is " + string(f.length) + " bytes and the value given is "
+                   + string(byte_count(v)) + " -- it is refused, never padded or cut")
+        end if
+        j = 0
+        while j < f.length
+            slots[f.offset + j] = byte_slice(v, j, 1)
+            j = j + 1
+        end while
+    end for
+    return join(slots, "")
+end function
+
 function concepts(lay)
     out = []
     for each f in lay

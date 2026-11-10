@@ -1,1 +1,1 @@
-runtime error at tests/negative_scrypt_over_memory.bas:2:5: scrypt derivation failed (cost likely exceeds the memory limit)
+runtime error at tests/negative_scrypt_over_memory.bas:2:5: scrypt could not derive: n 1099511627776, r 8 and p 1 need 1 PiB of memory (128 x r x (n + p + 2) bytes), which could not be had

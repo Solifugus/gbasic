@@ -32,6 +32,12 @@ handle:
     return replace(m, regex(" at line [0-9]+,"), ",")
 end function
 
+function lock_a_time_of_day()
+    k:date = "2026-01-01"
+    k = {datetime}"2026-01-02T10:30:00"
+    return k
+end function
+
 function raw_refusal(f)
     on error goto handle
     r = f()
@@ -62,8 +68,13 @@ check("  and from a number", m, {USD}2)
 d:date = "2026-01-02"
 check("date from text", d, {date}"2026-01-02")
 dt {datetime}= "2026-01-02T10:30:00"
-d = dt
-check("  a datetime value converts to its date", d, {date}"2026-01-02")
+' a datetime VALUE with a time of day is refused, as its text is (book gap G40,
+' Matthew's ruling 2026-11-08): it used to convert to its date in silence
+check("  a datetime value with a time of day is refused", contains(refusal(lock_a_time_of_day), "it has a time of day (10:30:00), which a date would lose"), true)
+d = {datetime}"2026-01-02T00:00:00"
+check("  a datetime at midnight converts to its date", d, {date}"2026-01-02")
+d = {date}dt
+check("  and {date} takes the date when that is meant", d, {date}"2026-01-02")
 tm:time = dt
 check("time from a datetime value", tm, {time}"10:30:00")
 when:datetime = "2026-01-02"
@@ -177,7 +188,7 @@ check("text that is no number", refusal(bad_text),
       "y is locked to number by y:number, and this value does not convert: number modifier expects a valid number string")
 
 check("  the refusal names the line the lock was declared on",
-      contains(raw_refusal(bad_text), "by y:number at line " + "172" + ","), true)
+      contains(raw_refusal(bad_text), "by y:number at line " + "183" + ","), true)
 
 function bad_array()
     y:number = 1

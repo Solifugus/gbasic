@@ -1,0 +1,14 @@
+child on the parent stdout
+inherit: the pipe got [], exit 0
+inherit stderr: the pipe got [], exit 0
+a file: stdout [out] stderr []
+the file, appended to:
+already here
+err
+
+null: [] [] exit 0
+null stderr, stdout still read: still
+pipe, said: [out] [err]
+a bare path: process.start: options.stderr must be "pipe" (the default), "null", "inherit", or a file such as {file}"run.log" (appended to)
+a number: process.start: options.stdout must be "pipe" (the default), "null", "inherit", or a file such as {file}"run.log" (appended to)
+a file that cannot be opened: process.start: options.stdout: could not open '/nonexistent/dir/x.log': No such file or directory

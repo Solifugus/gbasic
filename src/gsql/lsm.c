@@ -309,6 +309,12 @@ typedef struct FileMeta {
     struct GsStore *db;
     int refs;                  /* versions holding it */
     int obsolete;              /* dropped by a compaction; delete at refs 0 */
+    /* No record of a tree retired at or before this sequence: what the flush
+     * or compaction that wrote it dropped. In memory only, 0 for a file read
+     * from the manifest, which can cost one rewrite after an open. It is what
+     * stops dead_start rewriting a live file forever whose id range merely
+     * spans a dead tree's id. */
+    uint64_t clean_after;
     /* opened lazily; the index and bloom stay when the handle is closed */
     struct Hnd *h;
     IdxEntry *index;
@@ -403,6 +409,7 @@ struct GsStore {
     uint64_t read_seen, read_idle; /* last_seq at the last read, and reads since a commit */
     int spare_ready;
     uint64_t gc_seen;         /* the vgen at which no blob file was worth collecting */
+    uint64_t dead_seen, dead_seen_at; /* the vgen and horizon at which no file held a dead tree */
     int sweep;                /* a retired tree or a released snapshot may have freed whole files */
     int failed;
     unsigned char identity[16];
@@ -2167,7 +2174,11 @@ static int comp_close_output(Comp *c) {
     FileMeta *fm = NULL;
     c->open = 0; /* closed whatever it answers: never close it twice */
     int rc = bld_close(&c->b, &fm);
-    if (fm) { c->outs = realloc(c->outs, (c->nouts + 1) * sizeof *c->outs); c->outs[c->nouts++] = fm; }
+    if (fm) {
+        fm->clean_after = c->keep_after;  /* the merge dropped every tree retired by then */
+        c->outs = realloc(c->outs, (c->nouts + 1) * sizeof *c->outs);
+        c->outs[c->nouts++] = fm;
+    }
     return rc;
 }
 
@@ -2488,6 +2499,65 @@ static int gc_start(GsStore *db) {
     return rc;
 }
 
+static int file_all_dead(GsStore *db, FileMeta *m, uint64_t keep_after);
+
+/* Begin a compaction for a DROPPED TREE'S SPACE when no other is wanted: a
+ * file whose tree-id range covers a tree retired at or before the horizon,
+ * and retired after the file was written, so it may hold that tree's
+ * records. A file holding ONLY dead trees is sweep_dead's, dropped whole; this
+ * is the file that also holds a live one, which nothing reclaimed until a
+ * compaction happened to reach it. Measured (gdash's GDASH-16 B3, a staging
+ * table renamed over live 12 times, about 18 MB live -- first reported as
+ * 5.5 MB, the recipe's rounds being 110,000 rows rather than 20,000): level
+ * 0 held up to 54 MB of such files and the directory 90 MB, since each flush
+ * mixes the swaps that fell in one memtable and only the l0 trigger ever
+ * compacted them.
+ * The largest such file goes first, rewritten where it is below level 0, and
+ * level 0 compacted when it is there, as gc_start does. Every output is clean
+ * as of the horizon it was written at, so no file is picked twice for the
+ * same death. The scan is skipped until the version or the horizon moves. */
+static int dead_start(GsStore *db) {
+    if (!db->ndead) return GS_OK;
+    uint64_t keep_after = horizon(db);
+    if (db->dead_seen == db->vgen + 1 && db->dead_seen_at == keep_after) return GS_OK;
+    Version *v = db->cur;
+    FileMeta *pick = NULL;
+    int plevel = 0;
+    for (int l = 0; l < LEVELS; l++)
+        for (size_t i = 0; i < v->nfiles[l]; i++) {
+            FileMeta *m = v->files[l][i];
+            if (m->smallest.n < ID_LEN || m->largest.n < ID_LEN) continue;
+            if (pick && m->size <= pick->size) continue;
+            if (file_all_dead(db, m, keep_after)) continue;   /* sweep_dead's */
+            uint64_t a = ukey_id(m->smallest.p), b = ukey_id(m->largest.p);
+            for (size_t j = 0; j < db->ndead; j++) {
+                uint64_t id = db->dead[j].id, death = db->dead[j].death;
+                if (id >= a && id <= b && death <= keep_after && death > m->clean_after) {
+                    pick = m;
+                    plevel = l;
+                    break;
+                }
+            }
+        }
+    if (!pick) {
+        db->dead_seen = db->vgen + 1;
+        db->dead_seen_at = keep_after;
+        return GS_OK;
+    }
+    if (plevel == 0) {
+        int rc = comp_start(db, 0);
+        if (rc == GS_OK && db->comp) db->comp->for_gc = 1;
+        /* a trivial move rewrote nothing: the files are below level 0 now,
+           and the next scan rewrites them where they are */
+        return rc;
+    }
+    FileMeta **inputs = malloc(sizeof *inputs);
+    inputs[0] = pick;
+    int rc = comp_make(db, plevel, plevel, inputs, 1, 1);
+    if (rc == GS_OK && db->comp) db->comp->for_gc = 1;
+    return rc;
+}
+
 /* A file whose every record belongs to a tree retired at or before the last
  * durable commit (the horizon) is read by nobody new, and is dropped whole --
  * the readers already open keep their pinned copy -- rather than left until a
@@ -2597,8 +2667,10 @@ static int maybe_compact(GsStore *db, uint64_t wrote) {
         if (!db->comp) {
             int l = comp_wanted(db);
             if (l < 0) {
-                /* nothing the shape needs: spend what is left on blob space */
+                /* nothing the shape needs: spend what is left on blob space,
+                   and then on the space of dropped trees */
                 if (!budget || (rc = gc_start(db))) return rc ? rc : GS_OK;
+                if (!db->comp && (rc = dead_start(db))) return rc;
                 if (!db->comp) return GS_OK;
             } else {
                 if ((rc = comp_start(db, l))) return rc;
@@ -2787,6 +2859,7 @@ static int flush_install(GsStore *db) {
     Version *nv = version_copy(db->cur);
     mem_unref(nv->imm);
     nv->imm = NULL;
+    if (fm) fm->clean_after = f->upto;   /* the flush skipped every tree retired by the freeze */
     if (fm) version_add(nv, 0, fm);
     uint64_t first_before = db->log_first;
     db->log_first = f->last + 1;
@@ -4195,9 +4268,51 @@ static int lsm_flush(GsStore *db) {
     return rc == GS_OK ? GS_OK : rc == GS_FULL ? GS_FULL : GS_IO;
 }
 
+/* What a closing store leaves of its logs. Without this a closed database
+ * kept two logs at their high-water size -- the one in use, recycled at full
+ * size by the flush, and a spare -- up to a memtable each (32 MB by default),
+ * for as long as it sat closed (gdash B3, 2026-11-08: 4.3 MB of logs beside
+ * 3.2 MB of table after one 20,000-row load).
+ *
+ * The spare goes: the next open makes one when it needs one. Past the last
+ * record the log is zeros or what lost commits left, so it is cut there.
+ * When everything is flushed (the owner flushes before it closes), the log
+ * in use goes to nothing and the older ones go, after a manifest naming only
+ * the one in use. That manifest is NOT load-bearing, measured: without it
+ * store_test stays green, since the next open finds the first named log
+ * gone, makes it anew, and sweeps the rest as unnamed. It is kept so the
+ * open names what is there, rather than relying on the sweep. Each step
+ * leaves a store the next open reads the same: a cut that is lost leaves a
+ * longer file, and an old log that survives its removal is unnamed. */
+static void close_tidy(GsStore *db) {
+    if (db->spare) {
+        gsql_io_close(db->spare);
+        db->spare = NULL;
+        char *name = log_name(db->path, db->log_num + 1);
+        gsql_io_remove(db->io, name);
+        free(name);
+    }
+    if (!db->log) return;
+    uint64_t first = db->log_first;
+    if (!db->fl && !db->cur->imm && !db->cur->mem->sk.count) {
+        db->log_first = db->log_num;
+        if (manifest_write(db) != GS_OK) {
+            db->log_first = first;
+        } else {
+            for (uint64_t k = first; k < db->log_num; k++) {
+                char *name = log_name(db->path, k);
+                gsql_io_remove(db->io, name);
+                free(name);
+            }
+            db->log_end = 0;
+        }
+    }
+    gsql_io_truncate(db->log, db->log_end);
+}
+
 static int lsm_close(GsStore *db) {
     if (db->writer || db->nsnaps) return GS_MISUSE;
-    if (!db->failed) lsm_sync(db, NULL);
+    if (!db->failed && lsm_sync(db, NULL) == GS_OK) close_tidy(db);
     store_free(db);
     return GS_OK;
 }

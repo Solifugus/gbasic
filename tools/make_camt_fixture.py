@@ -34,12 +34,15 @@ def balance(code, amount, ccy, ind, date):
 
 def entry(ref, amount, ccy, ind, booked, value, code, details=None):
     d = ""
+    # The OTHER party, by direction (book gap G43): on a credit the company
+    # received, the payer is the debtor; on a debit it paid, the creditor.
+    party = "Dbtr" if ind == "CRDT" else "Cdtr"
     if details:
         d = f"""
         <NtryDtls>
           <TxDtls>
             <Refs><EndToEndId>{details}</EndToEndId></Refs>
-            <RltdPties><Cdtr><Pty><Nm>{details} LTD</Nm></Pty></Cdtr></RltdPties>
+            <RltdPties><{party}><Pty><Nm>{details} LTD</Nm></Pty></{party}></RltdPties>
           </TxDtls>
         </NtryDtls>"""
     return f"""      <Ntry>

@@ -47,8 +47,18 @@ live list is:
 
 | | what | where |
 |---|---|---|
-| 1 | **`qt.run()` from inside a function silently starves every loop-delivered source.** `watcher_trigger_change` returns at once unless the GLOBAL frame is current, so a function frame left current for the whole of Qt's loop means every timer tick is appended to `timer.ticks` and never delivered — the timer's own schedule advances, so it looks like it is working, and the program HANGS with no output. Reaches timers, the actor inbox, `http` events and a webserver's requests. Workaround: call `qt.run()` from the top level of the `program` block. | 2026-10-19 entry |
+| — | ~~**`xml.find_all(node, "a/b")` collects only under the first `a`**: two `<s><n/></s>` answer one for `"s/n"`, where the reference says "all matches". A path through repeated elements misses all but the first. Workaround: walk the path a step at a time, taking every match at each.~~ **FIXED 2026-11-09**: each step is taken from every element the step before reached, so `find_all` answers every element the path reaches in document order, and `find` the first of them (it too had missed an `n` only a later `s` held). A path over 1023 bytes or 64 steps, which was cut short in silence, is refused. Held by `examples/xml_find_paths_test.bas` in `tests/run_examples.sh`. | 2026-11-08 entry |
+| 9 | **Two exact decimals that differ only past a double's 17 digits share an index key**: G-SQL keys a decimal by its nearest double, so a UNIQUE index refuses `0.100000000000000001` beside `0.100000000000000002`, and `ORDER BY` through that index ties them. Answers through an index are still right (the condition is checked on every row). By design, since gBASIC compares a decimal and a double as doubles, which no byte order can follow exactly (`docs/exact_decimal_design.md` §6). | 2026-11-08 entry |
+| — | ~~**`gpdf.save(d, path)` as a statement draws warning 2101**, "the result of 'save' is discarded; a gBASIC function cannot change its caller, so an update returns the new value...": `save` returns the bytes it wrote, so the warning fires on the ordinary call and explains a mistake that was not made. Any library function returning something informational does the same.~~ **FIXED 2026-11-09** (Matthew): `gpdf.save` returns `nothing`; the size is `file_size(path)`, exactly, and a failed write raises. The warning stays as it was, right for a dropped update. Held by `tests/run_gpdf.sh`, whose demos now save as a statement and print `file_size`. | 2026-11-09 entry |
+| — | ~~**`xml.parse` drops an entity reference in silence**: `<!DOCTYPE a [<!ENTITY y 'Y'>]><a>&y;</a>` parses as an empty `<a>`, no error. Safe against XXE, but silent data loss; an error naming the DTD, or a `refuse_dtd` option, was asked for (Transward M31).~~ **FIXED 2026-11-09** (Matthew: give proper errors): a DTD entity in text is still never expanded, and the parse now raises naming it and its line ("xml: line 1 uses the entity &y; in text, which the document's DTD declares, ..."), as do `parse_file`, `xml.read` and `xml.subtree`. In an attribute libxml2 expands it, so nothing was lost there. Held by `examples/xml_refusals_test.bas` in `tests/run_examples.sh`. | 2026-11-08 entry |
+| — | ~~**`rsa_from_pem` given a CERTIFICATE says** "no RSA key could be read (an encrypted key needs its passphrase)", which points at a passphrase rather than at the certificate; `x509_parse` is requested (Transward M31 §10).~~ **FIXED 2026-11-08**: `x509_parse` shipped, and `rsa_from_pem` given a certificate now says "that text is an X.509 certificate, not a key; x509_parse(text).public_key is the key it holds". Held by `tests/run_xml_sign.sh` (tier x509, text that is neither keeping the passphrase message as the control). | 2026-11-08 entry |
+| — | ~~**`xml.text` of `unknown` answers `""`**: `xml.find(t, "c")` misses when `c` is not a direct child (a path is a chain of CHILD names), answers `unknown`, and `xml.text` of that is the empty text with no error, so a lookup that missed reads as an element with nothing in it. Met as a digest comparing `false` (2026-11-08 entry).~~ **FIXED 2026-11-09** (Matthew: give proper errors): `xml.text` of `unknown` raises, saying a find that matched nothing answers unknown, and of any other kind but an element or text raises naming the kind. `stdlib/insiders.bas` and `ownership.bas` decided a miss through it, and now check `is_unknown` first. Held by `examples/xml_refusals_test.bas`. | 2026-11-08 entry |
+| — | ~~**`-(2 hours)` is refused** ("arithmetic operator '-' expected number but got duration") where `0 seconds - 2 hours` answers `-2 hours`: subtraction takes a duration and negation does not. Workaround: `0 seconds - d`.~~ **FIXED 2026-11-09**: `-d` negates each field, so `-(90 minutes)` is `-90 minutes`, and equals `0 seconds - d`. Held by `examples/duration_sign_scale_test.bas` in `tests/run_examples.sh`. | 2026-11-08 entry |
+| — | ~~**`(1 second) * 2.5` is `3 seconds`, with no warning**: a duration scaled to a fraction of a second is rounded, half away from zero, in silence (`(1 hour) * 0.5` is exactly 30 minutes). Seconds are the resolution by design; changing the value without a word is the surprise.~~ **FIXED 2026-11-09**: a scaled duration that is not a whole number of seconds is refused ("that duration would be 2.5 seconds, and a duration holds whole seconds; round the seconds first, such as (1 second) * round(n)"), as a month scaled to a fraction was. `(1 hour) / 3` is still 20 minutes. Held by `examples/duration_sign_scale_test.bas`. | 2026-11-08 entry |
+| — | ~~**`qt.run()` from inside a function silently starves every loop-delivered source.**~~ **FIXED 2026-11-08** by `wait until`'s delivery rule (`docs/watch_scope_design.md` §4): a delivery by the event loop fires every live frame's watches, so it no longer depends on the global frame being current. Held by `tests/run_watch_scope.sh` (tier qtrun, the top-level form as the control). | 2026-10-19 entry |
 | — | ~~**A deeply nested value segfaults at teardown**~~ **DOCUMENTED AS AN ACCEPTED LIMITATION 2026-10-14**, with the numbers re-measured at a PINNED stack: ~43,000 levels at 8 MB, records and arrays alike, and 60,000 releases cleanly at 64 MB — so it is a fact about `ulimit -s`. It has a probe in `run_limitations.sh` now, with the 64 MB run as the control, so it goes red if anybody fixes it. | accepted limitations |
+| — | ~~**`watch` inside a function registers nothing, and says so only with an unlocated line on stderr**~~ **FIXED 2026-11-07** (Matthew's model): a watch belongs to the frame that declares it, sees its locals, and ends when it returns; a watch in a function on anything but its own variables is refused, located (`1003`). `docs/watch_scope_design.md` §3, held by `tests/run_watch_scope.sh`. Event sources in a function wait for increment 2 (`wait until`). | 2026-11-07 entry |
+| — | ~~**A library's top-level statements are silently not run.** A `print` or `counter = 5` at the top of a `library` block does nothing, and a function there reading `counter` raises `undefined variable`. No warning, unlike `2106` for statements beside a `program` block. So a library cannot hold initialised state or a top-level `watch`. Workaround: a function that returns the state, called by the program.~~ **FIXED 2026-11-09**: a statement that is not a declaration (`load`, `function`, `modifier`, `database`, `sql`) at a library's top level is refused when the library is loaded, at its own line in the library's file, before the program runs, with advice by kind (a `watch` goes in the function that wants the deliveries, an assignment becomes a function returning the value). Every stdlib library still loads. Held by `tests/run_library_scope.sh` (tier "a statement at a library's top level is refused"). | 2026-11-07 entry |
 | 5 | ~~**`DECODE_MAX_DEPTH` is unsafe below a ~2.5 MB stack**~~ **CLOSED 2026-10-14** — the bound is DERIVED from `getrlimit(RLIMIT_STACK)` now, `min(10000, stack_KB * 2)`, so it is unchanged at the 8 MB default and drops instead of the process below ~2.5 MB. The remote demonstration re-run against the fix: HTTP 200 and the listener alive at `ulimit -s 2048`. | 2026-10-14 entry |
 
 The two were one disease seen from both ends — recursion depth bounded by
@@ -1034,7 +1044,11 @@ what proves the live probes are running anything at all.
   the caller writes the entry function and hands the handles over
   (`docs/tools_design.md` §4). A function value crosses `spawn` fine as an
   ARGUMENT and is callable in the child, which is what makes the workaround
-  work at all.
+  work at all. **And a library's OWN function, named bare from inside that
+  library** (`spawn worker(self())` in `lib1.bas`, beside `function worker`),
+  raises `spawn: no function named worker`, though an ordinary call there
+  resolves to it (Transward, 2026-11-07): the message says the function does
+  not exist when it does.
 
 - ~~A raise cannot be caught; `on error resume next` abandons the whole
   failing statement. Doctrine: pre-validate, and grow `try_*`/probe builtins
@@ -13437,3 +13451,442 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
     it: every other case passed with the line removed.
   - `tests/run_web_tls.sh` mtls tiers: require, ask, a stranger's
     certificate, wss, resumption, the refusals.
+
+## 2026-11-07 — CC — while: checking Transward's report that the TLS fix had not taken
+
+- **What:** a binary built from the source tree, run with `GBASIC_PATH`
+  unset, loads `stdlib/*.bas` from the INSTALLED copy
+  (`/usr/local/share/gbasic/stdlib`), which can be an older release's. It says
+  nothing about it. Half of a9c71e56's security fix is in `stdlib/web.bas`
+  (`_tls_options` passing `web.configure`'s cert/key on), so Transward's run of
+  the fixed binary still served plain HTTP to a program that asked for TLS. Its
+  serve announced https all the same. Measured with Transward's repro on
+  `./gbasic` 0.10.0+6d4aecc3: with `GBASIC_PATH=stdlib`, https answers and http
+  does not; unset, https fails and http answers "ok http". The fallback is
+  documented (CLAUDE.md, "searched as a fallback when GBASIC_PATH is unset").
+  The surprise is that a binary and a library from different builds mix in
+  silence, so a fix split across C and stdlib can be half there.
+- **Workaround:** set `GBASIC_PATH` to the tree's `stdlib` when running a
+  source-tree binary, or `make install` after a fix that touches stdlib.
+- **Status: OPEN**, for Matthew to rule on. One option is for the binary to warn
+  when the library it loads comes from a different build than it was built
+  with. Another is for a source-tree binary to prefer its own tree's `stdlib`.
+  Transward also asked for `web.serve`'s answer to say whether TLS is on, so a
+  program can refuse to start without it.
+- **Status: FIXED 2026-11-07** (Matthew: "prefer its own"). A binary still in
+  the tree it was built in loads that tree's `stdlib` before an installed one.
+  The tree is the one the Makefile baked in (`GBASIC_SOURCE_DIR`), compared
+  with the running binary's own directory, both canonical, so a copy anywhere
+  else (an install, a release) is unaffected, and a `stdlib` merely beside a
+  binary is never read. `GBASIC_PATH` still wins. Held by
+  `tests/run_relocatable.sh`'s SOURCE TREE tier. Transward's other ask is
+  done too: `webserver.listen`'s and `web.serve`'s record carries `tls`, read
+  from the listener's own state (`tests/run_web_tls.sh` tls_flag).
+
+## 2026-11-07 — CC — while: weighing Transward's three DOGFOOD candidates for Matthew
+
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** measured each before filing.
+  - **`watch` in a function** (new, live list row 6): `function arm()` holding
+    `watch(timer.ticks)`, called from `program main`, prints `watch may only be
+    registered at top level for now` with no position (`src/eval.c`,
+    `watcher_register`, a bare `fprintf`), then warns `2108` that nothing
+    watches the timer, and exits 0. The same watch in the `program` block, or
+    in an `if` there, fires. The named form raises `1003`.
+  - **`spawn` of a library's own function** (added to the existing bullet): a
+    library `lib1` with `function worker` and `spawn worker(self())` raises
+    `spawn: no function named worker` at `lib1.bas:7:5`. The qualified and
+    function-value halves were already recorded (2026-09-06).
+  - **The ~104 KB actor message**: not filed. `send` refuses a larger message
+    with a message naming both sizes (120013 and 106496) and what to do, so it
+    is a stated limit, not a surprise.
+- **Workaround:** `watch` in the `program` block; the caller writes the spawn
+  entry function in its own program and hands the handles to the library.
+- **Status: OPEN** (watch), for Matthew: making it a located warning, or an
+  error as the named form is, is a language change. Both probed by
+  `tests/run_limitations.sh` (`watch_in_function`, `spawn_bare_name`).
+- **Status 2026-11-07, later:** Matthew's model is that a watch belongs to the
+  scope that declares it and dies with it. Designed in
+  `docs/watch_scope_design.md`: increment 1 (a function's own variables) and
+  increment 2 (event sources, with `wait until`). Not built.
+- **Status: FIXED 2026-11-07 (increment 1).** A watch in a function watches its
+  own variables and ends with the frame; anything else is refused with a
+  located `1003` naming the variable. The bare stderr line is gone. Held by
+  `tests/run_watch_scope.sh` (16 checks, a shape tier, valgrind); four
+  perturbations red. Event sources in a function are increment 2.
+
+## 2026-11-07 — CC — while: measuring how a watch's scope works today, for docs/watch_scope_design.md
+
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** a library's top-level statements are never run, and nothing says
+  so. `library lw` holding `print "library top ran"`, `counter = 5` and a
+  `function get()` returning `counter`, loaded by a program calling
+  `lw.get()`, printed nothing and raised `undefined variable: counter` at
+  `lw.bas:5:9`. A `watch` at a library's top level is likewise silent. The
+  reference lists what may stand beside a `program` block, but says nothing
+  about what a library body runs.
+- **Workaround:** state a library needs is returned by a function the program
+  calls, and a watch stays in the program's `program` block.
+- **Status: OPEN**, for Matthew: run them once at load, warn as `2106` does
+  beside a `program` block, or refuse them. Probed by `tests/run_limitations.sh`
+  (`library_top_statements`).
+
+## 2026-11-08 — CC — while: running the gate for the watch-scope change
+
+- **Type:** bug
+- **Severity:** medium
+- **What:** `xlsx.new("Summary")` refused a valid sheet name, `a sheet name
+  is 1 to 31 characters`, in `run_xlsx` and recipe 13 of the xlsx cookbook,
+  once the watch-scope change was built. That change touched no xlsx code.
+  valgrind named it: `xlsx_sheet_name_ok` counted codepoints with
+  `string_cp_count`, which reads a runtime string's header just before the
+  data, and `xlsx.new` passes a plain `char[256]` it copied the name into. So
+  it read the stack. It passed for as long as the bytes there happened to
+  read as a small count. A latent read, not a defect of the change that
+  exposed it.
+- **Workaround:** resolved: the raw `string_codepoint_count(name, n)`.
+  `run_xlsx.sh`'s valgrind tier now runs the creating fixture too, red with
+  the old call (it ran only the reading one).
+
+## 2026-11-08 — CC — while: reading every structured remittance in a camt entry (book gap G43)
+
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** `xml.find_all(node, "a/b")` takes only the FIRST `a` and returns
+  every `b` under it, so two `<s><n/></s>` answer one for `"s/n"`, measured.
+  The reference says "an array of all matches"; the code says, in a comment,
+  "descend first-match through all but the final step". So each structured
+  remittance in a camt entry (its own `Strd`) was missed after the first.
+- **Workaround:** `finio_camt` walks the path a step at a time, taking every
+  match at each step (`_find_all_steps`).
+- **Status: OPEN**, for Matthew: make `find_all` take every match at every
+  step (what "all matches" reads as), or say in the reference that only the
+  last step is collected in full. Not changed here: it is a core module's
+  rule, and callers may rely on it.
+
+## 2026-11-08 — CC — while: making decimal literals exact (book gap G50)
+
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** code in this tree writes `1.0` to mean "a double": `frame.bas`
+  signs a group key with `v * 1.0`, `finance.bas` seeds a rate search with
+  `hi = 1.0`, and `numfmt_dump.bas` says in a comment that its `1.0` is
+  load-bearing. When exact decimals first made `2.0` the exact integer 2, all
+  three changed what they answered, measured: 2^53 + 1 grouped with 2^53,
+  `pow(2, 360)` warned 2112, and the awk oracle disagreed 17 times.
+- **Workaround:** resolved in the design: a decimal is never the exact
+  integer by itself (`docs/exact_decimal_design.md` §10), so `1.0` answers on
+  integer paths as it did. `x * 1.0` still no longer makes a double, so the
+  places that meant one now say `x * 1e0`; the reference and UNLEARN say so.
+  No such use was found in gdash, Transward, gbasic-books or Studio.
+
+## 2026-11-08 — CC — while: keying exact decimals in G-SQL (G50 increment 2)
+
+- **Type:** design-limit
+- **Severity:** low
+- **What:** the design asked for a decimal's key to be its nearest double plus
+  a suffix ordering it exactly. That cannot agree with gBASIC: a decimal
+  against a double compares as doubles (so `sqrt(0.01) = 0.1`), which makes
+  `0.1 = 1e-1 = 0.10000000000000001` while the two decimals differ, and no
+  byte order is non-transitive. A suffix would make an index seek miss a row
+  a scan finds (`where x = 0.1` against a stored `1/10`).
+- **Workaround:** a decimal's key is its nearest double, no suffix (no key
+  changed). Measured: an index seek on `0.100000000000000001` among four rows
+  sharing that key answers the right two, as the executor checks the
+  condition on each row. What remains is live-list row 9: two decimals that
+  differ only past 17 digits share a key, so a UNIQUE index refuses the pair.
+- **Status: OPEN** (accepted), probed by `run_limitations.sh`
+  (`decimal_key_collision`).
+
+## 2026-11-08 — CC — while: logging Transward's M31 observations (reported by transward-8b)
+
+- **Type:** language-surprise
+- **Severity:** medium (the entity), low (the message)
+- **What:** reported by the Transward session building SAML sign-on, and
+  measured here on 4cf1aa21. (1) `xml.parse("<!DOCTYPE a [<!ENTITY y 'Y'>]><a>&y;</a>")`
+  answers an `<a>` whose text is empty, with `error` false: the reference is
+  dropped and nothing says so. Not expanding it is the safe answer to XXE;
+  doing it in silence is data loss. (2) `rsa_from_pem` on a certificate PEM
+  answers "no RSA key could be read from that text (an encrypted key needs its
+  passphrase)", which sends the reader after a passphrase.
+- **Workaround:** Transward walks the DER itself for the public key until
+  `x509_parse` exists, and has no workaround for (1) beyond refusing DTDs in
+  its own input.
+- **Status: OPEN**, for Matthew: live rows 10 and 11, probed by
+  `run_limitations.sh` (`xml_entity_dropped`, `rsa_pem_certificate`). The
+  requested builtins (`xml.canonicalize`, `x509_parse`) are queued with M31.
+
+## 2026-11-08 — CC — while: verifying a signed SAML assertion for run_xml_sign (Transward M31)
+
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** the test's verifier read the DigestValue as
+  `xml.text(xml.find(signed_info, "DigestValue"))`. DigestValue is under
+  `Reference`, and a path is a chain of child names, so `find` answered
+  `unknown`; `xml.text(unknown)` answered `""`, with no error, and the digest
+  compared `false`. Nothing said the lookup had missed: the failure read as
+  a wrong digest, and both canonical forms were byte for byte right.
+- **Workaround:** the full path, `"Reference/DigestValue"`.
+- **Status: OPEN**, for Matthew: live row 12, probed by `run_limitations.sh`
+  (`xml_text_unknown`). Raising there, as other verbs do on `unknown`, would
+  make a missed lookup say so.
+
+## 2026-11-08 — CC — while: building G-SQL's DURATION column (gsql_duration_design.md)
+
+- **Type:** language-surprise
+- **Severity:** low (the minus), medium (the rounding)
+- **What:** two things met while writing durations for the column's tests.
+  (1) `-(2 hours)` is refused, "arithmetic operator '-' expected number but
+  got duration", where `0 seconds - 2 hours` answers `-2 hours`: subtraction
+  takes a duration and negation does not. (2) `(1 second) * 2.5` is
+  `3 seconds` and `(1 second) * 3.5` is `4 seconds`, with `error` false and
+  no warning, while `(1 hour) * 0.5` is exactly `30 minutes`: a fraction of a
+  second is rounded, half away from zero, in silence. Seconds are the
+  resolution on purpose; saying nothing when a value is changed to fit it is
+  the part that surprises (`datetime_design.md` says scaling exact parts "is
+  fine" and does not mention rounding).
+- **Workaround:** `0 seconds - d` for a negation; for (2), scale a larger
+  unit, or round deliberately before scaling.
+- **Status: OPEN**, for Matthew: live rows 13 and 14, probed by
+  `run_limitations.sh` (`duration_negate`, `duration_scale_rounds`).
+
+## 2026-11-09 — Transward (relayed by CC) — while: moving Transward onto G-SQL (its M32)
+
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** `file_size(path)` answered an inexact number, so a G-SQL
+  `integer` column refused it: "the number is not an exact integer (it is
+  refused rather than converted)". `floor` and `round` of it stayed inexact and
+  were refused too; only `number(string(x))` gave the exact integer. A size is
+  a count, and `len`, `count`, `byte_count` and `epoch` are exact for that
+  reason. Two neighbours met on the same move, both documented, both
+  surprising to a program coming from the `sqlite` module: G-SQL reads `NULL`
+  as `unknown` where the sqlite driver gave `nothing` (so an `if` on it is
+  refused), and `'user:' || id` with an integer `id` is refused only once the
+  table has a row, so a migration checked against an empty schema passes.
+- **Workaround:** Transward's database module converts whole inexact numbers
+  through text at its boundary.
+- **Status: FIXED 2026-11-09** (Matthew chose the alternative to a new verb):
+  `file_size` is exact, and `floor`, `ceil` and `round` to no places answer an
+  exact integer up to 2^53 (`docs/exact_number_design.md`, the decision and its
+  accepted cost). The integer column's refusal now says floor, ceil and round
+  answer one. Held by `tests/run_exact.sh` ("a whole answer is exact"). The
+  two neighbours stay, as designed (Matthew: unknown is gBASIC's NULL); both
+  are in `docs/gsql_cookbook.md`, recipes 2 and 10.
+
+## 2026-11-09 — CC — while: making PDF fixtures with gpdf for the G54 design
+
+- **Type:** diagnostic-confusing
+- **Severity:** low
+- **What:** `gpdf.save(d, "text.pdf")` written as a statement, the ordinary
+  way to save, warns `[2101]`: "the result of 'save' is discarded; a gBASIC
+  function cannot change its caller, so an update returns the new value and
+  dropping it does nothing (assign it, or return nothing)". The file is
+  written correctly. `save` returns the bytes it wrote (reference: `n =
+  gpdf.save(...)`), and unused-result warns on any discarded value from a
+  gBASIC function, so the text explains a mistake about updates that was not
+  made. The same warnings on `add_page`, `set_font` and `text_at` were right:
+  those are updates, and dropping them lost the page.
+- **Workaround:** `n = gpdf.save(d, path)`.
+- **Status: OPEN**, for Matthew: live row 15, probed by `run_limitations.sh`
+  (`gpdf_save_warns`). Either `save` returns `nothing` (the reference's `n =`
+  form would change), or a library can mark a result informational.
+
+## 2026-11-09 — CC — while: writing stdlib/pdf.bas (G54), which loads `ocr` by name
+
+- **Type:** bug
+- **Severity:** low (a false warning; the right file is loaded)
+- **What:** a stdlib library that loads a sibling by bare name (`load ocr`
+  inside `library pdf`), run from the tree with `GBASIC_PATH=stdlib`, warns
+  `[2103]` "library 'ocr' resolved to stdlib/ocr.bas; ALSO FOUND and not used:
+  /home/.../gbasic/stdlib/ocr.bas" -- the SAME FILE twice. It is found beside
+  the loading file, under the relative spelling, and again in the tree's own
+  stdlib under the absolute one, and the match list compared path STRINGS. The
+  other stdlib libraries load siblings with `from "x.bas"`, which is perhaps
+  why it had not been met.
+- **Workaround:** none needed for correctness; `load ocr from "ocr.bas"` avoids
+  the warning.
+- **Status: FIXED 2026-11-09**: matches are compared as files
+  (`same_file_path`, already used for a library's identity). Held by
+  `tests/run_pdf.sh` (its loads warn nothing) and `tests/run_library_depth.sh`.
+
+## 2026-11-09 — Transward (relayed by CC) — while: a detached child printed a note 2102
+
+- **Type:** bug
+- **Severity:** high (a diagnostic can kill the program)
+- **What:** a note on stderr after the pipe's reader has gone kills the
+  process by SIGPIPE. Measured on 4da5e243: a program that has started no
+  webserver or `net` connection, writing one line with `print to error` after
+  its reader closed the pipe, exited -13, and the next statement never ran. A
+  webserver or the `net` module sets SIGPIPE to SIG_IGN, so a serve worker
+  survives; a plain detached child does not. Transward met the risk as a
+  note 2102 printed partway through a detached run (a library loaded `from` a
+  path is the author's own, so a function named like a builtin notes once,
+  when it is registered). `process.start` offers no way to give a child an fd 2
+  that cannot break, and Transward builds no shell strings, so it had no
+  defence but removing every source of output.
+- **Workaround:** Transward renamed its two functions named like builtins.
+- **Status: FIXED 2026-11-09** (Matthew: both): a broken pipe that is not
+  stdout no longer kills the process (stdout keeps dying by SIGPIPE, so
+  `gbasic prog | head` ends quietly as before), and `process.start` takes
+  `stdout:` and `stderr:` ("pipe", "null", "inherit", or a file). Held by
+  `tests/run_stderr.sh` and `tests/run_process.sh`.
+
+## 2026-11-09 — Transward (relayed by CC) — while: removing its number(string(x)) trip after 617c6e1f
+
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** `error.code` answers an inexact number even when the error was
+  raised with a literal: after `error { message: "x", code: 50 }`, inserting
+  `error.code` into a G-SQL `integer` column is refused, "not an exact
+  integer". Transward carries its native engine's result codes as error codes,
+  so without its conversion through text every native failure was recorded
+  as INTERRUPTED 70 instead of its real code. `error.line` and `error.column`,
+  and the same three on `warning`, were doubles too.
+- **Workaround:** `number(string(error.code))` at the boundary.
+- **Status: FIXED 2026-11-09**: the error and warning objects' `line`,
+  `column` and `code` are exact integers, as a count is. Held by
+  `tests/run_exact.sh`.
+
+## 2026-11-09 — CC — while: G55, giving the xlsx writer bold, fills, widths, panes and a filter
+
+- **Type:** bug
+- **Severity:** low (could not be seen yet)
+- **What:** re-reading a workbook's sheets after an edit (`xlsx_reload_sheets`,
+  which `add_sheet` calls) freed the sheet table and read it again, but left
+  the defined names in place while the read appended them again. Each name was
+  then held twice. Nothing could see it, because the two copies were the same
+  and a lookup takes the first. It would have mattered the moment a name could
+  change: `xlsx.filter` changes one (the sheet's `_xlnm._FilterDatabase`), and
+  the old range would have been the one found.
+- **Workaround:** none needed.
+- **Status: FIXED 2026-11-09**: the reload frees the names before reading them
+  again. Held by `tests/run_xlsx.sh` (tier 2l, the filter's name exactly once
+  after a second filter replaced the first).
+
+## 2026-11-09 — CC — while: G55, styling a workbook another program wrote
+
+- **Type:** surprise
+- **Severity:** low
+- **What:** setting a typed value, such as a date or money, into a cell that
+  already had a style moved the cell to some style showing that format, which
+  could be any style with that number format or a fresh default one. A bold
+  heading lost its bold, or a plain cell could take another cell's bold.
+  Separately, a workbook may leave out `fonts` and `fills` (both optional in
+  the format, and several of this tree's fixtures do); bold had nowhere to go.
+- **Workaround:** none in a program; the book repacked the parts by hand.
+- **Status: FIXED 2026-11-09**: a cell's new style is its old one with only
+  what was named changed. A style the workbook already shows that way is
+  reused, compared with attributes in name order. `fonts` and `fills` are made
+  when first needed. Held by `tests/run_xlsx.sh` (tier 2l, LibreOffice as the
+  reader that decides).
+
+## 2026-11-10 — Transward (relayed by CC) — while: M34's capacity monitor
+
+- **Type:** missing capability
+- **Severity:** medium
+- **What:** gBASIC could not say how much space a filesystem has. A monitor
+  projecting time-to-full for each directory it depends on ran
+  `df -P -B1 PATH` once a path a sweep and read fields out of its last line,
+  which a warning or a wrapped device name shifts, and Windows has no `df`.
+- **Workaround:** `df` through `process.run` with an argument vector.
+- **Status: FIXED 2026-11-10** (Matthew: useful): `disk_space(p)` answers
+  `{ total, free, available }` in exact bytes. Held by
+  `tests/run_disk_space.sh`, against Python's `os.statvfs` and `df`.
+
+## 2026-11-10 — Transward (relayed by CC) — while: its vault's passphrase mode
+
+- **Type:** bug
+- **Severity:** high (the documented recommendation could not run)
+- **What:** `scrypt("pw", salt, 65536, 8, 1, 32)` raised "scrypt derivation
+  failed (cost likely exceeds the memory limit)", and n=32768 did too;
+  n=16384 worked. The reference recommends n=65536, r=8, p=1, which needs
+  64 MiB, and gBASIC passed OpenSSL a maxmem of 0, meaning OpenSSL's default
+  of 32 MB. Transward's passphrase vault, scrypt at n=65536, could not derive
+  its key.
+- **Workaround:** none that keeps the cost; the keyfile mode was unaffected.
+- **Status: FIXED 2026-11-10**: scrypt is allowed `128 × r × (n + p + 2)`
+  bytes, what its cost needs. Held by `examples/crypto_kdf_test.bas` (n=65536,
+  r=8 against Python's `hashlib.scrypt`) and
+  `tests/negative_scrypt_over_memory` (1 PiB, refused naming it).
+
+## 2026-11-10 — CC — while: G58, embedding fonts in gpdf
+
+- **Type:** bug
+- **Severity:** medium (a wrong title, silently)
+- **What:** gpdf wrote `title`, `author`, `subject` and `creator` as WinAnsi
+  bytes, but the Info dictionary's strings are PDFDocEncoding, which differs
+  from WinAnsi at 0x80-0x9F (and leaves 0xAD undefined). A document titled
+  `Price €9 — net` showed `Price •9 Š net` in pdfinfo, and in any reader's
+  document properties. Nothing refused it: both encodings accept the bytes.
+- **Workaround:** none in a program; a title without those characters.
+- **Status: FIXED 2026-11-10**: such strings, and any WinAnsi cannot write,
+  go as UTF-16BE with a byte order mark. Held by `tests/run_gpdf_font.sh`
+  (semantics: the `€` title goes as UTF-16; text: pdfinfo reads a Polish title).
+
+## 2026-11-10 — CC — while: G58, writing the TrueType reader in gBASIC
+
+- **Type:** surprise
+- **Severity:** low (a parse error at once, naming the word)
+- **What:** `use` and `step` are reserved words, so the natural names for a
+  font's usage record and a stride through a name table did not parse
+  (`'use' is a reserved word and cannot be used as a name`). The message is
+  good; the surprise is the words. `use` is the legacy spelling of `load`, and
+  `step` belongs to the counted `for`.
+- **Workaround:** `usage` and `stride`.
+- **Status:** open, by design: both are keywords. Recorded so the next person
+  writing a binary-format reader knows to reach for other names.
+
+## 2026-11-10 — CC — while: G59, reading a message's Date with mail.parse
+
+- **Type:** language-surprise
+- **Severity:** medium (an instant moved by the machine's offset, silently)
+- **What:** a gBASIC datetime carries no zone, and three doors read it three
+  ways. `now()` is the system's civil time; `{datetime}"2027-04-06T07:52:00-05:00"`
+  is converted to UTC (`2027-04-06 12:52:00`); and `mail.compose`'s `date:`
+  (through `mail.format_date`) writes the value's fields beside the SYSTEM's
+  offset, so it reads the value as civil time. Round-tripping a parsed date
+  through compose on this machine (EST/EDT) wrote `12:52:00 -0400`, four hours
+  late; under `TZ=UTC` it was right, which is why nothing had caught it.
+  compose's reading is documented ("using the system's own offset") and agrees
+  with `now()`, so it is not a defect of compose alone.
+- **Workaround:** `mail.parse` answers UTC (as `{datetime}` reads an offset)
+  and adds `date_offset`, so `m.date + m.date_offset` is the writer's clock;
+  a parsed date handed to compose must be converted first
+  (`d + zone_offset(d)` gives civil time near enough, `to_zone` exactly).
+  tests/mail/parse_test.bas pins compose's reading by name.
+- **Status: RESOLVED 2026-11-10** by Matthew's ruling, "The default is UTC":
+  every instant gBASIC makes or reads is UTC (now(), from_epoch, file times,
+  epoch(dt), number(dt), set_mtime, zone_offset(dt)), "local" names the
+  system's zone at the edges, compose takes `zone:`, and pg sends `+00`.
+  Held by tests/run_utc_clock.sh under five TZ settings.
+
+## 2026-11-10 — CC — while: G59, emitting mail.parse's records as JSON
+
+- **Type:** language-surprise
+- **Severity:** low (a raise at once, naming the fix)
+- **What:** `json_encode` refuses `unknown` anywhere in a value ("`unknown`
+  has no JSON representation; omit the field or replace it with nothing
+  (null)"). A record that uses `unknown` for "none", as gBASIC's absence
+  convention says to, cannot be encoded without a walk over it first.
+- **Workaround:** a ten-line `nulls(v)` in tests/mail/mail_emit.bas that
+  replaces each `unknown` with `nothing`, recursively.
+- **Status:** open, by design (strict JSON refuses on purpose), recorded
+  because the walk is what every such emitter will write.
+
+## 2026-11-10 — CC — while: Studio §0.38 B1, source_comments' corpus tier
+
+- **Type:** bug
+- **Severity:** low (a column one to the right, in diagnostics and outlines)
+- **What:** after a modifier in braces -- `d {datetime}= "x" ) ` or
+  `{USD}"2"` -- every later token on the line was reported one column to the
+  right: `--tokens` put that `)` at 1:20, and it is at column 19. The lexer
+  consumed the `{` with advance(), which counts its column, then added the
+  whole span from the `{` again. A parse error after a modifier pointed one
+  column past its cause. Nothing pinned such a column, so no test saw it.
+- **Workaround:** none needed in a program.
+- **Status: FIXED 2026-11-10** (src/lexer.c, both the one-word and the
+  phrase form). Held by tests/source_comments_test.bas (three columns after a
+  modifier) and the corpus tier of tests/run_source_comments.sh.

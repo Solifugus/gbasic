@@ -1,0 +1,20 @@
+declared entity in text: xml: line 1 uses the entity &y; in text, which the document's DTD declares, and xml expands no DTD entity in text (that is how XXE and billion-laughs attacks work), so its text would be lost; write the text in place of the entity
+declared entity, line 3, between text: xml: line 3 uses the entity &y; in text, which the document's DTD declares, and xml expands no DTD entity in text (that is how XXE and billion-laughs attacks work), so its text would be lost; write the text in place of the entity
+[<>&'"AB]
+plain
+1Y2
+undeclared entity: xml: Entity 'q' not defined (line 1, column 7)
+parse_file: xml: line 2 uses the entity &y; in text, which the document's DTD declares, and xml expands no DTD entity in text (that is how XXE and billion-laughs attacks work), so its text would be lost; write the text in place of the entity
+reader before it: a
+reader text before it: ok
+reader at it: xml.read: line 2 uses the entity &y; in text, which the document's DTD declares, and xml expands no DTD entity in text, so its text would be lost; write the text in place of the entity
+subtree before it: ok
+subtree holding it: xml: line 2 uses the entity &y; in text, which the document's DTD declares, and xml expands no DTD entity in text (that is how XXE and billion-laughs attacks work), so its text would be lost; write the text in place of the entity
+text of a miss: xml.text was given unknown, which is what xml.find answers when nothing matched (a path is a chain of child names from the element it starts at); check the find with is_unknown first if a miss is expected
+text of a number: xml.text expects an element or a text child, not number
+[x]
+[]
+[x]
+[x]
+a miss is decided before xml.text
+no error after it: true

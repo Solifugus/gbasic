@@ -29,7 +29,7 @@ When the two sides of a comparison (`=`, `!=`, `<`, `<=`, `>`, `>=`,
 - **One side is text** and the other a number, money, a date, a time or a
   date-time: the text is read as the other side's kind, **with the same readers
   storing uses** -- trimmed, a number written plainly, a date as `{date}` reads
-  it, money in the other side's currency. Text that does not read as that kind
+  it, money in the other side's currency. Against a date, text with a time of day other than midnight is refused rather than read as that day (2026-11-07, gdash A7; `datetime_conversion_design.md` §3), as storing refuses it. Text that does not read as that kind
   is **refused**, naming both: T-SQL raises a conversion error there too.
 - **One side is a number and the other money:** the number is read as money in
   that money's currency, as storing a number into a money column does.

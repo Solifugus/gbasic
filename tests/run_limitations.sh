@@ -118,7 +118,7 @@ unnormalized_load_path|print the load path unnormalized
 spawn_bare_name|resolves a bare function **name**
 nul_string_literal|is refused in a string literal
 deep_value_teardown|segfaults when it is RELEASED
-qt_run_in_function|silently starves every loop-delivered source
+decimal_key_collision|share an index key
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -132,79 +132,6 @@ qt_run_in_function|silently starves every loop-delivered source
 NOT_MECHANICAL="
 vg_riscv|valgrind does not exist for riscv64|a fact about another architecture, unobservable from this one
 "
-
-probe_qt_run_in_function() {
-    # A PAIR, AND NEITHER HALF MEANS ANYTHING ALONE. The limitation is that
-    # `qt.run()` from inside a FUNCTION never gets gBASIC's sources serviced,
-    # so the program HANGS -- and "it hung" is equally satisfied by a fixture
-    # that cannot run at all, which is why the CONTROL is the identical program
-    # with `qt.run()` at the TOP LEVEL, which must tick and exit 0.
-    #
-    # IT GOES RED WHEN THE DEFECT IS FIXED, which is this suite's whole shape:
-    # the repair is to make the pump establish the global frame for the drain,
-    # and on a build that does so the first half exits 0 and this probe fails,
-    # naming the ledger line to strike.
-    local body
-    body='
-window app( title: "L", width: 200, height: 120 )
-    column
-        text t( label: "x" )
-    end column
-end window
-function handover()
-    qt.run()
-    return nothing
-end function
-program main(args)
-    if not qt.can_display() then
-        print "NODISPLAY"
-        return
-    end if
-    seen = 0
-    qt.open(app)
-    beat = timer.every(0.05)
-    watch(timer.ticks)
-        while count(timer.ticks) > 0
-            ev = take_first(timer.ticks)
-            seen = seen + 1
-            if seen >= 2 then
-                cancelled = timer.cancel(beat)
-                qt.stop()
-            end if
-        end while
-    end watch
-    HANDOVER
-    print "TICKS " + string(seen)
-end program
-'
-    printf '%s' "$body" | sed 's/^    HANDOVER$/    handover()/' > "$WORK/qtrun_fn.bas"
-    printf '%s' "$body" | sed 's/^    HANDOVER$/    qt.run()/'  > "$WORK/qtrun_top.bas"
-
-    set +e
-    QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 12 \
-        ./gbasic --line-buffered "$WORK/qtrun_top.bas" > "$WORK/qtrun_top.out" 2>&1
-    local top_rc=$?
-    QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 12 \
-        ./gbasic --line-buffered "$WORK/qtrun_fn.bas" > "$WORK/qtrun_fn.out" 2>&1
-    local fn_rc=$?
-
-    if grep -q NODISPLAY "$WORK/qtrun_top.out" 2>/dev/null; then
-        skipped "qt_run_in_function (no Qt in this build, so the loop was not exercised)"
-        return 0
-    fi
-    # THE CONTROL FIRST, because without it a hang proves nothing.
-    if [ "$top_rc" != "0" ] || ! grep -q "TICKS 2" "$WORK/qtrun_top.out"; then
-        printf '     %s\n' "$(tail -2 "$WORK/qtrun_top.out")"
-        printf 'FAIL qt_run_in_function CONTROL: qt.run at the TOP LEVEL must tick and exit 0, or a hang below means nothing\n'
-        status=1
-        return 1
-    fi
-    if [ "$fn_rc" = "124" ] || [ "$fn_rc" = "137" ]; then
-        ok "qt.run() inside a function still starves the loop, while the top level still ticks"
-    else
-        fixed "qt.run() inside a function no longer hangs (exit $fn_rc) -- the pump now serves the loop from any frame"
-    fi
-}
 
 probe_deep_value_teardown() {
     # THE DEPTH IS A PROPERTY OF THE STACK, NOT OF THE LANGUAGE, so this probe is
@@ -331,13 +258,42 @@ probe_spawn_bare_name() {
         fi
         return
     fi
+    # The third half (Transward, 2026-11-07): a library naming its OWN function
+    # bare is told it does not exist.
+    mkdir -p "$WORK/sl"
+    printf 'library lib1\nfunction worker(back)\n  send(back, 1)\n  return nothing\nend function\nfunction start()\n  return spawn worker(self())\nend function\nend library\n' > "$WORK/sl/lib1.bas"
+    printf 'load lib1\nprogram main()\n  h = lib1.start()\n  print receive()\nend program\n' > "$WORK/sl/main.bas"
+    own_out=$( (cd "$WORK/sl" && timeout 20 "$OLDPWD/gbasic" main.bas 2>&1) )
     if printf '%s' "$qualified_out" | grep -q 'parse error' &&
-       printf '%s' "$value_out" | grep -q 'spawn: no function named'; then
-        ok "spawn still takes a bare function name (not a qualified one, not a value)"
+       printf '%s' "$value_out" | grep -q 'spawn: no function named' &&
+       printf '%s' "$own_out" | grep -q 'spawn: no function named worker'; then
+        ok "spawn still takes a bare function name (not a qualified one, not a value, not a library's own)"
     else
-        fixed "spawn now accepts a qualified name or a function value"
+        fixed "spawn now accepts a qualified name, a function value, or a library's own function"
     fi
 }
+
+
+
+probe_decimal_key_collision() {
+    # Red when a UNIQUE index takes two decimals that differ past 17 digits
+    # (they would then have distinct keys). Skips without G-SQL in the build.
+    printf 'load gsql\ndb = gsql.connect("%s/dk.gsql", { create: true })\ndb.exec("create table t (x number)")\ndb.exec("create unique index u on t (x)")\ndb.insert("t", [{x: 0.100000000000000001}])\nr = try db.insert("t", [{x: 0.100000000000000002}])\nprint error.details.code\nprint count(db.query("select x from t where x = 0.100000000000000001"))\n' "$WORK" > "$WORK/dk.bas"
+    dk_out=$(timeout 30 ./gbasic "$WORK/dk.bas" 2>&1 | tr '\n' ' ')
+    if printf '%s' "$dk_out" | grep -q 'library not loaded: gsql\|no G-SQL'; then
+        ok "SKIP decimal key collision (no G-SQL in this build)"
+    elif [ "$dk_out" = "DUPLICATE 1 " ]; then
+        ok "two decimals differing past 17 digits still share a G-SQL index key (a unique index refuses the pair)"
+    else
+        printf '     %s\n' "$dk_out"
+        fixed "two such decimals no longer share a key (or the probe no longer runs)"
+    fi
+}
+
+
+
+
+
 
 probe_atomic_replace_inode() {
     mkdir -p "$WORK/ar"

@@ -18,7 +18,8 @@ program main(args)
     d = gpdf.add_page(d)
     d = gpdf.set_font(d, "Times-Roman", 12)
     d = gpdf.text(d, "Page two, in Times.")
-    print string(gpdf.save(d, dir + "/basic.pdf"))
+    gpdf.save(d, dir + "/basic.pdf")
+    print string(file_size(dir + "/basic.pdf"))
 
     ' Accents from BOTH ranges: Latin-1 (0xA0-0xFF) and the Windows additions
     ' (0x80-0x9F), which live elsewhere in Unicode and are the half a naive
@@ -28,7 +29,8 @@ program main(args)
     a = gpdf.set_font(a, "Helvetica", 14)
     a = gpdf.text(a, "Müller Provençal naïve")
     a = gpdf.text(a, "€9.99 — ‘quoted’ ½ ±")
-    print string(gpdf.save(a, dir + "/accents.pdf"))
+    gpdf.save(a, dir + "/accents.pdf")
+    print string(file_size(dir + "/accents.pdf"))
 
     ' ( ) and backslash end or escape a PDF string literal. Unescaped, the
     ' document is corrupt from that byte on -- and it is ordinary invoice text.
@@ -36,7 +38,8 @@ program main(args)
     e = gpdf.add_page(e)
     e = gpdf.set_font(e, "Courier", 11)
     e = gpdf.text(e, "Ref (A) \\ (B) — 50% off (while stocks last)")
-    print string(gpdf.save(e, dir + "/escapes.pdf"))
+    gpdf.save(e, dir + "/escapes.pdf")
+    print string(file_size(dir + "/escapes.pdf"))
 
     ' Enough text to run past the bottom margin, so `paragraph` must add pages.
     m = gpdf.document({ created: when })
@@ -50,7 +53,8 @@ program main(args)
     end while
     m = gpdf.paragraph(m, 450, body)
     print string(gpdf.page_count(m))
-    print string(gpdf.save(m, dir + "/multipage.pdf"))
+    gpdf.save(m, dir + "/multipage.pdf")
+    print string(file_size(dir + "/multipage.pdf"))
 
     ' A table that spans pages, with a row every seventh line tall enough to
     ' wrap. The runner asks poppler whether the heading repeats on every page
@@ -74,7 +78,8 @@ program main(args)
                                          { name: "amount", heading: "Amount", width: 90, align: "right", total: true } ] })
     t = gpdf.number_pages(t, {})
     print string(gpdf.page_count(t))
-    print string(gpdf.save(t, dir + "/table.pdf"))
+    gpdf.save(t, dir + "/table.pdf")
+    print string(file_size(dir + "/table.pdf"))
 
     ' A chart, as VECTORS. The readers check it parses; the text tier checks
     ' its labels come back as TEXT, which is the difference between a chart and
@@ -98,7 +103,8 @@ program main(args)
     ps = chart.y(ps, ["share"])
     ps = chart.size(ps, 240, 240)
     c = gpdf.svg(c, chart.render(ps), 72, 200, {})
-    print string(gpdf.save(c, dir + "/chart.pdf"))
+    gpdf.save(c, dir + "/chart.pdf")
+    print string(file_size(dir + "/chart.pdf"))
 
     ' A letterhead: a real palette PNG with six IDAT chunks, scaled by width.
     ' The readers check it parses AND that the image survived as an image.
@@ -108,5 +114,6 @@ program main(args)
     l = gpdf.set_font(l, "Helvetica-Bold", 16)
     l = gpdf.text_at(l, 72, 590, "gBASIC Consulting")
     l = gpdf.image(l, "tests/gpdf/images/photo.jpg", 72, 480, { width: 160 })
-    print string(gpdf.save(l, dir + "/logo.pdf"))
+    gpdf.save(l, dir + "/logo.pdf")
+    print string(file_size(dir + "/logo.pdf"))
 end program

@@ -109,8 +109,9 @@ for error handling, `ERRORS.md`.
   → `tests/equality_test.bas`, `tests/equality_dispatch_test.bas`
 - **Show a number** — `print` renders the shortest decimal that reads back as
   the same value, so nothing is truncated and `number(string(x)) = x` always
-  holds. That makes floating-point error visible (`0.1 + 0.2` shows
-  `0.30000000000000004`): round for display with `round(x, 2)`, or use a money
+  holds. That makes floating-point error visible (`1 / 3` shows
+  `0.3333333333333333`; decimal literals are exact, so `0.1 + 0.2` shows
+  `0.3`, `tests/run_exact_decimal.sh`): round for display with `round(x, 2)`, or use a money
   value (`t{USD}= 265550.75`) for figures that must read exactly. Integers below
   2^53 print plainly, and scientific notation is a literal since 0.2.3
   (`1e20`, `6.02e23`, `1.5e-3`); `number("1e20")` still builds one from text. → `tests/numfmt_test.bas`
@@ -257,13 +258,13 @@ for error handling, `ERRORS.md`.
 
 ## Dates, durations, calendars
 
-- **UTC** — `now("UTC")`. NOT `to_zone(now(), "UTC")`, which is a no-op that
-  returns local time unchanged: `to_zone` reads its input as already-UTC.
-  → `examples/datetime_zone_test.bas`
-- **An instant from a datetime** — `epoch(dt, zone)`. Bare `epoch(dt)` and
-  `number(dt)` read the value as LOCAL, so they are wrong for anything
-  converted; `epoch()` with no argument is the current instant.
-  → `examples/datetime_zone_test.bas`
+- **UTC** — `now()`. Every instant gBASIC makes is UTC (since 2026-11-10):
+  `now()`, `from_epoch`, file times; `epoch(dt)` and `number(dt)` read UTC.
+  → `tests/run_utc_clock.sh`
+- **A time for a person** — `to_zone(dt, "local")` (this machine) or
+  `to_zone(dt, "Europe/Berlin")`; `now("local")` for the wall clock. Civil
+  time from elsewhere goes on the timeline with `epoch(dt, zone)` or
+  `from_zone(dt, zone)`. → `examples/datetime_zone_test.bas`
 - **Exit status** — `exit(code)`, 0-255, unwinds out of everything. Wider
   values are refused, not truncated. → `tests/run_core.sh`
 

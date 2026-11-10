@@ -689,6 +689,12 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
     case AST_STMT_PRINT:
         analyze_expr(ctx, stmt->as.print.expr);
         break;
+    case AST_STMT_WAIT:
+        analyze_expr(ctx, stmt->as.wait.condition);
+        if (stmt->as.wait.limit) {
+            analyze_expr(ctx, stmt->as.wait.limit);
+        }
+        break;
     case AST_STMT_EXPR:
         analyze_expr(ctx, stmt->as.expr_stmt);
         break;
@@ -989,6 +995,8 @@ static int extract_flag(int *argc, char **argv, const char *flag) {
 }
 
 int main(int argc, char **argv) {
+    /* the same two pieces `--version` prints, below; a runner checks the two agree */
+    gb_runtime_identity_set("0.10.0", GBASIC_REVISION);
     int ast_only = 0;
     int tokens_only = 0;
     int json_diagnostics = 0;
@@ -1000,6 +1008,9 @@ int main(int argc, char **argv) {
     /* Before ANY output, including an actor's: on Windows stdout starts in text
      * mode and would turn every "\n" into "\r\n". See include/platform.h. */
     gb_stdio_binary();
+    /* Before any output too: a diagnostic on a broken stderr must not kill
+     * the program (include/platform.h). */
+    gb_pipe_guard_install();
 
     if (argc >= 4 && strcmp(argv[1], "--actor") == 0) {
         return run_actor_mode(argc, argv);

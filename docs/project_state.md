@@ -288,6 +288,10 @@ document list, with a status column, is `docs/README.md`.
   script with the wrong data returns words at 30-45% confidence rather than an
   error. `ocr.grid` output is a print-image report, so `ari` and `ari_discover`
   consume it unchanged.
+- **text out of a PDF** — `pdf`, pure gBASIC over poppler's programs (run,
+  never linked: poppler is GPL). Every page says how it was read (its own
+  text, a scan, a scan read by OCR, or blank); OCR only when asked, through `ocr`, whose word shape
+  it shares so `ocr.grid` lays out both; a damaged file is a value.
 - **an optional LLM advisor for report discovery** — `ari_advisor`
   (`ari_discover` Phase 4). Proposes better field names from a bounded,
   masked evidence package built from the PROPOSAL rather than the report, and

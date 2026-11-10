@@ -49,7 +49,7 @@ run() {   # run <fixture> <min-ok> <label>
 }
 
 echo "--- TIER 1: arithmetic, comparison, negation, rendering, overflow ---"
-run tests/exact/exact_test.bas 128 "exact semantics"
+run tests/exact/exact_test.bas 150 "exact semantics"
 
 echo "--- TIER 2: THE ORACLE -- python3 computes the same integers exactly ---"
 # THE TIER THAT CATCHES AN IMPLEMENTATION WHICH IS SELF-CONSISTENTLY WRONG. Tier 1

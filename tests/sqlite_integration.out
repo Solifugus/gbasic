@@ -14,5 +14,7 @@ true
 sqlite
 sqlite
 sqlite
+9007199254740994
+-9223372036854775808
 true
 sqlite

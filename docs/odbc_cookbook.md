@@ -316,7 +316,7 @@ program main(args)
   print "id number : " + string(number(row.id)) + "   <- exact, since 0.7.1"
   print ""
   print "amount    : " + row.amount + " (" + type(row.amount) + ")"
-  print "amount num: " + string(number(row.amount)) + "   <- a digit gone, silently"
+  print "amount num: " + string(number(row.amount)) + "   <- exact, since exact decimals"
 
   ' So: an integer id converts freely. A fractional amount does not -- where the
   ' loss is acceptable (a chart axis, a rough total) convert deliberately with
@@ -355,7 +355,7 @@ id exact  : 9007199254740993
 id number : 9007199254740993   <- exact, since 0.7.1
 
 amount    : 12345678901234.5678 (string)
-amount num: 12345678901234.568   <- a digit gone, silently
+amount num: 12345678901234.5678   <- exact, since exact decimals
 
 money in, text out: 1234.56
 
@@ -363,11 +363,14 @@ integer -> number 42
 real    -> number 0.5
 ```
 
-A gBASIC number is a double: about fifteen significant digits. `DECIMAL(19,4)`
-and `BIGINT` do not fit, and what you would get instead is not an error but an
-ordinary-looking number wrong in its last digits — see the account number
-above losing its final `3`. So `BIGINT`, `DECIMAL` and `NUMERIC` arrive as the
-driver's exact text and the decision to narrow is yours, spelled `number()`.
+A gBASIC number is exact for an integer in `int64` and for a decimal of up to
+18 places in an `int64` of digits, and a double otherwise: about fifteen
+significant digits. A `DECIMAL(38,20)` does not fit, and what you would get
+instead is not an error but an ordinary-looking number wrong in its last
+digits — as the account number above lost its final `3` before 0.7.1, and the
+amount its final `8` before exact decimals. So `BIGINT`, `DECIMAL` and
+`NUMERIC` arrive as the driver's exact text and the decision to narrow is
+yours, spelled `number()`.
 `pg` already answers `bigint` and `numeric` this way, so the convention is the
 same across backends.
 
@@ -709,8 +712,6 @@ table is real.
 
 ## What is not here yet
 
-- **Binary columns.** `BINARY`, `VARBINARY` and `LONGVARBINARY` results are
-  refused rather than mangled.
 - **Verified support for commercial backends.** See the caution at the top.
 - **Connection pooling and cursors.** One connection, one statement at a time.
 

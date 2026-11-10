@@ -69,7 +69,7 @@ SQLite result mapping:
 | SQLite storage class | gBASIC value | Notes |
 | --- | --- | --- |
 | `NULL` | `nothing` | Database null is absence |
-| `INTEGER` | number | Large integers may lose precision |
+| `INTEGER` | number | exact, all 64 bits (since 0.11.0, book gap G46) |
 | `REAL` | number | Stored as a gBASIC number |
 | `TEXT` | string | No date/time guessing is applied |
 | `BLOB` | runtime error | Future work |

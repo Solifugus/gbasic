@@ -1,2 +1,2 @@
-runtime error at tests/negative_watch_named_scope.bas:2:5: a named watcher may only be declared at top level
+runtime error at tests/negative_watch_named_scope.bas:2:5: a watch in a function watches that function's own variables or an event source (timer, inbox, http, net, stdin), and `g` is neither (assign it before the watch); a watch on any other global belongs at the top level of the program block
   in setup  tests/negative_watch_named_scope.bas:9:1

@@ -225,8 +225,27 @@ function read_source(src, revision)
                      domain: _text_field(e, "BkTxCd/Domn/Cd", epath + "/BkTxCd/Domn/Cd", ei),
                      family: _text_field(e, "BkTxCd/Domn/Fmly/Cd", epath + "/BkTxCd/Domn/Fmly/Cd", ei),
                      end_to_end_id: _text_field(e, "NtryDtls/TxDtls/Refs/EndToEndId", epath + "/NtryDtls/TxDtls/Refs/EndToEndId", ei),
-                     counterparty: _text_field(e, "NtryDtls/TxDtls/RltdPties/Cdtr/Pty/Nm", epath + "/NtryDtls/TxDtls/RltdPties/Cdtr/Pty/Nm", ei) }
+                     account_servicer_ref: _text_field(e, "NtryDtls/TxDtls/Refs/AcctSvcrRef", epath + "/NtryDtls/TxDtls/Refs/AcctSvcrRef", ei),
+                     debtor: _text_field(e, "NtryDtls/TxDtls/RltdPties/Dbtr/Pty/Nm", epath + "/NtryDtls/TxDtls/RltdPties/Dbtr/Pty/Nm", ei),
+                     creditor: _text_field(e, "NtryDtls/TxDtls/RltdPties/Cdtr/Pty/Nm", epath + "/NtryDtls/TxDtls/RltdPties/Cdtr/Pty/Nm", ei),
+                     remittance: _lines_field(e, "NtryDtls/TxDtls/RmtInf/Ustrd", epath + "/NtryDtls/TxDtls/RmtInf/Ustrd", ei),
+                     referred_documents: _list_field(e, "NtryDtls/TxDtls/RmtInf/Strd/RfrdDocInf/Nb", epath + "/NtryDtls/TxDtls/RmtInf/Strd/RfrdDocInf/Nb", ei) }
+            ' THE COUNTERPARTY IS THE OTHER PARTY, chosen by direction (book gap
+            ' G43): on a credit the company RECEIVED, the creditor is the company
+            ' and the payer is the debtor, so naming the creditor named the wrong
+            ' party for every incoming payment.
+            if flds.indicator.status = "ok" and flds.indicator.value = "CRDT" then
+                flds.counterparty = flds.debtor
+            else if flds.indicator.status = "ok" and flds.indicator.value = "DBIT" then
+                flds.counterparty = flds.creditor
+            else
+                flds.counterparty = { status: "unknown", value: unknown, raw: unknown,
+                                      location: flds.creditor.location }
+            end if
             append(records, { index: idx, kind: "entry", path: epath, occurrence: ei, fields: flds })
+            for each n in _txdtls_loss(e, idx, epath)
+                append(loss, n)
+            end for
             append(entries, idx)
             ei = ei + 1
         end for
@@ -286,6 +305,133 @@ function _text_field(node, path, full_path, occurrence)
         return { status: "unknown", value: unknown, raw: t, location: loc }
     end if
     return { status: "ok", value: trim(t), raw: t, location: loc }
+end function
+
+' Every Ustrd line, joined by a line break, located at the first: remittance
+' information as a payer wrote it, which is what cash application reads.
+function _lines_field(node, path, full_path, occurrence)
+    found = xml.find_all(node, path)
+    first = unknown
+    if count(found) > 0 then
+        first = found[0]
+    end if
+    loc = _xml_loc(full_path, occurrence, first)
+    lines = []
+    for each n in found
+        t = trim(xml.text(n))
+        if byte_count(t) > 0 then
+            append(lines, t)
+        end if
+    end for
+    if count(lines) = 0 then
+        return { status: "unknown", value: unknown, raw: unknown, location: loc }
+    end if
+    return { status: "ok", value: join(lines, chr(10)), raw: join(lines, chr(10)), location: loc }
+end function
+
+' Every value at `path`, as a list, located at the first: the structured
+' referred-document numbers a payer says it is paying.
+function _list_field(node, path, full_path, occurrence)
+    found = _find_all_steps(node, path)
+    first = unknown
+    if count(found) > 0 then
+        first = found[0]
+    end if
+    loc = _xml_loc(full_path, occurrence, first)
+    vals = []
+    for each n in found
+        t = trim(xml.text(n))
+        if byte_count(t) > 0 then
+            append(vals, t)
+        end if
+    end for
+    if count(vals) = 0 then
+        return { status: "unknown", value: unknown, raw: unknown, location: loc }
+    end if
+    return { status: "ok", value: vals, raw: vals, location: loc }
+end function
+
+' Every element at `path`, taking EVERY match at each step: `xml.find_all`
+' with a several-step path searches only under the first match of its earlier
+' steps (measured: two <s><n/></s> answer one for "s/n"), and each structured
+' remittance is its own Strd.
+function _find_all_steps(node, path)
+    level = [ node ]
+    for each part in split(path, "/")
+        next_level = []
+        for each n in level
+            for each m in xml.find_all(n, part)
+                append(next_level, m)
+            end for
+        end for
+        level = next_level
+    end for
+    return level
+end function
+
+' WHAT A TxDtls HOLDS THAT THIS READER DOES NOT INTERPRET IS SAID (book gap
+' G43, Axiom 8): remittance, the debtor and the bank's reference were dropped
+' with `loss` empty. Each uninterpreted element with text becomes a loss note
+' naming its path; a second TxDtls (a batched entry) is one note, since only
+' the first is read.
+function _txdtls_interpreted()
+    return [ "Refs/EndToEndId", "Refs/AcctSvcrRef", "RltdPties/Dbtr/Pty/Nm",
+             "RltdPties/Cdtr/Pty/Nm", "RmtInf/Ustrd", "RmtInf/Strd/RfrdDocInf/Nb" ]
+end function
+
+function _txdtls_loss(entry, idx, epath)
+    out = []
+    all = xml.find_all(entry, "NtryDtls/TxDtls")
+    if count(all) = 0 then
+        return out
+    end if
+    if count(all) > 1 then
+        append(out, finio.loss_note("uninterpreted",
+            { record: idx, why: (epath + "/NtryDtls holds " + string(count(all))
+                                 + " TxDtls (a batched entry); only the first is read") }))
+    end if
+    for each leaf in _leaves(all[0], "")
+        if not contains(_txdtls_interpreted(), leaf.path) then
+            d = { record: idx, raw: leaf.text,
+                  why: (epath + "/NtryDtls/TxDtls/" + leaf.path + " is not interpreted by this reader; its text is kept here") }
+            if has(leaf.node, "byte_start") then
+                d.byte_offset = leaf.node.byte_start
+                d.byte_length = leaf.node.byte_end - leaf.node.byte_start
+            end if
+            append(out, finio.loss_note("uninterpreted", d))
+        end if
+    end for
+    return out
+end function
+
+' The elements under `node` that hold text and no elements, with their path.
+function _leaves(node, prefix)
+    out = []
+    for each c in node.children
+        if is_record(c) then
+            p = c.name
+            if prefix != "" then
+                p = prefix + "/" + c.name
+            end if
+            has_child = false
+            for each g in c.children
+                if is_record(g) then
+                    has_child = true
+                end if
+            end for
+            if has_child then
+                for each x in _leaves(c, p)
+                    append(out, x)
+                end for
+            else
+                t = trim(xml.text(c))
+                if byte_count(t) > 0 then
+                    append(out, { path: p, text: t, node: c })
+                end if
+            end if
+        end if
+    end for
+    return out
 end function
 
 function _number_field(node, path, full_path, occurrence)

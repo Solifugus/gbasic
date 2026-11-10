@@ -17,7 +17,8 @@ cleanup_example_artifacts() {
         examples/tmp_screener_b.db \
         examples/tmp_screener_scores.db \
         examples/tmp_scorecard_cache.db \
-        examples/tmp_xml_reader.xml
+        examples/tmp_xml_reader.xml \
+        examples/tmp_xml_refusals.xml
 }
 
 trap cleanup_example_artifacts EXIT
@@ -121,6 +122,7 @@ examples=(
     keyword_field_test.bas
     mod_concat_merge_test.bas
     duration_test.gb
+    duration_sign_scale_test.bas
     now_test.bas
     file_test.gb
     file_management_test.gb
@@ -199,6 +201,8 @@ examples=(
     xml_reader_test.bas
     xml_window_13f_test.bas
     xml_parse_html_test.bas
+    xml_refusals_test.bas
+    xml_find_paths_test.bas
     insiders_form4_test.bas
     insiders_cluster_test.bas
     ownership_13f_test.bas

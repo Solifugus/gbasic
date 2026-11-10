@@ -70,7 +70,7 @@ program main( args )
     m = llm.replay(llm.openai("gpt-4o-mini", "not-used-in-replay"), "tests/ari_advisor/replay")
     r = ari_advisor.advise_names(p, m)
     check("the advisor answered", r.advisor.answered, true)
-    check("and said which prompt version", r.advisor.prompt_version, "ari-advisor-1")
+    check("and said which prompt version", r.advisor.prompt_version, "ari-advisor-2")
 
     ' THE LOAD-BEARING CHECK. A model's suggestion must NOT become the field's
     ' name, because nothing can score it: `posted` and `posted_date` parse the
@@ -92,6 +92,17 @@ program main( args )
     ' adopt_all, because accepting every suggestion in one call is the silent
     ' adoption this library exists to prevent wearing a person's clothes.
     check("the other field is untouched", a.fields[1].name, "amount")
+    ' book gap G34: the specification carries the adopted name
+    if has(r, "spec") then
+        check("adopting rewrites the field's declaration in the spec", contains(a.spec, "field posted_date:"), true)
+        check("  and the old declaration is gone", contains(a.spec, "field posted:"), false)
+    end if
+    ' book gap G35: the prompt names no domain of its own, and the caller's is sent
+    plain = ari_advisor._name_system(ari_advisor.default_options())
+    check("the prompt no longer calls every report a banking report", contains(plain, "banking"), false)
+    o2 = ari_advisor.default_options()
+    o2.domain = "a field-service company's monthly call register"
+    check("a caller's domain is sent", contains(ari_advisor._name_system(o2), "The report: a field-service company's monthly call register."), true)
     check("and still marked not adopted", a.fields[1].advice.adopted, false)
 
     print ""

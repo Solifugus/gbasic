@@ -33,8 +33,10 @@ c("# (tests/gsql/sql_test.c script). Generated from tests/gsql/gen_sql_cases.py;
 c("# every answer is written by hand there, never captured from a run.")
 
 sec("constants: gBASIC's numbers, text and logic")
-stmt("SELECT 1 + 2, 'a' || 'b', 5 / 2, 6 / 2, 7 % 3, 2 * 3.5", "= 3, 'ab', 2.5, 3.0, 1, 7.0")
-stmt("SELECT 9007199254740993 + 1, 9007199254740992.0 + 1", "= 9007199254740994, 9007199254740992.0")
+stmt("SELECT 1 + 2, 'a' || 'b', 5 / 2, 6 / 2, 7 % 3, 2 * 3.5, 2 * 35e-1", "= 3, 'ab', 2.5, 3.0, 1, 7.0d, 7.0")
+# an exact decimal, as gBASIC has it (docs/exact_decimal_design.md): `d` marks one
+stmt("SELECT 6331.475 - 2182.855, 0.1 + 0.2 = 0.3, 1e-1 + 2e-1 = 0.3", "= 4148.62d, TRUE, FALSE")
+stmt("SELECT 9007199254740993 + 1, 9007199254740992e0 + 1, 9007199254740992.0 + 1", "= 9007199254740994, 9007199254740992.0, 9007199254740993.0d")
 # gBASIC degrades an overflowing sum to an inexact number with warning 2112;
 # an expression keeps that rule, and an INTEGER column refuses the result
 stmt("SELECT 9223372036854775807 + 1", "= 9.223372036854776e+18")
@@ -55,7 +57,7 @@ stmt("SELECT CASE WHEN 1 > 2 THEN 'x' WHEN NULL THEN 'y' ELSE 'z' END, CASE 2 WH
      "= 'z', 'two', NULL")
 stmt("SELECT coalesce(NULL, NULL, 3, 4), coalesce(NULL), nullif(1, 1), nullif(1, 2)", "= 3, NULL, NULL, 1")
 stmt("SELECT lower('AbC'), upper('abc'), length('héllo'), char_length(''), trim('  a b  '), abs(-3), abs(-2.5), mod(7, 3)",
-     "= 'abc', 'ABC', 5, 0, 'a b', 3, 2.5, 1")
+     "= 'abc', 'ABC', 5, 0, 'a b', 3, 2.5d, 1")
 stmt("SELECT lower(NULL), length(NULL), abs(NULL), round(NULL)", "= NULL, NULL, NULL, NULL")
 # substring(text, start [, length]): characters counted from 1, as SQL counts
 # them; past the end is empty; NULL in is NULL out (gdash A5, 2026-11-07)
@@ -110,7 +112,7 @@ stmt("SELECT 3 IN (1, 'a')", ("EXPRESSION", "IN", "= compares a number with text
 stmt("SELECT 1 / 0", ("EXPRESSION", "/", "division by zero"))
 stmt("SELECT CAST('x' AS INTEGER)", ("EXPRESSION", "CAST", "expects a valid number string"))
 stmt("SELECT CAST(2.5 AS INTEGER)", ("EXPRESSION", "CAST", "CAST to INTEGER does not round"))
-stmt("SELECT CAST('2.5' AS NUMBER), CAST(3 AS INTEGER), CAST('true' AS BOOLEAN)", "= 2.5, 3, TRUE")
+stmt("SELECT CAST('2.5' AS NUMBER), CAST(3 AS INTEGER), CAST('true' AS BOOLEAN)", "= 2.5d, 3, TRUE")
 
 sec("money and dates are gBASIC's")
 stmt("SELECT CAST('1.25' AS MONEY(USD)) + CAST('2.50' AS MONEY(USD)), CAST('1.25' AS MONEY(USD)) * 2",
@@ -276,7 +278,7 @@ stmt("SELECT g, sum(m) FROM s GROUP BY g", "= 'a', money 3.50 | 'b', money 3.00 
 stmt("SELECT sum(m) FROM s", ("EXPRESSION", "sum", "cannot add money in different currencies (USD and EUR)"))
 stmt("SELECT sum(m) FROM s WHERE id < 3", "= money 3.50")
 # 3 and 3.0 are one value, so one group, as a unique index would say
-stmt("SELECT x, count(*) FROM s GROUP BY x", "= 1.5, 1 | 3, 2 | 4, 1 | NULL, 2")
+stmt("SELECT x, count(*) FROM s GROUP BY x", "= 1.5d, 1 | 3, 2 | 4, 1 | NULL, 2")
 stmt("SELECT lower(g), count(*) FROM s GROUP BY lower(g)", "= 'a', 2 | 'b', 2 | NULL, 2")
 stmt("SELECT upper(g) FROM s GROUP BY g", "= 'A' | 'B' | NULL")
 stmt("SELECT g FROM s GROUP BY g HAVING count(n) > 1", "= 'a' | NULL")
@@ -375,8 +377,8 @@ sec("SELECT DISTINCT (docs/gsql_distinct_design.md)")
 stmt("SELECT DISTINCT g FROM s", "= 'a' | 'b' | NULL")
 stmt("SELECT ALL g FROM s WHERE id < 3", "= 'a' | 'a'")
 # NULLs are one value and 3 and 3.0 are one value, as GROUP BY says
-stmt("SELECT DISTINCT x FROM s", "= 1.5 | NULL | 3 | 4")
-stmt("SELECT DISTINCT g, x FROM s", "= 'a', 1.5 | 'a', NULL | 'b', 3 | NULL, 4 | NULL, NULL")
+stmt("SELECT DISTINCT x FROM s", "= 1.5d | NULL | 3 | 4")
+stmt("SELECT DISTINCT g, x FROM s", "= 'a', 1.5d | 'a', NULL | 'b', 3 | NULL, 4 | NULL, NULL")
 stmt("SELECT DISTINCT g FROM s ORDER BY g", "= 'a' | 'b' | NULL")
 stmt("SELECT DISTINCT g FROM s ORDER BY 1 DESC", "= NULL | 'b' | 'a'")
 stmt("SELECT DISTINCT lower(g) AS l FROM s ORDER BY l", "= 'a' | 'b' | NULL")
@@ -1049,7 +1051,7 @@ stmt("SELECT n FROM gtl WHERE note = 'glate'", "= 5")
 stmt("INSERT INTO gtl (task, note) VALUES (NULL, 'x'), (NULL, 'y')", ("NOT_NULL", None, "gtl.task"))
 stmt("CREATE TABLE gns (k NUMBER, n INTEGER SERIAL OF (k))", "= done 0")
 stmt("INSERT INTO gns (k) VALUES (NULL), (NULL), (3), (3.0), (3.5)", "= done 5")
-stmt("SELECT k, n FROM gns", "= NULL, 1 | NULL, 2 | 3, 1 | 3.0, 2 | 3.5, 1")
+stmt("SELECT k, n FROM gns", "= NULL, 1 | NULL, 2 | 3, 1 | 3.0d, 2 | 3.5d, 1")
 # a composite scope, and one written as an expression of the row
 stmt("CREATE TABLE gtx (day DATE, branch TEXT, no INTEGER SERIAL OF (day, lower(branch)))", "= done 0")
 stmt("INSERT INTO gtx (day, branch) VALUES (DATE '2026-10-01', 'North'), (DATE '2026-10-01', 'north'), "

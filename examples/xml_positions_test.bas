@@ -104,3 +104,21 @@ print "  mid        [" + mid(text, u.byte_start, u.byte_end - u.byte_start) + "]
 print "--- ranges are absent unless asked for ---"
 plain = xml.parse(text)
 print "  has byte_start: " + string(has(plain, "byte_start"))
+
+print "--- content and attribute ranges, exact (book gap G39) ---"
+' A value's lineage wants the bytes of the VALUE, not of the markup around it,
+' so each element gives its content's range and each attribute its value's.
+' Every expected slice is written by hand. A '>' inside an attribute value is
+' legal, which is why the tag's end is found by its quotes.
+t = "<inv no=" + chr(34) + "A>7" + chr(34) + " cur='USD'><line qty=" + chr(34) + "3" + chr(34) + ">Bolt &amp; nut</line><empty/></inv>"
+v = xml.parse(t, { positions: true })
+print "  content      [" + byte_slice(t, v.content_start, v.content_end - v.content_start) + "]"
+print "  no           [" + byte_slice(t, v.attribute_bytes.no.byte_start, v.attribute_bytes.no.byte_end - v.attribute_bytes.no.byte_start) + "]"
+print "  cur          [" + byte_slice(t, v.attribute_bytes.cur.byte_start, v.attribute_bytes.cur.byte_end - v.attribute_bytes.cur.byte_start) + "]"
+ln = v.children[0]
+print "  line content [" + byte_slice(t, ln.content_start, ln.content_end - ln.content_start) + "]"
+print "  line qty     [" + byte_slice(t, ln.attribute_bytes.qty.byte_start, ln.attribute_bytes.qty.byte_end - ln.attribute_bytes.qty.byte_start) + "]"
+em = v.children[1]
+print "  self-closing content is empty at its end: " + string(em.content_start = em.byte_end and em.content_end = em.byte_end)
+' exact, as counts are: an inexact position is refused by a G-SQL integer column
+print "  exact: " + string(v.line + 9007199254740992) + " " + string(ln.byte_start + 9007199254740991)

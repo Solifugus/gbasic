@@ -81,7 +81,7 @@ library intake
     ' ---- options -----------------------------------------------------------
 
     function _identities()
-        return ["path", "stamp", "content"]
+        return ["path", "stamp", "content", "path+content"]
     end function
 
     function _option_names()
@@ -127,7 +127,7 @@ library intake
         ' library LOADS and this one mode then fails -- the third category
         ' tests/run_library_tiers.sh names, and the one a program cannot see
         ' coming.
-        if opts.identity = "content" and not has_builtin("sha256") then
+        if (opts.identity = "content" or opts.identity = "path+content") and not has_builtin("sha256") then
             error { message: "intake.open: identity \"content\" needs sha256, which"
                              + " this build of gBASIC does not have (it is behind"
                              + " libcrypto). Use identity \"stamp\", which compares"
@@ -374,9 +374,23 @@ library intake
             end if
             return "stamp:" + stamp
         end if
+        if led.identity = "path+content" then
+            ' SAMENESS BY NAME, and the bytes are recorded beside it (book gap
+            ' G38): a period's extract re-sent byte for byte is a repeat, and one
+            ' re-extracted with different bytes is a repeat whose `same_content`
+            ' is false. Neither rule alone was right for extracts named by their
+            ' period: "content" made two empty days one file, "path" could not
+            ' tell a resend from a re-extract.
+            return "pathc:" + entry.path
+        end if
+        return "sha256:" + _digest(led, entry)
+    end function
+
+    ' The file's SHA-256, under the max_hash bound "content" has always had.
+    function _digest(led, entry)
         if entry.size > led.max_hash then
             error { message: "intake: " + entry.path + " is " + string(entry.size)
-                             + " bytes and identity \"content\" reads the whole file"
+                             + " bytes and identity \"" + led.identity + "\" reads the whole file"
                              + " (just over twice the file in memory, measured)."
                              + " The bound here is " + string(led.max_hash)
                              + " bytes. Use identity \"stamp\", or raise max_hash:"
@@ -384,7 +398,7 @@ library intake
                     code: 1004, source: "intake" }
         end if
         f {file}= entry.path
-        return "sha256:" + hex_encode(sha256(read(f)))
+        return hex_encode(sha256(read(f)))
     end function
 
     ' ---- the scan ----------------------------------------------------------
@@ -464,6 +478,11 @@ library intake
                     if not original then
                         e.identity = id
                         e.repeats = entry_for(led, id)
+                        if led.identity = "path+content" then
+                            ' true: the same bytes sent again; false: the name
+                            ' again with different bytes, which is a conflict
+                            e.same_content = has(row, "content") and _digest(led, e) = row.content
+                        end if
                         append(out, e)
                     end if
                 end if
@@ -561,6 +580,9 @@ library intake
                    archived_to: nothing,
                    keep_seconds: nothing,
                    purged_at: nothing }
+        if led.identity = "path+content" then
+            record.content = _digest(led, entry)
+        end if
         _journal(led, entry.identity, record)
         led.taken[entry.identity] = record
         led.replayed = led.replayed + 1
@@ -593,6 +615,9 @@ library intake
         end if
         if has(e, "purged_at") then
             row.purged_at = e.purged_at
+        end if
+        if has(e, "content") then
+            row.content = e.content
         end if
         return row
     end function

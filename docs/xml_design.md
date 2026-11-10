@@ -108,9 +108,14 @@ v  = xml.attr(n, "id", "none")      ' attribute or default
 
 **Path syntax is deliberately tiny and is not XPath:** slash-separated steps,
 each a local name or `*`, matched against element children only, descending
-from the given node. First match for `find`, all matches at the final step for
-`find_all`. Anything fancier (predicates, `//`, axes) is a non-goal — user
-code loops.
+from the given node. Each step is taken from **every** element the step before
+reached, so `find_all` answers every element the path reaches, in document
+order, and `find` the first of them. *(Changed 2026-11-09.)* Both used to follow
+only the first element at each step but the last. `find_all(d, "s/n")` then
+missed the `n` under every `s` but the first, and `find` missed an `n` that only
+a later `s` held (DOGFOOD row 8). A path of 1024 bytes or more, or of more
+than 64 steps, is refused; it was cut short in silence. Anything fancier
+(predicates, `//`, axes) is a non-goal — user code loops.
 
 Matching is on **local names** by default, which is the right ergonomic for
 SEC documents where prefixes vary by filer. Exact qualified matching is
@@ -209,8 +214,11 @@ rather than configurably**:
 - **No external entities, ever** (XXE). No DTD loading, no network access
   from the parser (`NONET`), external entity references resolve to nothing.
 - **Entity-expansion cap** (billion-laughs): only the five predefined
-  entities and character references are expanded; DTD-defined entities are
-  not processed at all.
+  entities and character references are expanded in text; DTD-defined entities are
+  not processed at all. A reference to one in text is **refused**, naming the
+  entity and its line (2026-11-09). It used to be dropped, so `<a>&y;</a>` read
+  as an empty `<a>` and its text was lost (DOGFOOD row 10). In an attribute value, libxml2
+  expands an internal entity itself, so nothing is lost there.
 - **Depth cap** (default 256, generous) against pathological nesting;
   exceeding it is a structured error, not a crash.
 
@@ -224,9 +232,12 @@ different tool.
 Structured runtime errors, source **`xml`**, carrying the libxml2 message
 plus **line and column** where available: not-well-formed input, encoding
 failures, depth-cap violations, reader use-after-close, `subtree` when the
-cursor is not on a start-element. `find`/`attr`/`text` never raise on
-absence — they return `unknown` (find/attr) or `""` (text on empty), keeping
-lookup code linear.
+cursor is not on a start-element. `find` and `attr` never raise on absence:
+they return `unknown`. `text` of an element with no text is `""`. *(Changed
+2026-11-09.)* `text` of `unknown`, which is what a missed `find` answers,
+**raises**. It used to answer `""`, so a lookup that missed read as an element
+with nothing in it (DOGFOOD row 12). A find that may miss is checked with
+`is_unknown` first. A DTD entity in text raises too (§7).
 
 ---
 
@@ -236,6 +247,11 @@ XPath (the §3 mini-path is final), XSLT, schema/DTD *validation*, XInclude,
 XML 1.1, canonicalization, DOM mutation helpers (records are already mutable
 by ordinary means), streaming writer (future), and any SEC-specific
 knowledge.
+
+*(Changed 2026-11-08.)* Canonicalization is no longer a non-goal:
+`xml.canonicalize` binds libxml2's c14n for XML-DSig (Transward's SAML
+sign-on, M31). It takes the source text, not a tree from `xml.parse`, and
+refuses a DTD and an ID held twice; `tests/run_xml_sign.sh` holds it.
 
 ---
 

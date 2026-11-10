@@ -55,8 +55,19 @@ fi
 # produces is a print-image report, which is what `ari` already parses -- the
 # design's whole architectural claim, and the reason OCR is a front door to
 # existing machinery rather than a new pipeline.
+printf 'TIER grid\n'
+# Synthetic pages, so positions are exact and no engine is needed: words keep
+# a space (G52), grid_lines names each word's index, and a refusal measured on
+# the page itself, drift across the words against the line pitch (G53).
+gout="$(timeout 120 ./gbasic tests/ocr/grid_test.bas 2>&1)"
+if printf '%s' "$gout" | grep -q '^mismatches: 0$'; then
+    printf '  ok   %s checks, 0 mismatches\n' "$(printf '%s' "$gout" | sed -n 's/^checks: //p')"
+else
+    printf '  FAIL grid_test\n'; printf '%s\n' "$gout" | grep -E '^MISMATCH|error' | head -5; status=1
+fi
+
 printf 'TIER seam\n'
-if printf '%s' "$out" | grep -q 'ari_discover finds the 3-row detail family'; then
+if printf '%s' "$out" | grep -q '^ok   ari_discover finds the detail family of the two well-read rows'; then
     printf '  ok   a page that began as a PNG profiles as a report\n'
 else
     printf '  FAIL the OCR -> ari_discover seam did not hold\n'

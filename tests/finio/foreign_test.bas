@@ -93,8 +93,11 @@ print ""
 print "-- AND THE DIFFERENCE: SOME VALIDATE CLEAN AND MOST DO NOT"
 ' Without both halves this file passes on an adapter that reports nothing and
 ' on one that reports everything.
-check("two validate with no issues at all", clean, 2)
-check("and the other eight do not", count(names) - clean, 8)
+' THREE since book gap G44 (2026-11-08): cor-example.ach is a notification of
+' change, coded 21 with a type-98 addenda, which used to be an unknown code
+' and an addenda read with the type-05 layout; it is conforming, and now clean.
+check("three validate with no issues at all", clean, 3)
+check("and the other seven do not", count(names) - clean, 7)
 
 print ""
 print "-- WHAT EACH ONE FOUND, NAMED"
@@ -143,8 +146,21 @@ check("and its declared block count is NOT reported as wrong",
 check("while the missing padding still is", contains(bc, "blocking"), true)
 
 cor = finio.read_text(reg, slurp(dir + "cor-example.ach"), {})
-check("a transaction code not in the table is REPORTED, not guessed",
-      contains(codes_of(reg, cor), "unknown_transaction_code"), true)
+' A NOTIFICATION OF CHANGE, READ AS ONE (book gap G44): code 21 is the NOC or
+' return of a credit, and the type-98 addenda has its own layout. Each value
+' below is read off the file's own bytes: change code C01 (an incorrect
+' account number), the original entry's trace, and the corrected account.
+check("a NOC's transaction code has a direction", contains(codes_of(reg, cor), "unknown_transaction_code"), false)
+cr = unknown
+for each r in cor.records
+    if r.kind = "addenda" then
+        cr = r
+    end if
+end for
+check("its type-98 addenda gives the change code", cr.fields.change_code.value, "C01")
+check("  the original entry's trace", cr.fields.original_entry_trace_number.value, "121042880000001")
+check("  and the corrected data", trim(cr.fields.corrected_data.value), "1918171614")
+check("  and nothing is left uninterpreted", count(cor.loss), 0)
 
 print ""
 print "checks: " + string(tally.checks)

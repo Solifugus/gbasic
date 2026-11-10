@@ -861,7 +861,7 @@ static int rangeable(const GsqlColumn *c) {
     if (c->kind == GSQL_COL_MONEY && !c->currency[0]) {
         return 0;
     }
-    return c->kind != GSQL_COL_BOOLEAN && c->kind != GSQL_COL_RECORD;
+    return c->kind != GSQL_COL_BOOLEAN && c->kind != GSQL_COL_RECORD && c->kind != GSQL_COL_DURATION;
 }
 
 /* the constant `col = constant` (or `constant = col`) compares with, or NULL */

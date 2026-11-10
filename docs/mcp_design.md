@@ -34,6 +34,7 @@ end post
 | `mcp.tool_list(ts)` | the `tools/list` payload |
 | `mcp.resource_list(srv)`, `mcp.template_list(srv)`, `mcp.prompt_list(srv)` | the `resources/list`, `resources/templates/list` and `prompts/list` payloads of a declaration (§7) |
 | `mcp.check_options(opts)` | validate a server's options, including the ceiling |
+| `mcp.text(t)`, `mcp.image(bytes, mime_type)`, `mcp.content(blocks)` | a tool's result as content blocks, an image among them (below) |
 
 Implemented methods: `initialize`, `tools/list`, `tools/call`, and with a
 declaration `resources/list`, `resources/templates/list`, `resources/read`,
@@ -46,6 +47,18 @@ client that predates it; an error result or a text result carries none. A tool
 that declares `output` (docs/tools_design.md) is published with that schema as
 its `outputSchema`, and a result that does not match it becomes an error
 result.
+
+**Content blocks** (2026-11-10, Studio, docs/qt_gui_design.md §0.38 D2). A
+tool answers an image as well as text by returning
+`mcp.content([mcp.text("..."), mcp.image(bytes, "image/png")])`; the blocks go
+out as MCP's own `content` array (an image as base64 `data` with its
+`mimeType`) and no `structuredContent`. It is a wrapper rather than "a record
+with a `content` field" so that a tool whose ordinary answer has such a field
+is not misread; a tool that declares `output` and answers blocks is an error
+result. On the client side `mcp.call` keeps `content` as the text blocks
+joined and adds `blocks` -- every block, an image's `data` decoded to `bytes`
+with its `mime_type` -- only when a block is not text, so a text-only result
+keeps the shape `tools.dispatch` returns.
 
 **A tool's function is called as a method of its entry** (since 2026-11-06,
 Transward §7.2), so `this` is the entry and `this.name` says which tool is

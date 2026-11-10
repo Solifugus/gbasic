@@ -1007,6 +1007,54 @@ function profile_corpus(sources, options = nothing, profiles_in = nothing)
              support_warning: warn }
 end function
 
+' THE NEAR-MISS, said beside the refusal (book gap G31): a column that is
+' nearly constant in one file (a warranty flag N in 80% of October's rows) is
+' a literal there and text in the next, so one row family arrives as two
+' signatures and neither reaches minimum_support. The two differ at ONE word
+' position, which is what a reviewer needs to know to decide; this finds the
+' pairs of dominant signatures that do and names the position. Reported, not
+' merged: whether that column is a constant is the reviewer's call.
+function _near_miss(c, o)
+    all_sigs = []
+    for each p in c.profiles
+        for each fm in p.families
+            append(all_sigs, fm.signature)
+        end for
+    end for
+    sigs = unique(all_sigs)
+    notes = []
+    i = 0
+    while i < count(sigs)
+        j = i + 1
+        while j < count(sigs)
+            a = split(sigs[i], " ")
+            b = split(sigs[j], " ")
+            if count(a) = count(b) and count(a) > 2 then
+                diff = []
+                k = 0
+                while k < count(a)
+                    if a[k] != b[k] then
+                        append(diff, k)
+                    end if
+                    k = k + 1
+                end while
+                if count(diff) = 1 and count(notes) < 3 then
+                    append(notes, ("`" + sigs[i] + "` and `" + sigs[j] + "` differ only at token "
+                                   + string(diff[0] + 1) + " (`" + a[diff[0]] + "` against `" + b[diff[0]] + "`)"))
+                end if
+            end if
+            j = j + 1
+        end while
+        i = i + 1
+    end while
+    if count(notes) = 0 then
+        return ""
+    end if
+    return (". Near misses, which may be one family whose column is constant in some files: "
+            + join(notes, "; ") + ". If that column is a column, lowering minimum_support with the reason written down"
+            + " lets the files that agree decide")
+end function
+
 ' --- §16 PHASE 1: infer a specification, and let `ari` judge it -------------
 '
 ' Design principle 4: THE RUNTIME IS THE JUDGE. A proposed rule is not
@@ -1147,6 +1195,63 @@ end function
 ' This also merges spans correctly without a rule about merging: a surname and a
 ' forename separated by one space fall in ONE column and become ONE field, while
 ' an account and a name separated by a four-space gutter stay two.
+' COLUMN SPANS FROM THE PRINTED RULE (book gap G32): the gutters give each
+' column the width of its widest value in the source, so `columns 23-40` for
+' a customer column whose rule runs 23-46, and December's longer name was cut.
+' A rule line of dashes or equals just above the family says exactly where each
+' column is; each column is widened to the run of the rule that covers it.
+' Widened only, never narrowed, and only where one run covers the column.
+function _widen_to_rule(rows, fam, cols)
+    first = fam.lines[0]
+    rule = ""
+    k = first - 1
+    while k >= 1 and k >= first - 4 and rule = ""
+        t = rows[k - 1].text
+        if not is_unknown(match(t, regex("^[ ]*[-=]{3,}([ ]+[-=]{3,})*[ ]*$"))) then
+            rule = t
+        end if
+        k = k - 1
+    end while
+    if rule = "" then
+        return cols
+    end if
+    runs = []
+    i = 0
+    while i < len(rule)
+        ch = mid(rule, i, 1)
+        if ch = "-" or ch = "=" then
+            j = i
+            while j < len(rule) and (mid(rule, j, 1) = "-" or mid(rule, j, 1) = "=")
+                j = j + 1
+            end while
+            append(runs, { lo: i, hi: j - 1 })
+            i = j
+        else
+            i = i + 1
+        end if
+    end while
+    out = []
+    for each c in cols
+        cc = c
+        covering = []
+        for each r in runs
+            if r.lo <= c.cp_end and r.hi >= c.cp_start then
+                append(covering, r)
+            end if
+        end for
+        if count(covering) = 1 then
+            if covering[0].lo < cc.cp_start then
+                cc.cp_start = covering[0].lo
+            end if
+            if covering[0].hi > cc.cp_end then
+                cc.cp_end = covering[0].hi
+            end if
+        end if
+        append(out, cc)
+    end for
+    return out
+end function
+
 function gutters(rows, lines)
     width = 0
     for each ln in lines
@@ -1233,7 +1338,7 @@ end function
 function infer_fields(rows, fam, furniture_lines, options = nothing)
     o = _options(options)
     heading = _heading_for(rows, fam, furniture_lines)
-    cols = gutters(rows, fam.lines)
+    cols = _widen_to_rule(rows, fam, gutters(rows, fam.lines))
 
     ' What kind lives in each column, decided across the WHOLE family rather
     ' than from one row: a column is typed only if every row agrees, because a
@@ -1370,6 +1475,45 @@ function infer_fields(rows, fam, furniture_lines, options = nothing)
              columns: cols }
 end function
 
+' A RUN'S TOTALS, ONE PER MONEY COLUMN (book gap G32): `right of "DEPOT
+' TOTAL" as money`, commented "the closing amount of the run", reads the FIRST
+' money-shaped token after the label, which on a register with hours and parts
+' columns was the depot's hours (17.50), and the parts total (2,958.18) was not
+' read at all. With one money column that rule is right and is kept; with
+' several, each total is read on the label's own line within its column, from
+' just after the column before it (a total is wider than a row's figure, and
+' right-aligned figures grow leftward) to just past its end.
+function _total_fields(inferred, token)
+    money = []
+    for each f in inferred.fields
+        if f.type = "money" then
+            append(money, f)
+        end if
+    end for
+    if count(money) < 2 then
+        return [ { name: "group_total", locator: "right of " + token, as_type: " as money",
+                   why: "the closing amount of the run, by its own label",
+                   positional: false, type: "money", consistency: 1 } ]
+    end if
+    out = []
+    for each mf in money
+        lo = 0
+        for each c in inferred.columns
+            if c.cp_end < mf.cp_start and c.cp_end + 1 > lo then
+                lo = c.cp_end + 1
+            end if
+        end for
+        hi = mf.cp_start + mf.cp_length + 1
+        append(out, { name: "group_total_" + mf.name,
+                      locator: "down 0 of " + token + " first money within columns "
+                               + string(lo) + "-" + string(hi),
+                      as_type: " as money",
+                      why: "the run's total of " + mf.name + ", on its label's line under that column",
+                      positional: true, type: "money", consistency: 1 })
+    end for
+    return out
+end function
+
 ' The generated specification. Comments carry the evidence (§7 Phase 7), because
 ' a person has to maintain this afterwards WITHOUT ari_discover -- design
 ' principle 8.
@@ -1415,8 +1559,10 @@ function spec_text_nested(fam, inferred, sect, page, options = nothing)
         end for
         if not is_unknown(sect.total) then
           if sect.total_token != "" then
-            append(out, ind + "' the closing amount of the run, by its own label")
-            append(out, ind + "field group_total: right of " + sect.total_token + " as money")
+            for each tf in _total_fields(inferred, sect.total_token)
+                append(out, ind + "' " + tf.why)
+                append(out, ind + "field " + tf.name + ": " + tf.locator + tf.as_type)
+            end for
           end if
         end if
         append(out, ind + "section rows repeats starts(/" + _start_regex(fam) + "/):")
@@ -1440,9 +1586,43 @@ end function
 ' A `starts(...)` pattern for the family, built from what its first span IS
 ' rather than from the literal text of one row.
 function _start_regex(fam)
-    parts = [ "^" ]
+    if has(fam, "start_regex") then
+        return fam.start_regex
+    end if
     ' Leading indent is part of the family key, so it is evidence.
     return "^[ ]*" + _first_span_regex(fam)
+end function
+
+' THE START PATTERN, TESTED AGAINST THE LINES IT MUST NOT START (book gap
+' G32): built from the family's first literal, `/^[ ]*C/` for rows that begin
+' `C418003`, it also matched each depot's column heading `  CALL ...`, so the
+' detail section read 158 rows for 134 calls and the scorecard still said
+' every file parsed. Candidates from weakest to strongest -- the first span;
+' it with the next character's class; it with the next span after a space --
+' and the first that matches every detail line and NO other content line is
+' taken. When none separates them the first is kept, as before.
+function _start_regex_checked(fam, rows, furniture_lines)
+    base = "^[ ]*" + _first_span_regex(fam)
+    cands = [ base, base + "[0-9]", base + "[A-Za-z]", base + "[ ]+[0-9]", base + "[ ]+[A-Za-z]" ]
+    for each cand in cands
+        re = regex(cand)
+        all_in = true
+        none_out = true
+        for each r in rows
+            if not r.blank and not contains(furniture_lines, r.physical_line) then
+                hit = not is_unknown(match(r.text, re))
+                if contains(fam.lines, r.physical_line) then
+                    all_in = all_in and hit
+                else
+                    none_out = none_out and not hit
+                end if
+            end if
+        end for
+        if all_in and none_out then
+            return cand
+        end if
+    end for
+    return base
 end function
 
 function _first_span_regex(fam)
@@ -2327,8 +2507,12 @@ function decision_fields(kind)
     return [ "decision" ]
 end function
 
+' THE TYPES ARI HAS, from ARI itself (book gap G33): this list said `number`
+' where ARI's is `decimal`, so a review decision `as: "number"` was accepted
+' and wrote a type ARI does not have, and `as: "decimal"` was refused. One
+' vocabulary, derived, so the two cannot disagree again.
 function conversion_names()
-    return [ "text", "money", "date", "integer", "number" ]
+    return ari.builtin_types()
 end function
 
 ' Validated BY NAME, like the options record, and for the same reason: a
@@ -2868,7 +3052,8 @@ function _infer_from(sources, held, options = nothing, corpus_in = nothing, deci
                        + "% of its content lines) and present in at least "
                        + string(floor(o.minimum_support * 100)) + "% of the "
                        + string(c.sources) + " sources, so there is no repeating"
-                       + " structure to write a specification against"),
+                       + " structure to write a specification against"
+                       + _near_miss(c, o)),
                  spec: "", fields: [], questions: [], alternatives: [],
                  decisions: ds, section_fields: [], section_pattern: "",
                  trained_on: count(sources), holdout: unknown, corpus: c }
@@ -3070,13 +3255,10 @@ function _infer_from(sources, held, options = nothing, corpus_in = nothing, deci
         end for
         if not is_unknown(sect.total) then
             if sect.total_token != "" then
-                append(section_fields,
-                       { name: "group_total",
-                         locator: "right of " + sect.total_token,
-                         as_type: " as money",
-                         why: "the closing amount of the run, by its own label",
-                         positional: false, type: "money", consistency: 1,
-                         example: string(sect.total.literal) })
+                for each tf in _total_fields(inf, sect.total_token)
+                    tf.example = string(sect.total.literal)
+                    append(section_fields, tf)
+                end for
             end if
         end if
     end if
@@ -3093,7 +3275,10 @@ function _infer_from(sources, held, options = nothing, corpus_in = nothing, deci
                                    + " only some sources; the locator is an"
                                    + " alternation of all of them") })
     end if
-    sp = spec_text_nested(best.family, inf, sect, pagedir, o)
+    fam_for_spec = best.family
+    fam_for_spec.start_regex = _start_regex_checked(best.family, best.profile.grid,
+                                                    best.profile.furniture.lines)
+    sp = spec_text_nested(fam_for_spec, inf, sect, pagedir, o)
     sc = validate(sources, sp, o)
     st = anchor_stability(sources, best.family.signature, o, c.profiles)
     rc = region_coverage(sources, sp, best.family.signature, o, c.profiles)

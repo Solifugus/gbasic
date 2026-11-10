@@ -19,14 +19,18 @@
 #include <limits.h>
 #include <stdint.h>
 #include <signal.h>
+#include <poll.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <errno.h>
+#include <grp.h>
+#include <pwd.h>
 #include <sys/file.h>
 #include <sys/socket.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/time.h>   /* utimes, for gb_set_mtime */
 #include <dirent.h>
 #include <fcntl.h>
@@ -224,8 +228,63 @@ int gb_mkdir(const char *path, int mode) {
     return mkdir(path, (mode_t)mode);
 }
 
+long long gb_process_started(long pid) {
+#ifdef __linux__
+    char path[64];
+    snprintf(path, sizeof path, "/proc/%ld/stat", pid);
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        return -1;
+    }
+    char buf[2048];
+    size_t n = fread(buf, 1, sizeof buf - 1, f);
+    fclose(f);
+    buf[n] = '\0';
+    /* field 22, starttime in clock ticks after boot, counted from the last ')'
+       since the command name (field 2) may itself hold spaces or ')' */
+    char *p = strrchr(buf, ')');
+    if (!p) {
+        return -1;
+    }
+    unsigned long long ticks = 0;
+    int field = 2;
+    for (p++; *p && field < 22; p++) {
+        if (*p == ' ') {
+            field++;
+            if (field == 22) {
+                ticks = strtoull(p + 1, NULL, 10);
+            }
+        }
+    }
+    if (field != 22) {
+        return -1;
+    }
+    FILE *s = fopen("/proc/stat", "r");
+    if (!s) {
+        return -1;
+    }
+    long long btime = -1;
+    char line[256];
+    while (fgets(line, sizeof line, s)) {
+        if (strncmp(line, "btime ", 6) == 0) {
+            btime = atoll(line + 6);
+            break;
+        }
+    }
+    fclose(s);
+    long hz = sysconf(_SC_CLK_TCK);
+    if (btime < 0 || hz <= 0) {
+        return -1;
+    }
+    return btime + (long long)(ticks / (unsigned long long)hz);
+#else
+    (void)pid;
+    return -1;
+#endif
+}
+
 int gb_flock(int fd, int op) {
-    return flock(fd, op == GB_LOCK_EXCLUSIVE ? LOCK_EX : LOCK_UN);
+    return flock(fd, op == GB_LOCK_EXCLUSIVE ? LOCK_EX : op == GB_LOCK_TRY ? LOCK_EX | LOCK_NB : LOCK_UN);
 }
 
 char *gb_realpath(const char *path) {
@@ -364,6 +423,35 @@ void gb_stdout_line_buffered(void) {
     setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
 }
 
+/* See the header. poll, signal and raise are async-signal-safe. A pipe's write
+ * end polls POLLERR once its reader has gone; a terminal or a live pipe polls
+ * nothing, and a file never raises SIGPIPE. */
+static void gb_sigpipe_handler(int sig) {
+    int saved = errno;
+    struct pollfd p;
+    p.fd = STDOUT_FILENO;
+    p.events = 0;
+    p.revents = 0;
+    if (poll(&p, 1, 0) == 1 && (p.revents & (POLLERR | POLLHUP))) {
+        signal(sig, SIG_DFL);
+        raise(sig);              /* blocked until this returns, then delivered */
+    }
+    errno = saved;
+}
+
+void gb_pipe_guard_install(void) {
+    struct sigaction sa;
+    struct sigaction old;
+    if (sigaction(SIGPIPE, NULL, &old) == 0 && old.sa_handler == SIG_IGN) {
+        return;                  /* started ignoring it: keep that */
+    }
+    memset(&sa, 0, sizeof(sa));
+    sa.sa_handler = gb_sigpipe_handler;
+    sa.sa_flags = SA_RESTART;
+    sigemptyset(&sa.sa_mask);
+    sigaction(SIGPIPE, &sa, NULL);
+}
+
 void gb_stdio_binary(void) {
     /* POSIX has no text mode: bytes are bytes. */
 }
@@ -448,7 +536,35 @@ int gb_permissions(const char *path, GbPermissions *out) {
     out->readable = access(path, R_OK) == 0;
     out->writable = access(path, W_OK) == 0;
     out->executable = access(path, X_OK) == 0;
+    out->owner_id = (long)info.st_uid;
+    out->group_id = (long)info.st_gid;
+    struct passwd *pw = getpwuid(info.st_uid);
+    struct group *gr = getgrgid(info.st_gid);
+    snprintf(out->owner_name, sizeof out->owner_name, "%s", pw ? pw->pw_name : "");
+    snprintf(out->group_name, sizeof out->group_name, "%s", gr ? gr->gr_name : "");
     return 0;
+}
+
+int gb_disk_space(const char *path, unsigned long long *total, unsigned long long *free_bytes,
+                  unsigned long long *available) {
+    struct statvfs fs;
+    if (statvfs(path, &fs) != 0) {
+        return -1;
+    }
+    /* f_frsize is the unit the block counts are in; f_bsize is only the
+     * preferred I/O size, and on some filesystems the two differ */
+    unsigned long long unit = fs.f_frsize ? (unsigned long long)fs.f_frsize : (unsigned long long)fs.f_bsize;
+    *total = (unsigned long long)fs.f_blocks * unit;
+    *free_bytes = (unsigned long long)fs.f_bfree * unit;
+    *available = (unsigned long long)fs.f_bavail * unit;
+    return 0;
+}
+
+long gb_current_user(char *name, size_t cap) {
+    uid_t uid = geteuid();
+    struct passwd *pw = getpwuid(uid);
+    snprintf(name, cap, "%s", pw ? pw->pw_name : "");
+    return (long)uid;
 }
 
 int gb_chmod(const char *path, unsigned mode, int *dropped) {

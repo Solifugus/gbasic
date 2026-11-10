@@ -28,6 +28,11 @@
 #      against values Python computed; and whole numbers exact (G15).
 #   2k. CREATING -- xlsx.new, add_sheet, set making cells, typed values,
 #      set_formula (G14), read back here and by LibreOffice as shown.
+#   2l. STYLING -- bold, fill and format on set and set_formula, column
+#      widths, frozen panes and a filter (G55): read back here, then by
+#      LibreOffice (its flat ODS for each cell's look, its own xlsx for the
+#      panes, widths and filter it read) against tests/xlsx_formats/
+#      style_oracle.py, which also holds each sheet to the schema's order.
 #   4. VALGRIND -- the golden under valgrind. A refcounted handle owning a part
 #      tree, sheet table and shared-string table is exactly where a leak hides.
 #
@@ -1298,6 +1303,39 @@ else
     status=1
 fi
 
+# --- Tier 2l: STYLING a worksheet (G55) ---------------------------------------
+# What a manager filtering a report needs: headings bold on a fill, a subtotal
+# formula in the cells' money format, widths, the heading row frozen, a filter.
+# Each set changes only what it names; LibreOffice is the reader that decides.
+if timeout 120 ./gbasic tests/xlsx_formats/style_test.bas "$tmp/styled.xlsx" examples/fixtures/xlsx >"$out" 2>"$err" </dev/null &&
+   grep -q '^mismatches: 0$' "$out" && [ ! -s "$err" ] && [ "$(sed -n 's/^checks: //p' "$out")" -ge 23 ]; then
+    printf 'PASS styling a worksheet: bold, fill, formats kept, widths, panes, filter, refusals (%s checks)\n' \
+        "$(sed -n 's/^checks: //p' "$out")"
+    if command -v libreoffice >/dev/null 2>&1 && command -v python3 >/dev/null 2>&1; then
+        rm -rf "$tmp/lo" "$tmp/styled.fods"
+        mkdir -p "$tmp/lo"
+        timeout 240 libreoffice --headless --convert-to fods "$tmp/styled.xlsx" --outdir "$tmp" >/dev/null 2>&1
+        timeout 240 libreoffice --headless --convert-to xlsx "$tmp/styled.xlsx" --outdir "$tmp/lo" >/dev/null 2>&1
+        timeout 240 libreoffice --headless --convert-to fods "$tmp/styled_basic.xlsx" --outdir "$tmp" >/dev/null 2>&1
+        o=$(python3 -I tests/xlsx_formats/style_oracle.py "$tmp/styled.xlsx" "$tmp/styled.fods" "$tmp/lo/styled.xlsx" 2>&1)
+        if printf '%s\n' "$o" | grep -q '^mismatches: 0$' && [ "$(printf '%s\n' "$o" | sed -n 's/^checks: //p')" -ge 38 ] &&
+           [ -s "$tmp/styled_basic.fods" ]; then
+            printf 'PASS   and LibreOffice shows each cell, pane, width and filter as set, and opens a styled fixture (%s checks)\n' \
+                "$(printf '%s\n' "$o" | sed -n 's/^checks: //p')"
+        else
+            printf 'FAIL LibreOffice did not read the styling as set\n%s\n' "$o"
+            status=1
+        fi
+    else
+        printf 'SKIP   LibreOffice or python3 is absent, so no other reader opened the styled workbook\n'
+    fi
+else
+    printf 'FAIL styling a worksheet\n'
+    grep -E 'MISMATCH|checks|mismatches' "$out" | head -10
+    head -5 "$err"
+    status=1
+fi
+
 # --- Tier 3: negative ----------------------------------------------------------
 printf -- '-- negative (container errors are reported, not guessed at)\n'
 negative() { # label file expected-substring
@@ -1417,6 +1455,28 @@ if vg_available; then
         fi
     else
         printf 'FAIL valgrind examples/xlsx_read_test.bas\n'
+        tail -25 "$err"
+        status=1
+    fi
+    # CREATING a workbook too (2026-11-08): xlsx.new's sheet-name check read a
+    # runtime string's header before a plain stack buffer, and refused a valid
+    # name once an unrelated change moved the stack. Nothing ran valgrind over
+    # the creating path, and valgrind named the read at once.
+    if vg_run ./gbasic tests/xlsx_formats/create_test.bas "$tmp/vg_made.xlsx" examples/fixtures/xlsx \
+           >"$out" 2>"$err" </dev/null && tail -1 "$out" | grep -qx 'mismatches: 0'; then
+        printf 'PASS valgrind tests/xlsx_formats/create_test.bas\n'
+    else
+        printf 'FAIL valgrind tests/xlsx_formats/create_test.bas\n'
+        tail -25 "$err"
+        status=1
+    fi
+    # and STYLING (G55): copied style nodes, a canonical form of each, the
+    # sheet verbs' reparsed parts and reloaded defined names
+    if vg_run ./gbasic tests/xlsx_formats/style_test.bas "$tmp/vg_styled.xlsx" examples/fixtures/xlsx \
+           >"$out" 2>"$err" </dev/null && tail -1 "$out" | grep -qx 'mismatches: 0'; then
+        printf 'PASS valgrind tests/xlsx_formats/style_test.bas\n'
+    else
+        printf 'FAIL valgrind tests/xlsx_formats/style_test.bas\n'
         tail -25 "$err"
         status=1
     fi

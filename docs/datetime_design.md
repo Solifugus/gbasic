@@ -450,6 +450,19 @@ twice.
 
   No new value kind and no zone field on datetime — conversions take and
   return plain civil datetimes, and the zone name lives in the caller's data.
+
+  **Ruled 2026-11-10 (Matthew: "The default is UTC. It's better to make such
+  a change now than later."):** a datetime that stands for a moment is UTC.
+  Until then `now()`, `from_epoch`, file times, `epoch(dt)`/`number(dt)`,
+  `set_mtime` and `zone_offset(dt)` all read or made the system's LOCAL time,
+  while `{datetime}` converted a text with an offset to UTC, so the "timeline"
+  above was in two zones at once and a program mixing them was wrong by the
+  machine's offset (found when `mail.parse`'s Date went through
+  `mail.compose`). All of them moved together; `now(zone)` and the edge
+  builtins take `"local"` for the system's own zone; `pg` sends a datetime
+  parameter with `+00`. Civil values (dates, rules, all-day values) are
+  untouched. Held by `tests/run_utc_clock.sh` under five TZ settings, with a
+  tripwire that local time is read only by the zone helpers.
   Implementation route measured feasible with zero dependencies: the system
   IANA tzdb (`/usr/share/zoneinfo`, TZif) via the `TZ`+`tzset` technique —
   not thread-safe in general, but gBASIC actors are processes, so the hazard

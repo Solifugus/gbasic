@@ -157,6 +157,21 @@ int gb_mkdir(const char *path, int mode) {
  * the same byte, so mutual exclusion between them is unchanged. (SQLite locks
  * the same way, at a fixed offset outside the data.) LockFileEx needs the
  * OVERLAPPED even on a synchronous handle: it carries the range's offset. */
+long long gb_process_started(long pid) {
+    HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, (DWORD)pid);
+    if (!h) {
+        return -1;
+    }
+    FILETIME created, exited, kernel, user;
+    BOOL ok = GetProcessTimes(h, &created, &exited, &kernel, &user);
+    CloseHandle(h);
+    if (!ok) {
+        return -1;
+    }
+    unsigned long long t = ((unsigned long long)created.dwHighDateTime << 32) | created.dwLowDateTime;
+    return (long long)(t / 10000000ULL) - 11644473600LL;   /* 1601 to 1970, in seconds */
+}
+
 int gb_flock(int fd, int op) {
     HANDLE h = (HANDLE)_get_osfhandle(fd);
     if (h == INVALID_HANDLE_VALUE) {
@@ -165,9 +180,12 @@ int gb_flock(int fd, int op) {
     OVERLAPPED ov;
     memset(&ov, 0, sizeof ov);
     ov.OffsetHigh = 0x40000000;     /* offset 2^62 */
-    BOOL ok = (op == GB_LOCK_EXCLUSIVE)
-                  ? LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &ov)
-                  : UnlockFileEx(h, 0, 1, 0, &ov);
+    BOOL ok = op == GB_LOCK_EXCLUSIVE ? LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK, 0, 1, 0, &ov)
+              : op == GB_LOCK_TRY ? LockFileEx(h, LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov)
+                                  : UnlockFileEx(h, 0, 1, 0, &ov);
+    if (!ok && op == GB_LOCK_TRY && GetLastError() == ERROR_LOCK_VIOLATION) {
+        errno = EWOULDBLOCK;
+    }
     return ok ? 0 : -1;
 }
 
@@ -1691,6 +1709,10 @@ void gb_stdout_line_buffered(void) {
     setvbuf(stdout, NULL, _IONBF, 0);
 }
 
+/* See the header: Windows has no SIGPIPE, and a write to a closed pipe fails. */
+void gb_pipe_guard_install(void) {
+}
+
 /* See the header: LF out, on every platform. */
 void gb_stdio_binary(void) {
     _setmode(_fileno(stdout), _O_BINARY);
@@ -2106,7 +2128,48 @@ int gb_make_temp_dir(const char *dir, const char *prefix, char *out, size_t out_
     return rc;
 }
 
+int gb_disk_space(const char *path, unsigned long long *total, unsigned long long *free_bytes,
+                  unsigned long long *available) {
+    WCHAR *wpath = utf8_to_wide(path);
+    if (!wpath) {
+        errno = ENOMEM;
+        return -1;
+    }
+    DWORD attrs = GetFileAttributesW(wpath);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        DWORD e = GetLastError();
+        free(wpath);
+        errno = (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) ? ENOENT
+              : (e == ERROR_ACCESS_DENIED) ? EACCES : EIO;
+        return -1;
+    }
+    /* GetDiskFreeSpaceExW takes a folder: a file's is the one holding it */
+    if (!(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        WCHAR *cut = NULL;
+        for (WCHAR *p = wpath; *p; p++) {
+            if (*p == L'\\' || *p == L'/') cut = p;
+        }
+        if (cut) cut[1] = L'\0';
+        else wcscpy(wpath, L".");
+    }
+    ULARGE_INTEGER avail, size, freeb;
+    BOOL ok = GetDiskFreeSpaceExW(wpath, &avail, &size, &freeb);
+    free(wpath);
+    if (!ok) {
+        errno = GetLastError() == ERROR_ACCESS_DENIED ? EACCES : EIO;
+        return -1;
+    }
+    *total = size.QuadPart;
+    *free_bytes = freeb.QuadPart;
+    *available = avail.QuadPart;
+    return 0;
+}
+
 int gb_permissions(const char *path, GbPermissions *out) {
+    out->owner_id = -1;
+    out->group_id = -1;
+    out->owner_name[0] = '\0';
+    out->group_name[0] = '\0';
     WCHAR *wpath = utf8_to_wide(path);
     if (!wpath) {
         errno = ENOMEM;
@@ -2129,6 +2192,13 @@ int gb_permissions(const char *path, GbPermissions *out) {
     out->executable = -1;
     free(wpath);
     return 0;
+}
+
+long gb_current_user(char *name, size_t cap) {
+    if (cap) {
+        name[0] = '\0';
+    }
+    return -1;
 }
 
 int gb_chmod(const char *path, unsigned mode, int *dropped) {

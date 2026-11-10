@@ -1,0 +1,4 @@
+A1  text  [General]
+B2  date  [yyyy-mm-dd]
+C3  number  [#,##0.00 "USD"]
+C5  number  [#,##0.00 "USD"]

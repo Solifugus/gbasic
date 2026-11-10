@@ -1,5 +1,6 @@
 %{
 #include "ast.h"
+#include "gb_decimal.h"
 #include "builtins.h"
 #include "diagnostics.h"
 #include "lexer.h"
@@ -664,7 +665,7 @@ typedef struct {
     double number;
     /* A NUMBER LITERAL plus the exactness `yylex` determined from its digits.
      * `number` stays for anything that only needs the double. */
-    struct { double value; long long exact; int is_exact; } numlit;
+    struct { double value; long long exact; int is_exact; int scale; } numlit;
     char *text;
     AstExpr *expr;
     AstStmt *stmt;
@@ -705,7 +706,7 @@ typedef struct {
 %token DIM
 %token PLUS_EQ MINUS_EQ STAR_EQ SLASH_EQ
 %token EXCLUDING INTERSECTING
-%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT TRY WITH NEW SPAWN FOR TO STEP DO UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WITHOUT WATCHERS ON NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
+%token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT TRY WITH NEW SPAWN FOR TO STEP DO UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WAIT WITHOUT WATCHERS ON NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
 %precedence IF_WITHOUT_ELSE
@@ -835,7 +836,7 @@ static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
 %type <window_item_list> window_item_list
 %type <stmt> window_block
 %type <stmt> gsql_block
-%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement do_loop_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement unwatch_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement server_statement
+%type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement do_loop_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement unwatch_statement wait_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement server_statement
 %type <server_item> server_item
 %type <server_item_list> server_item_list
 %type <name_list> server_string_list
@@ -920,6 +921,7 @@ statement
     | watch_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | server_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | unwatch_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | wait_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | without_watchers_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | on_error_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | error_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
@@ -1238,6 +1240,7 @@ consider_body_statement
     | use_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | watch_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | unwatch_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | wait_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | without_watchers_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | on_error_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | error_statement NEWLINE { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
@@ -1401,6 +1404,14 @@ watch_statement
 
 unwatch_statement
     : UNWATCH expression { $$ = ast_unwatch($2); }
+    ;
+
+/* wait until <condition> [for <limit>]: the event loop runs from here until
+ * the condition is true (docs/watch_scope_design.md §4). WAIT is a token only
+ * when `until` follows, so no other `wait` is claimed. */
+wait_statement
+    : WAIT UNTIL expression { $$ = ast_wait($3, NULL); }
+    | WAIT UNTIL expression FOR expression { $$ = ast_wait($3, $5); }
     ;
 
 watch_target_list
@@ -1938,7 +1949,7 @@ primary
         }
         $$ = expr_at(ast_string($1), @1.first_line, @1.first_column);
       }
-    | NUMBER { $$ = expr_at(ast_number($1.value, $1.exact, $1.is_exact), @1.first_line, @1.first_column); }
+    | NUMBER { $$ = expr_at(ast_number($1.value, $1.exact, $1.is_exact, $1.scale), @1.first_line, @1.first_column); }
     | WATCHERS LPAREN RPAREN { $$ = expr_at(ast_call(copy_const("watchers"), ast_expr_list_empty()), @1.first_line, @1.first_column); }
     | duration_terms { $$ = expr_at(ast_duration($1), @1.first_line, @1.first_column); }
     | STRING { $$ = expr_at(ast_string($1), @1.first_line, @1.first_column); }
@@ -2075,15 +2086,16 @@ parameter_list_opt
  * the question does not arise. Going literal -> expression later is possible;
  * the reverse is not. */
 parameter_default
-    : NUMBER { $$ = expr_at(ast_number($1.value, $1.exact, $1.is_exact), @1.first_line, @1.first_column); }
+    : NUMBER { $$ = expr_at(ast_number($1.value, $1.exact, $1.is_exact, $1.scale), @1.first_line, @1.first_column); }
       /* A SIGNED LITERAL NEGATES THE EXACT VALUE TOO, or `-9007199254740993`
        * would be exact in magnitude and inexact in sign. `LLONG_MIN` has no
        * positive counterpart, so negating it is the one case that degrades. */
     | MINUS NUMBER { $$ = expr_at(ast_number(-$2.value,
                                              $2.exact == LLONG_MIN ? 0 : -$2.exact,
-                                             $2.exact == LLONG_MIN ? 0 : $2.is_exact),
+                                             $2.exact == LLONG_MIN ? 0 : $2.is_exact,
+                                             $2.exact == LLONG_MIN ? 0 : $2.scale),
                                   @1.first_line, @1.first_column); }
-    | PLUS NUMBER { $$ = expr_at(ast_number($2.value, $2.exact, $2.is_exact), @1.first_line, @1.first_column); }
+    | PLUS NUMBER { $$ = expr_at(ast_number($2.value, $2.exact, $2.is_exact, $2.scale), @1.first_line, @1.first_column); }
     | STRING { $$ = expr_at(ast_string($1), @1.first_line, @1.first_column); }
     | TRUE { $$ = expr_at(ast_bool(1), @1.first_line, @1.first_column); }
     | FALSE { $$ = expr_at(ast_bool(0), @1.first_line, @1.first_column); }
@@ -2639,6 +2651,22 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
          * program that runs today. */
         lvalp->numlit.exact = 0;
         lvalp->numlit.is_exact = 0;
+        lvalp->numlit.scale = 0;
+        /* AN EXACT DECIMAL (docs/exact_decimal_design.md §2): a literal with a
+         * point and no exponent is its digits, `6331.475` exactly, where it
+         * was the nearest double. One that does not fit an int64 at scale <= 18
+         * stays the double, as an out-of-range integer does. `2.0` is the
+         * exact DECIMAL 2, not the exact integer (see gb_decimal_from_text). */
+        if (strchr(numbuf, '.') && !strpbrk(numbuf, "eExX")) {
+            long long mantissa = 0;
+            int scale = 0;
+            if (gb_decimal_from_text(numbuf, &mantissa, &scale)) {
+                lvalp->numlit.exact = mantissa;
+                lvalp->numlit.scale = scale;
+                lvalp->numlit.value = gb_decimal_to_double(mantissa, scale);
+            }
+            return NUMBER;
+        }
         {
             const char *digits = numbuf;
             int base = 10;
@@ -2711,6 +2739,7 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_STEP: return STEP;
     case TOKEN_DO: return DO;
     case TOKEN_UNTIL: return UNTIL;
+    case TOKEN_WAIT: return WAIT;
     case TOKEN_IN: return IN;
     case TOKEN_EACH: return EACH;
     case TOKEN_WHILE: return WHILE;

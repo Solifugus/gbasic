@@ -50,7 +50,7 @@
 > select 'it''s', '' from t
 = SELECT 'it''s', '' FROM t
 > select 1.5, 2e3, .25, 9223372036854775807, 9223372036854775808
-= SELECT 1.5, 2000.0, 0.25, 9223372036854775807, 9.223372036854776e+18
+= SELECT 1.5, 2000e0, 0.25, 9223372036854775807, 9.223372036854776e+18
 > select true, false, null, unknown
 = SELECT TRUE, FALSE, NULL, NULL
 > select a from t order by a desc, b asc, 2 limit 10 offset :skip

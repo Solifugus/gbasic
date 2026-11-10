@@ -104,6 +104,8 @@ What goes in comes back as what it was:
 
 SQL's `NULL` reads back as gBASIC's `unknown`, which is a different thing from `""`.
 
+`unknown` is gBASIC's NULL. A program moving from the `sqlite` module, whose driver reads a `NULL` as `nothing`, meets this at its first `NULL` column: an `if` on `unknown` is refused, so test it with `is_unknown` (met by Transward moving to G-SQL, 2026-11-09).
+
 <!--CODE:02_values_that_stay_themselves-->
 
 ```basic
@@ -836,7 +838,7 @@ an index narrows; every condition is still checked:
 
 A refusal is an ordinary gBASIC error, with G-SQL's code and, where there is one, a position in the statement. This recipe uses strings, because it sends broken SQL on purpose: in a block, a syntax error is refused when the program loads, before anything runs.
 
-One thing to know: a comparison is checked when a row reaches it. A query that compares text with a number answers nothing over an empty table, and is refused once a row is there.
+One thing to know: a comparison is checked when a row reaches it. A query that compares text with a number answers nothing over an empty table, and is refused once a row is there. `'user:' || id` with an integer `id` is the same: refused only once a row exists, with *"|| joins text, and one side is a number: CAST it to TEXT"*. So a migration checked against an empty schema can pass and then fail on real rows; `'user:' || CAST(id AS TEXT)` is the form that works (met by Transward in a migration's upgrade test, 2026-11-09).
 
 <!--CODE:10_when_sql_says_no-->
 

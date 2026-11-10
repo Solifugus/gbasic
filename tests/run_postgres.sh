@@ -109,3 +109,27 @@ case "$out" in
     *) printf 'FAIL an ordinary text parameter broke: %s\n' "$out"; exit 1 ;;
 esac
 rm -f "$stdout_file.nul.bas" "$stdout_file.ok.bas"
+
+# max_rows (gdash's GDASH-16 B2): read in libpq's single-row mode, so past
+# the cap the query is cancelled and nothing more is held. The semantics, and
+# the memory, a million rows capped against the same uncapped, by the
+# kernel's peak (process.start's peak_memory): measured 33.5 MB against 655.
+mr="$(timeout 120 ./gbasic tests/max_rows/max_rows_test.bas pg 2>&1 || true)"
+if printf '%s\n' "$mr" | grep -q '^MISMATCH' || [ "$(printf '%s\n' "$mr" | grep -c '^ok ')" -lt 9 ]; then
+    printf '%s\n' "$mr"; printf 'FAIL max_rows semantics\n'; exit 1
+fi
+printf 'PASS max_rows (the cap answered, one past it raised MAX_ROWS, a 5,000,000-row query cancelled)\n'
+mrd="$(mktemp -d)"
+q="select g, repeat('x', 50) as pad from generate_series(1, 1000000) g"
+printf 'load pg\ndb = pg.connect({})\nr = try pg.query(db, "%s", [], { max_rows: 1000 })\nprint error.details.code\n' "$q" > "$mrd/mrc.bas"
+printf 'load pg\ndb = pg.connect({})\nr = pg.query(db, "%s")\nprint len(r)\n' "$q" > "$mrd/mru.bas"
+printf 'for each f in ["mrc", "mru"]\n    h = process.start({ command: "./gbasic", args: ["%s/" + f + ".bas"], limits: { memory: 8000000000 } })\n    s = process.wait(h)\n    print f + " " + trim(process.read(h).stdout) + " " + string(s.peak_memory)\nend for\n' "$mrd" > "$mrd/mrm.bas"
+mm="$(timeout 120 ./gbasic "$mrd/mrm.bas" 2>&1 || true)"
+rm -rf "$mrd"
+capped="$(printf '%s\n' "$mm" | sed -n 's/^mrc MAX_ROWS //p')"
+whole="$(printf '%s\n' "$mm" | sed -n 's/^mru 1000000 //p')"
+if [ -n "$capped" ] && [ -n "$whole" ] && [ $((capped * 5)) -lt "$whole" ]; then
+    printf 'PASS max_rows memory (capped %s MB, uncapped %s MB)\n' "$((capped / 1000000))" "$((whole / 1000000))"
+else
+    printf '%s\n' "$mm"; printf 'FAIL max_rows memory (the rows past the cap were held)\n'; exit 1
+fi

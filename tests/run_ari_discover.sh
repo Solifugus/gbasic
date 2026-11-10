@@ -184,6 +184,21 @@ fi
 # --- CORPUS DRIFT ----------------------------------------------------------
 # A corpus whose generator can no longer reproduce it is a corpus testing
 # itself. All three generators are pure functions of their arguments.
+printf 'TIER book_gaps (G31 near misses, G32 start pattern, rule spans, totals per column)\n'
+# Synthetic corpora shaped like the gBASIC books' Chapter 8 registers; every
+# answer by hand. Each check was red on the build before the fix, measured.
+bout="$scratch/book_gaps.out"
+if timeout 600 ./gbasic tests/ari_discover/book_gaps_test.bas >"$bout" 2>&1; then
+    if grep -q '^mismatches: 0$' "$bout"; then
+        ok "book_gaps: $(sed -n 's/^checks: //p' "$bout") checks, 0 mismatches"
+    else
+        grep '^MISMATCH' "$bout" | head -5
+        bad "book_gaps"
+    fi
+else
+    bad "book_gaps exited nonzero"; tail -5 "$bout"
+fi
+
 printf 'TIER corpus_drift\n'
 cp -r examples/fixtures/ari_discover "$scratch/before"
 if ./gbasic tools/gen_discover_corpus.bas >/dev/null 2>&1 \

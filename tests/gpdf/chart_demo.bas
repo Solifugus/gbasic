@@ -17,5 +17,6 @@ program main(args)
     d = gpdf.set_font(d, "Helvetica-Bold", 16)
     d = gpdf.text(d, "Quarterly report")
     d = gpdf.svg(d, chart.render(s), 72, 480, {})
-    print string(gpdf.save(d, args[0] + "/chart.pdf"))
+    gpdf.save(d, args[0] + "/chart.pdf")
+    print string(file_size(args[0] + "/chart.pdf"))
 end program

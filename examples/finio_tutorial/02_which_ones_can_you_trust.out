@@ -4,12 +4,12 @@
     FISERV-ZEROFILE.ach   10 records,  issues 2
 ok  NACHA_SAMPLE_TEL_REVERSAL.ach   10 records,  issues 0
     adv.ach   10 records,  issues 5
-    cor-example.ach   10 records,  issues 1
+ok  cor-example.ach   10 records,  issues 0
     extended-ascii.ach   20 records,  issues 1
 ok  gl-debit.ach   10 records,  issues 0
     ppd-debit.ach   10 records,  issues 2
 
-2 of 10 validate completely clean; 20 issues in all
+3 of 10 validate completely clean; 19 issues in all
 
 what kind of thing is wrong:
   record_length   6
@@ -18,6 +18,6 @@ what kind of thing is wrong:
   file_batch_count   2
   batch_credit_total   1
   unsupported_batch_kind   1
-  unknown_transaction_code   3
+  unknown_transaction_code   2
   file_credit_total   1
   non_ascii   1

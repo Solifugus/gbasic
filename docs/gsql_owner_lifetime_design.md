@@ -55,3 +55,20 @@ An owner is started by the first program to connect, as that program's child, ar
 - **What is still unbounded:** an owner stuck in a statement cannot notice its last connection going. It used to die with its starter; now it waits until a `SIGTERM`, which still ends it within its deadline. G-SQL's long statements are sliced (`gsql_slicing_design.md`), so an owner goes back to its loop between slices. Only a statement with no end could hold an owner, and none is known in G-SQL's SQL; that is reasoned, not measured.
 
 **Perturbations proven red:** the owner as the client's child again, the linger ignored, no wait for a leaving owner's lock, the program's streams kept, and no startup grace.
+
+## 7. gdash's G20-15: busy, and then gone (2026-11-07)
+
+gdash saw an open stall about 10 s under concurrent connects at linger 0. The whole of one such stall was sampled every 20 ms (lock, socket, owner processes): for 10.2 s the lock was free, no socket existed and no owner was running. The client was waiting for nobody. Three things were wrong, each found by measuring after the one before was fixed:
+
+- **The client waited 10 s for an owner already gone.** An owner says `busy` only once the winner's socket has answered (§3). At linger 0 the winner can serve its own client and leave within milliseconds of that answer. The client then retried a socket that no longer existed until its deadline. Now the client waits only for a socket that is there and too busy to accept (`EAGAIN`, a full backlog). Anything else means no owner is there, and it starts again at once.
+- **A connect and close counted as an owner's first client.** The `busy` check is a connect and close on the winner's socket. The owner marked itself served on any accept, so a check that reached a new owner before its starter ended the 2 s startup grace (§6). At linger 0 the owner then stopped before the client that started it could connect. An owner is served now once a client says HELLO. Found by the churn tier once the first fix was in: about 3% of opens failed, and every attempt read "busy", then "connection refused".
+- **Five attempts was a count, not a bound.** Each lost attempt had cost up to 10 s, so the cap was never reached. With starts failing fast, a client could lose five in a row (one open in 8,000). The client now tries `ATTEMPTS` times at once, then every 20 ms until its wait has passed.
+
+**Tests** (`run_gsql_owner.sh`):
+
+- `busygone` makes each case happen. A test owner relays the real owner's ready line and holds a `busy` back while the winner goes. It probes a new owner before relaying `ready`. It answers `busy` six times with no owner behind it. Its first case starts B's open once the winner holds the lock (a non-blocking `flock` on it) and after the creating owner has gone. It first opened 200 ms in, a guess, and was red under the parallel gate (2026-11-07): the sequence did not happen, and its own check said so. Under twice-per-core CPU load it went from red 2 of 5 to red 0 of 10, and it is still red 3 of 3 with the client fix undone.
+- Reverting each fix turns its part red 3 runs in 3. The client fix is the only one that shows as 10 020 ms.
+- `churn`: eight clients open, ping and close 100 times each at linger 0, and no open may take 2 s. On the old build it failed 5 runs in 6, with the slowest open at 10 048 to 30 091 ms. On the fixed build 16,000 opens over 20 runs were all served, the slowest in 118 ms.
+- Churn alone could not hold the fixes. With the owner fix in, reverting the client fix turned it red 1 run in 6, and reverting the owner fix 0 in 6, so each fix has its own deterministic part.
+
+**Not measured:** the wait on `EAGAIN` (a full backlog) has no test that fills a backlog. The window tier's 4 s-a-sync case (§3, measured at 80 s before this) was not re-run.

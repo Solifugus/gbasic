@@ -46,7 +46,24 @@ program main( args )
     ' amount. Asserted per row, because getting one right by luck is ordinary.
     g = ocr.grid(p)
     check("781 is with its own 1,250.00", _rowhas(g, "100294781", "1,250.00"), true)
-    check("782 is with its own -487.31", _rowhas(g, "100294782", "-487.31"), true)
+    ' THE ENGINE SPLIT -487.31 INTO TWO WORDS, "-487" at confidence 39 and
+    ' ".31", and the grid used to run them back together, hiding the split
+    ' (book gap G52, 2026-11-08). It keeps a space now, and grid_lines says
+    ' which words a figure is made of, so a reader can doubt it.
+    check("782 is with its own amount, as the engine read it", _rowhas(g, "100294782", "-487 .31"), true)
+    split = unknown
+    for each ln in ocr.grid_lines(p)
+        if contains(ln.text, "100294782") then
+            split = ln
+        end if
+    end for
+    pieces = []
+    for each pw in split.words
+        if pw.text = "-487" or pw.text = ".31" then
+            append(pieces, pw.text)
+        end if
+    end for
+    check("  and grid_lines shows it is two words, not one", pieces, ["-487", ".31"])
     check("783 is with its own 9,004.55", _rowhas(g, "100294783", "9,004.55"), true)
     ' AND THE CONTROL, without which the three above pass on a grid that put
     ' every word on one line.
@@ -77,13 +94,15 @@ program main( args )
     ' parses and `ari_discover` infers a specification from, so OCR is a front
     ' door to existing machinery rather than a new pipeline.
     prof = ari_discover.profile(g)
+    ' TWO ROWS, NOT THREE, since book gap G52: row 782's amount is the two
+    ' words the engine read, which is a different shape, now visibly so
     found = false
     for each fam in prof.families
-        if fam.count = 3 and contains(string(fam.signature), "MONEY") then
+        if fam.count = 2 and contains(string(fam.signature), "MONEY") then
             found = true
         end if
     end for
-    check("ari_discover finds the 3-row detail family", found, true)
+    check("ari_discover finds the detail family of the two well-read rows", found, true)
 
     ' ------------------------------------------------------------------
     print ""

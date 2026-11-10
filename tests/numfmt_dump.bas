@@ -72,7 +72,10 @@ program main(args)
   ' (...144), and the oracle reported 17 disagreements in which gBASIC was RIGHT.
   ' A fraction in the seed says "this is a test of the double formatter", which is
   ' what it always meant. Do not simplify it back.
-  y = 1.0
+  ' AND `1e0` SINCE EXACT DECIMALS (docs/exact_decimal_design.md): `1.0` is now
+  ' the exact integer 1 by its digits, so only an exponent literal still says
+  ' "a double". Measured: with `1.0` the same 17 disagreements came back.
+  y = 1e0
   i = 1
   while i <= 300
     y = y * 7

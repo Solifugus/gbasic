@@ -131,6 +131,7 @@
       <item>dh_keypair</item>
       <item>dh_shared</item>
       <item>directory_name</item>
+      <item>disk_space</item>
       <item>ec_keypair</item>
       <item>ec_public</item>
       <item>ecdh_shared</item>
@@ -190,6 +191,7 @@
       <item>join</item>
       <item>join_from</item>
       <item>join_path</item>
+      <item>json_decode</item>
       <item>json_encodable</item>
       <item>json_encode</item>
       <item>key</item>
@@ -275,6 +277,7 @@
       <item>rsa_sign</item>
       <item>rsa_to_pem</item>
       <item>rsa_verify</item>
+      <item>runtime</item>
       <item>scrypt</item>
       <item>secure_token</item>
       <item>seed</item>
@@ -293,6 +296,7 @@
       <item>sleep</item>
       <item>slice</item>
       <item>sort</item>
+      <item>source_comments</item>
       <item>source_outline</item>
       <item>split</item>
       <item>sqrt</item>
@@ -325,6 +329,7 @@
       <item>x25519_keypair</item>
       <item>x25519_public</item>
       <item>x25519_shared</item>
+      <item>x509_parse</item>
       <item>zone_offset</item>
       <item>zone_resolve</item>
     </list>

@@ -16,6 +16,576 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Studio's notebook, part 3: mcp content blocks, stdin in the loop (2026-11-10)
+
+- **`mcp.content([mcp.text(t), mcp.image(bytes, mime_type)])`** (§0.38 D2):
+  a tool answers an image as well as text, sent as MCP's own content array;
+  `mcp.call` adds `blocks`, images decoded to bytes, when a reply holds a block
+  that is not text (a text-only result keeps its shape). Dispatch by name was
+  already there: a tool's `fn` runs as a method of its entry, so `this.name`
+  names the tool.
+- **`watch w(stdin.lines)`** (§0.38 D3): standard input's lines delivered by
+  the event loop, one per delivery, with `stdin.closed` at the end, so a program
+  waiting for its input keeps serving everything else -- under `qt.run()`, a
+  window keeps working. New suite `tests/run_stdin_lines.sh` (a python3 driver
+  is the oracle: 3,000 lines of every kind, a slow writer, a window driven from
+  stdin while a timer fires); 7 perturbations, each red.
+- **Reworded, deliberately:** the refusal of a watch in a function on a global
+  lists `stdin` among the event sources; tests/watch_scope/scope_test.bas and
+  the golden tests/negative_watch_named_scope.err pin it and were updated.
+
+### Studio's notebook, part 2: blocks, folds, a markdown part (2026-11-10)
+
+- **`qt.blocks(win, part, items)`** (§0.38 A, B3): content shown between a
+  `source`'s lines -- `text`, `table`, `image` (PNG or SVG, by path or bytes)
+  and `markdown` -- replacing the whole set, reconciled by `id` so an unchanged
+  block keeps its widget. **None of it is document text**: plainText, the undo
+  stack, the modified flag, the revision, the caret and the line count do not
+  move (a C++ probe linking the real backend measures each). A block follows
+  its line through edits, stays under the second half of a split line, moves
+  with a line joined onto the one above, and is dropped when its line is
+  deleted or emptied. `max_height`, `collapsed` and `covers` (drawn over its
+  line rather than under it); `qt.blocks(win, part)` reads back what Qt holds
+  now, line included. Blocks follow the editor's palette, so a dark editor's
+  are dark.
+- **The `block` event** on a `source`: a click on a block, its collapse
+  control, or a link in a markdown block (never followed); `qt.block_event()`
+  answers `{ id, action, target }`, and `qt.block_press` drives it.
+- **`qt.fold(win, part, ranges)`** (B2): folds that keep their first line and
+  hide the rest, layout only, anchored through edits; a fold that hides the
+  caret's line moves the caret to its first line.
+- **A `markdown` window word** (B4): a read-only rendered-prose part, set with
+  `qt.set(win, part, "markdown", text)`; a link is the `link` event, read with
+  `qt.link()`, and never navigates. `qt.link_press` drives it.
+- **Found while building it:** QPlainTextEdit recomputes its scrollbar's range
+  only when the line count changes, so with blocks in the text the end of the
+  document could be unreachable (`caret_to(40)` scrolled six lines and stopped
+  short). The layout now announces a size change on every relayout.
+- `tests/run_qt_notebook.sh` grows a blocks tier (55 checks), the C++ probe
+  (20 checks), block pixels (an SVG image block drawn; a dark editor's block not
+  a white box) and valgrind over both fixtures. 17 perturbations, each red; one
+  that first stayed green (anchoring by the line's start rather than its end)
+  produced the split-line check.
+
+### Studio's notebook, part 1: comments, figures, themes (2026-11-10)
+
+Asked for by gBASIC Studio (docs/qt_gui_design.md §0.38): a `.bas` file that
+reads like a notebook. Every ask was measured first with an offscreen probe
+(29 checks); all are feasible. This is the first batch.
+
+- **`source_comments(text)`** (B1): every comment run the parser read, as
+  `{ start_line, end_line, start_column, start_offset, end_offset, text, raw,
+  trailing }` in `{ ok, comments, diagnostics }`. It parses with the lexer's
+  own comment reader recording, so a `'` in a string or an `sql` body is not a
+  comment. Suite `tests/run_source_comments.sh`: 22 checks by hand, and a
+  corpus tier over all 1,544 `.bas` files in the tree (each comment is exactly
+  its bytes; blanking them all leaves `source_outline`'s answer unchanged;
+  every comment line is reported), 65,687 checks.
+- **Fixed: a column after a `{modifier}` was one too far right.** The lexer
+  counted the `{` twice, so every token after `x {date}= ...` or `{USD}"2"` on
+  a line (and every diagnostic pointing at one) was a column off. Found by the
+  corpus tier above. No golden pinned such a column.
+- **`qt.render_svg(svg, file, { width, height, scale })`** (C): an SVG as a PNG
+  for print, on white, no alpha, the same bytes twice on one machine, its text
+  antialiased in gray. Built on QtSvg, a new optional dependency riding Qt's
+  switch (`HAVE_QT_SVG`).
+- **`theme:` names a KSyntaxHighlighting theme** (D1): one it ships
+  (`"Printing"` is a gray one) or one in `themes/*.theme` on the syntax path;
+  an unknown name is refused with the near miss or the list.
+  `qt.highlighting` now answers the theme the highlighter holds.
+- **Measured, not changed:** `qt.capture` draws widget text with subpixel
+  antialiasing, so glyphs have colour fringes (467 coloured pixels in an
+  editor whose theme is gray throughout); drawing into an image with alpha does
+  not change that for `QWidget::render`. Recorded for Studio's print figures.
+- New suite `tests/run_qt_notebook.sh`: 25 checks plus 11 pixel checks by
+  PIL, valgrind; 16 perturbations across this batch each went red.
+
+### BREAKING: every instant is UTC (2026-11-10)
+
+- **`now()` returns UTC**, and so do `from_epoch(n)`, `file_mtime(f)` and a
+  directory entry's `modified`. **`epoch(dt)`, `number(dt)` and
+  `set_mtime(f, dt)` read a datetime as UTC**, and **`zone_offset(dt)`** is
+  the system zone's offset at the instant `dt`. All of them were the system's
+  LOCAL time, while `{datetime}"…-05:00"` was converted to UTC; a program
+  holding both was wrong by the machine's offset and nothing said so. Matthew's
+  ruling: store UTC, convert at the edges. Civil values (dates, calendar
+  rules, all-day values) are unchanged.
+- **`"local"` is a zone name** for the system's own zone, in `now`,
+  `to_zone`, `from_zone`, `zone_offset`, `zone_resolve` and `epoch(dt, zone)`.
+  `to_zone(dt, "local")` is how a stored time is shown to a person here;
+  `now("local")` is the wall clock; `{day}= now("local")` is today on this
+  machine's calendar (`{day}= now()` is today in UTC).
+- **`pg` sends a datetime parameter with `+00`**, so a `timestamptz` column
+  stores the same instant whatever the session's zone; a `timestamp` column
+  ignores the offset (both measured against PostgreSQL in America/New_York).
+- **`mail.compose` takes `zone:`** for the zone its Date header is written in
+  (default `"local"`), and `mail.format_date(when [, zone])` reads `when` as
+  UTC. A date read by `mail.parse` now goes through `compose` unmoved.
+- **What to check in a program:** anything that shows `now()` or a file time
+  to a person (it now reads UTC; use `to_zone(..., "local")`); `{day}= now()`
+  used as "today" (it is UTC's today); and anything that stored `now()` as
+  text before this change and compares it with `now()` after (the stored
+  values are local, by the old offset). `epoch(now())`, `epoch()`, and
+  durations between two `now()`s are unaffected.
+- New suite `tests/run_utc_clock.sh`: the same program under five TZ settings
+  (UTC, New York, Kolkata, Chatham +13:45, St John's -03:30), the system
+  offset held to Python's zoneinfo, file times to `stat`, a block that must
+  print identical bytes in every zone and whose instants are Python's, a
+  source tripwire that local time is read only by the zone helpers, and
+  valgrind. Six perturbations (each piece put back to local, `"local"`
+  refused) each went red.
+- **Rebaselined, deliberately:** `examples/datetime_zone_test` (its checks
+  pinned the old local reading; they now pin UTC and `"local"`, 8 checks to
+  9) and `tests/smtp/refusals.out` (compose's field list names `zone`).
+
+### Reading a received message: `mail.parse` (book gap G59, 2026-11-10)
+
+- **`mail.parse(raw)` reads a message's bytes** into its headers (unfolded,
+  RFC 2047 encoded words decoded), `from`/`to`/`cc`/`reply_to` as
+  `{ name, address }` with groups opened, `subject`, `date` (the instant in
+  UTC) and `date_offset` (the writer's), the ids, every leaf part with its type,
+  charset, disposition, filename (RFC 2231 sections and charsets, or encoded
+  words), transfer encoding undone (`body`) and text in UTF-8 (`text`), a
+  `message/rfc822` part read as a message, and `text`/`html`: the parts a
+  person would read, chosen by the rule Python's `email.message.get_body`
+  applies. A `format=flowed` text is unflowed in `m.text`.
+- **Nothing in a received message raises.** What could not be read is a
+  sentence in `problems`, naming the part, and the rest is still read; a text
+  that cannot be decoded is `unknown` with its bytes kept. Charsets read:
+  us-ascii, utf-8, iso-8859-1, windows-1252, utf-16. Others (koi8-r,
+  iso-8859-2, the CJK sets) are named as not read.
+- **`mail.unflow(text [, delsp])`** (RFC 3676), **`mail.own_text(text)`**
+  (the text above a quotation, naming the convention it cut at and any
+  unquoted lines below the cut), **`mail.header(m, name)`** and
+  **`mail.headers_named(m, name)`**.
+- **Where Python and the RFCs part, the RFC is followed:** white space
+  between adjacent encoded words in a display name is dropped (RFC 2047 6.2;
+  Python keeps a space, "Anna Kowalsk a"); trailing white space on a
+  quoted-printable line is deleted, so `= ` ending a line is a soft break
+  (RFC 2045 6.7; binascii keeps both); a two-digit year 50-99 is 19xx
+  (RFC 5322 4.3; Python makes 50-68 20xx).
+- **A zone question, ruled the same day:** `mail.compose` read its `date` as
+  the system's civil time while `parse` answers UTC. Matthew ruled that every
+  instant is UTC (the entry above), and compose now agrees.
+- New suite `tests/run_mail_parse.sh`: by hand from the RFCs (135 checks,
+  every problem parse can report), and Python's `email` package reading the
+  same bytes for 1200 messages made per run (half written byte by byte, half
+  by Python's EmailMessage; the generator refuses a corpus missing any of the
+  40 forms it claims), about 43,000 checks; valgrind. 29 perturbations of
+  `stdlib/mail.bas` each went red; two of the first ones hung, and one of
+  those was a real hang (a quoted parameter ending in a lone backslash), now
+  fixed and checked.
+
+### Embedded fonts in gpdf (book gap G58, 2026-11-10)
+
+- **`gpdf.font_file(path [, { name, index }])` reads a TrueType font**, and
+  `gpdf.set_font(d, font, size)` sets text in it. The PDF carries the font
+  subset to the glyphs drawn (and every glyph a composite is built from) as a
+  Type0/CIDFontType2 font with a ToUnicode map, so a statement can name a
+  customer in Łódź, İzmir or Новосибирск and the text extracts as written.
+  `text_width`, `wrap`, `paragraph`, `table`, `number_pages` and `svg` text all
+  measure with it; `representable(s, font)` asks the font.
+- **Refused by name, as WinAnsi's characters are:** a character the font has no
+  glyph for; one from a script that needs shaping (Arabic, Hebrew, the Indic
+  scripts and their neighbours), which drawn a glyph at a time prints a wrong
+  word; a control character; CFF (`.otf`) outlines; and a licence that forbids
+  embedding. Kerning is not applied.
+- **The WinAnsi refusal's wording changed** to point at `gpdf.font_file`
+  instead of saying embedded fonts are a later phase. No golden pins it.
+- **Document information strings mended.** `title`, `author`, `subject` and
+  `creator` went into the PDF as WinAnsi bytes, but the Info dictionary is
+  PDFDocEncoding, which differs at 0x80-0x9F: a title `Price €9 — net` read as
+  `Price •9 Š net` in a reader's document properties (pdfinfo, measured). Such
+  strings, and any WinAnsi cannot write, now go as UTF-16BE.
+- New suite `tests/run_gpdf_font.sh`: a fixture font made per run by fontTools,
+  each drawn glyph's outline, advance, bearing and width held to the original
+  font after mupdf rewrites the PDF, every codepoint U+0000-U+2FFF looked up
+  through cmap formats 4 and 12 against fontTools, three readers, and
+  pdftotext giving back what was asked for.
+
+### scrypt is allowed the memory its cost needs (Transward §12.1, 2026-11-10)
+
+- **`scrypt` at the recommended `n = 65536, r = 8, p = 1` raised** "scrypt
+  derivation failed (cost likely exceeds the memory limit)": OpenSSL was given
+  no limit and used its own 32 MB, and that cost needs 64 MiB. It is now
+  allowed `128 × r × (n + p + 2)` bytes. A cost that cannot be had is still
+  refused, with a new message naming the memory it asked for:
+  `tests/negative_scrypt_over_memory.err` is rebaselined, and its cost moves
+  from the RFC's 1 GiB vector, which now derives, to 1 PiB.
+
+### disk_space(path) (Transward §11.1, 2026-11-10)
+
+- **`disk_space(p)` answers `{ total, free, available }`** for the filesystem
+  holding `p`, in exact integer bytes. `available` is what an unprivileged
+  writer may still use, and `free` also counts root's reserve. A capacity
+  monitor ran `df` once per path per sweep for this, and there is no `df` on
+  Windows.
+
+### A readable worksheet, and zip.write (book gap G55, 2026-11-09)
+
+- **`xlsx.set` and `xlsx.set_formula` take `{ format, bold, fill }`.** Each
+  changes only what it names, starting from the cell's own style: a heading
+  made bold keeps its number format, and a money value written into a bold cell
+  stays bold. `fill` is six hex digits (`"D9D9D9"`) or `"none"`. `set_formula`
+  took no options before, so a `SUBTOTAL` over money cells could only be
+  `General`.
+- **A behaviour change on `set`:** a typed value, such as a date or money,
+  written into a cell that already had a style used to move the cell to a plain
+  style showing that format, which dropped bold and anything else the old style
+  had. It now keeps the rest of the cell's style. A workbook with no `fonts` or
+  `fills` (both optional) gets them made when they are first needed.
+- **`xlsx.column_widths(wb, sheet, widths)`, `xlsx.freeze(wb, sheet, rows,
+  columns)` and `xlsx.filter(wb, sheet, range)`**, each replacing what the
+  sheet had: `freeze(.., 0, 0)` and `filter(.., "")` take theirs off. A filter
+  is also written as the sheet's hidden `_xlnm._FilterDatabase` name, as Excel
+  writes it.
+- **`zip.write(f, members)`** writes a ZIP holding `{ name, data }` members, in
+  order. The same members give the same bytes, because every member is dated
+  1980-01-01. It refuses what `zip.extract` would refuse, and anything needing
+  ZIP64.
+- Fixed along the way: re-reading a workbook's sheets after an edit (as
+  `add_sheet` does) appended its defined names a second time. Nothing could see
+  that until a name could change; `filter` changes one.
+
+### gpdf.save returns nothing; an error's code is exact (2026-11-09)
+
+- **`gpdf.save(doc, path)` returns `nothing`.** It returned the bytes
+  written, so the ordinary statement drew a 2101 warning about a dropped
+  update. **`n = gpdf.save(...)` still runs, but `n` is now `nothing`**; the
+  size is `file_size(path)`.
+- **`error.code`, `error.line` and `error.column` are exact integers**, and so
+  are `warning`'s, and a trace frame's `line` and `column`. Transward carries a
+  native engine's result codes as error codes into a G-SQL `integer` column,
+  which refused them as inexact.
+
+### A broken stderr no longer kills a program; process.start's stdout: and stderr: (2026-11-09)
+
+- **A diagnostic can no longer kill a program.** With SIGPIPE at its default,
+  a warning or note written to a stderr whose reader had gone killed the
+  process (exit -13, mid-run). Transward met the risk in a detached child.
+  Now only a broken *stdout* ends a program by SIGPIPE, so `| head` behaves as
+  before. A write to stderr, or to a child's stdin, fails instead, and the
+  program goes on.
+- **`process.start` takes `stdout:` and `stderr:`**: `"pipe"` (the default),
+  `"null"`, `"inherit"`, or a file such as `{file}"run.log"`, which is
+  appended to. A bare string other than those words is refused. On Windows
+  only `"pipe"` is taken.
+
+### Reading a PDF: `pdf` (book gap G54, 2026-11-09)
+
+- **`stdlib/pdf.bas`** reads a PDF's pages over poppler's programs, the
+  poppler-utils package, which it runs rather than links. It offers:
+  - `pdf.info`: the page count, title and producer, and each page's size;
+  - `pdf.read_page` and `pdf.read`: words with positions, and the pictures
+    on each page with their places;
+  - `pdf.text`: a page's text laid out as printed;
+  - `pdf.image`: a picture taken out as stored.
+- **Every page says how it was read**: `text`, `scan`, `ocr` or `blank`.
+  OCR runs only with `{ ocr: true }`, through the `ocr` library.
+  Its words come in `ocr.read_page`'s shape, so `ocr.grid` lays out a PDF
+  page as it does a scan.
+- **The awkward pages:**
+  - A searchable scan's text layer is named as a layer, and is set aside
+    when the picture is read.
+  - Small pictures are listed and never read.
+  - Two page-sized pictures are refused, as a value.
+  - A damaged file is a value carrying poppler's own words.
+- **A library found twice is one library.** A stdlib library loading a sibling
+  by name warned `[2103]` "ALSO FOUND and not used", naming the same file
+  under two spellings, and then also named the installed copy.
+
+### A whole number is exact: file_size, floor, ceil and round (2026-11-09)
+
+- **`file_size` answers an exact integer**, as `len` and `byte_count` do. It
+  answered a double, which a G-SQL `integer` column refuses.
+- **`floor`, `ceil` and `round` to no places answer an exact integer**, from
+  an inexact or decimal number too, up to 2^53. Past 2^53 the answer stays a
+  double. This is the way to make a whole inexact number exact:
+  `round(x)` goes into an `integer` column. `round(x, places)` is unchanged.
+  One consequence: `floor(a / b)` is exact, although `/` is not. It is right
+  whenever `a` and `b` are below 2^53.
+- The integer column's refusal says that floor, ceil and round answer an
+  exact integer.
+
+### xml paths reach every match; a library's top level is declarations (2026-11-09)
+
+- **`xml.find_all` answers every element a path reaches**, in document order.
+  `xml.find` answers the first of them. Both used to follow only the first
+  element at each step but the last, so `find_all(d, "s/n")` missed the `n`
+  under every `s` but the first, and `find` missed an `n` that only a later
+  `s` held. A path of 1024 bytes or more, or more than 64 steps, is refused,
+  where it used to be cut short in silence.
+- **A statement at the top level of a `library` block is refused** when the
+  library is loaded, at its own line: an assignment, a `print`, a `watch`, an
+  `if`, or a `function obj.f()` attached to a value. A library's body is
+  `load`, `function`, `modifier`, `database` and `sql`. These statements used
+  to be skipped in silence, so `counter = 5` there left a function that read
+  `counter` with "undefined variable". Every library in `stdlib/` still loads.
+
+### Errors in place of plausible answers: xml and durations (2026-11-09)
+
+- **`xml.parse` refuses an entity a DTD declares, when it appears in text.**
+  The entity is still never expanded, as a defence against XXE and
+  billion-laughs attacks. The reference used to be dropped, so `<a>&y;</a>`
+  read as an empty `<a>`. Now the parse raises, naming the entity and its line,
+  and so do `xml.parse_file`, `xml.read` and `xml.subtree`.
+- **`xml.text` of `unknown` raises.** `unknown` is what `xml.find` answers when
+  nothing matched, and `xml.text` used to answer `""` for it, so a miss read as
+  an element with nothing in it. It also raises, naming the kind, for anything
+  that is not an element or a text child. **A program that read a missing
+  element as `""` through `xml.text(xml.find(...))` now raises**: check the
+  find with `is_unknown` first. `stdlib/insiders.bas` and `ownership.bas` have
+  been changed to do that. Rebaselined golden: `examples/xml_form4_test.out`'s
+  last line, `text_of_unknown=[]`, is now `text_of_unknown_raises=true`.
+- **`-d` negates a duration**, field by field, so `-(90 minutes)` is
+  `-90 minutes`. It used to be refused as not a number.
+- **A duration scaled to a fraction of a second is refused.** `(1 second) * 2.5`
+  used to answer `3 seconds`, silently; now it raises, saying to round the
+  seconds first. `(1 hour) / 7` raises the same way. `(1 hour) / 3` is still 20
+  minutes.
+
+### G-SQL stores durations (Matthew's ruling 2026-11-08)
+
+- **A `DURATION` column** holds a duration as given, field for field:
+  `24 hours` comes back as `24 hours`, not `1 day`. Text stored into one is read
+  in the form a duration prints in (`'1 month 14 days 1 minute 30 seconds'`), and
+  so is `CAST(... AS DURATION)`; a number is refused, having no unit. A duration
+  may be stored inside a record as well. `DUMP TO` writes one as
+  `CAST('<text>' AS DURATION)`, and a restore puts back the same bytes.
+- **It is never keyed**: a primary key, `UNIQUE`, an index, `GROUP BY` and
+  `DISTINCT` refuse it, because `1 month` has no order against `31 days`. The
+  refusal says to keep its `total_seconds` in a number column beside it.
+  `=`, `<` between exact durations, arithmetic and `ORDER BY` work, as gBASIC's.
+- **`dbframe.schema` gives each column's gBASIC `kind`** (`date`, `datetime`,
+  `time`, `duration`, `money(USD)`, `boolean`, `number`, `text`) beside its
+  SQLite `type`, and **`dbframe.gsql_create_sql(table, df)`** writes a G-SQL
+  `CREATE TABLE` from it, so a date column is advised as `DATE` rather than
+  `TEXT` (the books' Chapter 6). A whole number is `number`: a G-SQL integer
+  column refuses an inexact whole value, which a sheet's numbers can be.
+- `INTERVAL` is refused as a type, naming `DURATION`. An older build refuses a
+  table with a duration column as `CORRUPT` (it is not) and serves the others.
+- The "grouped or made DISTINCT" refusals said a kind had "no single equality
+  G-SQL can key", which was false of a duration; they say "G-SQL has no key for
+  it" now. `gsql_storage_design.md` §3.2's claim that `1 day` and `24 hours` are
+  not `=` is corrected: they are.
+
+### What verifying a SAML signature needs (Transward M31 §10)
+
+- **`xml.canonicalize(text, options)`**: Exclusive XML Canonicalization 1.0
+  (or Canonical XML 1.0) over libxml2's c14n, of a document or of one element
+  chosen by `id` or by `element` and `namespace`, with `exclude_signature` for
+  the enveloped-signature transform and `inclusive_prefixes`. It refuses a DTD,
+  an ID held twice and a name matched twice (the signature-wrapping attack).
+  `signed_info: true` canonicalizes the `ds:SignedInfo` of the element's own
+  signature, so a Response signed beside its signed Assertion (Okta, ADFS) can
+  be verified; asked for by Transward the same day.
+- **`x509_parse(cert)`**: a certificate's subject, issuer, dates, serial,
+  SHA-256 fingerprint, DER and public key, the key in the record shape
+  `rsa_verify` and `ecdsa_verify` take. It checks nothing.
+- `tests/run_xml_sign.sh`: canonical forms written by hand from the
+  specifications, certificates held against openssl, and an assertion signed
+  by openssl over hand-written canonical bytes that gBASIC verifies, with a
+  tampered and a wrapped copy failing.
+
+### A closed G-SQL database keeps no logs, and `gsql.space` (gdash B3, second half)
+
+- **A closed database kept two logs at full size**, up to one memtable each
+  (32 MB at the default), for as long as it sat closed. Closing now drops the
+  spare log and cuts the one in use past its last record, and when everything
+  is flushed, which is how the owner closes, the logs go to nothing. Six
+  swaps of a 5,000-row table close to 0.70 MB (0.70 MB of it table), against
+  6.28 MB before (5.58 MB of logs).
+- **`gsql.space(path or connection)`** answers `{ total, logs, tables }` in
+  bytes, read from the directory, so it answers for a closed database without
+  starting an owner. An open database's logs can reach two memtables.
+
+### A row cap that does not buffer past it (gdash B2)
+
+- **`pg.query(db, sql, params, { max_rows: n })`** and the same on `odbc.query`:
+  one row past the cap raises with `details.code` `"MAX_ROWS"` instead of
+  answering a partial result. `pg` reads in libpq's single-row mode and
+  cancels the query (33 MB against 655 for a million rows); `odbc` closes the
+  cursor, though a driver that buffers its whole result still holds it.
+  The arity messages for `pg.query` and `odbc.query` now say two to four
+  arguments.
+
+### A child's memory limit (gdash B1)
+
+- **`process.start({ ..., limits: { memory: bytes } })`** runs the child under
+  `RLIMIT_DATA` and with no core dump. A gBASIC child past it dies by SIGABRT;
+  a limited child's status adds `memory_limit` and `peak_memory` (its peak
+  resident bytes), since the kernel does not say a limit was hit. Unknown limits
+  are refused by name.
+
+### G-SQL gives back a dropped table's space beside a live one (gdash B3)
+
+- **A table swapped in again and again kept its old rounds' space**: a staging
+  table renamed over live grew gdash's directory to 90 MB for about 18 MB of
+  live rows (first reported as 5.5 MB: the recipe's rounds were 110,000 rows,
+  not 20,000, as gdash found), because each sorted file mixed a live round with dead ones and only a
+  routine compaction ever rewrote it. A file holding a dropped table's rows is
+  now compacted when nothing else is wanted; the same recipe's sorted files
+  peak at one flush (17 MB). The two logs, up to one memtable each, are
+  unchanged and are most of what remains.
+
+### Exact decimal numbers (book gap G50)
+
+- **A number written or read with a decimal point is exact**
+  (`docs/exact_decimal_design.md`, increment 1): `6331.475 - 2182.855` is
+  `4148.62`, where it was `4148.620000000001`, and `0.1 + 0.2 = 0.3` is
+  `true`. Literals, `number("…")`, `{number}`, typed locks and `decode` all
+  give one; `+ - *`, `sum`, `round`, `floor`, `ceil`, `abs`, `pow` to a whole
+  power, the picks and a `for` counter with a decimal step keep it. Division
+  and functions are the double.
+- **Answers that move, each one that was wrong:** `round(2.675, 2)` is `2.68`
+  (was `2.67`); `for x = 0 to 1 step 0.1` ends on `1` (was
+  `0.9999999999999999`); `0.1 < 0.10000000000000001` is `true`.
+- **Exact against inexact still compares as doubles**, so `sqrt(0.01) = 0.1`
+  stays `true`.
+- **`x * 1.0` no longer makes a double**, since `1.0` is exact; write `x * 1e0`.
+  A decimal never becomes the exact integer by itself, so paths that ask for an
+  integer answer for `2.0` as before. `stdlib/frame.bas` used the idiom and was
+  changed.
+- **Digits that do not fit** give the double: silently when only far fractional
+  places go (compounding), with warning 2112 at 2^53 and past it.
+- **Stored and sent as digits** (increment 2): `serialize` writes a decimal as
+  exactness byte 2 with its scale and mantissa (an older build refuses it
+  rather than misreading it), so the actor wire and G-SQL rows keep it. SQL
+  literals with a point are decimals. **`dump` now writes a double with an
+  exponent** (`1e-1`, `2000e0`), since plain digits restore as a decimal. A
+  G-SQL index keys a decimal by its nearest double; a UNIQUE index refuses two
+  decimals that differ only past 17 digits (DOGFOOD row 9).
+- **Parameters keep their digits** (increment 3): `pg` sends a number as its
+  own digits (`0.1` arrived in a `numeric` as `0.10000000000000001`); `odbc`
+  declares a decimal `SQL_DECIMAL` with its scale; **`sqlite` binds an exact
+  integer as an integer** (a defect found here: 2^53 + 1 was stored as 2^53).
+  New suite: `tests/run_exact_decimal.sh`.
+
+### A watch belongs to the scope that declares it
+
+- **A `watch` in a function watches that function's own variables**, its body
+  runs in that call and sees its locals, and it ends when the function returns
+  (Matthew's ruling; `docs/watch_scope_design.md`). It used to register
+  nothing and print an unlocated line on stderr.
+- **Anything else in a function is refused** (`1003`, naming it): a global, a
+  variable not yet assigned, or an event source, which still belongs at the top
+  level of the `program` block until `wait until` (designed, not built).
+- **A named watcher may be declared in a function** (`watch w(x)`); a handle
+  that outlives its function names an ended watch.
+
+### The gBASIC books' last gaps, the library half (G31-G35, G43-G45, G52, G53, G60)
+
+- **Report discovery** (G31-G35): a refusal names the near miss (two row
+  families differing at one token); the detail rows' start pattern is tested
+  against the heading it must not match; column spans come from the printed
+  rule line; with several money columns each run total is read under its own
+  column (it read the hours as the total); discovery and ARI share one type
+  vocabulary and ARI refuses an unknown field type when it reads a
+  specification (an unknown type gave every value as the whole line);
+  `ari_advisor.adopt` rewrites the specification; the advisor's prompt names
+  no domain of its own and takes `domain:`.
+- **finio** (G43-G45): camt reads remittance, referred documents, debtor,
+  creditor and the bank's reference, picks the counterparty by direction (it
+  named the company on every incoming payment), and notes uninterpreted
+  `TxDtls` as a loss; NACHA gives return and NOC codes a direction and reads
+  type-98 and type-99 addenda with their own layouts; `finio.render` writes a
+  record from a layout, refusing a value of the wrong width.
+- **ocr** (G52, G53): the grid keeps a space between words; `ocr.grid_lines`
+  says which words each line is made of; a page whose drift passes half its
+  line pitch is refused, and `max_skew` can be set.
+- **llm** (G60): `parts_of` reads provider-shaped tool turns, and
+  `from_response` gives the arguments rather than `{ ok, value }` (which
+  `to_wire` would have sent as the call's input).
+
+### The gBASIC books' last gaps (volume 3, G31-G65), the core half
+
+- **`exit` ends the program from any depth** (G63, G48). A bare `exit(70)` in
+  a function two calls deep let the rest of that function and its caller run,
+  with the status still 70, and a statement run that way could print a stray
+  `nothing`. A refusal could carry on.
+- **Integers by nature are exact** (G62, G39, G46): `process.run`'s exit code
+  and signal, positions from `xml.parse` and `byte_find`, ids, statuses,
+  ports, sizes, row ids and counts, so a G-SQL `integer` column takes them;
+  and SQLite's `INTEGER` past 2^53 comes back exact, not as the nearest double.
+- **`xml.parse` positions give an element's content and each attribute's
+  value** (`content_start`/`content_end`, `attribute_bytes`) (G39).
+- **Money negates** (`-amount`) (G56), and its two construction refusals say
+  which they are in `error.details` (G41).
+- **`runtime()`** says which gBASIC is running (G36).
+- **`lock(f, { wait: false })`** answers whether it took the lock, never
+  waiting (G42); **`process.alive(pid)`** and **`process.info(pid)`** (start
+  time and command line), with `started`, `uid` and `user` on
+  `process.self()` (G64); **`permissions()`** names the owner and group (G65).
+- **`json_decode(text)`**: RFC 8259 and nothing else (G61); `webclient` says
+  `json_error` when a body it was told is JSON does not parse, and `encode`
+  is documented as not JSON (G51).
+- **A `date` lock refuses a time of day** (G40); **`default(r.field, x)` takes
+  a missing field** (G37).
+- **`pg` and `odbc` warn (2123) when a timestamp's fraction is cut** (G47);
+  **`odbc` returns a binary column as its bytes**, where the whole query was
+  refused (G49).
+- **`intake` identity `"path+content"`**: a repeat says whether its bytes are
+  the same (G38).
+
+### `wait until`: a function can wait for events
+
+- **`wait until <condition> [for <limit>]`** runs the event loop from where it
+  is written until the condition is true, delivering to the watches of every
+  scope still running. So a function can watch a timer, its inbox, a transfer,
+  a socket or a server it holds in a local, and wait for what it needs.
+- **It raises rather than hangs:** when its limit passes, when nothing is left
+  that could make the condition true, and past 16 waits inside one another.
+- **`qt.run()` from inside a function no longer starves the loop.**
+- `wait` is a keyword only before `until`; a variable called `wait` is
+  unaffected.
+
+### xlsx.new could refuse a valid sheet name
+
+- **`xlsx.new("Summary")` could be refused** as `a sheet name is 1 to 31
+  characters`, depending on what was on the stack: the length check read a
+  string header a plain buffer does not have. Found by valgrind; the
+  creating path is under valgrind in `run_xlsx.sh` now.
+
+### `process.self().pid`
+
+- **`process.self()` answers `pid`, this process's id** (Transward). A spawned
+  actor is a process of its own and answers its own.
+
+### Whether a server is serving TLS is on its record
+
+- **`webserver.listen` and `web.serve` answer a record with `tls: true` or
+  `false`**, read from the listener's own state, so a program can refuse to
+  run without TLS rather than trust what it asked for (Transward).
+
+### A source-tree binary loads its own stdlib
+
+- **`./gbasic` run from the tree it was built in loads that tree's `stdlib`**,
+  not an installed one, when `GBASIC_PATH` is unset. An older installed
+  `web.bas` had silently undone half of the TLS client-certificate fix for a
+  binary run this way. A copy installed or moved elsewhere is unaffected, and
+  `GBASIC_PATH` still wins.
+
+### G-SQL: a DATE column refuses text with a time of day (gdash's A7)
+
+- **Storing `'2026-01-15T10:00'` into a `date` column is refused** (`TYPE`),
+  naming the text and the time it would lose. It used to be stored as
+  2026-01-15, the time dropped in silence. Text at midnight
+  (`'2026-01-15T00:00'`) loses nothing and is stored, as a date is.
+- **`CAST('2026-01-15T10:00' AS DATE)` still takes the date,** so taking it
+  is now written down where it happens.
+- **A comparison with such text is refused too** (`EXPRESSION`): `where d =
+  '2026-01-15T10:00'` was true of the 15th. `where d = '2026-01-15'` and
+  midnight text still compare as the date.
+
+### G-SQL: an open no longer stalls 10 s at linger 0 (gdash's G20-15)
+
+- **A client told `busy` by an owner it started, whose winner then left, starts
+  again at once.** It used to wait out its 10 s for a socket that was gone.
+- **A connect and close is not an owner's first client.** Another owner's
+  check reached a new owner before its starter and, at linger 0, stopped it.
+- **A client keeps trying for its wait (10 s), not for five tries,** since
+  each try can now be lost in milliseconds.
+
 ### Client certificates on the webserver (a security fix)
 
 - **`webserver.listen` honours `tls.client_ca` and `tls.require_client_cert`**,

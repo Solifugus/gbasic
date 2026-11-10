@@ -132,6 +132,7 @@ static const char *const ACCEPT[] = {
     [GSQL_COL_TIME]     = "nnnnnnnYnnnnYY",
     [GSQL_COL_DATETIME] = "nnnnnnnnYnnnYY",
     [GSQL_COL_RECORD]   = "nnnnnnnnnYnnYY",
+    [GSQL_COL_DURATION] = "nnnnnnnnnnnYYY",   /* docs/gsql_duration_design.md */
 };
 
 typedef struct {
@@ -177,7 +178,7 @@ static void pool_build(void) {
     pool_add(v_rec1("x", v_int(1)), C_REC);
     pool_add(v_rec1("y", v_arr2(v_str("p", 1), v_money(5, "USD"))), C_REC);
     pool_add(v_arr2(v_int(1), v_int(2)), C_ARR);
-    pool_add(v_rec1("d", v_dur()), C_DUR);   /* a record holding a duration is refused too */
+    pool_add(v_rec1("d", v_dur()), C_REC);   /* a record may hold a duration (2026-11-08) */
     pool_add(v_dur(), C_DUR);
     pool_add(v_tag(SER_UNKNOWN), C_UNKNOWN);
     pool_add(v_tag(SER_UNKNOWN), C_UNKNOWN);
@@ -798,9 +799,9 @@ static int hexval(int c) {
 }
 
 static int kinds_run(const char *file) {
-    static const int ORDER[10] = {GSQL_COL_NUMBER, GSQL_COL_INTEGER, GSQL_COL_STRING, GSQL_COL_BOOLEAN,
+    static const int ORDER[11] = {GSQL_COL_NUMBER, GSQL_COL_INTEGER, GSQL_COL_STRING, GSQL_COL_BOOLEAN,
                                   GSQL_COL_MONEY, GSQL_COL_MONEY, GSQL_COL_DATE, GSQL_COL_TIME,
-                                  GSQL_COL_DATETIME, GSQL_COL_RECORD};
+                                  GSQL_COL_DATETIME, GSQL_COL_RECORD, GSQL_COL_DURATION};
     FILE *f = fopen(file, "r");
     if (!f) {
         printf("MISMATCH cannot read %s\n", file);
@@ -812,7 +813,7 @@ static int kinds_run(const char *file) {
         char verdicts[32], label[128], hex[8000];
         if (sscanf(line, "V %31s %127s %7999s", verdicts, label, hex) != 3) continue;
         size_t hn = strlen(hex);
-        if (strlen(verdicts) != 10 || hn < 10 || hn % 2) {
+        if (strlen(verdicts) != 11 || hn < 10 || hn % 2) {
             mismatch("a malformed line: %s", line);
             continue;
         }
@@ -823,7 +824,7 @@ static int kinds_run(const char *file) {
         values++;
         int is_absent = n == 1 && (v[0] == SER_UNKNOWN || v[0] == SER_NULL);
         absent += is_absent;
-        for (int k = 0; k < 10; k++) {
+        for (int k = 0; k < 11; k++) {
             GsqlColumn c;
             memset(&c, 0, sizeof c);
             c.name = "c";

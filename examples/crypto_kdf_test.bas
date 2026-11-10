@@ -29,10 +29,15 @@ program main(args)
     ' --- scrypt, RFC 7914 §12 vectors 2 and 3 -----------------------------
     ' Vector 1 (empty password AND empty salt) is deliberately unreachable: an
     ' empty salt is refused, because it silently turns a KDF into a plain
-    ' iterated hash. Vector 4 needs 1 GB and exceeds the memory ceiling by
-    ' design -- see the negative fixtures.
+    ' iterated hash. Vector 4 needs 1 GiB, which a gate running suites side by
+    ' side should not ask of the machine.
     print "scrypt N=1024         " + hex_encode(scrypt("password", "NaCl", 1024, 8, 16, 64))
     print "scrypt N=16384        " + hex_encode(scrypt("pleaseletmein", "SodiumChloride", 16384, 8, 1, 64))
+    ' the cost the reference recommends, 64 MiB, which OpenSSL's default 32 MB
+    ' ceiling refused (Transward §12.1); expected bytes from python3's
+    ' hashlib.scrypt(b"pw", salt=b"saltsalt", n=65536, r=8, p=1, dklen=32,
+    ' maxmem=128 << 20)
+    print "scrypt N=65536 r=8    " + hex_encode(scrypt("pw", "saltsalt", 65536, 8, 1, 32))
 
     ' --- the point of the exercise: a passphrase becomes an AES-GCM key ----
     salt = "a-stored-random-salt"

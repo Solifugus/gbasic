@@ -75,6 +75,7 @@ positive_cases=(
     plat_proc_interleave
     plat_proc_bytes
     plat_proc_actor
+    plat_proc_streams
 )
 
 for name in "${positive_cases[@]}"; do
@@ -299,3 +300,58 @@ if ! printf '%s' "$busy_out" | grep -qx 'mismatches: 0'; then
 fi
 printf 'PASS wait_timeout_busy_child (%s checks: a timed wait drains a 2MB producer, and still expires)\n' \
     "$(printf '%s' "$busy_out" | sed -n 's/^checks: //p')"
+
+# process.self().pid (Transward's ask), against the KERNEL's answer: the shell
+# prints its own $$ and then execs gbasic, so the two must be one number, and a
+# spawned actor (a process of its own) must answer a different one.
+pid_out="$(bash -c 'echo "shell $$"; exec ./gbasic tests/process/self_pid.bas' 2>&1 || true)"
+shell_pid="$(printf '%s\n' "$pid_out" | sed -n 's/^shell //p')"
+self_pid="$(printf '%s\n' "$pid_out" | sed -n 's/^pid //p')"
+if [ -z "$shell_pid" ] || [ "$shell_pid" != "$self_pid" ]; then
+    printf 'FAIL self_pid (the shell exec-ed as %s, process.self().pid said %s)\n' "$shell_pid" "${self_pid:-nothing}"
+    printf '%s\n' "$pid_out" | tail -3
+    exit 1
+fi
+if ! printf '%s\n' "$pid_out" | grep -qx 'actor differs'; then
+    printf 'FAIL self_pid (a spawned actor did not answer its own pid)\n'
+    printf '%s\n' "$pid_out" | tail -3
+    exit 1
+fi
+printf 'PASS self_pid (process.self().pid is the kernel'"'"'s pid; an actor answers its own)\n'
+
+# process.start's limits.memory (gdash's GDASH-16 B1). The oracle for the
+# limit is the KERNEL's: `cat /proc/self/limits` run as the limited child
+# prints what it runs under, data size and core size both. Then a gBASIC child
+# that outgrows a 100 MB limit dies by SIGABRT with its peak reported, while
+# the same child under a roomy limit finishes (so it is the limit, not the
+# program), and a child given no limit prints the status it always did.
+# Linux only: /proc/self/limits is the oracle.
+if [ -r /proc/self/limits ]; then
+    lim_dir="$(mktemp -d)"
+    lim_out="$(timeout 120 ./gbasic tests/process/memory_limit.bas "$lim_dir" "$PWD/gbasic" 2>&1 || true)"
+    lim_want='limits Max data size             150000000            150000000            bytes
+limits Max core file size        0                    0                    bytes
+limited status 150000000 true
+tight false 6 true
+roomy true 3000000
+plain {"running":false,"exit_code":0,"signal":0,"success":true}
+refused process.start: unknown limit '"'"'memroy'"'"' (the limits are: memory)
+refused process.start: limits.memory must be a whole number of bytes, at least 1
+refused process.start: options.limits must be a record, such as { memory: 200000000 }'
+    lim_got="$(printf '%s\n' "$lim_out" | sed 's/[[:space:]]*$//')"
+    lim_want="$(printf '%s\n' "$lim_want" | sed 's/[[:space:]]*$//')"
+    cores="$(find "$lim_dir" -name 'core*' | wc -l)"
+    rm -rf "$lim_dir"
+    if [ "$lim_got" != "$lim_want" ]; then
+        printf 'FAIL memory_limit\n'
+        diff <(printf '%s\n' "$lim_want") <(printf '%s\n' "$lim_got") | head -10
+        exit 1
+    fi
+    if [ "$cores" != 0 ]; then
+        printf 'FAIL memory_limit (a limited child left %s core file(s) in its directory)\n' "$cores"
+        exit 1
+    fi
+    printf 'PASS memory_limit (the child runs under RLIMIT_DATA and no core, by /proc; past it a gBASIC child dies by SIGABRT with its peak reported)\n'
+else
+    printf 'SKIP memory_limit (no /proc/self/limits: the limit was NOT checked from the kernel)\n'
+fi

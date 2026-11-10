@@ -46,6 +46,7 @@
 #include <openssl/sha.h>
 #include <openssl/err.h>
 #include <openssl/rand.h>
+#include <openssl/x509.h>
 
 #include "../vendor/bcrypt_pbkdf.c"
 
@@ -610,6 +611,40 @@ static int crypto_hash_alg_named(Value *v) {
     if (strcmp(v->as.string, "sha512") == 0) return HASH_SHA512;
     return 0;
 }
+/* ---- X.509 (x509_parse) ----------------------------------------------------*/
+
+/* A name as RFC 2253 writes it, most specific first: what `openssl x509
+ * -nameopt RFC2253` prints, and what an LDAP DN looks like. */
+static Value crypto_x509_name(const X509_NAME *n) {
+    BIO *bio = BIO_new(BIO_s_mem());
+    if (!bio) abort();
+    X509_NAME_print_ex(bio, n, 0, XN_FLAG_RFC2253);
+    char *p = NULL;
+    long len = BIO_get_mem_data(bio, &p);
+    Value v = value_string_n(p ? p : "", len > 0 ? (size_t)len : 0);
+    BIO_free(bio);
+    return v;
+}
+
+/* A certificate's time as a datetime in UTC, which is what X.509 writes
+ * (UTCTime and GeneralizedTime both end in Z). */
+static Value crypto_x509_time(const ASN1_TIME *t) {
+    struct tm tm;
+    memset(&tm, 0, sizeof tm);
+    if (!t || ASN1_TIME_to_tm(t, &tm) != 1) {
+        return value_unknown();
+    }
+    DateTime dt = {0};
+    dt.year = tm.tm_year + 1900;
+    dt.month = tm.tm_mon + 1;
+    dt.day = tm.tm_mday;
+    dt.hour = tm.tm_hour;
+    dt.minute = tm.tm_min;
+    dt.second = tm.tm_sec;
+    dt.precision = PREC_SECOND;
+    return value_datetime(dt);
+}
+
 #endif /* HAVE_LIBCRYPTO */
 
 /* ---- dispatch -------------------------------------------------------------*/
@@ -621,7 +656,7 @@ static int crypto_ssh_is(const char *name) {
         "aes_ctr", "bcrypt_pbkdf",
         "chacha20", "poly1305",
         "ec_keypair", "ec_public", "ecdsa_sign", "ecdsa_verify", "ecdh_shared",
-        "dh_keypair", "dh_shared", "hkdf", "hash_start", "hash_update", "hash_finish", NULL
+        "dh_keypair", "dh_shared", "hkdf", "hash_start", "hash_update", "hash_finish", "x509_parse", NULL
     };
     for (size_t i = 0; names[i]; i++) {
         if (strcmp(names[i], name) == 0) return 1;
@@ -845,7 +880,16 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         }
         ERR_clear_error();
         BIO_free(bio);
+        /* a certificate is the commonest thing handed here that is not a key
+         * (a SAML IdP publishes one), so it is named, with the verb that reads it */
+        int is_cert = !pkey && memmem(a[0].as.string, string_length(a[0].as.string),
+                                      "-----BEGIN CERTIFICATE-----", 27) != NULL;
         crypto_ssh_free(a, argc);
+        if (is_cert) {
+            crypto_ssh_raise(name, "that text is an X.509 certificate, not a key; x509_parse(text).public_key "
+                                   "is the key it holds");
+            return 1;
+        }
         if (!pkey) {
             crypto_ssh_raise(name, argc == 2
                 ? "no RSA key could be read from that text with that passphrase"
@@ -859,6 +903,105 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         }
         *out = crypto_rsa_to_record(pkey);
         EVP_PKEY_free(pkey);
+        return 1;
+    }
+
+    /* x509_parse(der_or_pem): what a certificate says (Transward M31 §10.2,
+     * a SAML identity provider's signing key). It READS a certificate and
+     * checks nothing: not its signature, its dates or its chain, which are
+     * the caller's decisions (a SAML IdP's certificate is often self-signed
+     * and pinned by metadata). The key comes back in the record shape
+     * rsa_verify and ecdsa_verify already take, so a certificate's key is
+     * used as any other. */
+    if (strcmp(name, "x509_parse") == 0) {
+        if (!crypto_ssh_args(expr, name, 1, 1, a)) return 1;
+        if (a[0].kind != VALUE_STRING || string_length(a[0].as.string) == 0) {
+            crypto_ssh_free(a, 1);
+            crypto_ssh_raise(name, "expects a certificate as DER bytes or PEM text");
+            return 1;
+        }
+        const unsigned char *in = (const unsigned char *)a[0].as.string;
+        size_t inlen = string_length(a[0].as.string);
+        X509 *cert = NULL;
+        if (inlen >= 11 && memmem(in, inlen, "-----BEGIN ", 11)) {
+            BIO *bio = BIO_new_mem_buf(in, (int)inlen);
+            if (!bio) abort();
+            cert = PEM_read_bio_X509(bio, NULL, NULL, NULL);
+            BIO_free(bio);
+        } else {
+            const unsigned char *p = in;
+            cert = d2i_X509(NULL, &p, (long)inlen);
+            /* DER is the whole input or it is not this certificate */
+            if (cert && p != in + inlen) {
+                X509_free(cert);
+                cert = NULL;
+            }
+        }
+        ERR_clear_error();
+        crypto_ssh_free(a, 1);
+        if (!cert) {
+            crypto_ssh_raise(name, "no X.509 certificate could be read from that (a PEM's BEGIN line must be "
+                                   "CERTIFICATE; DER must be the certificate's bytes and nothing after)");
+            return 1;
+        }
+        Value rec = value_record(NULL, 0);
+        record_set(&rec, "subject", crypto_x509_name(X509_get_subject_name(cert)));
+        record_set(&rec, "issuer", crypto_x509_name(X509_get_issuer_name(cert)));
+        record_set(&rec, "not_before", crypto_x509_time(X509_get0_notBefore(cert)));
+        record_set(&rec, "not_after", crypto_x509_time(X509_get0_notAfter(cert)));
+        BIGNUM *serial = ASN1_INTEGER_to_BN(X509_get0_serialNumber(cert), NULL);
+        record_set(&rec, "serial", serial ? crypto_bn_value(serial) : value_unknown());
+        BN_free(serial);
+        unsigned char *der = NULL;
+        int derlen = i2d_X509(cert, &der);
+        if (derlen > 0) {
+            unsigned char md[EVP_MAX_MD_SIZE];
+            unsigned int mdlen = 0;
+            EVP_Digest(der, (size_t)derlen, md, &mdlen, EVP_sha256(), NULL);
+            record_set(&rec, "fingerprint_sha256", crypto_ssh_bytes(md, mdlen));
+            record_set(&rec, "der", crypto_ssh_bytes(der, (size_t)derlen));
+        }
+        OPENSSL_free(der);
+        EVP_PKEY *pkey = X509_get0_pubkey(cert);
+        int base = pkey ? EVP_PKEY_get_base_id(pkey) : 0;
+        Value key = value_unknown();
+        const char *kind = "other";
+        if (base == EVP_PKEY_RSA) {
+            kind = "rsa";
+            key = crypto_rsa_to_record(pkey);
+        } else if (base == EVP_PKEY_EC) {
+            char group[64] = "";
+            size_t glen = 0;
+            const CryptoCurve *c = NULL;
+            if (EVP_PKEY_get_utf8_string_param(pkey, OSSL_PKEY_PARAM_GROUP_NAME, group, sizeof group, &glen) == 1) {
+                int nid = OBJ_txt2nid(group);
+                for (size_t i = 0; i < sizeof crypto_curves / sizeof crypto_curves[0]; i++)
+                    if (crypto_curves[i].nid == nid) c = &crypto_curves[i];
+            }
+            unsigned char pub[1 + 2 * 66];
+            size_t publen = 0;
+            if (c && EVP_PKEY_get_octet_string_param(pkey, OSSL_PKEY_PARAM_ENCODED_PUBLIC_KEY, pub, sizeof pub,
+                                                     &publen) == 1 && publen == 1 + 2 * c->bytes) {
+                kind = "ec";
+                key = value_record(NULL, 0);
+                record_set(&key, "curve", value_string(c->name));
+                record_set(&key, "public", crypto_ssh_bytes(pub, publen));
+            } else {
+                kind = "ec_other";  /* a curve or point form ecdsa_verify does not take */
+            }
+        } else if (base == EVP_PKEY_ED25519) {
+            unsigned char pub[32];
+            size_t publen = sizeof pub;
+            kind = "ed25519";
+            if (EVP_PKEY_get_raw_public_key(pkey, pub, &publen) == 1 && publen == 32) {
+                key = crypto_ssh_bytes(pub, 32);  /* as ed25519_verify takes it */
+            }
+        }
+        ERR_clear_error();
+        record_set(&rec, "key_type", value_string(kind));
+        record_set(&rec, "public_key", key);
+        X509_free(cert);
+        *out = rec;
         return 1;
     }
 

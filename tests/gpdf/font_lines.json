@@ -1,0 +1,14 @@
+{
+  "fixture": [
+    { "text": "Zakład Mechaniczny Łódź", "size": 12 },
+    { "text": "İ ş Д λ € 𝐀 123", "size": 10 },
+    { "text": "ł ź ó Łódź", "size": 14.5 }
+  ],
+  "dejavu": [
+    { "text": "Zakład Mechaniczny Łódź", "size": 12 },
+    { "text": "İzmir Şişli Üsküdar Ağaç", "size": 12 },
+    { "text": "Новосибирск, улица Ленина 5", "size": 11 },
+    { "text": "Ελλάδα Αθήνα", "size": 11 },
+    { "text": "Žluťoučký kůň Őrület Ţară", "size": 9 }
+  ]
+}

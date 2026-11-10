@@ -5611,6 +5611,15 @@ static void xlsx_reload_sheets(XlsxWorkbook *wb) {
     free(wb->sheets);
     wb->sheets = NULL;
     wb->sheet_count = 0;
+    /* the defined names are read with the sheets, and appended: kept, each
+     * would be there twice, and a name changed since read the old way first */
+    for (size_t i = 0; i < wb->defined_count; i++) {
+        free(wb->defined[i].name);
+        free(wb->defined[i].refers);
+    }
+    free(wb->defined);
+    wb->defined = NULL;
+    wb->defined_count = 0;
     xlsx_load_sheets(wb);
 }
 
@@ -5636,9 +5645,11 @@ static const char *XLSX_WS_REL = "http://schemas.openxmlformats.org/officeDocume
  * beginning or ending with an apostrophe, and unique ignoring case. */
 static int xlsx_sheet_name_ok(XlsxWorkbook *wb, const char *name, char *why, size_t wn) {
     size_t n = strlen(name);
-    /* The raw walker, not string_cp_count: `name` is a plain C string (a stack
-     * buffer in xlsx.new, the literal "Sheet1"), and string_cp_count reads and
-     * WRITES a string value's header in front of its pointer. */
+    /* the RAW count: `name` is often a plain buffer (xlsx.new copies its
+       argument into one), and string_cp_count reads a runtime string's header
+       before the data, which a plain buffer does not have. It read the stack
+       there, and a valid name was refused once the stack under it changed
+       (found 2026-11-08 by valgrind, when an unrelated change moved it). */
     if (n == 0 || string_codepoint_count(name, n) > 31) {
         snprintf(why, wn, "a sheet name is 1 to 31 characters");
         return 0;
@@ -5763,25 +5774,172 @@ static XlsxWorkbook *xlsx_new_workbook(const char *first_sheet) {
     return wb;
 }
 
-/* The cell style showing `code`, added when the workbook has none: its numFmt
- * (a built-in id when the code is one, else the next custom id) and an xf
- * using it. -1 with *why when the workbook has no styles part to add to. */
-static long xlsx_style_for(XlsxWorkbook *wb, const char *code, char *why, size_t wn) {
-    xlsx_load_styles(wb);
-    /* Written as the workbook's OWN format, never a built-in id but General:
-     * a built-in id is read by each program's locale and table (LibreOffice
-     * showed [h]:mm:ss under id 46 as "01:30:00 AM"), the code is not. */
-    long fid = strcmp(code, "General") == 0 ? 0 : -1;
-    for (size_t i = 0; i < wb->fmt_count && fid < 0; i++) {
-        if (strcmp(wb->fmt_codes[i], code) == 0) fid = wb->fmt_ids[i];
+/* A node as text, for telling two styles' pieces apart: two fonts (or fills,
+ * or cell styles) that read alike show alike. Attributes are in name order,
+ * since their order is not content: a style made bold and then given a
+ * format, and one given the format and then made bold, are one style. */
+static int xlsx_attr_cmp(const void *a, const void *b) {
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+static void xlsx_canon(StringBuilder *sb, xmlNodePtr n) {
+    for (; n; n = n->next) {
+        if (n->type == XML_TEXT_NODE && n->content) {
+            sb_append_text(sb, (const char *)n->content);
+            continue;
+        }
+        if (n->type != XML_ELEMENT_NODE) continue;
+        sb_append_text(sb, "<");
+        sb_append_text(sb, (const char *)n->name);
+        size_t k = 0;
+        for (xmlAttrPtr a = n->properties; a; a = a->next) k++;
+        char **attrs = calloc(k ? k : 1, sizeof *attrs);
+        if (!attrs) abort();
+        k = 0;
+        for (xmlAttrPtr a = n->properties; a; a = a->next) {
+            xmlChar *v = xmlNodeListGetString(n->doc, a->children, 1);
+            size_t len = strlen((const char *)a->name) + (v ? strlen((const char *)v) : 0) + 2;
+            attrs[k] = malloc(len);
+            if (!attrs[k]) abort();
+            snprintf(attrs[k], len, "%s=%s", (const char *)a->name, v ? (const char *)v : "");
+            xmlFree(v);
+            k++;
+        }
+        qsort(attrs, k, sizeof *attrs, xlsx_attr_cmp);
+        for (size_t i = 0; i < k; i++) {
+            sb_append_text(sb, " ");
+            sb_append_text(sb, attrs[i]);
+            free(attrs[i]);
+        }
+        free(attrs);
+        sb_append_text(sb, ">");
+        xlsx_canon(sb, n->children);
+        sb_append_text(sb, "</>");
     }
+}
+
+static char *xlsx_node_dump(xmlDocPtr doc, xmlNodePtr n) {
+    (void)doc;
+    StringBuilder sb;
+    sb_init(&sb);
+    xmlNodePtr next = n->next;
+    n->next = NULL;   /* the node alone, not its siblings */
+    xlsx_canon(&sb, n);
+    n->next = next;
+    return sb_take(&sb);
+}
+
+/* A node copied out of the styles part names the default namespace itself
+ * (libxml declares it on the copy, which has no parent to inherit from), and
+ * would be written with a needless xmlns once put back. The copy and its
+ * elements use the root's instead. */
+static void xlsx_ns_remap(xmlNodePtr n, xmlNsPtr from, xmlNsPtr to) {
+    for (; n; n = n->next) {
+        if (n->type != XML_ELEMENT_NODE) continue;
+        if (n->ns == from) n->ns = to;
+        xlsx_ns_remap(n->children, from, to);
+    }
+}
+
+static xmlNodePtr xlsx_copy_in(xmlDocPtr doc, xmlNodePtr root, xmlNodePtr src) {
+    xmlNodePtr c = xmlDocCopyNode(src, doc, 1);
+    if (!c) abort();
+    for (xmlNsPtr *pp = &c->nsDef; *pp;) {
+        xmlNsPtr d = *pp;
+        if (!d->prefix && root->ns && d->href && xmlStrEqual(d->href, root->ns->href)) {
+            *pp = d->next;
+            c->ns = c->ns == d ? root->ns : c->ns;
+            xlsx_ns_remap(c->children, d, root->ns);
+            d->next = NULL;
+            xmlFreeNs(d);
+        } else {
+            pp = &d->next;
+        }
+    }
+    return c;
+}
+
+static xmlNodePtr xlsx_nth_child(xmlNodePtr parent, const char *name, long k) {
+    for (xmlNodePtr c = parent ? parent->children : NULL; c; c = c->next) {
+        if (xlsx_is(c, name) && k-- == 0) return c;
+    }
+    return NULL;
+}
+
+/* The index in `pool` (fonts, fills or cellXfs) of a child showing as `cand`
+ * does, `prefer` first when it is one; else `cand` is added at the end and
+ * the pool's count kept. `cand` is consumed. *added says which. */
+static long xlsx_pool_index(xmlDocPtr doc, xmlNodePtr pool, const char *name, xmlNodePtr cand, long prefer,
+                            int *added) {
+    char *want = xlsx_node_dump(doc, cand);
+    long i = 0, first = -1, hit = -1;
+    for (xmlNodePtr c = pool->children; c; c = c->next) {
+        if (!xlsx_is(c, name)) continue;
+        char *got = xlsx_node_dump(doc, c);
+        if (strcmp(got, want) == 0) {
+            if (first < 0) first = i;
+            if (i == prefer) hit = i;
+        }
+        free(got);
+        i++;
+    }
+    free(want);
+    if (hit < 0) hit = first;
+    if (hit >= 0) {
+        xmlFreeNode(cand);
+        return hit;
+    }
+    xmlAddChild(pool, cand);
+    char buf[32];
+    snprintf(buf, sizeof buf, "%ld", i + 1);
+    xmlSetProp(pool, (const xmlChar *)"count", (const xmlChar *)buf);
+    *added = 1;
+    return i;
+}
+
+static long xlsx_attr_long(xmlNodePtr n, const char *name) {
+    char *v = xlsx_prop(n, name);
+    long r = v ? strtol(v, NULL, 10) : 0;
+    free(v);
+    return r;
+}
+
+/* A cell style's applyX says it differs from the default in X: set when the
+ * id it now names is not the default's 0, and taken off when it is, so a
+ * fill taken off leaves the default style, not a twin of it. */
+static void xlsx_apply_flag(xmlNodePtr xf, const char *flag, long id) {
+    if (id) xmlSetProp(xf, (const xmlChar *)flag, (const xmlChar *)"1");
+    else xmlUnsetProp(xf, (const xmlChar *)flag);
+}
+
+/* `node` into the styleSheet before the first of `later` it holds */
+static void xlsx_styles_place(xmlNodePtr root, xmlNodePtr node, const char *const *later) {
+    for (xmlNodePtr c = root->children; c; c = c->next) {
+        for (int i = 0; later[i]; i++) {
+            if (xlsx_is(c, later[i])) {
+                xmlAddPrevSibling(c, node);
+                return;
+            }
+        }
+    }
+    xmlAddChild(root, node);
+}
+
+/* The cell style a cell moves to when its style `base` is changed only as
+ * asked (G55 from the gBASIC books): `code` a number format, or NULL to keep
+ * base's; `bold` 1 or 0, or -1 to keep; `fill` six hex digits or "none", or
+ * NULL to keep. Everything else of base's -- border, alignment, protection --
+ * is kept, so setting a heading bold keeps its money format, and a money
+ * format keeps its bold. A style that already shows the result is used
+ * rather than another made. -1 with *why when the workbook's styles part
+ * cannot hold it. */
+static long xlsx_style_derive(XlsxWorkbook *wb, long base, const char *code, int bold, const char *fill,
+                              char *why, size_t wn) {
+    xlsx_load_styles(wb);
     XlsxPart *sp = xlsx_find_part(wb, "xl/styles.xml");
     if (!sp) {
-        snprintf(why, wn, "the workbook has no styles part, so a number format cannot be added");
+        snprintf(why, wn, "the workbook has no styles part, so a cell's style cannot be changed");
         return -1;
-    }
-    for (size_t i = 0; i < wb->xf_count; i++) {
-        if (fid >= 0 && wb->xf_fmt[i] == fid) return (long)i;   /* a style already showing it */
     }
     xmlDocPtr doc = xlsx_parse_part(sp);
     xmlNodePtr root = doc ? xmlDocGetRootElement(doc) : NULL;
@@ -5790,54 +5948,241 @@ static long xlsx_style_for(XlsxWorkbook *wb, const char *code, char *why, size_t
         snprintf(why, wn, "the styles part is not well-formed XML");
         return -1;
     }
-    xmlNodePtr numfmts = NULL, cellxfs = NULL;
+    xmlNodePtr numfmts = NULL, fonts = NULL, fills = NULL, cellxfs = NULL;
     for (xmlNodePtr n = root->children; n; n = n->next) {
         if (xlsx_is(n, "numFmts")) numfmts = n;
+        if (xlsx_is(n, "fonts")) fonts = n;
+        if (xlsx_is(n, "fills")) fills = n;
         if (xlsx_is(n, "cellXfs")) cellxfs = n;
     }
-    if (!cellxfs) {
+    xmlNodePtr bx = cellxfs ? xlsx_nth_child(cellxfs, "xf", base) : NULL;
+    if (!bx && cellxfs) bx = xlsx_nth_child(cellxfs, "xf", 0);
+    if (!bx) {
         xmlFreeDoc(doc);
         snprintf(why, wn, "the styles part has no cell styles (cellXfs)");
         return -1;
     }
-    char buf[32];
-    if (fid < 0) {
-        fid = 164;
-        for (size_t i = 0; i < wb->fmt_count; i++) if (wb->fmt_ids[i] >= fid) fid = wb->fmt_ids[i] + 1;
-        if (!numfmts) {
-            /* numFmts comes first in a styleSheet */
-            numfmts = xmlNewNode(root->ns, (const xmlChar *)"numFmts");
-            if (root->children) xmlAddPrevSibling(root->children, numfmts);
-            else xmlAddChild(root, numfmts);
-        }
-        xmlNodePtr f = xmlNewChild(numfmts, root->ns, (const xmlChar *)"numFmt", NULL);
-        snprintf(buf, sizeof buf, "%ld", fid);
-        xmlSetProp(f, (const xmlChar *)"numFmtId", (const xmlChar *)buf);
-        xmlSetProp(f, (const xmlChar *)"formatCode", (const xmlChar *)code);
-        snprintf(buf, sizeof buf, "%zu", wb->fmt_count + 1);
-        xmlSetProp(numfmts, (const xmlChar *)"count", (const xmlChar *)buf);
+    int added = 0;
+    /* A workbook may have no fonts or fills (both are optional, and a cell
+     * style then names the reader's default). They are made, holding what
+     * Excel reserves -- its default font; fills none and gray125 -- and put
+     * where a styleSheet orders them, before what follows them. */
+    const char *after_fonts[] = { "fills", "borders", "cellStyleXfs", "cellXfs", "cellStyles", "dxfs",
+                                  "tableStyles", "colors", "extLst", NULL };
+    if (bold >= 0 && !fonts) {
+        fonts = xmlNewDocNode(doc, root->ns, (const xmlChar *)"fonts", NULL);
+        xmlSetProp(fonts, (const xmlChar *)"count", (const xmlChar *)"1");
+        xmlNodePtr f0 = xmlNewChild(fonts, root->ns, (const xmlChar *)"font", NULL);
+        xmlSetProp(xmlNewChild(f0, root->ns, (const xmlChar *)"sz", NULL), (const xmlChar *)"val", (const xmlChar *)"11");
+        xmlSetProp(xmlNewChild(f0, root->ns, (const xmlChar *)"name", NULL), (const xmlChar *)"val",
+                   (const xmlChar *)"Calibri");
+        xlsx_styles_place(root, fonts, after_fonts);
+        added = 1;
     }
-    xmlNodePtr xf = xmlNewChild(cellxfs, root->ns, (const xmlChar *)"xf", NULL);
-    snprintf(buf, sizeof buf, "%ld", fid);
-    xmlSetProp(xf, (const xmlChar *)"numFmtId", (const xmlChar *)buf);
-    xmlSetProp(xf, (const xmlChar *)"fontId", (const xmlChar *)"0");
-    xmlSetProp(xf, (const xmlChar *)"fillId", (const xmlChar *)"0");
-    xmlSetProp(xf, (const xmlChar *)"borderId", (const xmlChar *)"0");
-    xmlSetProp(xf, (const xmlChar *)"xfId", (const xmlChar *)"0");
-    xmlSetProp(xf, (const xmlChar *)"applyNumberFormat", (const xmlChar *)"1");
-    long style = (long)wb->xf_count;
-    snprintf(buf, sizeof buf, "%ld", style + 1);
-    xmlSetProp(cellxfs, (const xmlChar *)"count", (const xmlChar *)buf);
+    if (fill && !fills) {
+        fills = xmlNewDocNode(doc, root->ns, (const xmlChar *)"fills", NULL);
+        xmlSetProp(fills, (const xmlChar *)"count", (const xmlChar *)"2");
+        const char *kinds[] = { "none", "gray125" };
+        for (int k = 0; k < 2; k++) {
+            xmlNodePtr f = xmlNewChild(fills, root->ns, (const xmlChar *)"fill", NULL);
+            xmlSetProp(xmlNewChild(f, root->ns, (const xmlChar *)"patternFill", NULL), (const xmlChar *)"patternType",
+                       (const xmlChar *)kinds[k]);
+        }
+        xlsx_styles_place(root, fills, after_fonts + 1);
+        added = 1;
+    }
+    char buf[32];
+    xmlNodePtr cand = xlsx_copy_in(doc, root, bx);
+    if (code) {
+        /* Written as the workbook's OWN format, never a built-in id but
+         * General: a built-in id is read by each program's locale and table
+         * (LibreOffice showed [h]:mm:ss under id 46 as "01:30:00 AM"), the
+         * code is not. */
+        long fid = strcmp(code, "General") == 0 ? 0 : -1;
+        for (size_t i = 0; i < wb->fmt_count && fid < 0; i++) {
+            if (strcmp(wb->fmt_codes[i], code) == 0) fid = wb->fmt_ids[i];
+        }
+        if (fid < 0) {
+            fid = 164;
+            for (size_t i = 0; i < wb->fmt_count; i++) if (wb->fmt_ids[i] >= fid) fid = wb->fmt_ids[i] + 1;
+            if (!numfmts) {
+                /* numFmts comes first in a styleSheet */
+                numfmts = xmlNewNode(root->ns, (const xmlChar *)"numFmts");
+                if (root->children) xmlAddPrevSibling(root->children, numfmts);
+                else xmlAddChild(root, numfmts);
+            }
+            xmlNodePtr f = xmlNewChild(numfmts, root->ns, (const xmlChar *)"numFmt", NULL);
+            snprintf(buf, sizeof buf, "%ld", fid);
+            xmlSetProp(f, (const xmlChar *)"numFmtId", (const xmlChar *)buf);
+            xmlSetProp(f, (const xmlChar *)"formatCode", (const xmlChar *)code);
+            snprintf(buf, sizeof buf, "%zu", wb->fmt_count + 1);
+            xmlSetProp(numfmts, (const xmlChar *)"count", (const xmlChar *)buf);
+            added = 1;
+        }
+        if (xlsx_attr_long(cand, "numFmtId") != fid) {
+            snprintf(buf, sizeof buf, "%ld", fid);
+            xmlSetProp(cand, (const xmlChar *)"numFmtId", (const xmlChar *)buf);
+            xlsx_apply_flag(cand, "applyNumberFormat", fid);
+        }
+    }
+    if (bold >= 0) {
+        long was = xlsx_attr_long(cand, "fontId");
+        xmlNodePtr bf = xlsx_nth_child(fonts, "font", was);
+        if (!bf) bf = xlsx_nth_child(fonts, "font", 0);
+        xmlNodePtr font = bf ? xlsx_copy_in(doc, root, bf) : xmlNewDocNode(doc, root->ns, (const xmlChar *)"font", NULL);
+        for (xmlNodePtr c = font->children, next; c; c = next) {
+            next = c->next;
+            if (xlsx_is(c, "b")) {
+                xmlUnlinkNode(c);
+                xmlFreeNode(c);
+            }
+        }
+        if (bold) {
+            xmlNodePtr b = xmlNewDocNode(doc, root->ns, (const xmlChar *)"b", NULL);
+            if (font->children) xmlAddPrevSibling(font->children, b);
+            else xmlAddChild(font, b);
+        }
+        long id = xlsx_pool_index(doc, fonts, "font", font, was, &added);
+        if (id != was) {
+            snprintf(buf, sizeof buf, "%ld", id);
+            xmlSetProp(cand, (const xmlChar *)"fontId", (const xmlChar *)buf);
+            xlsx_apply_flag(cand, "applyFont", id);
+        }
+    }
+    if (fill) {
+        long was = xlsx_attr_long(cand, "fillId");
+        xmlNodePtr fn = xmlNewDocNode(doc, root->ns, (const xmlChar *)"fill", NULL);
+        xmlNodePtr pf = xmlNewChild(fn, root->ns, (const xmlChar *)"patternFill", NULL);
+        if (strcmp(fill, "none") == 0) {
+            xmlSetProp(pf, (const xmlChar *)"patternType", (const xmlChar *)"none");
+        } else {
+            char rgb[16];
+            snprintf(rgb, sizeof rgb, "FF%s", fill);
+            xmlSetProp(pf, (const xmlChar *)"patternType", (const xmlChar *)"solid");
+            xmlNodePtr fg = xmlNewChild(pf, root->ns, (const xmlChar *)"fgColor", NULL);
+            xmlSetProp(fg, (const xmlChar *)"rgb", (const xmlChar *)rgb);
+            xmlNodePtr bg = xmlNewChild(pf, root->ns, (const xmlChar *)"bgColor", NULL);
+            xmlSetProp(bg, (const xmlChar *)"indexed", (const xmlChar *)"64");
+        }
+        long id = xlsx_pool_index(doc, fills, "fill", fn, was, &added);
+        if (id != was) {
+            snprintf(buf, sizeof buf, "%ld", id);
+            xmlSetProp(cand, (const xmlChar *)"fillId", (const xmlChar *)buf);
+            xlsx_apply_flag(cand, "applyFill", id);
+        }
+    }
+    long style = xlsx_pool_index(doc, cellxfs, "xf", cand, base, &added);
+    if (added) {
+        xmlChar *dumped = NULL;
+        int dn = 0;
+        xmlDocDumpMemory(doc, &dumped, &dn);
+        if (dumped) {
+            xlsx_part_replace(sp, (const char *)dumped, (size_t)dn);
+            xmlFree(dumped);
+        }
+        xlsx_styles_forget(wb);
+    }
+    xmlFreeDoc(doc);
+    return style;
+}
+
+/* A worksheet's children in the order its schema requires (CT_Worksheet):
+ * Excel refuses a sheet whose children are out of it. */
+static const char *const XLSX_WS_ORDER[] = {
+    "sheetPr", "dimension", "sheetViews", "sheetFormatPr", "cols", "sheetData", "sheetCalcPr", "sheetProtection",
+    "protectedRanges", "scenarios", "autoFilter", "sortState", "dataConsolidate", "customSheetViews", "mergeCells",
+    "phoneticPr", "conditionalFormatting", "dataValidations", "hyperlinks", "printOptions", "pageMargins",
+    "pageSetup", "headerFooter", "rowBreaks", "colBreaks", "customProperties", "cellWatches", "ignoredErrors",
+    "smartTags", "drawing", "legacyDrawing", "legacyDrawingHF", "picture", "oleObjects", "controls",
+    "webPublishItems", "tableParts", "extLst", NULL
+};
+
+static int xlsx_ws_rank(xmlNodePtr n) {
+    if (n->type != XML_ELEMENT_NODE) return -1;
+    for (int i = 0; XLSX_WS_ORDER[i]; i++) {
+        if (xlsx_is(n, XLSX_WS_ORDER[i])) return i;
+    }
+    return -1;
+}
+
+/* `node` into the worksheet before the first child the schema puts after it */
+static void xlsx_ws_place(xmlNodePtr root, xmlNodePtr node) {
+    int rank = xlsx_ws_rank(node);
+    for (xmlNodePtr c = root->children; c; c = c->next) {
+        if (xlsx_ws_rank(c) > rank) {
+            xmlAddPrevSibling(c, node);
+            return;
+        }
+    }
+    xmlAddChild(root, node);
+}
+
+static void xlsx_ws_remove(xmlNodePtr root, const char *name) {
+    for (xmlNodePtr c = root->children, next; c; c = next) {
+        next = c->next;
+        if (xlsx_is(c, name)) {
+            xmlUnlinkNode(c);
+            xmlFreeNode(c);
+        }
+    }
+}
+
+/* The workbook's defined name `name` local to sheet `index` set to `refers`,
+ * or removed when it is NULL, in definedNames (made after the sheet list
+ * when absent). The sheets and names are read again after. 0 when the
+ * workbook part cannot be parsed. */
+static int xlsx_set_sheet_name(XlsxWorkbook *wb, const char *name, long index, const char *refers, int hidden) {
+    XlsxPart *wbp = xlsx_find_part(wb, "xl/workbook.xml");
+    xmlDocPtr doc = wbp ? xlsx_parse_part(wbp) : NULL;
+    xmlNodePtr root = doc ? xmlDocGetRootElement(doc) : NULL;
+    if (!root) {
+        if (doc) xmlFreeDoc(doc);
+        return 0;
+    }
+    xmlNodePtr names = NULL, after = NULL;
+    for (xmlNodePtr n = root->children; n; n = n->next) {
+        if (xlsx_is(n, "definedNames")) names = n;
+        if (xlsx_is(n, "sheets") || xlsx_is(n, "functionGroups") || xlsx_is(n, "externalReferences")) after = n;
+    }
+    if (names) {
+        for (xmlNodePtr d = names->children, next; d; d = next) {
+            next = d->next;
+            char *nm = xlsx_is(d, "definedName") ? xlsx_prop(d, "name") : NULL;
+            char *ls = nm ? xlsx_prop(d, "localSheetId") : NULL;
+            if (nm && ls && strcmp(nm, name) == 0 && strtol(ls, NULL, 10) == index) {
+                xmlUnlinkNode(d);
+                xmlFreeNode(d);
+            }
+            free(nm);
+            free(ls);
+        }
+    }
+    if (refers) {
+        if (!names) {
+            names = xmlNewDocNode(doc, root->ns, (const xmlChar *)"definedNames", NULL);
+            if (after) xmlAddNextSibling(after, names);
+            else xmlAddChild(root, names);
+        }
+        xmlNodePtr d = xmlNewTextChild(names, root->ns, (const xmlChar *)"definedName", (const xmlChar *)refers);
+        char buf[32];
+        xmlSetProp(d, (const xmlChar *)"name", (const xmlChar *)name);
+        snprintf(buf, sizeof buf, "%ld", index);
+        xmlSetProp(d, (const xmlChar *)"localSheetId", (const xmlChar *)buf);
+        if (hidden) xmlSetProp(d, (const xmlChar *)"hidden", (const xmlChar *)"1");
+    } else if (names && !xlsx_nth_child(names, "definedName", 0)) {
+        xmlUnlinkNode(names);
+        xmlFreeNode(names);
+    }
     xmlChar *dumped = NULL;
     int dn = 0;
     xmlDocDumpMemory(doc, &dumped, &dn);
     xmlFreeDoc(doc);
     if (dumped) {
-        xlsx_part_replace(sp, (const char *)dumped, (size_t)dn);
+        xlsx_part_replace(wbp, (const char *)dumped, (size_t)dn);
         xmlFree(dumped);
     }
-    xlsx_styles_forget(wb);
-    return style;
+    xlsx_reload_sheets(wb);
+    return 1;
 }
 
 /* days since 1970-01-01 (Howard Hinnant's days_from_civil) */
@@ -6447,25 +6792,63 @@ static Value xlsx_eval_call(AstExpr *expr) {
     if (strcmp(name, "set") == 0 || strcmp(name, "set_formula") == 0) {
         int formula_mode = strcmp(name, "set_formula") == 0;
         size_t argc = expr->as.call.args.count;
-        if (argc != 4 && !(argc == 5 && !formula_mode)) {
-            return xlsx_raise(formula_mode ? "xlsx.set_formula expects four arguments (workbook, sheet, ref, formula)"
+        const char *verb = formula_mode ? "xlsx.set_formula" : "xlsx.set";
+        if (argc != 4 && argc != 5) {
+            return xlsx_raise(formula_mode ? "xlsx.set_formula expects four arguments (workbook, sheet, ref, formula), "
+                                             "and optionally { format, bold, fill }"
                                            : "xlsx.set expects four arguments (workbook, sheet, ref, value), and "
-                                             "optionally { format: \"0.0%\" }");
+                                             "optionally { format, bold, fill }");
         }
         Value wbv = eval_expr(expr->as.call.args.items[0]);
         Value shv = eval_expr(expr->as.call.args.items[1]);
         Value refv = eval_expr(expr->as.call.args.items[2]);
         Value newv = eval_expr(expr->as.call.args.items[3]);
-        char fmt_given[256] = "";
+        /* The options (G55): what the cell's style changes to, each one kept
+         * as it was when not named. A closed set, refused by name. */
+        char fmt_given[256] = "", fill_given[8] = "";
+        int bold_given = -1;
         if (argc == 5) {
             Value ov = eval_expr(expr->as.call.args.items[4]);
-            RecordField *ff = ov.kind == VALUE_RECORD ? record_find(&ov, "format") : NULL;
-            int bad = ov.kind != VALUE_RECORD || ov.as.record.count != 1 || !ff || ff->value->kind != VALUE_STRING;
-            if (!bad) snprintf(fmt_given, sizeof fmt_given, "%s", ff->value->as.string);
+            char m[300] = "";
+            if (ov.kind != VALUE_RECORD) {
+                snprintf(m, sizeof m, "%s: the options are a record, such as { format: \"#,##0.00\", bold: true, "
+                         "fill: \"D9D9D9\" }", verb);
+            }
+            for (size_t i = 0; !m[0] && i < ov.as.record.count; i++) {
+                const char *fname = ov.as.record.fields[i].name;
+                Value *fv = ov.as.record.fields[i].value;
+                if (strcmp(fname, "format") == 0) {
+                    if (fv->kind != VALUE_STRING || !fv->as.string[0] ||
+                        string_length(fv->as.string) != strlen(fv->as.string) || strlen(fv->as.string) >= sizeof fmt_given) {
+                        snprintf(m, sizeof m, "%s: format is an Excel number format code, such as \"#,##0.00\"", verb);
+                    } else {
+                        snprintf(fmt_given, sizeof fmt_given, "%s", fv->as.string);
+                    }
+                } else if (strcmp(fname, "bold") == 0) {
+                    if (fv->kind != VALUE_BOOL) snprintf(m, sizeof m, "%s: bold is true or false", verb);
+                    else bold_given = fv->as.boolean ? 1 : 0;
+                } else if (strcmp(fname, "fill") == 0) {
+                    const char *h = fv->kind == VALUE_STRING ? fv->as.string : "";
+                    if (*h == '#') h++;
+                    int hex = strlen(h) == 6;
+                    for (int k = 0; hex && k < 6; k++) hex = isxdigit((unsigned char)h[k]) != 0;
+                    if (fv->kind == VALUE_STRING && strcmp(fv->as.string, "none") == 0) {
+                        snprintf(fill_given, sizeof fill_given, "none");
+                    } else if (!hex) {
+                        snprintf(m, sizeof m, "%s: fill is a colour as six hex digits, red green blue, such as "
+                                 "\"D9D9D9\" (a light grey), or \"none\"", verb);
+                    } else {
+                        for (int k = 0; k < 6; k++) fill_given[k] = (char)toupper((unsigned char)h[k]);
+                        fill_given[6] = '\0';
+                    }
+                } else {
+                    snprintf(m, sizeof m, "%s: unknown option '%s' (known: format, bold, fill)", verb, fname);
+                }
+            }
             value_free(ov);
-            if (bad) {
+            if (m[0]) {
                 value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
-                return xlsx_raise("xlsx.set: the options are { format: \"...\" }, an Excel number format code");
+                return xlsx_raise(m);
             }
         }
         if (wbv.kind != VALUE_WORKBOOK || shv.kind != VALUE_STRING || refv.kind != VALUE_STRING) {
@@ -6615,12 +6998,14 @@ static Value xlsx_eval_call(AstExpr *expr) {
         if (fmt_given[0]) {
             code = fmt_given;
         }
-        if (code) {
-            long style = xlsx_style_for(wb, code, why, sizeof why);
+        if (code || bold_given >= 0 || fill_given[0]) {
+            long base = xlsx_attr_long(target, "s");
+            long style = xlsx_style_derive(wb, base, code, bold_given, fill_given[0] ? fill_given : NULL, why,
+                                           sizeof why);
             if (style < 0) {
                 xmlFreeDoc(doc);
                 char m[400];
-                snprintf(m, sizeof m, "xlsx.set: %s", why);
+                snprintf(m, sizeof m, "%s: %s", verb, why);
                 value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
                 return xlsx_raise(m);
             }
@@ -6676,6 +7061,197 @@ static Value xlsx_eval_call(AstExpr *expr) {
         xmlFree(dumped);
 
         value_free(wbv); value_free(shv); value_free(refv); value_free(newv);
+        return value_bool(1);
+    }
+
+    /* What makes a worksheet readable (G55 from the gBASIC books): column
+     * widths, rows and columns frozen in view, and a filter over a range.
+     * Each rewrites that sheet's part alone, its element put where the
+     * schema orders it, since Excel refuses a worksheet whose children are
+     * out of order. Each replaces what was set before. */
+    if (strcmp(name, "column_widths") == 0 || strcmp(name, "freeze") == 0 || strcmp(name, "filter") == 0) {
+        int widths = name[0] == 'c', freeze = name[1] == 'r';
+        char verb[40], m[600] = "";
+        snprintf(verb, sizeof verb, "xlsx.%s", name);
+        size_t argc = expr->as.call.args.count;
+        if (argc != (size_t)(freeze ? 4 : 3)) {
+            snprintf(m, sizeof m, "%s expects %s", verb,
+                     widths ? "a workbook, a sheet name and the widths, such as [12, 30, 14] (characters, from A)"
+                     : freeze ? "a workbook, a sheet name, the rows and the columns to keep in view"
+                              : "a workbook, a sheet name and a range, such as \"A1:F40\" (its heading row first)");
+            return xlsx_raise(m);
+        }
+        Value wbv = eval_expr(expr->as.call.args.items[0]);
+        Value shv = eval_expr(expr->as.call.args.items[1]);
+        Value av = eval_expr(expr->as.call.args.items[2]);
+        Value bv = freeze ? eval_expr(expr->as.call.args.items[3]) : value_null();
+        long rows = 0, cols = 0, c0 = 0, r0 = 0, c1 = 0, r1 = 0;
+        if (wbv.kind != VALUE_WORKBOOK || shv.kind != VALUE_STRING) {
+            snprintf(m, sizeof m, "%s expects a workbook and a sheet name first", verb);
+        } else if (widths) {
+            if (av.kind != VALUE_ARRAY) {
+                snprintf(m, sizeof m, "%s: the widths are a list of numbers, such as [12, 30, 14] (characters, "
+                         "from column A)", verb);
+            }
+            for (size_t i = 0; !m[0] && i < av.as.array.store->count; i++) {
+                Value *w = &av.as.array.store->items[i];
+                if (w->kind != VALUE_NUMBER || !(w->as.num.value > 0 && w->as.num.value <= 255)) {
+                    snprintf(m, sizeof m, "%s: width %zu is not a number of characters from above 0 to 255, "
+                             "the most a column holds", verb, i + 1);
+                }
+            }
+            if (!m[0] && av.as.array.store->count > 16384) {
+                snprintf(m, sizeof m, "%s: a sheet has 16384 columns, and %zu widths were given", verb,
+                         av.as.array.store->count);
+            }
+        } else if (freeze) {
+            Value *pair[2] = { &av, &bv };
+            long *out[2] = { &rows, &cols };
+            long most[2] = { 1048575, 16383 };
+            for (int k = 0; k < 2 && !m[0]; k++) {
+                double d = pair[k]->kind == VALUE_NUMBER ? pair[k]->as.num.value : -1;
+                if (d < 0 || d != floor(d) || d > most[k]) {
+                    snprintf(m, sizeof m, "%s: the %s to keep in view are a whole number from 0 to %ld", verb,
+                             k ? "columns" : "rows", most[k]);
+                } else {
+                    *out[k] = (long)d;
+                }
+            }
+        } else {
+            const char *ref = av.kind == VALUE_STRING ? av.as.string : NULL;
+            const char *colon = ref ? strchr(ref, ':') : NULL;
+            char a[32] = "", b[32] = "";
+            if (colon && (size_t)(colon - ref) < sizeof a && strlen(colon + 1) < sizeof b) {
+                memcpy(a, ref, (size_t)(colon - ref));
+                snprintf(b, sizeof b, "%s", colon + 1);
+            }
+            if (ref && !*ref) {
+                c0 = -1;   /* "" takes the filter off */
+            } else if (!colon || !xlsx_parse_ref(a, &c0, &r0) || !xlsx_parse_ref(b, &c1, &r1)) {
+                snprintf(m, sizeof m, "%s: the range is two cells, such as \"A1:F40\" (capital letters), or \"\" "
+                         "to take the filter off", verb);
+            } else if (c1 < c0 || r1 < r0) {
+                snprintf(m, sizeof m, "%s: %s does not run from its top-left cell to its bottom-right", verb, ref);
+            } else if (r1 == r0) {
+                snprintf(m, sizeof m, "%s: %s is one row, its heading, and filters no rows", verb, ref);
+            }
+        }
+        XlsxWorkbook *wb = m[0] ? NULL : wbv.as.workbook;
+        XlsxSheet *sheet = wb ? xlsx_find_sheet(wb, shv.as.string) : NULL;
+        if (wb && !sheet) snprintf(m, sizeof m, "xlsx: no such sheet: %s", shv.as.string);
+        XlsxPart *sp = sheet && sheet->part ? xlsx_find_part(wb, sheet->part) : NULL;
+        if (sheet && !sp) {
+            snprintf(m, sizeof m, "%s: sheet %s has no worksheet part (it is a macro or module sheet)", verb,
+                     shv.as.string);
+        }
+        xmlDocPtr doc = sp ? xlsx_parse_part(sp) : NULL;
+        xmlNodePtr root = doc ? xmlDocGetRootElement(doc) : NULL;
+        if (sp && !root) snprintf(m, sizeof m, "%s: the sheet part is not well-formed XML", verb);
+        if (m[0]) {
+            if (doc) xmlFreeDoc(doc);
+            value_free(wbv); value_free(shv); value_free(av); value_free(bv);
+            return xlsx_raise(m);
+        }
+        char buf[64];
+        if (widths) {
+            xlsx_ws_remove(root, "cols");
+            if (av.as.array.store->count) {
+                xmlNodePtr cn = xmlNewDocNode(doc, root->ns, (const xmlChar *)"cols", NULL);
+                for (size_t i = 0; i < av.as.array.store->count; i++) {
+                    xmlNodePtr col = xmlNewChild(cn, root->ns, (const xmlChar *)"col", NULL);
+                    snprintf(buf, sizeof buf, "%zu", i + 1);
+                    xmlSetProp(col, (const xmlChar *)"min", (const xmlChar *)buf);
+                    xmlSetProp(col, (const xmlChar *)"max", (const xmlChar *)buf);
+                    snprintf(buf, sizeof buf, "%.10g", av.as.array.store->items[i].as.num.value);
+                    xmlSetProp(col, (const xmlChar *)"width", (const xmlChar *)buf);
+                    xmlSetProp(col, (const xmlChar *)"customWidth", (const xmlChar *)"1");
+                }
+                xlsx_ws_place(root, cn);
+            }
+        } else if (freeze) {
+            xmlNodePtr views = NULL, view = NULL;
+            for (xmlNodePtr n = root->children; n; n = n->next) if (xlsx_is(n, "sheetViews")) views = n;
+            if (!views) {
+                views = xmlNewDocNode(doc, root->ns, (const xmlChar *)"sheetViews", NULL);
+                xlsx_ws_place(root, views);
+            }
+            view = xlsx_nth_child(views, "sheetView", 0);
+            if (!view) {
+                view = xmlNewChild(views, root->ns, (const xmlChar *)"sheetView", NULL);
+                xmlSetProp(view, (const xmlChar *)"workbookViewId", (const xmlChar *)"0");
+            }
+            /* the old pane goes, and any selection in a pane, which names
+             * panes that may no longer exist */
+            for (xmlNodePtr c = view->children, next; c; c = next) {
+                next = c->next;
+                char *pane = xlsx_is(c, "selection") ? xlsx_prop(c, "pane") : NULL;
+                if (xlsx_is(c, "pane") || pane) {
+                    xmlUnlinkNode(c);
+                    xmlFreeNode(c);
+                }
+                free(pane);
+            }
+            if (rows || cols) {
+                xmlNodePtr pane = xmlNewDocNode(doc, root->ns, (const xmlChar *)"pane", NULL);
+                if (cols) {
+                    snprintf(buf, sizeof buf, "%ld", cols);
+                    xmlSetProp(pane, (const xmlChar *)"xSplit", (const xmlChar *)buf);
+                }
+                if (rows) {
+                    snprintf(buf, sizeof buf, "%ld", rows);
+                    xmlSetProp(pane, (const xmlChar *)"ySplit", (const xmlChar *)buf);
+                }
+                char letters[8];
+                xlsx_col_letters(cols, letters);
+                snprintf(buf, sizeof buf, "%s%ld", letters, rows + 1);
+                xmlSetProp(pane, (const xmlChar *)"topLeftCell", (const xmlChar *)buf);
+                xmlSetProp(pane, (const xmlChar *)"activePane",
+                           (const xmlChar *)(rows && cols ? "bottomRight" : rows ? "bottomLeft" : "topRight"));
+                xmlSetProp(pane, (const xmlChar *)"state", (const xmlChar *)"frozen");
+                /* a pane comes first in a sheetView */
+                if (view->children) xmlAddPrevSibling(view->children, pane);
+                else xmlAddChild(view, pane);
+            }
+        } else {
+            xlsx_ws_remove(root, "autoFilter");
+            if (c0 >= 0) {
+                xmlNodePtr af = xmlNewDocNode(doc, root->ns, (const xmlChar *)"autoFilter", NULL);
+                xmlSetProp(af, (const xmlChar *)"ref", (const xmlChar *)av.as.string);
+                xlsx_ws_place(root, af);
+            }
+        }
+        xmlChar *dumped = NULL;
+        int dn = 0;
+        xmlDocDumpMemory(doc, &dumped, &dn);
+        xmlFreeDoc(doc);
+        if (dumped) {
+            xlsx_part_replace(sp, (const char *)dumped, (size_t)dn);
+            xmlFree(dumped);
+        }
+        if (!widths && !freeze) {
+            /* Excel keeps a filter's range as the sheet's hidden name
+             * _xlnm._FilterDatabase too, and writes both */
+            long index = (long)(sheet - wb->sheets);
+            char text[600] = "";
+            if (c0 >= 0) {
+                char l0[8], l1[8], qn[300];
+                size_t q = 0;
+                for (const char *p = shv.as.string; *p && q + 2 < sizeof qn; p++) {
+                    if (*p == '\'') qn[q++] = '\'';
+                    qn[q++] = *p;
+                }
+                qn[q] = '\0';
+                xlsx_col_letters(c0, l0);
+                xlsx_col_letters(c1, l1);
+                snprintf(text, sizeof text, "'%s'!$%s$%ld:$%s$%ld", qn, l0, r0, l1, r1);
+            }
+            if (!xlsx_set_sheet_name(wb, "_xlnm._FilterDatabase", index, text[0] ? text : NULL, 1)) {
+                value_free(wbv); value_free(shv); value_free(av); value_free(bv);
+                snprintf(m, sizeof m, "%s: the workbook part is not well-formed XML", verb);
+                return xlsx_raise(m);
+            }
+        }
+        value_free(wbv); value_free(shv); value_free(av); value_free(bv);
         return value_bool(1);
     }
 

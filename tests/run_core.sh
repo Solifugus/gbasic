@@ -154,6 +154,26 @@ i=2" ]]
 check "exit unwinds out of a function inside a loop" $?
 rm -f "$ex_deep"
 
+# exit from ANY depth, with statements after it (book gaps G63 and G48,
+# 2026-11-08). The check above calls exit one deep, as the function's last
+# statement, so it never reached the defect: a function body is run by its own
+# loop in invoke_function, which lacked eval_stmt_list's stop check, so after a
+# bare `exit(70)` the function's next statements ran, and its caller's; and a
+# statement run under the stop printed a stray `nothing`. On the build before
+# the fix five of these seven carried on. Each must exit 70 having printed
+# only what came before the exit.
+for shape in bare2:before inif:before method:before "loopfn:before AFTER i=1" watchbody:before onerror:before; do
+    name="${shape%%:*}"; want="${shape#*:}"
+    got="$(./gbasic "tests/exit_shapes/$name.bas" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+    rc="$(./gbasic "tests/exit_shapes/$name.bas" >/dev/null 2>&1; echo $?)"
+    [[ "$rc" -eq 70 && "$got" == "$want" ]]
+    check "exit(70) from $name stops there (got [$got], status $rc)" $?
+done
+lib_got="$(cd tests/exit_shapes/lib && ../../../gbasic library.bas 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
+lib_rc="$(cd tests/exit_shapes/lib && ../../../gbasic library.bas >/dev/null 2>&1; echo $?)"
+[[ "$lib_rc" -eq 70 && "$lib_got" == "before" ]]
+check "exit(70) from a library function stops there (got [$lib_got], status $lib_rc)" $?
+
 # --- now(zone) and epoch(dt, zone) against the SYSTEM clock -----------------
 # Facts about the world, which is why they live here: the assertion is against
 # `date`, not against a string gBASIC printed. This is the check that would

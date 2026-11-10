@@ -4,9 +4,11 @@
 
 #include "eval.h"
 #include "builtins.h"
+#include "gb_decimal.h"
 #include "platform.h"
 #include "actor.h"
 #include "diagnostics.h"
+#include "lexer.h"
 #include "window_check.h"
 #include "gb_number_text.h"
 
@@ -36,6 +38,9 @@
 #include <string.h>
 #include "posix_compat.h"   /* poll, sockets, wait, flock: see the header */
 #include <sys/stat.h>
+#ifndef _WIN32
+#include <sys/resource.h>   /* process.start limits: setrlimit, and wait4's rusage */
+#endif
 #include <time.h>
 #include <unistd.h>
 
@@ -359,6 +364,12 @@ struct Value {
             double value;
             long long exact;
             int is_exact;
+            /* AN EXACT DECIMAL when > 0 (docs/exact_decimal_design.md): the
+             * number is `exact` x 10^-scale, `is_exact` stays 0 and `value` is
+             * its nearest double. So every reader that knows only integers and
+             * doubles reads a decimal as the double it always was, and only the
+             * operators taught about decimals see more. Zero cost: the padding. */
+            int scale;
         } num;
         char *string;
         int boolean;
@@ -610,6 +621,12 @@ struct ProcessHandle {
     ProcBuf pending_err;
     int reaped;             /* waitpid completed; `status` is final */
     int status;             /* raw wait(2) status, valid when reaped */
+    /* `limits: { memory: n }` (gdash's GDASH-16 B1): the child's RLIMIT_DATA,
+     * or 0 for none; and its peak resident bytes from wait4, or -1 when it was
+     * not reaped here. Reported only for a limited child, so no status record
+     * a program already prints changes shape. */
+    long long memory_limit;
+    long long peak_memory;
     size_t ref_count;
 #ifdef _WIN32
     /* The process and its job (include/platform.h, gb_child_start). out_fd,
@@ -753,6 +770,15 @@ typedef struct {
     int pending;
     int active;      /* 0 after unwatch or replace-on-redeclare: a tombstone */
     char *name;      /* owned; NULL for the anonymous form */
+    /* THE FRAME THAT DECLARED IT (docs/watch_scope_design.md): the global
+     * frame, or one call of a function, whose locals the body sees and whose
+     * end ends it. Frames live on the C stack and their addresses are reused,
+     * so an entry is ended when its frame is cleared, never by comparing. */
+    struct Env *frame;
+    /* what a handle holds: entries come and go at the registry's END as frames
+     * do, so an index is reused and a handle that outlived its frame would
+     * reach a newer watcher through it; a serial is never reused */
+    size_t serial;
 } WatcherDef;
 
 /* PLAT-ERR (docs/error_model_design.md): `on error` is FRAME-scoped. Every
@@ -951,6 +977,24 @@ static size_t lock_count = 0;
 static int lock_cleanup_registered = 0;
 static WatcherDef *watchers = NULL;
 static size_t watcher_count = 0;
+static size_t watcher_next_serial = 1;
+/* how many `wait until`s are running, one inside another's watch body */
+#define WAIT_MAX_DEPTH 16
+static int wait_depth = 0;
+/* A DELIVERY BY THE EVENT LOOP fires the watches of every live frame
+ * (docs/watch_scope_design.md §4): they are all still running, and a function
+ * waiting in `wait until` is one of them. An ASSIGNMENT fires only its own
+ * frame's. Set around a loop delivery by watcher_trigger_delivery; `frame`
+ * narrows it to the one frame holding the source (a server in a local). */
+static int watcher_delivering = 0;
+/* A `wait until` inside a watch body sets the running drain's queue aside and
+ * gives the loop a fresh one (its own deliveries must drain while the outer
+ * body is still running); restored, with the outer queue's unrun entries
+ * marked pending again, when the wait ends. While any is set aside, ended
+ * watches stay as tombstones: the saved queue's indexes must not be reused. */
+static size_t watcher_drain_next = 0;
+static int watcher_queues_set_aside = 0;
+static struct Env *watcher_delivery_frame = NULL;
 static size_t *watcher_queue = NULL;
 /* THE PRINCIPAL IN FORCE WHEN EACH ENTRY WAS QUEUED, carried beside the queue so
  * a body that runs LATER still acts for whoever made the write. See
@@ -1099,6 +1143,7 @@ static long net_socket_id(NetSocket *s);
 static void net_socket_retain(NetSocket *s);
 static Value net_eval_call(AstExpr *expr);
 static void timer_bind_global(void);
+static void stdin_bind_global(void);
 static int timer_loop_active(void);
 static int timer_loop_service(void);
 static long timer_poll_timeout_ms(long tick_ms);
@@ -1763,6 +1808,157 @@ static int value_is_exact(Value v) {
     return v.kind == VALUE_NUMBER && v.as.num.is_exact;
 }
 
+/* AN EXACT DECIMAL, mantissa x 10^-scale, normalised to the smallest scale
+ * that is at least 1, so two equal decimals have one representation and a
+ * whole one (`1.5 * 2`) is still a DECIMAL: it never becomes the exact
+ * integer by itself, and so never reaches a path that asks about integers
+ * (see gb_decimal_from_text). Scale 0 in is a whole number brought to scale 1;
+ * when that does not fit it is the double it would have been. */
+static Value value_number_decimal(long long mantissa, int scale) {
+    while (scale > 1 && mantissa % 10 == 0) {
+        mantissa /= 10;
+        scale--;
+    }
+    if (scale <= 0) {
+        long long tenfold = 0;
+        if (__builtin_mul_overflow(mantissa, 10LL, &tenfold)) {
+            return value_number((double)mantissa);
+        }
+        mantissa = tenfold;
+        scale = 1;
+    }
+    Value value = {0};
+    value.kind = VALUE_NUMBER;
+    value.as.num.value = gb_decimal_to_double(mantissa, scale);
+    value.as.num.exact = mantissa;
+    value.as.num.scale = scale;
+    return value;
+}
+
+static int value_is_decimal(Value v) {
+    return v.kind == VALUE_NUMBER && !v.as.num.is_exact && v.as.num.scale > 0;
+}
+
+/* EXACT AT ALL, integer or decimal, as a mantissa and a scale (0 for an
+ * integer). The decimal operators ask this; the integer ones keep asking
+ * `value_is_exact`, which a decimal deliberately answers no to. */
+static int value_exact_parts(Value v, long long *mantissa, int *scale) {
+    if (v.kind != VALUE_NUMBER) {
+        return 0;
+    }
+    if (v.as.num.is_exact) {
+        *mantissa = v.as.num.exact;
+        *scale = 0;
+        return 1;
+    }
+    if (v.as.num.scale > 0) {
+        *mantissa = v.as.num.exact;
+        *scale = v.as.num.scale;
+        return 1;
+    }
+    return 0;
+}
+
+/* m x 10^by, or 0 on overflow. */
+static int decimal_rescale(long long m, int by, long long *out) {
+    for (int i = 0; i < by; i++) {
+        if (__builtin_mul_overflow(m, 10LL, &m)) {
+            return 0;
+        }
+    }
+    *out = m;
+    return 1;
+}
+
+/* WHEN A DECIMAL'S DIGITS DO NOT FIT, which is said only when WHOLE digits may
+ * be lost. A product past 18 places (`0.005 * 1.005^12`, any compounding)
+ * loses only far fractional digits, the ones a double always lost, so it
+ * becomes the double in silence; a warning there would fire on every
+ * compounding loop. At 2^53 and past it the double cannot hold every whole
+ * number either (`1.5 * 10^18`), which is the integer overflow case, and it
+ * says so with 2112 as integer overflow does. */
+static int decimal_loss_is_loud(double result) {
+    return !(fabs(result) < 9007199254740992.0);
+}
+
+/* `+`, `-` or `*` of two exact numbers at least one of which is a decimal.
+ * Answers 1 and the exact result, or 0 when the mantissa or the scale does not
+ * fit, and the caller degrades with 2112 as integer overflow does. */
+static int decimal_arith(char op, long long am, int as, long long bm, int bs, Value *out) {
+    long long r = 0;
+    int rs = 0;
+    if (op == '*') {
+        rs = as + bs;
+        if (__builtin_mul_overflow(am, bm, &r)) {
+            return 0;
+        }
+        /* a product's scale can pass 18 and still normalise back under it */
+        while (rs > 18 && r % 10 == 0) {
+            r /= 10;
+            rs--;
+        }
+        if (rs > 18) {
+            return 0;
+        }
+    } else {
+        rs = as > bs ? as : bs;
+        if (!decimal_rescale(am, rs - as, &am) || !decimal_rescale(bm, rs - bs, &bm)) {
+            return 0;
+        }
+        if (op == '+' ? __builtin_add_overflow(am, bm, &r)
+                      : __builtin_sub_overflow(am, bm, &r)) {
+            return 0;
+        }
+    }
+    *out = value_number_decimal(r, rs);
+    return 1;
+}
+
+/* Compare two exact numbers mathematically: the one at the smaller scale is
+ * brought up, and when that overflows its magnitude already decides. */
+static int decimal_compare(long long am, int as, long long bm, int bs) {
+    if (as == bs) {
+        return (am > bm) - (am < bm);
+    }
+    long long x = 0;
+    if (as < bs) {
+        if (!decimal_rescale(am, bs - as, &x)) {
+            return am < 0 ? -1 : 1;
+        }
+        return (x > bm) - (x < bm);
+    }
+    if (!decimal_rescale(bm, as - bs, &x)) {
+        return bm < 0 ? 1 : -1;
+    }
+    return (am > x) - (am < x);
+}
+
+/* The digits of an exact decimal, `-12.034`, which is what print, string and
+ * encode show: past 15 significant digits the shortest double may not be
+ * these digits, and these are the value. */
+static void format_decimal(char *buf, size_t bufsize, long long m, int scale) {
+    while (scale > 0 && m % 10 == 0) {     /* a whole decimal shows as `3` */
+        m /= 10;
+        scale--;
+    }
+    if (scale == 0) {
+        snprintf(buf, bufsize, "%lld", m);
+        return;
+    }
+    char digits[32];
+    unsigned long long mag = m < 0 ? (unsigned long long)(-(m + 1)) + 1ULL : (unsigned long long)m;
+    snprintf(digits, sizeof digits, "%llu", mag);
+    int n = (int)strlen(digits);
+    if (n <= scale) {
+        snprintf(buf, bufsize, "%s0.%0*d%s", m < 0 ? "-" : "", scale - n, 0, digits);
+        if (scale - n == 0) {
+            snprintf(buf, bufsize, "%s0.%s", m < 0 ? "-" : "", digits);
+        }
+        return;
+    }
+    snprintf(buf, bufsize, "%s%.*s.%s", m < 0 ? "-" : "", n - scale, digits, digits + n - scale);
+}
+
 /* INTEGER TEXT -> AN EXACT int64, or 0 and nothing written.
  *
  * `docs/exact_number_design.md` lists `number("...")` under "Where exactness
@@ -1822,6 +2018,26 @@ static int exact_from_integer_text(const char *text, long long *out) {
     }
     *out = parsed;
     return 1;
+}
+
+/* DECIMAL TEXT -> AN EXACT NUMBER, integer or decimal, by the same narrowing
+ * as exact_from_integer_text (no exponent, no hex, no whitespace), or 0 and
+ * nothing written. The doors that call this are the doors the integer helper
+ * already served, so a decimal is exact wherever an integer was
+ * (docs/exact_decimal_design.md §2). */
+static Value value_number_decimal(long long mantissa, int scale);
+static int exact_from_text(const char *text, Value *out) {
+    long long whole = 0;
+    if (exact_from_integer_text(text, &whole)) {
+        *out = value_number_exact(whole);
+        return 1;
+    }
+    int scale = 0;
+    if (text && strchr(text, '.') && gb_decimal_from_text(text, &whole, &scale)) {
+        *out = value_number_decimal(whole, scale);
+        return 1;
+    }
+    return 0;
 }
 
 /* COMPARE AN EXACT INTEGER WITH AN INEXACT DOUBLE **MATHEMATICALLY**, which is
@@ -1894,6 +2110,24 @@ static int exact_vs_double_compare(long long a, double b) {
  * everything here. */
 static int number_compare_exactly(const Value *left, const Value *right) {
     int le = left->as.num.is_exact, re = right->as.num.is_exact;
+    /* EXACT DECIMALS (docs/exact_decimal_design.md §4). Against another exact
+     * number, mathematically: `0.1 + 0.2 = 0.3` is true. Against an INEXACT
+     * number, as doubles, so `sqrt(0.01) = 0.1` stays true -- the literal is
+     * now exactly 0.1 and the root is the nearest double to it, and comparing
+     * them exactly would make every computed-versus-literal test a program
+     * makes today answer differently. */
+    int ld = !le && left->as.num.scale > 0, rd = !re && right->as.num.scale > 0;
+    if (ld || rd) {
+        if ((ld || le) && (rd || re)) {
+            return decimal_compare(left->as.num.exact, ld ? left->as.num.scale : 0,
+                                   right->as.num.exact, rd ? right->as.num.scale : 0);
+        }
+        double a = left->as.num.value, b = right->as.num.value;
+        if (a != a || b != b) {
+            return 2;
+        }
+        return (a > b) - (a < b);
+    }
     if (le && re) {
         long long x = left->as.num.exact, y = right->as.num.exact;
         return (x > y) - (x < y);
@@ -2324,16 +2558,17 @@ static Value value_datetime(DateTime datetime) {
  * conversion fails. st_mtime is whole seconds since the epoch and gBASIC's
  * DateTime has second precision, so any sub-second st_mtim.tv_nsec is
  * intentionally dropped -- we do not fabricate precision the value model
- * cannot hold. Local time, mirroring from_epoch().
+ * cannot hold. UTC, as every instant gBASIC makes is (now(), from_epoch()):
+ * the zone is chosen at the edge that shows it, with to_zone or now(zone).
  *
  * SHARED BY `file_mtime` AND THE DIRECTORY ENTRY'S `modified` FIELD. The two
  * answer the same question by two routes, and two copies of this construction
  * are two things that can disagree about the zone or the precision -- the
  * failure shape run_exact.sh records for `sort` and `=` having each been given
  * exactness separately. */
-static Value value_datetime_from_epoch_local(time_t raw) {
+static Value value_datetime_from_epoch_utc(time_t raw) {
     struct tm local;
-    if (!gb_localtime(&raw, &local)) {
+    if (!gb_gmtime(&raw, &local)) {
         return value_unknown();
     }
     DateTime dt = {0};
@@ -2394,6 +2629,10 @@ static void format_number_value(char *buf, size_t bufsize, Value v) {
         snprintf(buf, bufsize, "%lld", v.as.num.exact);
         return;
     }
+    if (value_is_decimal(v)) {
+        format_decimal(buf, bufsize, v.as.num.exact, v.as.num.scale);
+        return;
+    }
     format_number(buf, bufsize, v.as.num.value);
 }
 
@@ -2428,11 +2667,6 @@ static void format_number(char *buf, size_t bufsize, double v) {
     }
 }
 
-/* Convert a datetime to Unix epoch seconds. Datetimes are local wall-clock
- * (now() uses localtime), so mktime() interprets the fields as local time and
- * yields the same instant epoch() reports. Missing calendar parts (year/month/
- * day-only precisions) default to the start of the period; a time-only value has
- * no date and cannot be placed on the timeline (*ok = 0). */
 /* ---------------------------------------------------------------------------
  * Timezone edges (docs/datetime_design.md §9): UTC for the timeline, CIVIL
  * time for the calendar, zone names at the edges. These builtins are the
@@ -2451,7 +2685,28 @@ static void format_number(char *buf, size_t bufsize, double v) {
  * typo like "America/Chigaco" into quietly-UTC arithmetic -- the exact class
  * of plausible wrong answer this design refuses everywhere else. */
 
+/* "local" names the system's own zone (TZ, or /etc/localtime): what a
+ * datetime must be converted to for a person at this machine, now that every
+ * instant gBASIC makes is UTC. It is not an IANA name, so it collides with
+ * none. */
+static int zone_is_local(const char *zone) {
+    return zone && strcmp(zone, "local") == 0;
+}
+
+/* The system zone's offset from UTC, in seconds, at UTC instant `raw`. */
+static int zone_local_offset_at(time_t raw, int *offset) {
+    struct tm l;
+    if (!gb_localtime(&raw, &l)) {
+        return -1;
+    }
+    *offset = (int)((long long)gb_timegm(&l) - (long long)raw);
+    return 0;
+}
+
 static int zone_name_valid(const char *zone) {
+    if (zone_is_local(zone)) {
+        return 1;
+    }
     if (!zone || !zone[0] || zone[0] == '/') {
         return 0;
     }
@@ -2504,11 +2759,15 @@ static int zone_check(const char *zone, char *message, size_t size) {
 }
 
 #ifndef _WIN32
+/* "local" leaves TZ as the process has it; zone_pop then puts back what
+ * was there, which is the same thing. */
 static char *zone_push(const char *zone) {
     const char *cur = getenv("TZ");
     char *saved = cur ? copy_string(cur) : NULL;
-    gb_setenv("TZ", zone);
-    tzset();
+    if (!zone_is_local(zone)) {
+        gb_setenv("TZ", zone);
+        tzset();
+    }
     return saved;
 }
 
@@ -2523,6 +2782,16 @@ static void zone_pop(char *saved) {
 }
 #endif
 
+#ifdef _WIN32
+/* gb_zone_offset asks ICU by name; "local" is the C runtime's own zone. */
+static int zone_offset_at(const char *zone, long long instant, int *offset) {
+    if (zone_is_local(zone)) {
+        return zone_local_offset_at((time_t)instant, offset);
+    }
+    return gb_zone_offset(zone, instant, offset);
+}
+#endif
+
 /* The civil fields of UTC instant `raw` in `zone`. Returns 1 on success.
  * POSIX: the TZ dance above. Windows: the zone's offset at that instant, from
  * Windows' ICU, added to the instant -- exact, since an offset is a property
@@ -2530,7 +2799,7 @@ static void zone_pop(char *saved) {
 static int zone_localtime(const char *zone, time_t raw, struct tm *out) {
 #ifdef _WIN32
     int offset = 0;
-    if (gb_zone_offset(zone, (long long)raw, &offset) != 0) {
+    if (zone_offset_at(zone, (long long)raw, &offset) != 0) {
         return 0;
     }
     time_t shifted = raw + (time_t)offset;
@@ -2592,8 +2861,8 @@ static int zone_resolve_instants(DateTime dt, const char *zone,
                                  long long *later) {
     long long naive = zone_timegm(dt);
     int before = 0, after = 0;
-    if (gb_zone_offset(zone, naive - 86400, &before) != 0 ||
-        gb_zone_offset(zone, naive + 86400, &after) != 0) {
+    if (zone_offset_at(zone, naive - 86400, &before) != 0 ||
+        zone_offset_at(zone, naive + 86400, &after) != 0) {
         *chosen = *earlier = *later = naive;   /* unreachable for a known zone */
         return 0;
     }
@@ -2602,7 +2871,7 @@ static int zone_resolve_instants(DateTime dt, const char *zone,
     int valid[2] = { 0, 0 };
     for (int i = 0; i < 2; i++) {
         int got = 0;
-        valid[i] = gb_zone_offset(zone, cand[i], &got) == 0 && got == want[i];
+        valid[i] = zone_offset_at(zone, cand[i], &got) == 0 && got == want[i];
     }
     if (before == after) {
         valid[1] = 0;                           /* one offset: one candidate */
@@ -2692,26 +2961,20 @@ static DateTime zone_civil_from_epoch_utc(long long epoch, DateTimePrecision pre
     return dt;
 }
 
+/* A datetime on the timeline, read as UTC -- the zone every instant gBASIC
+ * makes is in (now(), from_epoch(), file times). It read LOCAL until
+ * 2026-11-10, when now() did too; a value converted from a text with an
+ * offset was UTC all along, so the two disagreed by the machine's offset and
+ * nothing said so (mail.parse's Date handed to mail.compose). Missing calendar
+ * parts (year- or month-precision) default to the start of the period; a
+ * time-only value has no date (*ok = 0). */
 static double datetime_to_epoch(DateTime dt, int *ok) {
     if (dt.time_only) {
         *ok = 0;
         return 0;
     }
-    struct tm tm = {0};
-    tm.tm_year = dt.year - 1900;
-    tm.tm_mon = (dt.month >= 1 ? dt.month : 1) - 1;
-    tm.tm_mday = dt.day >= 1 ? dt.day : 1;
-    tm.tm_hour = dt.hour;
-    tm.tm_min = dt.minute;
-    tm.tm_sec = dt.second;
-    tm.tm_isdst = -1;
-    time_t t = gb_mktime(&tm);   /* any year; Windows' mktime stops at 1970 */
-    if (t == (time_t)-1) {
-        *ok = 0;
-        return 0;
-    }
     *ok = 1;
-    return (double)t;
+    return (double)zone_timegm(dt);
 }
 
 static Value value_duration(Duration duration) {
@@ -3139,10 +3402,10 @@ static Value regex_build_match(const RegexValue *regex,
     *fields[0].value = value_string_n(subject + so, eo - so);
     fields[1].name = field_name_new("start");
     fields[1].value = cell_alloc();
-    *fields[1].value = value_number((double)start_cp);
+    *fields[1].value = value_number_exact((long long)start_cp);
     fields[2].name = field_name_new("length");
     fields[2].value = cell_alloc();
-    *fields[2].value = value_number((double)(end_cp - start_cp));
+    *fields[2].value = value_number_exact((long long)(end_cp - start_cp));
     fields[3].name = field_name_new("groups");
     fields[3].value = cell_alloc();
     *fields[3].value = value_array(items, group_count);
@@ -3795,8 +4058,8 @@ static Value error_capture_trace(void) {
          * string before `path` was fixed, and they are different claims. */
         char shown[300];
         *fields[2].value = value_string(frame->library ? library_shown(frame->library, shown, sizeof shown) : "");
-        *fields[3].value = value_number(frame->line);
-        *fields[4].value = value_number(frame->column);
+        *fields[3].value = value_number_exact((long long)frame->line);
+        *fields[4].value = value_number_exact((long long)frame->column);
         items[i] = value_record(fields, 5);
     }
     return value_array(items, count);
@@ -4408,9 +4671,9 @@ static Value value_error_object(void) {
     }
     int on = current_error.active;
     *fields[0].value = value_string(on ? current_error.message : "");
-    *fields[1].value = value_number(on ? current_error.line : 0);
-    *fields[2].value = value_number(on ? current_error.column : 0);
-    *fields[3].value = value_number(on ? current_error.code : 0);
+    *fields[1].value = value_number_exact(on ? (long long)current_error.line : 0);
+    *fields[2].value = value_number_exact(on ? (long long)current_error.column : 0);
+    *fields[3].value = value_number_exact(on ? (long long)current_error.code : 0);
     *fields[4].value = value_string(on ? current_error.source : "");
     *fields[5].value = value_string(on && current_error.path ? current_error.path : "");
     *fields[6].value = on && current_error.details.kind == VALUE_RECORD
@@ -4445,9 +4708,9 @@ static Value value_warning_object(void) {
     }
     int on = current_warning.active;
     *fields[0].value = value_string(on ? current_warning.message : "");
-    *fields[1].value = value_number(on ? current_warning.line : 0);
-    *fields[2].value = value_number(on ? current_warning.column : 0);
-    *fields[3].value = value_number(on ? current_warning.code : 0);
+    *fields[1].value = value_number_exact(on ? (long long)current_warning.line : 0);
+    *fields[2].value = value_number_exact(on ? (long long)current_warning.column : 0);
+    *fields[3].value = value_number_exact(on ? (long long)current_warning.code : 0);
     *fields[4].value = value_string(on ? current_warning.source : "");
     *fields[5].value = value_string(on && current_warning.path ? current_warning.path : "");
     *fields[6].value = on && current_warning.details.kind == VALUE_RECORD
@@ -5147,6 +5410,38 @@ typedef enum {
 #define MONEY_ERR_EXCESS_DIGITS \
     "money text has more decimal places than the currency can store"
 
+/* A money construction's refusal, with `details` saying WHICH (book gap G41):
+ * `{ kind: "places", allowed, found }` or `{ kind: "range" }`. Both used to be
+ * 1003 with empty details, so a program turning "this price has seven decimals"
+ * into a data outcome could tell them apart only by the message text, and
+ * could not catch either without catching a real fault too. `text` is the
+ * decimal text given, from which the places found are counted. */
+static void error_set_state_full(const char *message, int code, const char *source, Value details,
+                                 Value trace, int line, int column);
+static void money_construction_raise(const char *message, const char *err, const char *text, int scale) {
+    if (raise_in_flight) {
+        return;
+    }
+    Value details = value_record(NULL, 0);
+    if (err && strcmp(err, MONEY_ERR_EXCESS_DIGITS) == 0) {
+        long long found = 0;
+        const char *dot = text ? strchr(text, '.') : NULL;
+        for (const char *p = dot ? dot + 1 : NULL; p && *p >= '0' && *p <= '9'; p++) {
+            found++;
+        }
+        record_set(&details, "kind", value_string("places"));
+        record_set(&details, "allowed", value_number_exact(scale));
+        record_set(&details, "found", value_number_exact(found));
+    } else if (err && strcmp(err, "money value is out of range") == 0) {
+        record_set(&details, "kind", value_string("range"));
+    } else {
+        record_set(&details, "kind", value_string("text"));
+    }
+    error_set_state_full(message, 1003, "money", details, value_null(), 0, 0);
+    error_generation++;
+    raise_in_flight = 1;
+}
+
 /* Round-half-even on a decision digit plus whether anything nonzero follows.
  * Half-even is the financial default (§5): it is unbiased across many
  * roundings, where half-up drifts upward. */
@@ -5798,7 +6093,12 @@ static Value env_get(const char *name) {
     return value_copy(symbol->value);
 }
 
+static void watcher_end_frame(Env *env);
+
 static void env_clear(Env *env) {
+    if (env != &global_env) {
+        watcher_end_frame(env);
+    }
     for (size_t i = 0; i < env->outer_reads_count; i++) {
         free(env->outer_reads[i]);
     }
@@ -5968,7 +6268,15 @@ static void lock_install_cleanup(void) {
     lock_cleanup_registered = 1;
 }
 
+/* 1 taken, 0 failed (the reason printed, as before), and with `try_only` -1
+ * when another process holds it (book gap G42): a scheduler started every few
+ * minutes steps around a running job rather than queueing behind it. */
+static int lock_path_ex(const char *path, int try_only);
 static int lock_path(const char *path) {
+    return lock_path_ex(path, 0);
+}
+
+static int lock_path_ex(const char *path, int try_only) {
     LockEntry *entry = lock_find(path);
     if (entry) {
         entry->depth++;
@@ -5981,7 +6289,11 @@ static int lock_path(const char *path) {
         perror(path);
         return 0;
     }
-    if (gb_flock(fd, GB_LOCK_EXCLUSIVE) != 0) {
+    if (gb_flock(fd, try_only ? GB_LOCK_TRY : GB_LOCK_EXCLUSIVE) != 0) {
+        if (try_only && (errno == EWOULDBLOCK || errno == EAGAIN)) {
+            close(fd);
+            return -1;
+        }
         perror(path);
         close(fd);
         return 0;
@@ -7188,7 +7500,7 @@ static Value datetime_field_value(DateTime dt, const char *name) {
 static Value zone_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     char message[192];
-    /* `zone_offset(dt)` -- the SYSTEM's offset for that wall-clock time. A
+    /* `zone_offset(dt)` -- the SYSTEM's offset at the instant dt (UTC). A
      * datetime carries no zone, so without this a program can read the wall
      * clock and has no way to say what it is offset from: an RFC 5322 Date,
      * an ISO 8601 offset and a zone-stamped log line are all unwritable. The
@@ -7214,17 +7526,19 @@ static Value zone_eval_call(AstExpr *expr) {
                                 1003, "datetime");
             return value_null();
         }
-        struct tm tm;
-        zone_fill_tm(local_dt, &tm);
-        tm.tm_isdst = -1;
-        time_t instant = gb_mktime(&tm);
-        if (instant == (time_t)-1) {
+        /* The datetime is an instant in UTC (as every one gBASIC makes is,
+         * since 2026-11-10); the answer is the system zone's offset AT that
+         * instant, so `dt + zone_offset(dt)` is the clock on this machine's
+         * wall. It read `dt` as local wall-clock time before, when now() was
+         * local. An offset at an instant is never ambiguous, so no DST policy
+         * is needed in this direction. */
+        int offset = 0;
+        if (zone_local_offset_at((time_t)zone_timegm(local_dt), &offset) != 0) {
             runtime_error_raise("zone_offset could not place that datetime on the timeline",
                                 1003, "datetime");
             return value_null();
         }
-        return value_duration(duration_from_totals(0,
-                              zone_timegm(local_dt) - (long long)instant));
+        return value_duration(duration_from_totals(0, (long long)offset));
     }
     if (expr->as.call.args.count != 2) {
         snprintf(message, sizeof(message), "%s expects a datetime and a zone name", name);
@@ -7335,7 +7649,7 @@ static Value duration_field_value(Duration d, const char *name) {
                                 1003, "duration");
             return value_null();
         }
-        return value_number((double)seconds);
+        return value_number_exact((long long)seconds);
     }
     char message[128];
     snprintf(message, sizeof(message), "duration has no field '%s'", name);
@@ -7465,6 +7779,7 @@ static int watcher_drain(void) {
         }
         size_t slot = cursor;
         size_t index = watcher_queue[cursor++];
+        watcher_drain_next = cursor;   /* where a wait in this body resumes from */
         /* An entry can be unwatched between enqueue and drain -- it must not
          * fire one last time on the way out. */
         if (index < watcher_count && watchers[index].active) {
@@ -7475,7 +7790,11 @@ static int watcher_drain(void) {
              * popped on EVERY exit below, including a raise, which is the rule
              * `with principal` itself follows. */
             int pushed = principal_push_captured(watcher_queue_principal[slot]);
+            /* in the frame that declared it, whose locals it reads and writes */
+            Env *drain_env = current_env;
+            current_env = watchers[index].frame;
             EvalResult result = eval_stmt_list(watchers[index].stmt->as.watch.body);
+            current_env = drain_env;
             if (pushed) {
                 principal_pop_captured();
             }
@@ -7519,7 +7838,22 @@ static int watcher_drain(void) {
 }
 
 static int watcher_trigger_change(const char *path) {
-    if (watcher_suppressed || current_env != &global_env) {
+    if (watcher_suppressed) {
+        return 1;
+    }
+    /* a change fires the watches of the frame it is made in, and only those:
+       a callee's local of the same name is the callee's (watch_scope_design §3).
+       A loop delivery fires every live frame's, or the one holding the source. */
+    int all = watcher_delivering && !watcher_delivery_frame;
+    Env *only = watcher_delivering && watcher_delivery_frame ? watcher_delivery_frame : current_env;
+    /* the bodies' own assignments are assignments, whatever started the drain */
+    watcher_delivering = 0;
+    watcher_delivery_frame = NULL;
+    int any = 0;
+    for (size_t i = 0; i < watcher_count && !any; i++) {
+        any = watchers[i].active && (all || watchers[i].frame == only);
+    }
+    if (!any) {
         return 1;
     }
     int start_drain = !watcher_draining && watcher_queue_count == 0;
@@ -7528,8 +7862,8 @@ static int watcher_trigger_change(const char *path) {
         watcher_drain_origin_column = current_column;
     }
     for (size_t i = 0; i < watcher_count; i++) {
-        if (!watchers[i].active) {
-            continue;      /* a tombstone: unwatched, or replaced by redeclare */
+        if (!watchers[i].active || !(all || watchers[i].frame == only)) {
+            continue;      /* a tombstone, or another frame's watch */
         }
         if (watcher_matches_change(watchers[i].stmt, path)) {
             watcher_enqueue(i);
@@ -7538,29 +7872,104 @@ static int watcher_trigger_change(const char *path) {
     return watcher_drain();
 }
 
+/* The entry a handle names, by its serial: entries are appended in serial
+ * order and removed only from the end, so the array is sorted by serial. -1
+ * for a watch that has ended. */
+static long watcher_index_of(size_t serial) {
+    size_t lo = 0, hi = watcher_count;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        if (watchers[mid].serial < serial) {
+            lo = mid + 1;
+        } else {
+            hi = mid;
+        }
+    }
+    return lo < watcher_count && watchers[lo].serial == serial ? (long)lo : -1;
+}
+
+/* A frame is ending (env_clear): its watches end with it, by every exit --
+ * return, the end of the body, a raise unwinding through it. Entries at the
+ * registry's end are removed outright, which they always are once nothing is
+ * queued: a callee's watches come after its caller's and end first. With a
+ * drain under way they stay as tombstones, since a queued index must not be
+ * reused by a watch registered before the queue empties. */
+static void watcher_end_frame(Env *env) {
+    for (size_t i = 0; i < watcher_count; i++) {
+        if (watchers[i].frame == env) {
+            watchers[i].active = 0;
+            watchers[i].frame = NULL;
+        }
+    }
+    while (watcher_queue_count == 0 && !watcher_draining && watcher_queues_set_aside == 0 && watcher_count > 0 &&
+           !watchers[watcher_count - 1].active && watchers[watcher_count - 1].frame == NULL) {
+        watcher_count--;
+        free(watchers[watcher_count].name);
+    }
+}
+
+/* A delivery by the event loop: every live frame's watches on `path`, or only
+ * `frame`'s when the source is held there. */
+static int watcher_trigger_delivery(const char *path, Env *frame) {
+    watcher_delivering = 1;
+    watcher_delivery_frame = frame;
+    int ok = watcher_trigger_change(path);
+    watcher_delivering = 0;
+    watcher_delivery_frame = NULL;
+    return ok;
+}
+
+/* The global names whose fields the event loop delivers into: a watch in a
+ * function may watch these, since `wait until` keeps it alive while the loop
+ * runs (§4). Every other global is still refused. */
+static int watcher_is_loop_source(const char *root) {
+    static const char *const sources[] = { "timer", "inbox", "http", "net", "stdin" };
+    for (size_t i = 0; i < sizeof sources / sizeof sources[0]; i++) {
+        if (strcmp(root, sources[i]) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 static int watcher_register(AstStmt *stmt) {
     if (current_env != &global_env) {
-        if (stmt->as.watch.name) {
-            /* New surface, so a proper error rather than the anonymous form's
-             * historical stderr warning: the registry is global, and a named
-             * handle bound in a vanishing scope would be a watcher that fires
-             * forever with its off-switch out of reach. */
-            runtime_error_raise("a named watcher may only be declared at top level",
-                                1003, "watcher");
-            return 0;
+        /* IN A FUNCTION, a watch watches that function's own variables
+         * (docs/watch_scope_design.md §3). Anything else could never fire after
+         * registration: a function cannot assign a global, a global changes
+         * only while no function runs, and an event source is delivered by the
+         * loop, which runs after main -- so it is refused, where it was once
+         * registered nowhere with a line on stderr. */
+        for (size_t i = 0; i < stmt->as.watch.names.count; i++) {
+            const char *path = stmt->as.watch.names.items[i];
+            size_t root_len = strcspn(path, ".[");
+            char root[256];
+            snprintf(root, sizeof root, "%.*s", (int)(root_len < 255 ? root_len : 255), path);
+            Symbol *own = env_find_in_frame(current_env, root);
+            char message[600];
+            if (!own && watcher_is_loop_source(root)) {
+                continue;   /* an event source: delivered while this function waits */
+            }
+            if (!own) {
+                snprintf(message, sizeof message,
+                         "a watch in a function watches that function's own variables or an event source "
+                         "(timer, inbox, http, net, stdin), and `%s` is neither (assign it before the watch); a watch "
+                         "on any other global belongs at the top level of the program block", root);
+                runtime_error_raise(message, 1003, "watcher");
+                return 0;
+            }
         }
-        fprintf(stderr, "watch may only be registered at top level for now\n");
-        return 1;
     }
 
     /* REPLACE-ON-REDECLARE: re-running setup code must not stack a second
      * watcher doing the work twice. If the name is currently bound to a live
      * watcher, that registration is tombstoned before the new one lands. */
     if (stmt->as.watch.name) {
-        Symbol *existing = env_find_in_frame(&global_env, stmt->as.watch.name);
-        if (existing && existing->value.kind == VALUE_WATCHER &&
-            existing->value.as.watcher_id < watcher_count) {
-            watchers[existing->value.as.watcher_id].active = 0;
+        Symbol *existing = env_find_in_frame(current_env, stmt->as.watch.name);
+        long at = existing && existing->value.kind == VALUE_WATCHER
+                      ? watcher_index_of(existing->value.as.watcher_id) : -1;
+        if (at >= 0) {
+            watchers[at].active = 0;
         }
     }
 
@@ -7573,10 +7982,12 @@ static int watcher_register(AstStmt *stmt) {
     watchers[watcher_count].pending = 0;
     watchers[watcher_count].active = 1;
     watchers[watcher_count].name = stmt->as.watch.name ? copy_string(stmt->as.watch.name) : NULL;
+    watchers[watcher_count].frame = current_env;
+    watchers[watcher_count].serial = watcher_next_serial++;
     if (stmt->as.watch.name) {
         Value handle = {0};
         handle.kind = VALUE_WATCHER;
-        handle.as.watcher_id = watcher_count;
+        handle.as.watcher_id = watchers[watcher_count].serial;
         env_set(stmt->as.watch.name, handle);
     }
     watcher_count++;
@@ -7585,6 +7996,11 @@ static int watcher_register(AstStmt *stmt) {
      * the watcher's first firing reads a name that does not exist. */
     if (watcher_matches_change(stmt, "inbox.messages")) {
         inbox_bind_global();
+    }
+    /* And standard input (§0.38 D3): the watch declares the program wants its
+     * lines delivered, so `stdin` exists before the body first reads it. */
+    if (watcher_matches_change(stmt, "stdin.lines")) {
+        stdin_bind_global();
     }
     /* Same reason as the inbox: a watch on `timer.ticks` is what declares the
      * program wants delivery, and the body must not read a name that does not
@@ -8746,23 +9162,38 @@ static void library_matches_clear(LibraryMatch *matches, size_t count) {
     free(matches);
 }
 
+/* AS FILES, NOT STRINGS: one library found beside the loading file as
+ * `stdlib/ocr.bas` and again in the tree's own stdlib as an absolute path is
+ * one file, and was reported as two in a 2103 "ALSO FOUND" naming it twice. */
+static int same_file_path(const char *a, const char *b);
+
 static int library_match_seen(LibraryMatch *matches, size_t count, const char *path) {
     for (size_t i = 0; i < count; i++) {
-        if (strcmp(matches[i].path, path) == 0) {
+        if (same_file_path(matches[i].path, path)) {
             return 1;
         }
     }
     return 0;
 }
 
+/* Set when a search finds a library it already holds (the same file, reached
+ * again). The stdlib fallbacks are consulted only when GBASIC_PATH found
+ * nothing, and a library found beside the loading file AND on GBASIC_PATH is
+ * one GBASIC_PATH found: without this the list did not grow, so the installed
+ * copy was searched too and reported "ALSO FOUND" (2026-11-09). */
+static int library_search_found_again = 0;
+
 static void search_file_for_library(const char *path,
                                     const char *name,
                                     LibraryMatch **matches,
                                     size_t *match_count) {
+    if (has_bas_extension(path) && library_match_seen(*matches, *match_count, path)) {
+        library_search_found_again = 1;
+        return;
+    }
     if (!has_bas_extension(path) ||
         path_equal(path, root_source_path) ||
-        path_equal(path, current_import_path) ||
-        library_match_seen(*matches, *match_count, path)) {
+        path_equal(path, current_import_path)) {
         return;
     }
 
@@ -8900,12 +9331,68 @@ static const char *gb_exe_relative_share(const char *subdir, char *resolved,
     return resolved;
 }
 
+/* A BINARY STILL IN THE TREE IT WAS BUILT IN loads that tree's stdlib (Matthew's
+ * ruling 2026-11-07, "prefer its own"). ./gbasic at the repo root has no
+ * ../share, so it fell through to the installed stdlib, which may be older:
+ * Transward ran a fixed interpreter against an unfixed web.bas, and a TLS
+ * security fix that lives half in each did not take, in silence.
+ *
+ * ONE RULE, NOT A GUESS: the tree is the one the Makefile baked in
+ * (GBASIC_SOURCE_DIR), and it applies only when the running binary's own
+ * directory IS that tree, both canonical. A `stdlib` merely sitting beside some
+ * binary is never read -- that would let whoever can write beside a binary
+ * choose the code it loads. An installed or released copy is somewhere else,
+ * so it never applies there. */
+static const char *gb_source_tree_stdlib(char *resolved, size_t resolved_size) {
+    resolved[0] = '\0';
+#ifdef GBASIC_SOURCE_DIR
+    char exe[PATH_MAX];
+    if (!gb_exe_path(exe, sizeof exe)) {
+        return NULL;
+    }
+    char *slash = strrchr(exe, '/');
+    if (!slash) {
+        return NULL;
+    }
+    *slash = '\0';
+    char *here = gb_realpath(exe);
+    char *tree = gb_realpath(GBASIC_SOURCE_DIR);
+    int same = here && tree && strcmp(here, tree) == 0;
+    free(here);
+    if (!same) {
+        free(tree);
+        return NULL;
+    }
+    int written = snprintf(resolved, resolved_size, "%s/stdlib", tree);
+    free(tree);
+    struct stat st;
+    if (written < 0 || (size_t)written >= resolved_size || gb_stat(resolved, &st) != 0 || !S_ISDIR(st.st_mode)) {
+        resolved[0] = '\0';
+        return NULL;
+    }
+    return resolved;
+#else
+    (void)resolved_size;
+    return NULL;
+#endif
+}
+
+static char runtime_version_text[32] = "";
+static char runtime_revision_text[64] = "";
+
+void gb_runtime_identity_set(const char *version, const char *revision) {
+    snprintf(runtime_version_text, sizeof runtime_version_text, "%s", version ? version : "");
+    snprintf(runtime_revision_text, sizeof runtime_revision_text, "%s", revision ? revision : "");
+}
+
 const char *gb_exe_relative_stdlib(void) {
     static char resolved[PATH_MAX];
     static int computed = 0;
     if (!computed) {
         computed = 1;
-        gb_exe_relative_share("stdlib", resolved, sizeof resolved);
+        if (!gb_source_tree_stdlib(resolved, sizeof resolved)) {
+            gb_exe_relative_share("stdlib", resolved, sizeof resolved);
+        }
     }
     return resolved[0] ? resolved : NULL;
 }
@@ -9032,6 +9519,7 @@ static void search_gbasic_path_for_library(const char *name,
     const char *gbasic_path = getenv("GBASIC_PATH");
     const char *start = gbasic_path;
     size_t before_path = *match_count;
+    library_search_found_again = 0;
     while (start && *start) {
         const char *end = strchr(start, ':');
         size_t len = end ? (size_t)(end - start) : strlen(start);
@@ -9072,7 +9560,7 @@ static void search_gbasic_path_for_library(const char *name,
      * shipped with over a system install that may be a different version --
      * otherwise extracting 0.2.0 beside an installed 0.1.0 silently runs the
      * older stdlib. */
-    if (*match_count == before_path) {
+    if (*match_count == before_path && !library_search_found_again) {
         const char *relative = gb_exe_relative_stdlib();
         if (relative) {
             search_directory_for_library(relative, name, 1, exact_filename, matches, match_count);
@@ -9083,7 +9571,7 @@ static void search_gbasic_path_for_library(const char *name,
     /* Fallback so an installed gbasic finds its stdlib without GBASIC_PATH set.
      * Only consulted when GBASIC_PATH did not already resolve the library, so a
      * GBASIC_PATH copy is never shadowed by (or warns against) the installed one. */
-    if (*match_count == before_path && GBASIC_DEFAULT_STDLIB[0] != '\0') {
+    if (*match_count == before_path && !library_search_found_again && GBASIC_DEFAULT_STDLIB[0] != '\0') {
         search_directory_for_library(GBASIC_DEFAULT_STDLIB, name, 1, exact_filename, matches, match_count);
     }
 #endif
@@ -9944,6 +10432,38 @@ static void library_import_from_block(AstStmt *library, const char *effective) {
     const char *importer = current_importer_library;   /* who asked for THIS library */
     const char *previous_importer = current_importer_library;
     current_importer_library = effective;               /* nested loads are on its behalf */
+    /* A LIBRARY'S BODY IS DECLARATIONS, and anything else at its top level was
+     * skipped in silence: a `print` printed nothing, `counter = 5` left a
+     * function reading `counter` with "undefined variable", and a `watch`
+     * registered nothing (DOGFOOD row 7). Running them at load time would make
+     * a load a program, so they are refused, at the statement, before anything
+     * of the library is registered. A dotted `function obj.f()` is an attach
+     * statement, not a declaration, and was skipped the same way. */
+    for (size_t i = 0; i < library->as.library.body.count; i++) {
+        AstStmt *stmt = library->as.library.body.items[i];
+        AstStmtKind k = stmt->kind;
+        int declaration = k == AST_STMT_USE || k == AST_STMT_MODIFIER || k == AST_STMT_DATABASE ||
+                          k == AST_STMT_SQL || k == AST_STMT_SERVER || k == AST_STMT_WINDOW ||
+                          (k == AST_STMT_FUNCTION && !stmt->as.function.object);
+        if (declaration) {
+            continue;
+        }
+        char m[512];
+        snprintf(m, sizeof m,
+                 "library %s: this statement is at the top level of the library, where it would never "
+                 "run -- a library holds declarations (load, function, modifier, database, sql), and "
+                 "loading it runs no code. Put it in a function the program calls%s",
+                 library->as.library.name,
+                 k == AST_STMT_WATCH ? "; a watch belongs in the function that wants the deliveries"
+                 : k == AST_STMT_FUNCTION ? "; a function attached to a value (function obj.f) is "
+                                            "a statement, so attach it inside a function"
+                 : k == AST_STMT_ASSIGN ? ", and return the value from it (a library has no variables "
+                                          "of its own)"
+                 : "");
+        runtime_error_raise_at(m, 1003, "library", stmt->line, stmt->column);
+        current_importer_library = previous_importer;
+        return;
+    }
     for (size_t i = 0; i < library->as.library.body.count; i++) {
         AstStmt *stmt = library->as.library.body.items[i];
         if (stmt->kind == AST_STMT_USE) {
@@ -11016,6 +11536,43 @@ static Value eval_file_call(AstExpr *expr) {
         repl_note_effect();
     }
 
+    /* lock(f, { wait: false }): answers whether it was taken, never waits */
+    if (strcmp(name, "lock") == 0 && expr->as.call.args.count == 2) {
+        Value file_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(file_value);
+            return value_null();
+        }
+        Value opts = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(file_value);
+            value_free(opts);
+            return value_null();
+        }
+        RecordField *wf = opts.kind == VALUE_RECORD ? record_find(&opts, "wait") : NULL;
+        int one_key = opts.kind == VALUE_RECORD && opts.as.record.count == 1;
+        if (!wf || !one_key || wf->value->kind != VALUE_BOOL) {
+            value_free(file_value);
+            value_free(opts);
+            runtime_error_raise("lock(f, options): the one option is `wait`, true or false", 1004,
+                                "file operation");
+            return value_null();
+        }
+        int wait = wf->value->as.boolean;
+        value_free(opts);
+        if (!file_arg_from_path(name, &file_value)) {
+            return value_null();
+        }
+        if (file_value.kind != VALUE_FILE) {
+            value_free(file_value);
+            runtime_error_raise("lock expects a file", 1004, "file operation");
+            return value_null();
+        }
+        int got = lock_path_ex(file_value.as.file_path, !wait);
+        value_free(file_value);
+        return value_bool(got == 1);
+    }
+
     if (strcmp(name, "exists") == 0 ||
         strcmp(name, "read") == 0 ||
         strcmp(name, "read_lines") == 0 ||
@@ -11104,7 +11661,7 @@ static Value eval_file_call(AstExpr *expr) {
             if (gb_stat(file_value.as.file_path, &info) == 0 &&
                 S_ISREG(info.st_mode)) {
                 value_free(file_value);
-                return value_number((double)info.st_size);
+                return value_number_exact((long long)info.st_size);
             }
         }
 
@@ -11150,7 +11707,7 @@ static Value eval_file_call(AstExpr *expr) {
              * from `stat` above without reading anything. */
             free(text);
             value_free(file_value);
-            return value_number((double)size);
+            return value_number_exact((long long)size);
         }
         if (strcmp(name, "chars") == 0) {
             /* CODEPOINTS, which is what the name says and what it did not do.
@@ -11166,7 +11723,7 @@ static Value eval_file_call(AstExpr *expr) {
              * question disagreed. Counted with the same walker `len` uses, not
              * a second one. Reported by the gbasic-books session 2026-10-02. */
             Value result =
-                value_number((double)string_codepoint_count(text, (size_t)size));
+                value_number_exact((long long)string_codepoint_count(text, (size_t)size));
             free(text);
             value_free(file_value);
             return result;
@@ -11183,7 +11740,7 @@ static Value eval_file_call(AstExpr *expr) {
         }
         free(text);
         value_free(file_value);
-        return value_number((double)lines);
+        return value_number_exact((long long)lines);
     }
 
     if (strcmp(name, "delete") == 0) {
@@ -11258,8 +11815,11 @@ static Value eval_file_call(AstExpr *expr) {
         if (strcmp(name, "file_size") == 0) {
             /* Size is the regular-file byte length. A directory has no meaningful
              * content size, so reject it rather than return the platform's dirent
-             * bookkeeping bytes. off_t -> double is exact up to 2^53 bytes (8 PiB),
-             * far beyond any real file, so no practical truncation. */
+             * bookkeeping bytes. A SIZE IS A COUNT, so it is exact, as `len`
+             * and `byte_count` are (see builtin_len_value): it answered a
+             * double, and a G-SQL `integer` column refuses an inexact number,
+             * so a size could not be stored without a trip through text
+             * (Transward, 2026-11-09). */
             if (S_ISDIR(st.st_mode)) {
                 char message[512];
                 snprintf(message,
@@ -11270,15 +11830,15 @@ static Value eval_file_call(AstExpr *expr) {
                 value_free(file_value);
                 return value_null();
             }
-            double size = (double)st.st_size;
+            long long size = (long long)st.st_size;
             value_free(file_value);
-            return value_number(size);
+            return value_number_exact(size);
         }
 
         /* file_mtime: st_mtime is whole seconds since the epoch. gBASIC's DateTime
          * has second precision, so any sub-second st_mtim.tv_nsec is intentionally
-         * dropped (we do not fabricate precision the value model can't hold). Local
-         * time, mirroring from_epoch(). Works for any stat-able path, directories
+         * dropped (we do not fabricate precision the value model can't hold). UTC,
+         * as from_epoch() is. Works for any stat-able path, directories
          * included (a directory's mtime is a meaningful change signal).
          * Read through gb_file_mtime, NOT st.st_mtime: on Windows the C runtime
          * shifts that field whenever TZ differs from the system zone. */
@@ -11296,7 +11856,7 @@ static Value eval_file_call(AstExpr *expr) {
             return value_null();
         }
         value_free(file_value);
-        Value when = value_datetime_from_epoch_local(raw);
+        Value when = value_datetime_from_epoch_utc(raw);
         if (when.kind == VALUE_UNKNOWN) {
             runtime_error_raise("file_mtime could not convert the file time",
                                 1004,
@@ -11601,6 +12161,50 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(1);
     }
 
+    if (strcmp(name, "disk_space") == 0) {
+        /* The filesystem holding a path, in exact bytes (Transward §11.1: a
+         * capacity monitor projecting time-to-full ran `df` once a path a
+         * sweep, and there is no df on Windows). `available` is beside
+         * `free` because they are different questions: what a service
+         * account may still write is f_bavail, which fills first. */
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("disk_space expects one path argument, a file or folder on the filesystem "
+                                "asked about", 1004, "file operation");
+            return value_null();
+        }
+        Value path_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(path_value);
+            return value_null();
+        }
+        if (!path_string_reject_nul(name, path_value)) {
+            value_free(path_value);
+            return value_null();
+        }
+        const char *path = directory_path(path_value);
+        if (!path) {
+            runtime_error_raise("disk_space expects a string, file reference, or directory reference", 1004,
+                                "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+        unsigned long long total = 0, free_bytes = 0, available = 0;
+        if (gb_disk_space(path, &total, &free_bytes, &available) != 0) {
+            char message[PATH_MAX + 128];
+            snprintf(message, sizeof(message), "disk_space could not read %s (%s)", path,
+                     strerror(path_open_errno(path, errno)));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+        Value result = value_record(NULL, 0);
+        record_set(&result, "total", value_number_exact((long long)total));
+        record_set(&result, "free", value_number_exact((long long)free_bytes));
+        record_set(&result, "available", value_number_exact((long long)available));
+        value_free(path_value);
+        return result;
+    }
+
     if (strcmp(name, "permissions") == 0) {
         /* TWO DIFFERENT QUESTIONS, BOTH ANSWERED, because conflating them is
          * the classic bug. `mode` is what the FILE says; `readable`/`writable`/
@@ -11656,6 +12260,12 @@ static Value eval_file_call(AstExpr *expr) {
         record_set(&result, "executable",
                    perms.executable < 0 ? value_unknown()
                                         : value_bool(perms.executable));
+        /* who the bits are about (book gap G65): "mode 0600" means "only the
+           service" only beside whose file it is */
+        record_set(&result, "owner", perms.owner_id < 0 ? value_unknown() : value_number_exact(perms.owner_id));
+        record_set(&result, "owner_name", perms.owner_name[0] ? value_string(perms.owner_name) : value_unknown());
+        record_set(&result, "group", perms.group_id < 0 ? value_unknown() : value_number_exact(perms.group_id));
+        record_set(&result, "group_name", perms.group_name[0] ? value_string(perms.group_name) : value_unknown());
         value_free(path_value);
         return result;
     }
@@ -12928,13 +13538,13 @@ static Value make_dir_entry(const char *path, const char *name,
         *fields[4].value = value_unknown();
     } else {
         *fields[3].value = S_ISDIR(st->st_mode) ? value_unknown()
-                                                : value_number((double)st->st_size);
+                                                : value_number_exact((long long)st->st_size);
         /* Read through gb_file_mtime, NOT st->st_mtime: on Windows the C
          * runtime shifts that field whenever TZ differs from the system zone,
          * which is the correction `file_mtime` already carries. */
         time_t raw;
         if (gb_file_mtime(path, &raw) == 0) {
-            *fields[4].value = value_datetime_from_epoch_local(raw);
+            *fields[4].value = value_datetime_from_epoch_utc(raw);
         } else {
             *fields[4].value = value_unknown();
         }
@@ -13368,6 +13978,19 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     EvalResult result = eval_no_result();
     while (pc < stmt->as.function.body.count) {
         result = eval_stmt(stmt->as.function.body.items[pc]);
+        /* PLAT-EXIT, AS eval_stmt_list ALREADY HAS IT: a function body is run
+         * by this loop, not by eval_stmt_list, and lacked its check. So after
+         * `exit(70)` as a bare statement in a function, the function's next
+         * statements ran, and its caller's too (book gap G63, "a refusal can
+         * carry on"). And a statement that ran under the stop printed a stray
+         * `nothing`: `print "x" + string(v)` evaluates to nothing once the
+         * program is stopping (book gap G48, the same defect seen from a
+         * caller's `print`). */
+        if (runtime_stopped && !eval_result_exits_block(result)) {
+            value_free(result.value);
+            result = eval_stop();
+            break;
+        }
         if (result.did_raise) {
             char *jump = NULL;
             int absorbed = error_frame_absorb(&jump);
@@ -15007,11 +15630,11 @@ static Value builtin_number_modifier_value(Value value) {
      * two doors into one conversion must not disagree about what a string is.
      * Applied to the TRIMMED text, which is this door's existing whitespace
      * behaviour rather than a new one. */
-    long long whole = 0;
-    if (exact_from_integer_text(trimmed, &whole)) {
+    Value exact_value = {0};
+    if (exact_from_text(trimmed, &exact_value)) {
         free(trimmed);
         value_free(value);
-        return value_number_exact(whole);
+        return exact_value;
     }
 
     errno = 0;
@@ -15314,10 +15937,11 @@ static Value builtin_string_value(Value value) {
         snprintf(buffer, sizeof(buffer), "<function %s>", value.as.function.name);
         value_free(value);
         return value_string(buffer);
-    case VALUE_WATCHER:
+    case VALUE_WATCHER: {
+        long at = watcher_index_of(value.as.watcher_id);
         snprintf(buffer, sizeof(buffer), "<watcher %s>",
-                 value.as.watcher_id < watcher_count && watchers[value.as.watcher_id].name
-                     ? watchers[value.as.watcher_id].name : "?");
+                 at >= 0 && watchers[at].name ? watchers[at].name : "?");
+    }
         value_free(value);
         return value_string(buffer);
     case VALUE_REGEX:
@@ -15747,6 +16371,14 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         if (v.as.num.is_exact) {
             serbuf_u8(b, 1);
             serbuf_le(b, (uint64_t)v.as.num.exact, 8);
+        } else if (v.as.num.scale > 0) {
+            /* AN EXACT DECIMAL is 2, its scale and its int64 mantissa
+             * (docs/exact_decimal_design.md §6), so it travels as its digits.
+             * A reader that does not know 2 refuses it: data written by this
+             * build is refused by an older one, never misread as a double. */
+            serbuf_u8(b, 2);
+            serbuf_u8(b, (unsigned char)v.as.num.scale);
+            serbuf_le(b, (uint64_t)v.as.num.exact, 8);
         } else {
             uint64_t bits;
             memcpy(&bits, &v.as.num.value, sizeof bits);
@@ -16121,6 +16753,18 @@ static Value deserialize_value(SerReader *r, int depth) {
     case SER_NUMBER: {
         if (r->version >= 3) {
             unsigned char exact = serread_u8(r);
+            if (r->ok && exact == 2) {
+                /* ONE REPRESENTATION, so bytes compare as values do: the scale
+                 * is 1..18 and the mantissa carries no trailing zero past the
+                 * first place, or the payload is refused as corrupt. */
+                unsigned scale = serread_u8(r);
+                long long m = (long long)serread_le(r, 8);
+                if (!r->ok || scale < 1 || scale > 18 || (scale > 1 && m % 10 == 0)) {
+                    r->ok = 0;
+                    return value_null();
+                }
+                return value_number_decimal(m, (int)scale);
+            }
             uint64_t bits = serread_le(r, 8);
             if (!r->ok || exact > 1) {
                 r->ok = 0;
@@ -17232,7 +17876,7 @@ static Value builtin_actor_monitor(Value handle) {
         value_free(m->target);
         free(m);
     }
-    return value_number((double)ref);
+    return value_number_exact((long long)ref);
 }
 
 static Value builtin_actor_demonitor(Value ref) {
@@ -18619,10 +19263,10 @@ static Value decode_parse_number(DecodeParser *parser) {
          * (the `1e20` ruling -- and JSON's own grammar lets `1e16` through this
          * branch), a fraction stays inexact, and out of int64 range degrades to
          * the double rather than raising. */
-        long long whole = 0;
-        if (valid && exact_from_integer_text(number_text, &whole)) {
+        Value exact_value = {0};
+        if (valid && exact_from_text(number_text, &exact_value)) {
             free(number_text);
-            return value_number_exact(whole);
+            return exact_value;
         }
         free(number_text);
         if (!valid) {
@@ -18653,11 +19297,11 @@ static Value decode_parse_number(DecodeParser *parser) {
         }
         memcpy(token, start, span);
         token[span] = '\0';
-        long long whole = 0;
-        int is_exact = exact_from_integer_text(token, &whole);
+        Value exact_value = {0};
+        int is_exact = exact_from_text(token, &exact_value);
         free(token);
         if (is_exact) {
-            return value_number_exact(whole);
+            return exact_value;
         }
     }
     return value_number(number);
@@ -18783,9 +19427,9 @@ static Value try_decode_result(int ok, Value value, const char *message,
     *fields[0].value = value_bool(ok);
     *fields[1].value = value;
     *fields[2].value = value_string(message);
-    *fields[3].value = value_number((double)offset);
-    *fields[4].value = value_number((double)line);
-    *fields[5].value = value_number((double)column);
+    *fields[3].value = value_number_exact((long long)offset);
+    *fields[4].value = value_number_exact((long long)line);
+    *fields[5].value = value_number_exact((long long)column);
     return value_record(fields, 6);
 }
 
@@ -18851,6 +19495,65 @@ static Value builtin_try_decode_text(Value text) {
     }
     value_free(text);
     return try_decode_result(1, result, "", 0, 0, 0);
+}
+
+/* STRICT JSON (RFC 8259) and nothing else: the wire parser, shared by
+ * webclient's `json` and the `json_decode` builtin (book gap G61). `why`, when
+ * given, receives the reason it is not JSON, with the byte it was found at. */
+static int json_strict_decode(const char *body, size_t length, Value *out, char *why, size_t why_cap) {
+    if (memchr(body, '\0', length)) {
+        /* the parser walks a C string, so a NUL would end the document early
+           and the rest would be read as nothing at all */
+        if (why) {
+            snprintf(why, why_cap, "a NUL byte at byte %zu; JSON text holds none",
+                     (size_t)((const char *)memchr(body, '\0', length) - body));
+        }
+        return 0;
+    }
+    DecodeParser parser = {0};
+    parser.text = body;
+    parser.ok = 1;
+    parser.json_only = 1;
+    Value result = decode_parse_value(&parser);
+    if (parser.ok) {
+        decode_skip_ws(&parser);
+        if (parser.text[parser.pos] != '\0') {
+            if (why) {
+                snprintf(why, why_cap, "text after the JSON value at byte %zu", parser.pos);
+            }
+            value_free(result);
+            return 0;
+        }
+        *out = result;
+        return 1;
+    }
+    if (why) {
+        snprintf(why, why_cap, "%s", parser.message);
+    }
+    value_free(result);
+    return 0;
+}
+
+/* A DATABASE TIMESTAMP'S FRACTION, DROPPED, IS SAID (book gap G47, Matthew's
+ * ruling): a gBASIC datetime holds whole seconds, so `10:00:00.75` arrives as
+ * 10:00:00, and two rows a quarter-second apart compare equal. Warned rather
+ * than refused, so existing pulls keep working, and only for a nonzero
+ * fraction; warnings are said once per site, so a big result warns once. */
+static void datetime_fraction_warn(const char *module, const char *column, const char *text) {
+    const char *dot = strchr(text, '.');
+    if (!dot) {
+        return;
+    }
+    int nonzero = 0;
+    for (const char *p = dot + 1; *p >= '0' && *p <= '9'; p++) {
+        nonzero |= *p != '0';
+    }
+    if (nonzero) {
+        warn_fmt(2123, "fractional seconds",
+                 "%s: %.40s in column `%.60s` has fractional seconds, which a gBASIC datetime does not "
+                 "hold; they were cut (cast the column to text in the query to keep them)",
+                 module, text, column ? column : "?");
+    }
 }
 
 #if HAVE_LIBCURL
@@ -19165,23 +19868,9 @@ static int webclient_validate_url(const char *url) {
     return 1;
 }
 
+
 static int webclient_decode_json(const char *body, Value *out) {
-    DecodeParser parser = {0};
-    parser.text = body;
-    parser.ok = 1;
-    parser.json_only = 1;
-    Value result = decode_parse_value(&parser);
-    if (parser.ok) {
-        decode_skip_ws(&parser);
-        if (parser.text[parser.pos] != '\0') {
-            value_free(result);
-            return 0;
-        }
-        *out = result;
-        return 1;
-    }
-    value_free(result);
-    return 0;
+    return json_strict_decode(body, strlen(body), out, NULL, 0);
 }
 
 /* A RESPONSE BODY IS BYTES (PLAT-NUL, 2026-09-25).
@@ -19199,7 +19888,7 @@ static Value webclient_response_value(long status,
                                       WebclientBuffer *body) {
 
     Value response = value_record(NULL, 0);
-    record_set(&response, "status", value_number((double)status));
+    record_set(&response, "status", value_number_exact((long long)status));
     record_set(&response,
                "reason",
                value_string(metadata->reason ? metadata->reason : ""));
@@ -19213,11 +19902,24 @@ static Value webclient_response_value(long status,
      * `{"a":1}` followed by a NUL and arbitrary bytes would have been reported
      * as valid JSON, which is a wrong answer where refusing to offer `json` is
      * merely a true one. A NUL cannot occur in a JSON document anyway. */
-    if (body->length > 0 && !memchr(body->data, '\0', body->length)) {
+    /* A BODY THE SERVER CALLS JSON THAT DOES NOT PARSE says so (book gap G51):
+     * it used to arrive with no `json` field and nothing to say why, so the
+     * failure surfaced later as "the answer is not what I expected". */
+    int says_json = 0;
+    if (metadata->headers.kind == VALUE_RECORD) {
+        RecordField *ct = record_find(&metadata->headers, "content-type");
+        says_json = ct && ct->value->kind == VALUE_STRING && strstr(ct->value->as.string, "json") != NULL;
+    }
+    if (body->length > 0) {
         Value json;
-        if (webclient_decode_json(body->data, &json)) {
+        char why[200] = "";
+        if (json_strict_decode(body->data, body->length, &json, why, sizeof why)) {
             record_set(&response, "json", json);
+        } else if (says_json) {
+            record_set(&response, "json_error", value_string(why));
         }
+    } else if (says_json) {
+        record_set(&response, "json_error", value_string("the body is empty"));
     }
     return response;
 }
@@ -19904,16 +20606,16 @@ static Value http_make_status(HttpHandle *h) {
             abort();
         }
     }
-    *fields[0].value = value_number((double)h->id);
+    *fields[0].value = value_number_exact((long long)h->id);
     *fields[1].value = value_bool(!h->done);
-    *fields[2].value = value_number((double)h->status);
+    *fields[2].value = value_number_exact((long long)h->status);
     *fields[3].value = value_string(h->reason ? h->reason : "");
     *fields[4].value = value_copy(h->headers);
     /* False while running: a transfer that has not finished has not succeeded.
      * Read it after `running` is false, exactly as with process.success. */
     *fields[5].value = value_bool(h->done && !h->failed);
     *fields[6].value = value_string(h->error ? h->error : "");
-    *fields[7].value = value_number((double)h->body_total);
+    *fields[7].value = value_number_exact((long long)h->body_total);
     return value_record(fields, 8);
 }
 
@@ -19932,7 +20634,7 @@ static Value http_make_chunk(HttpHandle *h) {
             abort();
         }
     }
-    *fields[0].value = value_number((double)h->id);
+    *fields[0].value = value_number_exact((long long)h->id);
     *fields[1].value = value_string_n(h->pending.data ? h->pending.data : "",
                                       h->pending.len);
     h->pending.len = 0;
@@ -20435,9 +21137,9 @@ static int http_emit_event(HttpHandle *h, const char *kind) {
             abort();
         }
     }
-    *fields[0].value = value_number((double)h->id);
+    *fields[0].value = value_number_exact((long long)h->id);
     *fields[1].value = value_string(kind);
-    *fields[2].value = value_number((double)h->status);
+    *fields[2].value = value_number_exact((long long)h->status);
     /* THE EVENT CARRIES THE HANDLE, not only its id, following the precedent
      * that a queued request carries everything its handler needs. A watcher
      * that had to map an id back to a handle would need a table for the
@@ -20452,7 +21154,7 @@ static int http_emit_event(HttpHandle *h, const char *kind) {
     Value event = value_record(fields, 4);
     Value ignored = append_to_array_ref(events->value, event, 0);
     value_free(ignored);
-    return watcher_trigger_change("http.events");
+    return watcher_trigger_delivery("http.events", NULL);
 }
 
 /* Called once per event-loop iteration: advance the transfers, then report what
@@ -20619,7 +21321,154 @@ static int inbox_loop_service(void) {
     }
     Value ignored = append_to_array_ref(messages->value, frame, 0);
     value_free(ignored);
-    return watcher_trigger_change("inbox.messages");
+    return watcher_trigger_delivery("inbox.messages", NULL);
+}
+
+/* --- standard input in the event loop (Qt design §0.38 D3) ----------------
+ *
+ * `input()` BLOCKS, and so does anything else that reads a line: under
+ * `qt.run()` a program reading its stdin that way stops Qt's loop, and a
+ * visible window stops painting while it waits. Studio's `./studio mcp` reads
+ * an MCP client's requests from stdin, so it could only run offscreen; with
+ * this a person can watch an AI drive the window.
+ *
+ * `watch w(stdin.lines)` puts descriptor 0 in the loop's poll set. What is
+ * ready is read without blocking, cut into lines (the line break removed, a
+ * CR before it too), and each complete line is appended to `stdin.lines` and
+ * delivered ON ITS OWN, so a handler sees one line per firing. At end of input
+ * a last unterminated line is delivered, `stdin.closed` becomes true, one more
+ * delivery says so, and descriptor 0 leaves the poll set -- so a program with
+ * nothing else to wait for ends.
+ *
+ * Reads go straight to the descriptor, past stdio's buffer: a program that
+ * has already called `input()` may have lines sitting in that buffer that this
+ * will never see, so the two are not to be mixed. */
+static int stdin_source_eof = 0;
+static char *stdin_source_partial = NULL;
+static size_t stdin_source_partial_len = 0;
+
+static int stdin_events_watched(void) {
+    for (size_t i = 0; i < watcher_count; i++) {
+        if (watchers[i].active &&
+            watcher_matches_change(watchers[i].stmt, "stdin.lines")) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void stdin_bind_global(void) {
+    if (env_find_in_frame(&global_env, "stdin")) {
+        return;
+    }
+    RecordField *fields = calloc(2, sizeof(RecordField));
+    if (!fields) {
+        abort();
+    }
+    fields[0].name = field_name_new("lines");
+    fields[0].value = cell_alloc();
+    fields[1].name = field_name_new("closed");
+    fields[1].value = cell_alloc();
+    if (!fields[0].value || !fields[1].value) {
+        abort();
+    }
+    *fields[0].value = value_array(NULL, 0);
+    *fields[1].value = value_bool(0);
+    Value record = value_record(fields, 2);
+    Symbol *items = realloc(global_env.items, sizeof(Symbol) * (global_env.count + 1));
+    if (!items) {
+        abort();
+    }
+    global_env.items = items;
+    global_env.items[global_env.count].name = copy_string("stdin");
+    memset(&global_env.items[global_env.count].lock, 0, sizeof(TypeLock));
+    global_env.items[global_env.count].value = record;
+    global_env.count++;
+}
+
+static int stdin_loop_active(void) {
+    return !stdin_source_eof && stdin_events_watched();
+}
+
+/* Append one line to `stdin.lines` and deliver it. 0 when a watcher raised. */
+static int stdin_deliver_line(const char *text, size_t len) {
+    Symbol *symbol = env_find_in_frame(&global_env, "stdin");
+    if (!symbol || symbol->value.kind != VALUE_RECORD) {
+        return 1;
+    }
+    RecordField *lines = record_find(&symbol->value, "lines");
+    if (!lines || lines->value->kind != VALUE_ARRAY) {
+        return 1;
+    }
+    if (len > 0 && text[len - 1] == '\r') {
+        len--;
+    }
+    Value ignored = append_to_array_ref(lines->value, value_string_n(text, len), 0);
+    value_free(ignored);
+    return watcher_trigger_delivery("stdin.lines", NULL);
+}
+
+/* Read what descriptor 0 has ready (the poll said so, so this does not
+ * block) and deliver each complete line. */
+static int stdin_loop_service(void) {
+    char buffer[65536];
+    ssize_t got = read(0, buffer, sizeof buffer);
+    if (got < 0) {
+        if (errno == EINTR || errno == EAGAIN) {
+            return 1;
+        }
+        got = 0;   /* an unreadable stdin is the end of it */
+    }
+    if (got == 0) {
+        stdin_source_eof = 1;
+        if (stdin_source_partial_len > 0) {
+            int ok = stdin_deliver_line(stdin_source_partial, stdin_source_partial_len);
+            free(stdin_source_partial);
+            stdin_source_partial = NULL;
+            stdin_source_partial_len = 0;
+            if (!ok) {
+                return 0;
+            }
+        }
+        Symbol *symbol = env_find_in_frame(&global_env, "stdin");
+        if (symbol && symbol->value.kind == VALUE_RECORD) {
+            RecordField *closed = record_find(&symbol->value, "closed");
+            if (closed && closed->value) {
+                value_free(*closed->value);
+                *closed->value = value_bool(1);
+            }
+        }
+        return watcher_trigger_delivery("stdin.lines", NULL);
+    }
+    char *joined = realloc(stdin_source_partial, stdin_source_partial_len + (size_t)got);
+    if (!joined) {
+        abort();
+    }
+    memcpy(joined + stdin_source_partial_len, buffer, (size_t)got);
+    size_t total = stdin_source_partial_len + (size_t)got;
+    size_t start = 0;
+    for (size_t i = 0; i < total; i++) {
+        if (joined[i] == '\n') {
+            if (!stdin_deliver_line(joined + start, i - start)) {
+                free(joined);
+                stdin_source_partial = NULL;
+                stdin_source_partial_len = 0;
+                return 0;
+            }
+            start = i + 1;
+        }
+    }
+    size_t rest = total - start;
+    if (rest > 0) {
+        memmove(joined, joined + start, rest);
+        stdin_source_partial = joined;
+        stdin_source_partial_len = rest;
+    } else {
+        free(joined);
+        stdin_source_partial = NULL;
+        stdin_source_partial_len = 0;
+    }
+    return 1;
 }
 
 /* --- the clock in the event loop ------------------------------------------
@@ -20739,7 +21588,7 @@ static int timer_loop_active(void) {
  * a new kind is a new way into the comparison fallthrough. */
 static Value timer_descriptor(const TimerEntry *t) {
     Value d = value_record(NULL, 0);
-    record_set(&d, "id", value_number((double)t->id));
+    record_set(&d, "id", value_number_exact((long long)t->id));
     record_set(&d, "interval", value_number(t->interval));
     record_set(&d, "repeating", value_bool(t->repeating != 0));
     return d;
@@ -20918,7 +21767,7 @@ static int timer_loop_service(void) {
         }
         t->delivered += 1.0;
         Value event = value_record(NULL, 0);
-        record_set(&event, "id", value_number((double)t->id));
+        record_set(&event, "id", value_number_exact((long long)t->id));
         record_set(&event, "kind", value_string("tick"));
         record_set(&event, "count", value_number(t->delivered));
         record_set(&event, "skipped", value_number(skipped));
@@ -20936,7 +21785,7 @@ static int timer_loop_service(void) {
     if (!fired) {
         return 1;
     }
-    return watcher_trigger_change("timer.ticks");
+    return watcher_trigger_delivery("timer.ticks", NULL);
 }
 
 static void timer_shutdown(void) {
@@ -21082,7 +21931,8 @@ static int aux_loop_sources_active(void) {
     if (webserver_term_requested) {
         return 0;
     }
-    return http_loop_active() || inbox_loop_active() || timer_loop_active() || net_loop_active();
+    return http_loop_active() || inbox_loop_active() || timer_loop_active() || net_loop_active() ||
+           stdin_loop_active();
 }
 static int webserver_term_installed = 0;
 
@@ -21166,18 +22016,35 @@ static int webserver_record_id(Value *record, unsigned long *out_id) {
     return 1;
 }
 
-static Value *webserver_find_record(unsigned long id, const char **out_name) {
-    for (size_t i = 0; i < global_env.count; i++) {
+/* The frame the last webserver_find_record found its record in: the global
+ * frame, or a function's that holds the server in a local and is waiting. */
+static Env *webserver_record_frame = NULL;
+
+static Value *webserver_find_record_in(Env *env, unsigned long id, const char **out_name) {
+    for (size_t i = 0; i < env->count; i++) {
         unsigned long record_id = 0;
-        if (webserver_record_id(&global_env.items[i].value, &record_id) &&
-            record_id == id) {
+        if (webserver_record_id(&env->items[i].value, &record_id) && record_id == id) {
             if (out_name) {
-                *out_name = global_env.items[i].name;
+                *out_name = env->items[i].name;
             }
-            return &global_env.items[i].value;
+            webserver_record_frame = env;
+            return &env->items[i].value;
         }
     }
     return NULL;
+}
+
+static Value *webserver_find_record(unsigned long id, const char **out_name) {
+    Value *found = webserver_find_record_in(&global_env, id, out_name);
+    /* A SERVER IN A FUNCTION'S LOCAL (docs/watch_scope_design.md §4): the
+     * frames worth looking in are those with a live watch, since only a frame
+     * that is watching can be waiting for its requests. */
+    for (size_t w = 0; !found && w < watcher_count; w++) {
+        if (watchers[w].active && watchers[w].frame && watchers[w].frame != &global_env) {
+            found = webserver_find_record_in(watchers[w].frame, id, out_name);
+        }
+    }
+    return found;
 }
 
 static Value *webserver_field(Value *record, const char *name) {
@@ -21708,7 +22575,7 @@ static Value webserver_make_request(WebServerClient *client,
                                     const char *body,
                                     size_t body_length) {
     Value request = value_record(NULL, 0);
-    record_set(&request, "id", value_number((double)client->id));
+    record_set(&request, "id", value_number_exact((long long)client->id));
     record_set(&request, "method", value_string(method));
     record_set(&request, "path", value_string(path));
     record_set(&request, "query", webserver_query_record(query));
@@ -21748,7 +22615,7 @@ static Value webserver_make_request(WebServerClient *client,
         }
     }
     record_set(&request, "remote_ip", value_string(client->remote_ip));
-    record_set(&request, "remote_port", value_number((double)client->remote_port));
+    record_set(&request, "remote_port", value_number_exact((long long)client->remote_port));
     char *timestamp = webserver_timestamp();
     record_set(&request, "timestamp", value_string(timestamp));
     free(timestamp);
@@ -21922,7 +22789,7 @@ static int webserver_parse_request(WebServer *server, WebServerClient *client) {
     value_free(ignored);
     char watch_path[256];
     snprintf(watch_path, sizeof(watch_path), "%s.requests", server_name);
-    if (!watcher_trigger_change(watch_path)) {
+    if (!watcher_trigger_delivery(watch_path, webserver_record_frame)) {
         return -500;
     }
     return 1;
@@ -22356,7 +23223,7 @@ static int webserver_call_handler(WebServer *server, Value request) {
      * receive copies, and a copy of the full record would only invite appends
      * that go nowhere. */
     Value mini = value_record(NULL, 0);
-    record_set(&mini, "_webserver_id", value_number((double)server->id));
+    record_set(&mini, "_webserver_id", value_number_exact((long long)server->id));
     record_set(&request, "server", mini);
 
     FunctionDef *fn = function_resolve(server->handler_lib, server->handler_fn);
@@ -22882,14 +23749,16 @@ static int webserver_loop_iterate(int *idle) {
     /* `net`'s watched sockets (docs/networking_design.md P1): their
      * descriptors join this same poll, after everything else. */
     int net_wants_loop = aux_ok && net_loop_active();
+    /* Standard input's lines (§0.38 D3): descriptor 0, while it is open. */
+    int stdin_wants_loop = aux_ok && stdin_loop_active();
     if (descriptor_count == 0 && !http_wants_loop && !inbox_wants_loop &&
-        !timer_wants_loop && !net_wants_loop) {
+        !timer_wants_loop && !net_wants_loop && !stdin_wants_loop) {
         *idle = 1;
         return 0;
     }
     size_t inbox_fd_count = inbox_wants_loop ? mailbox_poll_count(&root_mailbox) : 0;
     size_t net_max = net_wants_loop ? net_poll_count() : 0;
-    struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + inbox_fd_count + net_max + 2,
+    struct pollfd *pollfds = calloc(descriptor_count + http_fd_count + inbox_fd_count + net_max + 3,
                                     sizeof(struct pollfd));
     NetSocket **net_who = net_max ? calloc(net_max, sizeof(NetSocket *)) : NULL;
     if (!pollfds) {
@@ -22931,6 +23800,12 @@ static int webserver_loop_iterate(int *idle) {
         net_fd_count = net_collect_fds(&pollfds[net_slot], net_who, net_max);
         polled += net_fd_count;
     }
+    size_t stdin_slot = polled;
+    if (stdin_wants_loop) {
+        pollfds[stdin_slot].fd = 0;
+        pollfds[stdin_slot].events = POLLIN;
+        polled++;
+    }
     long tick_ms = http_wants_loop ? http_poll_timeout_ms(50) : 50;
     if (timer_wants_loop) {
         tick_ms = timer_poll_timeout_ms(tick_ms);
@@ -22961,6 +23836,14 @@ static int webserver_loop_iterate(int *idle) {
         if (!inbox_loop_service()) {
             free(pollfds);
         free(net_who);
+            return 1;
+        }
+    }
+    if (stdin_wants_loop && ready > 0 &&
+        (pollfds[stdin_slot].revents & (POLLIN | POLLHUP | POLLERR))) {
+        if (!stdin_loop_service()) {
+            free(pollfds);
+            free(net_who);
             return 1;
         }
     }
@@ -23340,11 +24223,15 @@ static Value webserver_register(int fd, const char *bound_address, int bound_por
     server->next_request_id = 1;
 
     Value record = value_record(NULL, 0);
-    record_set(&record, "_webserver_id", value_number((double)server->id));
-    record_set(&record, "port", value_number((double)server->port));
+    record_set(&record, "_webserver_id", value_number_exact((long long)server->id));
+    record_set(&record, "port", value_number_exact((long long)server->port));
     record_set(&record, "address", value_string(server->address));
     record_set(&record, "running", value_bool(1));
     record_set(&record, "held", value_bool(hold));
+    /* whether THIS listener terminates TLS, set true below once its context is
+       attached: read from the socket's own state, never from what the caller
+       asked for, so a program can refuse to run without it (Transward) */
+    record_set(&record, "tls", value_bool(0));
     record_set(&record, "requests", value_array(NULL, 0));
     record_set(&record, "responses", value_array(NULL, 0));
     return record;
@@ -23490,6 +24377,7 @@ static Value webserver_eval_inherited(AstExpr *expr) {
             server->sni_count = sni_count;
             SSL_CTX_set_tlsext_servername_callback(tls_default, webserver_sni_select);
             SSL_CTX_set_tlsext_servername_arg(tls_default, (void *)(uintptr_t)server->id);
+            record_set(&items[i], "tls", value_bool(1));
         }
 #endif
     }
@@ -23634,6 +24522,7 @@ static Value webserver_eval_listen(AstExpr *expr) {
         server->sni_count = sni_count;
         SSL_CTX_set_tlsext_servername_callback(tls_default, webserver_sni_select);
         SSL_CTX_set_tlsext_servername_arg(tls_default, (void *)(uintptr_t)server->id);
+        record_set(&record, "tls", value_bool(1));
     }
 #endif
     return record;
@@ -23908,8 +24797,8 @@ static Value webserver_eval_redirect(AstExpr *expr) {
     record_set(&headers, "location", value_string(location.as.string));
 
     Value response = value_record(NULL, 0);
-    record_set(&response, "id", value_number((double)id));
-    record_set(&response, "status", value_number((double)status));
+    record_set(&response, "id", value_number_exact((long long)id));
+    record_set(&response, "status", value_number_exact((long long)status));
     record_set(&response, "headers", headers);
     record_set(&response, "body", value_string(""));
 
@@ -24440,7 +25329,17 @@ static int sqlite_bind_value(sqlite3_stmt *statement, int index, Value value, ch
             sqlite_raise_message("SQLite number parameters must be finite");
             return 0;
         }
-        rc = sqlite3_bind_double(statement, index, value.as.num.value);
+        /* AN EXACT INTEGER IS BOUND AS ONE. Bound as its double, measured
+         * 2026-11-08, 9007199254740993 was stored as ...992 in an INTEGER
+         * column, a digit gone with exit 0. An exact decimal stays the double:
+         * SQLite has no decimal type, so a REAL is what any route stores, and
+         * text would change what an untyped column holds
+         * (docs/exact_decimal_design.md §7). */
+        if (value.as.num.is_exact) {
+            rc = sqlite3_bind_int64(statement, index, (sqlite3_int64)value.as.num.exact);
+        } else {
+            rc = sqlite3_bind_double(statement, index, value.as.num.value);
+        }
         break;
     case VALUE_STRING:
     case VALUE_DATETIME:
@@ -24562,7 +25461,7 @@ static Value sqlite_column_value(sqlite3_stmt *statement, int column) {
     case SQLITE_NULL:
         return value_null();
     case SQLITE_INTEGER:
-        return value_number((double)sqlite3_column_int64(statement, column));
+        return value_number_exact((long long)sqlite3_column_int64(statement, column));
     case SQLITE_FLOAT:
         return value_number(sqlite3_column_double(statement, column));
     case SQLITE_TEXT:
@@ -24712,7 +25611,7 @@ static Value sqlite_command_result(sqlite3 *native, const char *sql) {
     int counts = sql_command_counts_rows(command);
     *fields[0].value = value_string(command);
     free(command);
-    *fields[1].value = counts ? value_number((double)sqlite3_changes(native))
+    *fields[1].value = counts ? value_number_exact((long long)sqlite3_changes(native))
                               : value_null();
     return value_record(fields, 2);
 }
@@ -24849,7 +25748,7 @@ static Value sqlite_eval_last_insert_rowid(AstExpr *expr) {
     }
     sqlite3_int64 rowid = sqlite3_last_insert_rowid(connection->connection);
     value_free(connection_value);
-    return value_number((double)rowid);
+    return value_number_exact((long long)rowid);
 }
 
 static Value sqlite_eval_call(AstExpr *expr) {
@@ -24884,6 +25783,53 @@ static Value sqlite_eval_call(AstExpr *expr) {
     return value_null();
 }
 #endif
+
+/* A ROW CAP THAT DOES NOT BUFFER PAST IT (gdash's GDASH-16 B2): `max_rows` on
+ * `pg.query` and `odbc.query`. Over the cap is RAISED, not truncated, so a
+ * caller cannot quietly keep a partial result: code 1003 from the module, and
+ * `details: { code: "MAX_ROWS", max_rows }`. Shared by both modules. */
+static void db_max_rows_raise(const char *module, long long max_rows, int code, const char *source) {
+    if (raise_in_flight) {
+        return;
+    }
+    char message[200];
+    snprintf(message, sizeof message,
+             "%s.query: the query returned more than %lld rows, its max_rows", module, max_rows);
+    Value details = value_record(NULL, 0);
+    record_set(&details, "code", value_string("MAX_ROWS"));
+    record_set(&details, "max_rows", value_number_exact(max_rows));
+    error_set_state_full(message, code, source, details, value_null(), 0, 0);
+    error_generation++;
+    raise_in_flight = 1;
+}
+
+/* `{ max_rows: n }`, a closed set, n a whole number of at least 1. Answers 1
+ * and *out (0 when absent), or raises and answers 0. */
+static int db_query_options(Value options, const char *module, long long *out, int code, const char *source) {
+    char message[200];
+    *out = 0;
+    if (options.kind != VALUE_RECORD) {
+        snprintf(message, sizeof message, "%s.query options must be a record, such as { max_rows: 200000 }", module);
+        runtime_error_raise(message, code, source);
+        return 0;
+    }
+    for (size_t i = 0; i < options.as.record.count; i++) {
+        RecordField *f = &options.as.record.fields[i];
+        if (!record_name_is(f, "max_rows")) {
+            snprintf(message, sizeof message, "%s.query: unknown option '%s' (the options are: max_rows)",
+                     module, f->name);
+            runtime_error_raise(message, code, source);
+            return 0;
+        }
+        if (!value_is_exact(*f->value) || f->value->as.num.exact < 1) {
+            snprintf(message, sizeof message, "%s.query: max_rows must be a whole number, at least 1", module);
+            runtime_error_raise(message, code, source);
+            return 0;
+        }
+        *out = f->value->as.num.exact;
+    }
+    return 1;
+}
 
 #if HAVE_ODBC
 #define ODBC_ERROR_CODE 2003
@@ -25336,6 +26282,14 @@ static int odbc_bind_value(SQLHSTMT statement,
             format_number_value(text, sizeof(text), value);
             *owned_text = copy_string(text);
             sql_type = SQL_DOUBLE;
+            /* AN EXACT DECIMAL IS DECLARED A DECIMAL, with its scale, as money
+             * is (docs/exact_decimal_design.md §7): declared SQL_DOUBLE, the
+             * driver may take the digits through a double on the way to a
+             * DECIMAL column, which is the loss this value exists to avoid. */
+            if (value_is_decimal(value)) {
+                sql_type = SQL_DECIMAL;
+                decimal_digits = (SQLSMALLINT)value.as.num.scale;
+            }
         }
         break;
     case VALUE_MONEY:
@@ -25541,15 +26495,60 @@ static int odbc_parse_datetime(const char *text, int shape, Value *out) {
 /* Turn one column of the current row into a gBASIC value, keyed on the type
  * the driver DECLARED rather than on what the text happens to look like --
  * "0001" out of a CHAR column is a string, not the number one. */
+
 static Value odbc_column_value(SQLHSTMT statement,
                                SQLUSMALLINT column,
-                               SQLSMALLINT sql_type) {
+                               SQLSMALLINT sql_type,
+                               const char *column_name) {
     switch (sql_type) {
     case SQL_BINARY:
     case SQL_VARBINARY:
-    case SQL_LONGVARBINARY:
-        odbc_raise_message("odbc binary results are not supported");
-        return value_null();
+    case SQL_LONGVARBINARY: {
+        /* BYTES, as a byte string (book gap G49). The whole query used to be
+         * refused, so `select *` from any SQL Server table with a rowversion
+         * failed, and the commonest change marker could not be read as itself.
+         * Read in pieces until the driver has no more, never as text: a
+         * driver converting binary to text writes hex, or stops at a NUL. */
+        size_t cap = 256, length = 0;
+        char *bytes = malloc(cap);
+        if (!bytes) {
+            abort();
+        }
+        for (;;) {
+            SQLLEN ind = 0;
+            SQLRETURN brc = SQLGetData(statement, column, SQL_C_BINARY, bytes + length,
+                                       (SQLLEN)(cap - length), &ind);
+            if (brc == SQL_NO_DATA) {
+                break;
+            }
+            if (!SQL_SUCCEEDED(brc)) {
+                free(bytes);
+                odbc_raise_diag(SQL_HANDLE_STMT, statement, "could not read odbc binary column");
+                return value_null();
+            }
+            if (ind == SQL_NULL_DATA) {
+                free(bytes);
+                return value_null();
+            }
+            if (brc == SQL_SUCCESS_WITH_INFO) {
+                /* the buffer was filled; ind is the total, or SQL_NO_TOTAL */
+                length = cap;
+                size_t want = ind != SQL_NO_TOTAL && (size_t)ind > cap ? (size_t)ind : cap * 2;
+                char *grown = realloc(bytes, want);
+                if (!grown) {
+                    abort();
+                }
+                bytes = grown;
+                cap = want;
+                continue;
+            }
+            length += (size_t)ind;
+            break;
+        }
+        Value out = value_string_n(bytes, length);
+        free(bytes);
+        return out;
+    }
     default:
         break;
     }
@@ -25618,6 +26617,7 @@ static Value odbc_column_value(SQLHSTMT statement,
         }
         break;
     case SQL_TYPE_TIMESTAMP:
+        datetime_fraction_warn("odbc", column_name, text);
         if (!odbc_parse_datetime(text, ODBC_DT_TIMESTAMP, &result)) {
             free(text);
             odbc_raise_message("invalid odbc timestamp result");
@@ -25636,7 +26636,14 @@ static Value odbc_column_value(SQLHSTMT statement,
     return result;
 }
 
+static Value odbc_rows_from_statement_capped(SQLHSTMT statement, long long max_rows);
 static Value odbc_rows_from_statement(SQLHSTMT statement) {
+    return odbc_rows_from_statement_capped(statement, 0);
+}
+
+/* max_rows > 0: raise on the row past it (gdash's GDASH-16 B2), closing the
+ * cursor there, so no more than the rows kept plus one are ever fetched. */
+static Value odbc_rows_from_statement_capped(SQLHSTMT statement, long long max_rows) {
     SQLSMALLINT columns = 0;
     SQLRETURN rc = SQLNumResultCols(statement, &columns);
     if (!SQL_SUCCEEDED(rc)) {
@@ -25701,6 +26708,16 @@ static Value odbc_rows_from_statement(SQLHSTMT statement) {
             free(items);
             goto fail;
         }
+        if (max_rows > 0 && (long long)count == max_rows) {
+            SQLCancel(statement);
+            SQLCloseCursor(statement);
+            for (size_t i = 0; i < count; i++) {
+                value_free(items[i]);
+            }
+            free(items);
+            db_max_rows_raise("odbc", max_rows, ODBC_ERROR_CODE, "odbc");
+            goto fail;
+        }
 
         RecordField *fields = columns > 0
             ? calloc((size_t)columns, sizeof(RecordField))
@@ -25717,7 +26734,7 @@ static Value odbc_rows_from_statement(SQLHSTMT statement) {
                 abort();
             }
             *fields[column].value =
-                odbc_column_value(statement, (SQLUSMALLINT)(column + 1), types[column]);
+                odbc_column_value(statement, (SQLUSMALLINT)(column + 1), types[column], names[column]);
             completed++;
             if (error_generation != before_error) {
                 for (int i = 0; i < completed; i++) {
@@ -25798,14 +26815,15 @@ static Value odbc_command_result(SQLHSTMT statement, const char *sql) {
     }
     *fields[0].value = value_string(command);
     free(command);
-    *fields[1].value = counted ? value_number((double)affected) : value_null();
+    *fields[1].value = counted ? value_number_exact((long long)affected) : value_null();
     return value_record(fields, 2);
 }
 
 static Value odbc_eval_sql(AstExpr *expr, int query_mode) {
-    if (expr->as.call.args.count != 2 && expr->as.call.args.count != 3) {
+    size_t nargs = expr->as.call.args.count;
+    if (nargs < 2 || nargs > (query_mode ? 4u : 3u)) {
         odbc_raise_message(query_mode
-            ? "odbc.query expects two or three arguments"
+            ? "odbc.query expects two to four arguments (connection, sql, params, options)"
             : "odbc.exec expects two or three arguments");
         return value_null();
     }
@@ -25836,9 +26854,21 @@ static Value odbc_eval_sql(AstExpr *expr, int query_mode) {
         return value_null();
     }
 
+    long long max_rows = 0;
+    if (nargs == 4) {
+        Value options = eval_expr(expr->as.call.args.items[3]);
+        int ok = !error_action_pending() &&
+                 db_query_options(options, "odbc", &max_rows, ODBC_ERROR_CODE, "odbc");
+        value_free(options);
+        if (!ok) {
+            value_free(sql);
+            value_free(connection_value);
+            return value_null();
+        }
+    }
     Value params_value = value_null();
     int have_params = 0;
-    if (expr->as.call.args.count == 3) {
+    if (expr->as.call.args.count >= 3) {
         params_value = eval_expr(expr->as.call.args.items[2]);
         if (error_action_pending()) {
             value_free(params_value);
@@ -25935,7 +26965,7 @@ static Value odbc_eval_sql(AstExpr *expr, int query_mode) {
 
     Value converted = value_null();
     if (query_mode) {
-        converted = odbc_rows_from_statement(params.statement);
+        converted = odbc_rows_from_statement_capped(params.statement, max_rows);
     } else if (columns > 0) {
         odbc_raise_message("odbc.exec cannot discard row results; use odbc.query");
     } else {
@@ -26863,9 +27893,15 @@ static char *pg_datetime_text(DateTime datetime) {
                  datetime.month,
                  datetime.day);
     } else {
+        /* "+00": the value is an instant in UTC (as every one gBASIC makes
+         * is, since 2026-11-10). A timestamptz column reads a text with no
+         * offset in the SESSION's zone, so without it the instant moved by
+         * that zone's offset; a timestamp column ignores the offset, so the
+         * civil fields land as they are. Both measured against PostgreSQL
+         * with the session in America/New_York. */
         snprintf(buffer,
                  sizeof(buffer),
-                 "%04d-%02d-%02d %02d:%02d:%02d",
+                 "%04d-%02d-%02d %02d:%02d:%02d+00",
                  datetime.year,
                  datetime.month,
                  datetime.day,
@@ -26908,7 +27944,11 @@ static char *pg_parameter_text(Value value) {
             pg_raise_message("PostgreSQL number parameters must be finite");
             return NULL;
         }
-        snprintf(buffer, sizeof(buffer), "%.17g", value.as.num.value);
+        /* THE VALUE'S OWN DIGITS: an exact integer or decimal as itself, a
+         * double as its shortest round-trip form. `%.17g` sent `0.1` as
+         * 0.10000000000000001, which a `numeric` column keeps, and an exact
+         * integer past 2^53 as its double (docs/exact_decimal_design.md §7). */
+        format_number_value(buffer, sizeof(buffer), value);
         return copy_string(buffer);
     case VALUE_DATETIME:
         return pg_datetime_text(value.as.datetime);
@@ -27371,7 +28411,11 @@ static Value pg_result_value(PGresult *result, int row, int column) {
     if (PQgetisnull(result, row, column)) {
         return value_null();
     }
-    return pg_scalar_from_text(PQftype(result, column), PQgetvalue(result, row, column));
+    Oid oid = PQftype(result, column);
+    if (oid == 1114 || oid == 1083) {   /* timestamp, time: their fraction is cut */
+        datetime_fraction_warn("pg", PQfname(result, column), PQgetvalue(result, row, column));
+    }
+    return pg_scalar_from_text(oid, PQgetvalue(result, row, column));
 }
 
 /* One column's text, by its type OID, as a gBASIC value. Shared by the row
@@ -27540,10 +28584,88 @@ static Value pg_command_result(PGresult *result) {
     return value_record(fields, 2);
 }
 
+/* pg.query under a cap: sent, then read in libpq's SINGLE-ROW MODE, so the
+ * client never holds more than the rows kept plus one. On the row past the cap
+ * the query is cancelled on the server and what is in flight is drained, and
+ * the call raises. In a transaction the cancel aborts it, as any statement's
+ * error does in PostgreSQL. */
+static Value pg_query_capped(PgConnectionValue *connection, const char *sql,
+                             PgParameterList *params, int prepared, long long max_rows) {
+    PGconn *conn = connection->connection;
+    int sent = prepared ? PQsendQueryPrepared(conn, "", params->count, params->pointers, NULL, NULL, 0)
+             : params   ? PQsendQueryParams(conn, sql, params->count, NULL, params->pointers, NULL, NULL, 0)
+                        : PQsendQuery(conn, sql);
+    if (!sent) {
+        pg_raise_connection_error(conn, "PostgreSQL operation failed");
+        return value_null();
+    }
+    PQsetSingleRowMode(conn);
+    Value *items = NULL;
+    size_t count = 0, cap = 0;
+    int failed = 0, over = 0;
+    PGresult *r;
+    while ((r = PQgetResult(conn)) != NULL) {
+        ExecStatusType st = PQresultStatus(r);
+        if (failed || over) {
+            PQclear(r);                        /* draining */
+            continue;
+        }
+        if (st == PGRES_SINGLE_TUPLE) {
+            if ((long long)count == max_rows) {
+                over = 1;
+                PQclear(r);
+                PGcancel *c = PQgetCancel(conn);
+                if (c) {
+                    char why[256];
+                    PQcancel(c, why, sizeof why);
+                    PQfreeCancel(c);
+                }
+                continue;
+            }
+            Value one = pg_rows_from_result(r);
+            PQclear(r);
+            if (one.kind != VALUE_ARRAY) {
+                value_free(one);
+                failed = 1;
+                continue;
+            }
+            for (size_t i = 0; i < one.as.array.store->count; i++) {
+                if (count == cap) {
+                    cap = cap ? cap * 2 : 64;
+                    items = realloc(items, cap * sizeof *items);
+                    if (!items) {
+                        abort();
+                    }
+                }
+                items[count++] = value_copy(one.as.array.store->items[i]);
+            }
+            value_free(one);
+        } else if (st == PGRES_TUPLES_OK || st == PGRES_COMMAND_OK) {
+            PQclear(r);
+        } else {
+            pg_raise_result_error_sql(conn, r, sql);
+            PQclear(r);
+            failed = 1;
+        }
+    }
+    if (failed || over) {
+        for (size_t i = 0; i < count; i++) {
+            value_free(items[i]);
+        }
+        free(items);
+        if (over) {
+            db_max_rows_raise("pg", max_rows, PG_ERROR_CODE, "postgres");
+        }
+        return value_null();
+    }
+    return value_array(items, count);
+}
+
 static Value pg_eval_sql(AstExpr *expr, int query_mode) {
-    if (expr->as.call.args.count != 2 && expr->as.call.args.count != 3) {
+    size_t nargs = expr->as.call.args.count;
+    if (nargs < 2 || nargs > (query_mode ? 4u : 3u)) {
         pg_raise_message(query_mode
-            ? "pg.query expects two or three arguments"
+            ? "pg.query expects two to four arguments (connection, sql, params, options)"
             : "pg.exec expects two or three arguments");
         return value_null();
     }
@@ -27579,7 +28701,19 @@ static Value pg_eval_sql(AstExpr *expr, int query_mode) {
     PgParameterList *params_ptr = NULL;
     Oid *param_types = NULL;
     int prepared = 0;
-    if (expr->as.call.args.count == 3) {
+    long long max_rows = 0;
+    if (nargs == 4) {
+        Value options = eval_expr(expr->as.call.args.items[3]);
+        int ok = !error_action_pending() &&
+                 db_query_options(options, "pg", &max_rows, PG_ERROR_CODE, "postgres");
+        value_free(options);
+        if (!ok) {
+            value_free(sql);
+            value_free(connection_value);
+            return value_null();
+        }
+    }
+    if (expr->as.call.args.count >= 3) {
         params_value = eval_expr(expr->as.call.args.items[2]);
         if (error_action_pending()) {
             value_free(params_value);
@@ -27607,6 +28741,15 @@ static Value pg_eval_sql(AstExpr *expr, int query_mode) {
         params_ptr = &params;
     }
 
+    if (max_rows > 0) {
+        Value rows = pg_query_capped(connection, sql.as.string, params_ptr, prepared, max_rows);
+        free(param_types);
+        pg_parameter_list_clear(&params);
+        value_free(params_value);
+        value_free(sql);
+        value_free(connection_value);
+        return rows;
+    }
     PGresult *result = pg_execute_sql(connection, sql.as.string, params_ptr, prepared);
     free(param_types);
     pg_parameter_list_clear(&params);
@@ -28410,11 +29553,11 @@ static Value process_make_result_ex(int exit_code, ProcBuf *out, ProcBuf *err,
             abort();
         }
     }
-    *fields[0].value = value_number(exit_code);
+    *fields[0].value = value_number_exact(exit_code);
     *fields[1].value = value_string_n(out->data ? out->data : "", out->len);
     *fields[2].value = value_string_n(err->data ? err->data : "", err->len);
     *fields[3].value = value_bool(success);
-    *fields[4].value = value_number(signal_num);
+    *fields[4].value = value_number_exact(signal_num);
     *fields[5].value = value_bool(timed_out);
     if (with_launch) {
         *fields[6].value = value_bool(launch_failed);
@@ -28931,10 +30074,18 @@ static int process_parse_options(Value *opts, const char *label, ProcLaunch *out
  * exec is distinguishable from a real exit 127). On success returns the pid and
  * fills the out_fd/err_fd outputs. Returns -1 and sets launch_errno on exec
  * failure, or -2 on a pipe/fork failure. */
+/* out_to / err_to: where the child's fd 1 / fd 2 go. PROC_TO_PIPE (the
+ * default) is a pipe the parent reads; PROC_TO_INHERIT leaves the parent's own;
+ * an fd >= 0 (opened by the caller, close-on-exec) is dup'd onto it. The pipe
+ * is made either way, so the parent's end simply reads end-of-file when the
+ * stream went elsewhere, and process.read answers "" for it. */
+#define PROC_TO_PIPE (-1)
+#define PROC_TO_INHERIT (-2)
 static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
                             const int *share_fds, size_t share_count,
                             int *out_fd, int *err_fd, int *launch_errno,
-                            int want_stdin, int *in_fd) {
+                            int want_stdin, int *in_fd, long long memory_limit,
+                            int out_to, int err_to) {
     int out_pipe[2] = {-1, -1}, err_pipe[2] = {-1, -1}, exec_pipe[2] = {-1, -1};
     int in_pipe[2] = {-1, -1};
     *launch_errno = 0;
@@ -28965,7 +30116,10 @@ static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
     if (pid == 0) {
         proc_arm_parent_death(launcher_pid);
         setpgid(0, 0);
-        if (dup2(out_pipe[1], STDOUT_FILENO) < 0 || dup2(err_pipe[1], STDERR_FILENO) < 0 ||
+        int out_src = out_to >= 0 ? out_to : out_pipe[1];
+        int err_src = err_to >= 0 ? err_to : err_pipe[1];
+        if ((out_to != PROC_TO_INHERIT && dup2(out_src, STDOUT_FILENO) < 0) ||
+            (err_to != PROC_TO_INHERIT && dup2(err_src, STDERR_FILENO) < 0) ||
             (in_pipe[0] >= 0 && dup2(in_pipe[0], STDIN_FILENO) < 0)) {
             int e = errno;
             ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
@@ -29024,6 +30178,24 @@ static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
             int e = errno;
             ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
             _exit(127);
+        }
+        /* THE MEMORY LIMIT, set here so it binds the program exec runs and not
+         * the parent. RLIMIT_DATA, not RLIMIT_AS: the address space counts every
+         * mapping, shared libraries and reserved thread stacks included, which
+         * for a gbasic linked with Qt is far more than it uses; the data limit
+         * counts the heap and private anonymous mappings, which is what grows
+         * when a child holds a result set. No core dump either: a child killed
+         * by its own limit would otherwise write one about the limit's size,
+         * against the disk the same caller is metering. A refusal is a launch
+         * failure, reported as one. */
+        if (memory_limit > 0) {
+            struct rlimit data = { (rlim_t)memory_limit, (rlim_t)memory_limit };
+            struct rlimit core = { 0, 0 };
+            if (setrlimit(RLIMIT_DATA, &data) != 0 || setrlimit(RLIMIT_CORE, &core) != 0) {
+                int e = errno;
+                ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;
+                _exit(127);
+            }
         }
         execvp(argv[0], argv);
         int e = errno;
@@ -29143,12 +30315,19 @@ static void process_try_reap(ProcessHandle *h) {
 #else
     int st;
     pid_t r;
+    struct rusage ru;
+    memset(&ru, 0, sizeof ru);
     do {
-        r = waitpid(h->pid, &st, WNOHANG);
+        r = wait4(h->pid, &st, WNOHANG, &ru);   /* waitpid, plus the child's usage */
     } while (r < 0 && errno == EINTR);
     if (r == h->pid) {
         h->status = st;
         h->reaped = 1;
+#ifdef __APPLE__
+        h->peak_memory = (long long)ru.ru_maxrss;          /* bytes there */
+#else
+        h->peak_memory = (long long)ru.ru_maxrss * 1024;   /* kilobytes on Linux and the BSDs */
+#endif
     } else if (r < 0) {
         h->status = 0;      /* ECHILD: already gone; treat as exit 0 unknown */
         h->reaped = 1;
@@ -29261,10 +30440,21 @@ static Value process_make_status(ProcessHandle *h) {
         }
     }
     *fields[0].value = value_bool(running);
-    *fields[1].value = value_number(exit_code);
-    *fields[2].value = value_number(signal_num);
+    *fields[1].value = value_number_exact(exit_code);
+    *fields[2].value = value_number_exact(signal_num);
     *fields[3].value = value_bool(success);
-    return value_record(fields, 4);
+    Value status = value_record(fields, 4);
+    /* A LIMITED CHILD SAYS WHAT IT WAS GIVEN AND WHAT IT TOOK. The kernel keeps
+     * no record that a limit was hit -- the child's allocation fails, and what
+     * it does then is its own runtime's (a gBASIC child dies by SIGABRT, 6) --
+     * so the evidence is reported rather than a verdict guessed from it. */
+    if (h->memory_limit > 0) {
+        record_set(&status, "memory_limit", value_number_exact(h->memory_limit));
+        record_set(&status, "peak_memory", h->reaped && h->peak_memory >= 0
+                                               ? value_number_exact(h->peak_memory)
+                                               : value_unknown());
+    }
+    return status;
 }
 
 /* Hand over everything buffered so far and clear it, so the next call starts where
@@ -29383,7 +30573,8 @@ static Value process_do_start(AstExpr *expr) {
     size_t share_count = 0;
     {
         static const char *const allowed[] = {
-            "command", "args", "cwd", "env", "listen_fds", "timeout", "stdin"
+            "command", "args", "cwd", "env", "listen_fds", "timeout", "stdin", "limits",
+            "stdout", "stderr"
         };
         if (!process_reject_unknown(&opts, "process.start", allowed,
                                     sizeof(allowed) / sizeof(allowed[0]))) {
@@ -29451,6 +30642,109 @@ static Value process_do_start(AstExpr *expr) {
         }
     }
 
+    /* `limits: { memory: bytes }`: a closed set, so a misspelled limit is
+     * refused by name rather than silently not applied -- a limit that does
+     * not apply is the one failure here nobody would see. */
+    long long memory_limit = 0;
+    {
+        RecordField *lim = record_find(&opts, "limits");
+        if (lim) {
+            const char *why = NULL;
+            char bad[160];
+            if (lim->value->kind != VALUE_RECORD) {
+                why = "process.start: options.limits must be a record, such as { memory: 200000000 }";
+            } else {
+                for (size_t i = 0; i < lim->value->as.record.count && !why; i++) {
+                    RecordField *f = &lim->value->as.record.fields[i];
+                    if (!record_name_is(f, "memory")) {
+                        snprintf(bad, sizeof bad, "process.start: unknown limit '%s' (the limits are: memory)",
+                                 f->name);
+                        why = bad;
+                    } else if (!value_is_exact(*f->value) || f->value->as.num.exact < 1) {
+                        why = "process.start: limits.memory must be a whole number of bytes, at least 1";
+                    } else {
+                        memory_limit = f->value->as.num.exact;
+                    }
+                }
+            }
+#ifdef _WIN32
+            if (!why) {
+                why = "process.start: limits are not available on Windows (they are POSIX rlimits)";
+            }
+#endif
+            if (why) {
+                free(launch.argv);
+                value_free(opts);
+                return process_raise(why);
+            }
+        }
+    }
+
+    /* `stdout:` / `stderr:` -- where the child's output goes (2026-11-09). A
+     * detached child whose stderr is a pipe nobody reads any more had no way to
+     * be given an fd 2 that cannot break (Transward; DOGFOOD 2026-11-09). A bare
+     * string other than the three words is refused rather than taken as a
+     * path, so a file named `null` is not mistaken for the device: a file is
+     * given as a file, {file}"run.log", and is appended to. */
+    int stream_to[2] = { PROC_TO_PIPE, PROC_TO_PIPE };
+    {
+        static const char *const names[2] = { "stdout", "stderr" };
+        for (int k = 0; k < 2; k++) {
+            RecordField *sf = record_find(&opts, names[k]);
+            if (!sf) {
+                continue;
+            }
+            char why[640];
+            why[0] = '\0';
+            Value *v = sf->value;
+            if (v->kind == VALUE_STRING && strcmp(v->as.string, "pipe") == 0) {
+                stream_to[k] = PROC_TO_PIPE;
+            } else if (v->kind == VALUE_STRING && strcmp(v->as.string, "inherit") == 0) {
+#ifdef _WIN32
+                /* the Windows launch is process.run's and takes no redirect, so
+                 * this is refused rather than accepted and not applied */
+                snprintf(why, sizeof why, "process.start: options.%s is not available on Windows", names[k]);
+#else
+                stream_to[k] = PROC_TO_INHERIT;
+#endif
+            } else if (v->kind == VALUE_STRING && strcmp(v->as.string, "null") == 0) {
+#ifdef _WIN32
+                snprintf(why, sizeof why, "process.start: options.%s is not available on Windows", names[k]);
+#else
+                stream_to[k] = open("/dev/null", O_WRONLY | O_CLOEXEC);
+                if (stream_to[k] < 0) {
+                    snprintf(why, sizeof why, "process.start: options.%s: could not open /dev/null: %s",
+                             names[k], strerror(errno));
+                }
+#endif
+            } else if (v->kind == VALUE_FILE) {
+#ifdef _WIN32
+                snprintf(why, sizeof why, "process.start: options.%s is not available on Windows", names[k]);
+#else
+                stream_to[k] = open(v->as.file_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+                if (stream_to[k] < 0) {
+                    snprintf(why, sizeof why, "process.start: options.%s: could not open '%.400s': %s",
+                             names[k], v->as.file_path, strerror(errno));
+                }
+#endif
+            } else {
+                snprintf(why, sizeof why,
+                         "process.start: options.%s must be \"pipe\" (the default), \"null\", "
+                         "\"inherit\", or a file such as {file}\"run.log\" (appended to)", names[k]);
+            }
+            if (why[0]) {
+                for (int j = 0; j < 2; j++) {
+                    if (stream_to[j] >= 0) {
+                        close(stream_to[j]);
+                    }
+                }
+                free(launch.argv);
+                value_free(opts);
+                return process_raise(why);
+            }
+        }
+    }
+
 #ifdef _WIN32
     /* Everything above -- options, refusals, env validation -- is shared with
      * POSIX; only the launch differs, and it is process.run's launch. */
@@ -29490,7 +30784,13 @@ static Value process_do_start(AstExpr *expr) {
 #endif
     int out_fd = -1, err_fd = -1, in_fd = -1, launch_errno = 0;
     pid_t pid = process_launch(launch.argv, launch.cwd, launch.env, share_fds, share_count,
-                               &out_fd, &err_fd, &launch_errno, want_stdin, &in_fd);
+                               &out_fd, &err_fd, &launch_errno, want_stdin, &in_fd,
+                               memory_limit, stream_to[0], stream_to[1]);
+    for (int j = 0; j < 2; j++) {
+        if (stream_to[j] >= 0) {
+            close(stream_to[j]);     /* the child has its own copy now */
+        }
+    }
     if (pid == -2) {
         free(launch.argv);
         value_free(opts);
@@ -29520,6 +30820,8 @@ static Value process_do_start(AstExpr *expr) {
     h->out_fd = out_fd;
     h->err_fd = err_fd;
     h->in_fd = in_fd;
+    h->memory_limit = memory_limit;
+    h->peak_memory = -1;
     h->ref_count = 1;
     return value_process(h);
 }
@@ -29584,7 +30886,7 @@ static Value process_do_write(AstExpr *expr) {
     }
     value_free(text);
     value_free(owner);
-    return value_number((double)sent);
+    return value_number_exact((long long)sent);
 }
 
 /* process.close_stdin(handle) -> true. Many line protocols end on EOF, and a
@@ -29823,7 +31125,7 @@ static int process_is_executable(const char *path) {
  * meaning the current directory. The answer is the first candidate that is a
  * regular file with execute permission. Not found is `unknown`, never an
  * error: absence is the ordinary state this function exists to report. */
-/* PLAT-WEB-5: `process.self()` -> { interpreter, script, args }.
+/* PLAT-WEB-5: `process.self()` -> { interpreter, script, args, pid }.
  *
  * The one fact a program cannot otherwise learn: how to launch ANOTHER COPY OF
  * ITSELF. web.serve's worker pool is the motivating caller (the supervisor
@@ -29858,7 +31160,107 @@ static Value process_do_self(AstExpr *expr) {
         items[i] = value_string(program_args[i]);
     }
     record_set(&result, "args", value_array(items, program_arg_count));
+    /* this process's id (Transward): a spawned actor is a process of its own
+       and answers its own */
+    record_set(&result, "pid", value_number_exact((long long)getpid()));
+    /* when this process started, so a later run can tell this pid from a
+       reused one (book gap G64); unknown where the platform does not say */
+    long long started = gb_process_started((long)getpid());
+    record_set(&result, "started", started >= 0 ? value_number_exact(started) : value_unknown());
+    /* the user this process acts as, the one permissions()' answers are for */
+    char user_name[64];
+    long uid = gb_current_user(user_name, sizeof user_name);
+    record_set(&result, "uid", uid < 0 ? value_unknown() : value_number_exact(uid));
+    record_set(&result, "user", user_name[0] ? value_string(user_name) : value_unknown());
     return result;
+}
+
+/* The pid argument of process.alive / process.info: a whole number above 0. */
+static int process_pid_arg(AstExpr *expr, const char *verb, long *pid) {
+    char msg[160];
+    if (expr->as.call.args.count != 1) {
+        snprintf(msg, sizeof msg, "process.%s expects one argument, a process id", verb);
+        process_raise(msg);
+        return 0;
+    }
+    Value v = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(v);
+        return 0;
+    }
+    double d = v.kind == VALUE_NUMBER ? v.as.num.value : -1;
+    value_free(v);
+    if (!(d >= 1 && d == floor(d) && d <= 4194304.0 * 1024)) {
+        snprintf(msg, sizeof msg, "process.%s: a process id is a whole number above 0", verb);
+        process_raise(msg);
+        return 0;
+    }
+    *pid = (long)d;
+    return 1;
+}
+
+/* process.alive(pid): whether a process with that id exists now (book gap
+ * G64). A pid recorded by an earlier run may have been reused, so this alone
+ * does not say it is the same program: process.info gives what tells them
+ * apart, its start time and command line. */
+static Value process_do_alive(AstExpr *expr) {
+    long pid = 0;
+    if (!process_pid_arg(expr, "alive", &pid)) {
+        return value_null();
+    }
+    int alive = gb_process_alive(pid);
+    return alive < 0 ? value_unknown() : value_bool(alive == 1);
+}
+
+/* process.info(pid): { pid, alive, started, command }. `started` is epoch
+ * seconds (compare it with what process.self() said when the pid was
+ * recorded); `command` is the argument list. Either is unknown where the
+ * platform does not say, and both are once the process is gone. */
+static Value process_do_info(AstExpr *expr) {
+    long pid = 0;
+    if (!process_pid_arg(expr, "info", &pid)) {
+        return value_null();
+    }
+    int alive = gb_process_alive(pid);
+    Value r = value_record(NULL, 0);
+    record_set(&r, "pid", value_number_exact(pid));
+    record_set(&r, "alive", alive < 0 ? value_unknown() : value_bool(alive == 1));
+    long long started = alive == 1 ? gb_process_started(pid) : -1;
+    record_set(&r, "started", started >= 0 ? value_number_exact(started) : value_unknown());
+    Value command = value_unknown();
+#ifdef __linux__
+    if (alive == 1) {
+        char path[64];
+        snprintf(path, sizeof path, "/proc/%ld/cmdline", pid);
+        FILE *f = fopen(path, "rb");
+        if (f) {
+            char buf[8192];
+            size_t n = fread(buf, 1, sizeof buf, f);
+            fclose(f);
+            size_t count = 0, cap = 8;
+            Value *items = malloc(sizeof(Value) * cap);
+            if (!items) {
+                abort();
+            }
+            for (size_t at = 0; at < n;) {
+                size_t len = strnlen(buf + at, n - at);
+                if (count == cap) {
+                    cap *= 2;
+                    Value *grown = realloc(items, sizeof(Value) * cap);
+                    if (!grown) {
+                        abort();
+                    }
+                    items = grown;
+                }
+                items[count++] = value_string_n(buf + at, len);
+                at += len + 1;
+            }
+            command = value_array(items, count);
+        }
+    }
+#endif
+    record_set(&r, "command", command);
+    return r;
 }
 
 static Value process_do_which(AstExpr *expr) {
@@ -29952,6 +31354,12 @@ static Value process_eval_call(AstExpr *expr) {
     }
     if (strcmp(expr->as.call.name, "self") == 0) {
         return process_do_self(expr);
+    }
+    if (strcmp(expr->as.call.name, "alive") == 0) {
+        return process_do_alive(expr);
+    }
+    if (strcmp(expr->as.call.name, "info") == 0) {
+        return process_do_info(expr);
     }
     if (strcmp(expr->as.call.name, "start") == 0) {
         return process_do_start(expr);
@@ -30567,17 +31975,17 @@ static int outline_emit(OutlineCtx *c, AstStmt *stmt, const char *kind,
     outline_locate(c->l, end_off, &el, &ec);
 
     Value node = value_record(NULL, 0);
-    record_set(&node, "id", value_number((double)id));
+    record_set(&node, "id", value_number_exact((long long)id));
     record_set(&node, "parent_id",
-               parent_id > 0 ? value_number((double)parent_id) : value_null());
+               parent_id > 0 ? value_number_exact((long long)parent_id) : value_null());
     record_set(&node, "kind", value_string(kind));
     record_set(&node, "name", name ? value_string(name) : value_null());
-    record_set(&node, "start_offset", value_number((double)start_off));
-    record_set(&node, "end_offset", value_number((double)end_off));
-    record_set(&node, "start_line", value_number((double)sl));
-    record_set(&node, "start_column", value_number((double)sc));
-    record_set(&node, "end_line", value_number((double)el));
-    record_set(&node, "end_column", value_number((double)ec));
+    record_set(&node, "start_offset", value_number_exact((long long)start_off));
+    record_set(&node, "end_offset", value_number_exact((long long)end_off));
+    record_set(&node, "start_line", value_number_exact((long long)sl));
+    record_set(&node, "start_column", value_number_exact((long long)sc));
+    record_set(&node, "end_line", value_number_exact((long long)el));
+    record_set(&node, "end_column", value_number_exact((long long)ec));
     Value flags = value_record(NULL, 0);
     record_set(&flags, "block", value_bool(is_block));
     record_set(&flags, "exported", value_bool(exported));
@@ -30795,12 +32203,12 @@ static Value builtin_source_outline_value(Value text, const char *path) {
         Value dr = value_record(NULL, 0);
         record_set(&dr, "severity", value_string(sev));
         record_set(&dr, "message", value_string(d->message ? d->message : ""));
-        record_set(&dr, "start_offset", value_number((double)so));
-        record_set(&dr, "end_offset", value_number((double)eo));
-        record_set(&dr, "start_line", value_number((double)d->span.start_line));
-        record_set(&dr, "start_column", value_number((double)d->span.start_column));
-        record_set(&dr, "end_line", value_number((double)d->span.end_line));
-        record_set(&dr, "end_column", value_number((double)d->span.end_column));
+        record_set(&dr, "start_offset", value_number_exact((long long)so));
+        record_set(&dr, "end_offset", value_number_exact((long long)eo));
+        record_set(&dr, "start_line", value_number_exact((long long)d->span.start_line));
+        record_set(&dr, "start_column", value_number_exact((long long)d->span.start_column));
+        record_set(&dr, "end_line", value_number_exact((long long)d->span.end_line));
+        record_set(&dr, "end_column", value_number_exact((long long)d->span.end_column));
         diag_arr = append_to_array_value(diag_arr, dr, 0);
     }
 
@@ -30817,6 +32225,156 @@ static Value builtin_source_outline_value(Value text, const char *path) {
     return result;
 }
 
+
+/* ---- source_comments: the comments the parser read (Qt design §0.38 B1) ---
+ *
+ * Studio shows marked comment runs as prose, and a raw-text scan gets a `'`
+ * inside a string wrong. So this parses the text exactly as source_outline
+ * does with the lexer's comment recorder attached (include/lexer.h): the
+ * comments it answers are the ones the parser consumed as comments, by
+ * construction. A comment the lexer meets twice (a re-lex) is recorded once,
+ * since only a position past the last one recorded is kept. */
+typedef struct {
+    int line;
+    int column;
+    char *text;            /* from the `'` to the end of the line */
+} CommentSeen;
+
+typedef struct {
+    CommentSeen *items;
+    size_t count;
+    size_t cap;
+} CommentLog;
+
+static void comment_log_sink(void *ctx, int line, int column,
+                             const char *text, size_t length) {
+    CommentLog *log = ctx;
+    if (log->count > 0) {
+        CommentSeen *last = &log->items[log->count - 1];
+        if (line < last->line || (line == last->line && column <= last->column)) {
+            return;
+        }
+    }
+    if (log->count == log->cap) {
+        log->cap = log->cap ? log->cap * 2 : 32;
+        CommentSeen *grown = realloc(log->items, log->cap * sizeof(CommentSeen));
+        if (!grown) { abort(); }
+        log->items = grown;
+    }
+    char *copy = malloc(length + 1);
+    if (!copy) { abort(); }
+    memcpy(copy, text, length);
+    copy[length] = '\0';
+    log->items[log->count].line = line;
+    log->items[log->count].column = column;
+    log->items[log->count].text = copy;
+    log->count++;
+}
+
+/* Whether only blanks precede `column` on `line`: a comment that does not is
+ * TRAILING (it follows code). */
+static int comment_leads_line(const OutlineLines *l, int line, int column) {
+    if (line < 1 || (size_t)line > l->line_count) { return 1; }
+    size_t base = l->starts[line - 1];
+    for (int i = 0; i < column - 1 && base + (size_t)i < l->len; i++) {
+        char c = l->src[base + (size_t)i];
+        if (c != ' ' && c != '\t') { return 0; }
+    }
+    return 1;
+}
+
+static Value builtin_source_comments_value(Value text) {
+    if (text.kind != VALUE_STRING) {
+        value_free(text);
+        runtime_error_raise("source_comments expects a string", 1003, "invalid function call");
+        return value_null();
+    }
+    const char *src = text.as.string;
+    size_t len = string_length(text.as.string);
+
+    CommentLog log = { NULL, 0, 0 };
+    gb_diagnostics diags;
+    gb_diagnostics_init(&diags);
+    AstStmtList program = ast_stmt_list_empty();
+    lexer_set_comment_sink(comment_log_sink, &log);
+    int rc = gb_parse(src, NULL, &program, &diags);
+    lexer_set_comment_sink(NULL, NULL);
+
+    OutlineLines lines;
+    outline_lines_build(&lines, src, len);
+
+    /* Runs: consecutive comment-only lines at the same column are one run; a
+     * trailing comment is a run of its own. */
+    Value runs = value_array(NULL, 0);
+    size_t i = 0;
+    while (i < log.count) {
+        int trailing = !comment_leads_line(&lines, log.items[i].line, log.items[i].column);
+        size_t j = i + 1;
+        if (!trailing) {
+            while (j < log.count &&
+                   log.items[j].line == log.items[j - 1].line + 1 &&
+                   log.items[j].column == log.items[i].column &&
+                   comment_leads_line(&lines, log.items[j].line, log.items[j].column)) {
+                j++;
+            }
+        }
+        StringBuilder stripped, raw;
+        sb_init(&stripped);
+        sb_init(&raw);
+        for (size_t k = i; k < j; k++) {
+            if (k > i) {
+                sb_append_char(&stripped, '\n');
+                sb_append_char(&raw, '\n');
+            }
+            sb_append_text(&raw, log.items[k].text);
+            sb_append_text(&stripped, log.items[k].text + 1);   /* one `'` off */
+        }
+        int sl = log.items[i].line, el = log.items[j - 1].line;
+        size_t so = outline_offset(&lines, sl, log.items[i].column);
+        size_t eo = outline_offset(&lines, el, log.items[j - 1].column) + strlen(log.items[j - 1].text);
+        Value r = value_record(NULL, 0);
+        record_set(&r, "start_line", value_number_exact((long long)sl));
+        record_set(&r, "end_line", value_number_exact((long long)el));
+        record_set(&r, "start_column", value_number_exact((long long)log.items[i].column));
+        record_set(&r, "start_offset", value_number_exact((long long)so));
+        record_set(&r, "end_offset", value_number_exact((long long)eo));
+        char *st = sb_take(&stripped);
+        char *rw = sb_take(&raw);
+        record_set(&r, "text", value_string(st));
+        record_set(&r, "raw", value_string(rw));
+        free(st);
+        free(rw);
+        record_set(&r, "trailing", value_bool(trailing));
+        runs = append_to_array_value(runs, r, 0);
+        i = j;
+    }
+
+    Value diag_arr = value_array(NULL, 0);
+    for (size_t d = 0; d < gb_diagnostics_count(&diags); d++) {
+        const gb_diag *g = gb_diagnostics_at(&diags, d);
+        const char *sev = g->severity == GB_SEVERITY_ERROR ? "error"
+                        : g->severity == GB_SEVERITY_WARNING ? "warning" : "note";
+        Value dr = value_record(NULL, 0);
+        record_set(&dr, "severity", value_string(sev));
+        record_set(&dr, "message", value_string(g->message ? g->message : ""));
+        record_set(&dr, "start_line", value_number_exact((long long)g->span.start_line));
+        record_set(&dr, "start_column", value_number_exact((long long)g->span.start_column));
+        diag_arr = append_to_array_value(diag_arr, dr, 0);
+    }
+
+    Value result = value_record(NULL, 0);
+    record_set(&result, "ok", value_bool(rc == 0));
+    record_set(&result, "comments", runs);
+    record_set(&result, "diagnostics", diag_arr);
+
+    for (size_t k = 0; k < log.count; k++) { free(log.items[k].text); }
+    free(log.items);
+    free(lines.starts);
+    ast_free_program(program);
+    gb_diagnostics_free(&diags);
+    value_free(text);
+    return result;
+}
 
 /* --- PLAT-MONEY phase 3: exchange rates, which are DATED facts -------------
  *
@@ -31002,8 +32560,8 @@ static Value money_eval_call(AstExpr *expr) {
             f[2].name = field_name_new("exponent");  f[2].value = cell_alloc();
             f[3].name = field_name_new("historical");f[3].value = cell_alloc();
             *f[0].value = value_string(currency_table[i].alpha);
-            *f[1].value = value_number((double)currency_table[i].numeric);
-            *f[2].value = value_number((double)currency_table[i].exponent);
+            *f[1].value = value_number_exact((long long)currency_table[i].numeric);
+            *f[2].value = value_number_exact((long long)currency_table[i].exponent);
             *f[3].value = value_bool(0);
             items[n++] = value_record(f, 4);
         }
@@ -31015,8 +32573,8 @@ static Value money_eval_call(AstExpr *expr) {
             f[2].name = field_name_new("exponent");  f[2].value = cell_alloc();
             f[3].name = field_name_new("historical");f[3].value = cell_alloc();
             *f[0].value = value_string(currency_registered[i].alpha);
-            *f[1].value = value_number((double)currency_registered[i].numeric);
-            *f[2].value = value_number((double)currency_registered[i].exponent);
+            *f[1].value = value_number_exact((long long)currency_registered[i].numeric);
+            *f[2].value = value_number_exact((long long)currency_registered[i].exponent);
             *f[3].value = value_bool(currency_registered[i].historical);
             items[n++] = value_record(f, 4);
         }
@@ -31071,7 +32629,7 @@ static Value money_eval_call(AstExpr *expr) {
                 currency_registered[i].historical = 0;
                 unsigned short num = currency_registered[i].numeric;
                 value_free(code); value_free(expv);
-                return value_number((double)num);
+                return value_number_exact((long long)num);
             }
         }
         CurrencyReg *grown = realloc(currency_registered,
@@ -31088,7 +32646,7 @@ static Value money_eval_call(AstExpr *expr) {
         slot->numeric = currency_next_code++;
         unsigned short assigned = slot->numeric;
         value_free(code); value_free(expv);
-        return value_number((double)assigned);
+        return value_number_exact((long long)assigned);
     }
 
     if (strcmp(name, "of") == 0) {
@@ -31147,11 +32705,12 @@ static Value money_eval_call(AstExpr *expr) {
         int ok = money_parse_decimal(text.as.string, scale,
                                      MONEY_EXCESS_REJECT, &units, &err);
         value_free(code);
-        value_free(text);
         if (!ok) {
-            runtime_error_raise(err ? err : "invalid money value", 1003, "money");
+            money_construction_raise(err ? err : "invalid money value", err, text.as.string, scale);
+            value_free(text);
             return value_null();
         }
+        value_free(text);
         return value_money(money_make(units, numeric, exponent));
     }
 
@@ -33141,9 +34700,17 @@ static Value eval_call(AstExpr *expr) {
 #endif
     }
 
-    /* `now()` is LOCAL civil time; `now(zone)` is civil time in a named zone.
+    /* `now()` is UTC; `now(zone)` is civil time in a named zone, and
+     * `now("local")` is the system's own.
      *
-     * The zone form exists because there was no way to obtain UTC at all. The
+     * UTC SINCE 2026-11-10 (Matthew: "The default is UTC"): store UTC, convert
+     * at the edges. It was LOCAL before, as were from_epoch(), epoch(dt) and
+     * file times, while a datetime read from a text with an offset was UTC --
+     * so a program holding both was wrong by the machine's offset with
+     * nothing to show it. The whole family moved together; a test run under
+     * several TZ settings (tests/run_utc_clock.sh) holds it.
+     *
+     * The zone form exists because there was once no way to obtain UTC. The
      * obvious-looking `to_zone(now(), "UTC")` is a NO-OP -- `to_zone` reads its
      * input as already-UTC and renders it in the target, so handing it a local
      * value returns that value unchanged, silently wrong by the offset. And the
@@ -33188,7 +34755,7 @@ static Value eval_call(AstExpr *expr) {
             converted = zone_localtime(zone_arg, raw, &local);
             free(zone_arg);
         } else {
-            converted = gb_localtime(&raw, &local) != NULL;
+            converted = gb_gmtime(&raw, &local) != NULL;
         }
         if (!converted) {
             runtime_error_raise("could not convert the current time", 1003, "clock");
@@ -33207,17 +34774,14 @@ static Value eval_call(AstExpr *expr) {
     }
 
     /* `epoch()` is the current instant. `epoch(dt)` places a civil datetime on
-     * the timeline reading it as LOCAL, and `epoch(dt, zone)` reads it as civil
-     * in that zone.
+     * the timeline reading it as UTC (since 2026-11-10; it read LOCAL before,
+     * see now()), and `epoch(dt, zone)` reads it as civil in that zone.
      *
-     * The zone form closes a real trap. A gBASIC datetime carries no zone, so
-     * turning one into an instant needs one from somewhere -- and `number(dt)`
-     * silently supplies LOCAL. That is right for `now()` and wrong for anything
-     * converted: `number(from_zone(now(), here))` is the documented way to get
-     * UTC and its epoch is off by the offset, because the value is UTC civil
-     * text being read as local. An audit trail built that way stores timestamps
-     * hours in the future and nothing says so. `epoch(dt, "UTC")` states the
-     * zone the value is in, which is the only thing that can make it correct. */
+     * The zone form came first, to close a trap the LOCAL reading made:
+     * `number(from_zone(now(), here))` read UTC civil text as local and stored
+     * timestamps hours in the future. With UTC the default the plain form is
+     * right for every instant gBASIC makes; the zone form is for civil time
+     * that came from somewhere else. */
     if (strcmp(expr->as.call.name, "epoch") == 0) {
         if (expr->as.call.args.count > 2) {
             runtime_error_raise("epoch expects no arguments, a datetime, or a datetime and a zone name",
@@ -33366,9 +34930,10 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("from_epoch expects an integer number of seconds", 1003, "invalid argument");
             return value_null();
         }
+        /* UTC, as now() is (2026-11-10). */
         time_t raw = (time_t)sd;
         struct tm local;
-        if (!gb_localtime(&raw, &local)) {
+        if (!gb_gmtime(&raw, &local)) {
             runtime_error_raise("could not convert the given epoch time", 1003, "clock");
             return value_null();
         }
@@ -33453,7 +35018,7 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         uint32_t r = name[1] == 'a' ? (x & y) : (name[1] == 'o' ? (x | y) : (x ^ y));
-        return value_number((double)r);
+        return value_number_exact((long long)r);
     }
     if (strcmp(expr->as.call.name, "bnot") == 0) {
         double a[1];
@@ -33463,7 +35028,7 @@ static Value eval_call(AstExpr *expr) {
             runtime_error_raise("bnot: operand must be an integer in [0, 2^32)", 1003, "invalid argument");
             return value_null();
         }
-        return value_number((double)(uint32_t)(~x));
+        return value_number_exact((long long)(uint32_t)(~x));
     }
     if (strcmp(expr->as.call.name, "shl") == 0 ||
         strcmp(expr->as.call.name, "shr") == 0 ||
@@ -33496,7 +35061,7 @@ static Value eval_call(AstExpr *expr) {
         } else {
             r = n == 0 ? x : (uint32_t)((x >> n) | (x << (32 - n)));
         }
-        return value_number((double)r);
+        return value_number_exact((long long)r);
     }
 
     /* ----- Cryptography: encoding (always available) ----- */
@@ -34097,18 +35662,38 @@ static Value eval_call(AstExpr *expr) {
             size_t outlen = (size_t)a[5].as.num.value;
             unsigned char *out = malloc(outlen);
             if (!out) abort();
-            /* maxmem 0 means OpenSSL's own default ceiling (32 MB). A cost above
-             * it FAILS rather than silently deriving with less memory, which is
-             * the whole point of a memory-hard KDF. */
-            int ok = EVP_PBE_scrypt(a[0].as.string, string_length(a[0].as.string),
-                                    (const unsigned char *)a[1].as.string,
-                                    string_length(a[1].as.string),
-                                    N, r, pp, 0, out, outlen);
+            /* THE MEMORY IS THE COST, so it is allowed what the cost needs:
+             * 128 x r x (n + p + 2) bytes, OpenSSL's own reckoning of V and B.
+             * maxmem 0 meant OpenSSL's default ceiling of 32 MB, so the cost
+             * the reference recommends (n 65536, r 8: 64 MiB) was refused --
+             * measured by Transward, whose passphrase vault could not derive
+             * its key (§12.1). A cost that cannot be had still fails rather
+             * than deriving with less, which is the point of a memory-hard
+             * KDF; the refusal now says how much it asked for. */
+            uint64_t need = 0;
+            int fits = r <= UINT64_MAX / 128 && N <= UINT64_MAX - pp - 2 &&
+                       (N + pp + 2) <= UINT64_MAX / (128 * r) && (need = 128 * r * (N + pp + 2)) <= SIZE_MAX / 2;
+            int ok = fits && EVP_PBE_scrypt(a[0].as.string, string_length(a[0].as.string),
+                                            (const unsigned char *)a[1].as.string,
+                                            string_length(a[1].as.string),
+                                            N, r, pp, need, out, outlen);
             for (int j = 0; j < 6; j++) value_free(a[j]);
             if (!ok) {
                 free(out);
-                runtime_error_raise("scrypt derivation failed (cost likely exceeds the memory limit)",
-                                    1003, "crypto");
+                char why[300];
+                if (fits) {
+                    const char *unit[] = { "bytes", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB" };
+                    double shown = (double)need;
+                    int u = 0;
+                    while (shown >= 1024 && u < 6) { shown /= 1024; u++; }
+                    snprintf(why, sizeof why, "scrypt could not derive: n %llu, r %llu and p %llu need %.4g %s of "
+                             "memory (128 x r x (n + p + 2) bytes), which could not be had",
+                             (unsigned long long)N, (unsigned long long)r, (unsigned long long)pp, shown, unit[u]);
+                } else {
+                    snprintf(why, sizeof why, "scrypt could not derive: n %llu and r %llu need more memory than "
+                             "this machine can address", (unsigned long long)N, (unsigned long long)r);
+                }
+                runtime_error_raise(why, 1003, "crypto");
                 return value_null();
             }
             Value v = value_string_n((const char *)out, outlen);
@@ -34298,10 +35883,10 @@ static Value eval_call(AstExpr *expr) {
              * exact_from_integer_text. Tried FIRST because strtod would answer
              * the same digits as a lossy double and nothing downstream could
              * tell. */
-            long long whole = 0;
-            if (exact_from_integer_text(value.as.string, &whole)) {
+            Value exact_value = {0};
+            if (exact_from_text(value.as.string, &exact_value)) {
                 value_free(value);
-                return value_number_exact(whole);
+                return exact_value;
             }
             char *end;
             double result = strtod(value.as.string, &end);
@@ -34849,7 +36434,7 @@ static Value eval_call(AstExpr *expr) {
         unsigned cp = 0;
         utf8_decode_first(text.as.string, string_length(text.as.string), &cp);
         value_free(text);
-        return value_number((double)cp);
+        return value_number_exact((long long)cp);
     }
 
     /* --- pack / unpack: integers at fixed widths (docs/networking_design.md §8)
@@ -35002,7 +36587,7 @@ static Value eval_call(AstExpr *expr) {
         if (start <= hlen && nlen <= hlen) {
             for (size_t i = start; i + nlen <= hlen; i++) {
                 if (memcmp(hay.as.string + i, needle.as.string, nlen) == 0) {
-                    r = value_number((double)i);
+                    r = value_number_exact((long long)i);
                     break;
                 }
             }
@@ -35017,7 +36602,7 @@ static Value eval_call(AstExpr *expr) {
         Value *items = len ? malloc(sizeof(Value) * len) : NULL;
         if (len && !items) { abort(); }
         for (size_t i = 0; i < len; i++) {
-            items[i] = value_number((double)(unsigned char)text.as.string[i]);
+            items[i] = value_number_exact((long long)(unsigned char)text.as.string[i]);
         }
         value_free(text);
         return value_array(items, len);
@@ -35060,7 +36645,7 @@ static Value eval_call(AstExpr *expr) {
         }
         unsigned char byte = (unsigned char)text.as.string[(size_t)index_double];
         value_free(text);
-        return value_number((double)byte);
+        return value_number_exact((long long)byte);
     }
 
     if (strcmp(expr->as.call.name, "from_bytes") == 0) {
@@ -35349,7 +36934,37 @@ static Value eval_call(AstExpr *expr) {
                                 1003, "invalid function call");
             return value_null();
         }
-        Value value = eval_expr(expr->as.call.args.items[0]);
+        /* A MISSING FIELD IS ABSENT TOO (book gap G37, Matthew's ruling):
+         * `default(r.candidates, [])` raised "unknown record field" while
+         * `default(r["candidates"], [])` answered, and `default` is exactly
+         * where a caller says "this may be absent". Only for a field of a name
+         * or of a field chain, which evaluate without side effects; the strict
+         * `.field` everywhere else still catches a misspelling. */
+        AstExpr *first = expr->as.call.args.items[0];
+        int pure_chain = first->kind == AST_EXPR_FIELD;
+        for (AstExpr *o = pure_chain ? first->as.field.object : NULL; o; ) {
+            if (o->kind == AST_EXPR_IDENT) {
+                break;
+            }
+            if (o->kind != AST_EXPR_FIELD) {
+                pure_chain = 0;
+                break;
+            }
+            o = o->as.field.object;
+        }
+        if (pure_chain) {
+            Value object = eval_expr(first->as.field.object);
+            if (error_action_pending()) {
+                value_free(object);
+                return value_null();
+            }
+            int missing = object.kind == VALUE_RECORD && !record_find(&object, first->as.field.field);
+            value_free(object);
+            if (missing) {
+                return eval_expr(expr->as.call.args.items[1]);
+            }
+        }
+        Value value = eval_expr(first);
         if (error_action_pending()) {
             value_free(value);
             return value_null();
@@ -35485,6 +37100,37 @@ static Value eval_call(AstExpr *expr) {
             return value_null();
         }
         return builtin_decode_text(eval_expr(expr->as.call.args.items[0]));
+    }
+
+    /* json_decode(text): RFC 8259 and nothing else, nested (book gap G61).
+     * `decode` reads gBASIC's own notation as well, so a model's reply that
+     * must be JSON was accepted in the dialect; this refuses it, naming where. */
+    if (strcmp(expr->as.call.name, "json_decode") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("json_decode expects one argument, the JSON text", 1003, "serialization");
+            return value_null();
+        }
+        Value text = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(text);
+            return value_null();
+        }
+        if (text.kind != VALUE_STRING) {
+            value_free(text);
+            runtime_error_raise("json_decode expects text", 1003, "serialization");
+            return value_null();
+        }
+        Value out;
+        char why[200] = "";
+        int ok = json_strict_decode(text.as.string, string_length(text.as.string), &out, why, sizeof why);
+        value_free(text);
+        if (!ok) {
+            char message[260];
+            snprintf(message, sizeof message, "json_decode: not JSON: %s", why);
+            runtime_error_raise(message, 1003, "serialization");
+            return value_null();
+        }
+        return out;
     }
 
     if (strcmp(expr->as.call.name, "try_decode") == 0) {
@@ -35729,6 +37375,35 @@ static Value eval_call(AstExpr *expr) {
             value_free(places);
             return value_number_exact(whole);
         }
+        /* AN EXACT DECIMAL ROUNDS IN ITS DIGITS, half away from zero as the
+         * double path below does, so `round(2.675, 2)` is 2.68: the double
+         * 2.675 is 2.67499999999999982236431605997495353221893310546875 and
+         * rounded down. Fewer places than the decimal has is the only case
+         * with work to do. */
+        if (value_is_decimal(value)) {
+            long long m = value.as.num.exact;
+            int ds = value.as.num.scale;
+            int want = (int)value_number_or_zero(places);
+            value_free(value);
+            value_free(places);
+            if (want < 0) {
+                want = 0;
+            }
+            if (want >= ds) {
+                return value_number_decimal(m, ds);
+            }
+            int whole = want == 0;
+            long long d = 1;
+            for (int i = 0; i < ds - want; i++) {
+                d *= 10;             /* ds <= 18, so this fits */
+            }
+            long long q = m / d, r = m % d;
+            long long ar = r < 0 ? -r : r;
+            if (ar >= d - ar) {
+                q += m < 0 ? -1 : 1;
+            }
+            return whole ? value_number_exact(q) : value_number_decimal(q, want);
+        }
         double scale = 1.0;
         int n = (int)value_number_or_zero(places);
         for (int i = 0; i < n; i++) {
@@ -35738,6 +37413,10 @@ static Value eval_call(AstExpr *expr) {
         long long rounded = scaled >= 0 ? (long long)(scaled + 0.5) : (long long)(scaled - 0.5);
         value_free(value);
         value_free(places);
+        /* to no places the answer is whole, and exact as floor's is (above) */
+        if (n <= 0 && fabs(scaled) <= 9007199254740992.0) {
+            return value_number_exact(rounded);
+        }
         return value_number((double)rounded / scale);
     }
 
@@ -36112,7 +37791,35 @@ static Value eval_call(AstExpr *expr) {
          * way in. */
         int x_exact = value_is_exact(v);
         long long xe = v.as.num.exact;
+        int x_decimal = value_is_decimal(v);
+        int xs = v.as.num.scale;
         value_free(v);
+        /* AN EXACT DECIMAL keeps its exactness through the same four, by the
+         * same rule: `abs` picks a magnitude, `floor`/`ceil` a whole decimal
+         * (still a decimal, as a double's floor was still a double), and `sign`
+         * an integer, as for any number (docs/exact_decimal_design.md §9). */
+        if (x_decimal) {
+            if (strcmp(fn, "abs") == 0) {
+                return value_number_decimal(xe < 0 ? -xe : xe, xs);
+            }
+            if (strcmp(fn, "sign") == 0) {
+                return value_number_exact((xe > 0) - (xe < 0));
+            }
+            if (strcmp(fn, "floor") == 0 || strcmp(fn, "ceil") == 0) {
+                long long d = 1;
+                for (int i = 0; i < xs; i++) {
+                    d *= 10;
+                }
+                long long q = xe / d, r = xe % d;   /* C truncates toward zero */
+                if (r != 0 && strcmp(fn, "floor") == 0 && xe < 0) {
+                    q--;
+                }
+                if (r != 0 && strcmp(fn, "ceil") == 0 && xe > 0) {
+                    q++;
+                }
+                return value_number_exact(q);
+            }
+        }
         if (x_exact) {
             if (strcmp(fn, "floor") == 0 || strcmp(fn, "ceil") == 0) {
                 return value_number_exact(xe);
@@ -36161,10 +37868,18 @@ static Value eval_call(AstExpr *expr) {
                 return value_null();
             }
             r = log10(x);
-        } else if (strcmp(fn, "floor") == 0) {
-            r = floor(x);
-        } else if (strcmp(fn, "ceil") == 0) {
-            r = ceil(x);
+        } else if (strcmp(fn, "floor") == 0 || strcmp(fn, "ceil") == 0) {
+            r = strcmp(fn, "floor") == 0 ? floor(x) : ceil(x);
+            /* A WHOLE NUMBER IS EXACT once it is one (Matthew, 2026-11-09): the
+             * answer of floor and ceil is whole by definition, and where a
+             * double holds every whole number (to 2^53) it is the integer
+             * itself, so it is answered exact. That is the way to make a whole
+             * inexact number exact, with no verb of its own: a G-SQL
+             * `integer` column refused floor(size) as inexact. Past 2^53 a
+             * double is no longer every integer, so it stays a double. */
+            if (fabs(r) <= 9007199254740992.0) {
+                return value_number_exact((long long)r);
+            }
         } else if (strcmp(fn, "erf") == 0) {
             r = erf(x);
         } else if (strcmp(fn, "erfc") == 0) {
@@ -36246,6 +37961,35 @@ static Value eval_call(AstExpr *expr) {
                 value_free(ex);
                 return value_null();
             }
+        }
+        /* AN EXACT DECIMAL TO A WHOLE POWER is repeated multiplication too,
+         * so `pow(1.05, 3)` is 1.157625 (finance's compounding); a fractional
+         * or negative exponent is a root or a division and stays inexact. */
+        long long dbm = 0;
+        int dbs = 0;
+        long long dexp = ex.as.num.exact;
+        if (value_is_decimal(base) && value_is_exact(ex) && ex.as.num.exact >= 0 &&
+            value_exact_parts(base, &dbm, &dbs)) {
+            Value acc = value_number_exact(1);
+            int fitted = 1;
+            for (long long k = 0; k < ex.as.num.exact && fitted; k++) {
+                long long am = 0;
+                int as = 0;
+                value_exact_parts(acc, &am, &as);
+                fitted = decimal_arith('*', am, as, dbm, dbs, &acc);
+            }
+            value_free(base);
+            value_free(ex);
+            if (fitted) {
+                long long am = 0;
+                int as = 0;
+                value_exact_parts(acc, &am, &as);
+                return value_number_decimal(am, as);   /* pow(1.05, 0) is 1.0 */
+            }
+            /* NOT FITTING IS SILENT here, unlike the operators: `pow` was
+             * never promised exact (a function is inexact, §2), and this is
+             * the double it always answered. 1.005^360 needs 1080 places. */
+            return value_number(pow(gb_decimal_to_double(dbm, dbs), (double)dexp));
         }
         double r = pow(base.as.num.value, ex.as.num.value);
         value_free(base);
@@ -36839,7 +38583,7 @@ static Value eval_call(AstExpr *expr) {
                 value_free(records);
                 value_free(field_name);
                 value_free(target);
-                return value_number((double)i);
+                return value_number_exact((long long)i);
             }
             if (error_action_pending()) {
                 value_free(records);
@@ -37756,6 +39500,7 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "remove_dir") == 0 ||
         strcmp(expr->as.call.name, "remove_tree") == 0 ||
         strcmp(expr->as.call.name, "permissions") == 0 ||
+        strcmp(expr->as.call.name, "disk_space") == 0 ||
         strcmp(expr->as.call.name, "chmod") == 0 ||
         strcmp(expr->as.call.name, "set_mtime") == 0 ||
         strcmp(expr->as.call.name, "is_symlink") == 0 ||
@@ -37779,6 +39524,36 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "files") == 0 ||
         strcmp(expr->as.call.name, "folders") == 0) {
         return eval_dir_call(expr);
+    }
+
+    if (strcmp(expr->as.call.name, "runtime") == 0) {
+        /* WHICH gBASIC IS RUNNING THIS (book gap G36): a program recording,
+         * for each file it loads, what read it, so a reading can be reproduced
+         * or questioned, had to be handed `gbasic --version` in an environment
+         * variable. `version` and `build` are what --version prints, split;
+         * `stdlib` is where a `load` looks first, as the loader decides it. */
+        if (expr->as.call.args.count != 0) {
+            runtime_error_raise("runtime expects no arguments", 1003, "invalid function call");
+            return value_null();
+        }
+        Value r = value_record(NULL, 0);
+        record_set(&r, "version", value_string(runtime_version_text[0] ? runtime_version_text : "unknown"));
+        record_set(&r, "build", value_string(runtime_revision_text[0] == '+' ? runtime_revision_text + 1
+                                                                            : runtime_revision_text));
+        const char *path = getenv("GBASIC_PATH");
+        char first[PATH_MAX] = "";
+        if (path && *path) {
+            snprintf(first, sizeof first, "%.*s", (int)strcspn(path, ":"), path);
+        }
+        const char *relative = gb_exe_relative_stdlib();
+        const char *where = first[0] ? first : relative ? relative :
+#ifdef GBASIC_DEFAULT_STDLIB
+            GBASIC_DEFAULT_STDLIB;
+#else
+            "";
+#endif
+        record_set(&r, "stdlib", value_string(where));
+        return r;
     }
 
     if (strcmp(expr->as.call.name, "platform") == 0) {
@@ -37827,10 +39602,21 @@ static Value eval_call(AstExpr *expr) {
             if (!watchers[i].active) continue;
             Value handle = {0};
             handle.kind = VALUE_WATCHER;
-            handle.as.watcher_id = i;
+            handle.as.watcher_id = watchers[i].serial;
             items[n++] = handle;
         }
         return value_array(items, live);
+    }
+
+    if (strcmp(expr->as.call.name, "source_comments") == 0) {
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("source_comments expects one argument, the text",
+                                1003, "invalid function call");
+            return value_null();
+        }
+        Value text = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) { value_free(text); return value_null(); }
+        return builtin_source_comments_value(text);
     }
 
     if (strcmp(expr->as.call.name, "source_outline") == 0) {
@@ -38311,6 +40097,50 @@ static Value eval_call(AstExpr *expr) {
                      "this sum of exact integers does not fit a whole number the"
                      " runtime can hold, so the answer is approximate from here on");
             if (error_action_pending()) {   /* `on warning stop` escalated it */
+                value_free(arg);
+                return value_null();
+            }
+        }
+    }
+
+    /* A SUM WITH EXACT DECIMALS IN IT is exact when every item is exact,
+     * integer or decimal, by the operator's rule and with its warning. */
+    if (count > 0 && strcmp(name, "sum") == 0) {
+        int all_exact = 1, any_decimal = 0;
+        for (size_t i = 0; i < count; i++) {
+            long long m = 0;
+            int sc = 0;
+            if (!value_exact_parts(arg.as.array.store->items[i], &m, &sc)) {
+                all_exact = 0;
+                break;
+            }
+            any_decimal |= sc > 0;
+        }
+        if (all_exact && any_decimal) {
+            Value total = value_number_exact(0);
+            int fitted = 1;
+            for (size_t i = 0; i < count && fitted; i++) {
+                long long am = 0, bm = 0;
+                int as = 0, bs = 0;
+                value_exact_parts(total, &am, &as);
+                value_exact_parts(arg.as.array.store->items[i], &bm, &bs);
+                fitted = decimal_arith('+', am, as, bm, bs, &total);
+            }
+            if (fitted) {
+                value_free(arg);
+                return total;
+            }
+            double approx = 0;
+            for (size_t i = 0; i < count; i++) {
+                approx += arg.as.array.store->items[i].as.num.value;
+            }
+            if (decimal_loss_is_loud(approx)) {
+                warn_fmt(2112, "exactness",
+                         "this sum of exact numbers does not fit a whole number"
+                         " the runtime can hold, so the answer is approximate"
+                         " from here on");
+            }
+            if (error_action_pending()) {
                 value_free(arg);
                 return value_null();
             }
@@ -39633,7 +41463,8 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
          *
          * A BOOLEAN IS NEVER EXACT, so `0 = false` keeps the double path above and
          * all 1,472 of its measured uses are untouched. */
-        if ((value_is_exact(left) || value_is_exact(right)) &&
+        if ((value_is_exact(left) || value_is_exact(right) ||
+             value_is_decimal(left) || value_is_decimal(right)) &&
             left.kind == VALUE_NUMBER && right.kind == VALUE_NUMBER) {
             int cmp = number_compare_exactly(&left, &right);
             if (cmp == 2) {
@@ -40017,26 +41848,36 @@ static Value eval_binary(AstExpr *expr) {
         value_free(right);
         current_line = previous_line;
         current_column = previous_column;
-        if (strcmp(op, "/") == 0) {
-            if (n == 0) {
-                runtime_error_raise("division by zero", 1003, "duration");
-                return value_null();
-            }
-            n = 1.0 / n;
+        int divide = strcmp(op, "/") == 0;
+        if (divide && n == 0) {
+            runtime_error_raise("division by zero", 1003, "duration");
+            return value_null();
         }
         long long dm, ds;
         duration_totals(d, &dm, &ds);
         /* Months scale only by integers: 2.5 months has no meaning, and a
-         * plausible wrong answer would be worse than the refusal. Seconds
-         * scale freely and round to the whole second, which durations are. */
-        double scaled_months = (double)dm * n;
-        if (fabs(scaled_months - llround(scaled_months)) > 1e-9) {
+         * plausible wrong answer would be worse than the refusal. Seconds are
+         * the resolution, so a result between two whole seconds is refused
+         * too: it was rounded in silence, `(1 second) * 2.5` answering 3
+         * seconds (DOGFOOD row 14). The tolerance is relative, so a double's
+         * last-digit error leaves `(1 hour) / 3` whole either way. */
+        double scaled_months = divide ? (double)dm / n : (double)dm * n;
+        if (fabs(scaled_months - llround(scaled_months)) > 1e-9 * fmax(1.0, fabs(scaled_months))) {
             runtime_error_raise("cannot scale a duration with months or years by a non-integer",
                                 1003, "duration");
             return value_null();
         }
+        double scaled_seconds = divide ? (double)ds / n : (double)ds * n;
+        if (fabs(scaled_seconds - llround(scaled_seconds)) > 1e-9 * fmax(1.0, fabs(scaled_seconds))) {
+            char m[240];
+            snprintf(m, sizeof m,
+                     "that duration would be %.10g seconds, and a duration holds whole seconds; "
+                     "round the seconds first, such as (1 second) * round(n)", scaled_seconds);
+            runtime_error_raise(m, 1003, "duration");
+            return value_null();
+        }
         return value_duration(duration_from_totals(llround(scaled_months),
-                                                   llround((double)ds * n)));
+                                                   llround(scaled_seconds)));
     }
 
     if (strcmp(op, "+") == 0 &&
@@ -40259,8 +42100,41 @@ static Value eval_binary(AstExpr *expr) {
     int exact_both = value_is_exact(left) && value_is_exact(right);
     long long la = left.as.num.exact;
     long long lb = right.as.num.exact;
+    /* EXACT DECIMALS (docs/exact_decimal_design.md §3): the same three
+     * operators, when both sides are exact and at least one has a fraction.
+     * `6331.475 - 2182.855` is 4148.62, where the doubles answered
+     * 4148.620000000001. Overflow of the mantissa or the scale degrades to
+     * the double below with 2112, as integer overflow does. */
+    long long dm_l = 0, dm_r = 0;
+    int ds_l = 0, ds_r = 0;
+    int decimal_both = !exact_both &&
+        value_exact_parts(left, &dm_l, &ds_l) && value_exact_parts(right, &dm_r, &ds_r);
     value_free(left);
     value_free(right);
+
+    if (decimal_both && (strcmp(op, "+") == 0 || strcmp(op, "-") == 0 ||
+                         strcmp(op, "*") == 0)) {
+        Value out = {0};
+        if (decimal_arith(op[0], dm_l, ds_l, dm_r, ds_r, &out)) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return out;
+        }
+        double whole = strcmp(op, "+") == 0 ? a + b : (strcmp(op, "-") == 0 ? a - b : a * b);
+        if (decimal_loss_is_loud(whole)) {
+            warn_fmt(2112, "exactness",
+                     "this %s of two exact numbers does not fit a whole number"
+                     " the runtime can hold, so the answer is approximate from"
+                     " here on",
+                     strcmp(op, "+") == 0 ? "sum"
+                         : (strcmp(op, "-") == 0 ? "difference" : "product"));
+        }
+        if (error_action_pending()) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_null();
+        }
+    }
 
     if (exact_both && (strcmp(op, "+") == 0 || strcmp(op, "-") == 0 ||
                        strcmp(op, "*") == 0)) {
@@ -40471,7 +42345,9 @@ static Value eval_expr(AstExpr *expr) {
          * inert and the fixture read as a design error rather than a wrong edit.
          * Found by probing the flag at `value_is_exact`, not by reading. */
         return expr->as.num.is_exact ? value_number_exact(expr->as.num.exact)
-                                     : value_number(expr->as.num.value);
+             : expr->as.num.scale > 0
+                 ? value_number_decimal(expr->as.num.exact, expr->as.num.scale)
+                 : value_number(expr->as.num.value);
     case AST_EXPR_STRING:
         return value_string(expr->as.string);
     case AST_EXPR_IDENT:
@@ -40772,12 +42648,14 @@ static Value eval_expr(AstExpr *expr) {
             return duration_field_value(dur, expr->as.field.field);
         }
         if (object.kind == VALUE_WATCHER) {
-            size_t id = object.as.watcher_id;
+            long at = watcher_index_of(object.as.watcher_id);
             value_free(object);
-            if (id >= watcher_count) {
-                runtime_error_raise("watcher handle is not valid", 1003, "watcher");
+            if (at < 0) {
+                runtime_error_raise("watcher handle is not valid: its watch has ended with the function that "
+                                    "declared it", 1003, "watcher");
                 return value_null();
             }
+            size_t id = (size_t)at;
             if (strcmp(expr->as.field.field, "name") == 0) {
                 return value_string(watchers[id].name ? watchers[id].name : "");
             }
@@ -40823,7 +42701,7 @@ static Value eval_expr(AstExpr *expr) {
         if (object.kind == VALUE_HTTP) {
             HttpHandle *h = object.as.http;
             if (strcmp(expr->as.field.field, "id") == 0) {
-                Value id = value_number((double)h->id);
+                Value id = value_number_exact((long long)h->id);
                 value_free(object);
                 return id;
             }
@@ -40999,6 +42877,39 @@ static Value eval_expr(AstExpr *expr) {
                 current_line = expr->line;
                 current_column = expr->column > 0 ? expr->column : previous_column;
             }
+            /* MONEY NEGATES TO MONEY, in its own currency (book gap G56): `-x`
+             * on money was refused while `zero - x` worked, so a negative line
+             * was written as a subtraction from a zero of the same currency.
+             * Its units are an integer, so this is exact; the one amount with
+             * no negative is refused as out of range, as an overflowing sum is. */
+            if (value.kind == VALUE_MONEY) {
+                current_line = previous_line;
+                current_column = previous_column;
+                if (value.as.money.units == LLONG_MIN) {
+                    runtime_error_raise("money value is out of range", 1003, "money");
+                    return value_null();
+                }
+                Value negated = value;
+                negated.as.money.units = -value.as.money.units;
+                return negated;
+            }
+            /* A DURATION NEGATES FIELD BY FIELD, as `0 seconds - d` would give
+             * on its totals (DOGFOOD row 13); it was refused as not a number.
+             * Each field negated keeps a literal's shape, so -(90 minutes)
+             * prints -90 minutes, as the literal 90 minutes keeps its form. */
+            if (value.kind == VALUE_DURATION) {
+                current_line = previous_line;
+                current_column = previous_column;
+                Duration d = value.as.duration;
+                if (d.years == INT_MIN || d.months == INT_MIN || d.weeks == INT_MIN || d.days == INT_MIN ||
+                    d.hours == INT_MIN || d.minutes == INT_MIN || d.seconds == INT_MIN) {
+                    runtime_error_raise("duration value is out of range", 1003, "duration");
+                    return value_null();
+                }
+                d.years = -d.years; d.months = -d.months; d.weeks = -d.weeks; d.days = -d.days;
+                d.hours = -d.hours; d.minutes = -d.minutes; d.seconds = -d.seconds;
+                return value_duration(d);
+            }
             double number = 0.0;
             if (!value_number_for_arithmetic(value, expr->as.unary.op, &number)) {
                 value_free(value);
@@ -41017,6 +42928,14 @@ static Value eval_expr(AstExpr *expr) {
                 current_line = previous_line;
                 current_column = previous_column;
                 return value_number_exact(negated);
+            }
+            if (value_is_decimal(value)) {
+                /* a decimal's mantissa came from digits, so it is never LLONG_MIN */
+                Value negated = value_number_decimal(-value.as.num.exact, value.as.num.scale);
+                value_free(value);
+                current_line = previous_line;
+                current_column = previous_column;
+                return negated;
             }
             value_free(value);
             current_line = previous_line;
@@ -41243,6 +43162,22 @@ static Value lock_convert(const TypeLock *lock, const char *var, Value value) {
         /* Another currency is a conversion at a RATE, which a lock cannot know. */
         value_free(value);
         lock_refuse(lock, var, "this is money in another currency; convert it at a rate first");
+        return value_null();
+    }
+    if (lock->kind == LOCK_DATE && value.kind == VALUE_DATETIME && !value.as.datetime.time_only &&
+        value.as.datetime.precision > PREC_DAY &&
+        (value.as.datetime.hour || value.as.datetime.minute || value.as.datetime.second)) {
+        /* A TIME OF DAY IS NOT DROPPED IN SILENCE (book gap G40, Matthew's
+         * ruling): the same moment written as text was refused and as a value
+         * was truncated. As a G-SQL date column refuses it (gdash A7); midnight
+         * loses nothing and converts. `{date}x` takes the date when that is
+         * what is meant. */
+        char cause[160];
+        snprintf(cause, sizeof cause, "it has a time of day (%02d:%02d:%02d), which a date would lose; "
+                 "write {date}(...) to take its date", value.as.datetime.hour, value.as.datetime.minute,
+                 value.as.datetime.second);
+        value_free(value);
+        lock_refuse(lock, var, cause);
         return value_null();
     }
     AstModifierUse use = {0};
@@ -41987,20 +43922,23 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
             return value_null();
         }
 
-        value_free(value);
         if (!ok) {
+            const char *given = value.kind == VALUE_STRING ? value.as.string : NULL;
             if (err && strcmp(err, MONEY_ERR_EXCESS_DIGITS) == 0) {
                 char message[192];
                 snprintf(message, sizeof(message),
                          "%s: %s (%s stores %d)",
                          modifier.name, MONEY_ERR_EXCESS_DIGITS,
                          modifier.name, scale);
-                runtime_error_raise(message, 1003, "money");
+                money_construction_raise(message, err, given, scale);
+                value_free(value);
                 return value_null();
             }
-            runtime_error_raise(err ? err : "invalid money value", 1003, "money");
+            money_construction_raise(err ? err : "invalid money value", err, given, scale);
+            value_free(value);
             return value_null();
         }
+        value_free(value);
         return value_money(money_make(units, mod_ccy, mod_exp));
     }
     const char *builtin_args = NULL;
@@ -42789,7 +44727,9 @@ static Value server_literal_value(AstExpr *expr) {
     case AST_EXPR_NUMBER:
         /* The literal carries its own exactness, determined from its digits. */
         return expr->as.num.is_exact ? value_number_exact(expr->as.num.exact)
-                                     : value_number(expr->as.num.value);
+             : expr->as.num.scale > 0
+                 ? value_number_decimal(expr->as.num.exact, expr->as.num.scale)
+                 : value_number(expr->as.num.value);
     case AST_EXPR_STRING: return value_string(expr->as.string);
     case AST_EXPR_BOOL:   return value_bool(expr->as.boolean);
     default:              return value_null();   /* refused at load time */
@@ -44108,10 +46048,30 @@ static EvalResult eval_stmt(AstStmt *stmt) {
          * refuses an inexact value there whatever it holds), and one short in
          * `i + 2^53`. Found writing the first program that put a loop counter
          * into a database. The limit is only compared, so it may be either. */
-        int exact = value_is_exact(start_v) && value_is_exact(step_v);
-        long long xstart = start_v.as.num.exact, xstep = step_v.as.num.exact;
-        int xlimit_exact = value_is_exact(limit_v);
-        long long xlimit = limit_v.as.num.exact;
+        /* AND A DECIMAL STEP IS EXACT TOO (docs/exact_decimal_design.md):
+         * the counter is a mantissa at the largest scale of the three, so
+         * `for x = 0 to 1 step 0.1` ends on 1, where adding the double 0.1 ten
+         * times ended on 0.9999999999999999. A scale that does not fit falls
+         * back to the double counter it always was. */
+        long long xstart = 0, xstep = 0, xlimit = 0;
+        int sstart = 0, sstep = 0, slimit = 0;
+        int exact = value_exact_parts(start_v, &xstart, &sstart) &&
+                    value_exact_parts(step_v, &xstep, &sstep);
+        int xlimit_exact = value_exact_parts(limit_v, &xlimit, &slimit);
+        int xscale = 0;
+        if (exact) {
+            xscale = sstart > sstep ? sstart : sstep;
+            if (xlimit_exact && slimit > xscale) {
+                xscale = slimit;
+            }
+            if (!decimal_rescale(xstart, xscale - sstart, &xstart) ||
+                !decimal_rescale(xstep, xscale - sstep, &xstep)) {
+                exact = 0;
+            }
+            if (xlimit_exact && !decimal_rescale(xlimit, xscale - slimit, &xlimit)) {
+                xlimit_exact = 0;
+            }
+        }
         value_free(start_v); value_free(limit_v); value_free(step_v);
         /* Refused rather than run: `step 0` cannot reach any limit, so it is a
          * hang, and a hang is the least debuggable outcome available. */
@@ -44125,12 +46085,14 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         long long xi = xstart;
         for (double i = start; ; ) {
             if (exact) {
+                double xd = xscale ? gb_decimal_to_double(xi, xscale) : (double)xi;
                 int in = xlimit_exact ? (xstep > 0 ? xi <= xlimit : xi >= xlimit)
-                                      : (xstep > 0 ? (double)xi <= limit : (double)xi >= limit);
+                                      : (xstep > 0 ? xd <= limit : xd >= limit);
                 if (!in) {
                     break;
                 }
-                env_set(stmt->as.for_range.name, value_number_exact(xi));
+                env_set(stmt->as.for_range.name, xscale ? value_number_decimal(xi, xscale)
+                                                        : value_number_exact(xi));
             } else {
                 if (!(step > 0 ? i <= limit : i >= limit)) {
                     break;
@@ -44444,7 +46406,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
              * Iteration is over the snapshot taken above, so writing to the
              * array here cannot disturb the walk. */
             if (stmt->as.for_each.index_name) {
-                env_set(stmt->as.for_each.index_name, value_number((double)i));
+                env_set(stmt->as.for_each.index_name, value_number_exact((long long)i));
             }
             EvalResult result = eval_stmt_list(stmt->as.for_each.body);
             if ((result.did_break || result.did_continue) &&
@@ -44606,8 +46568,9 @@ static EvalResult eval_stmt(AstStmt *stmt) {
          * definitively off either way, so the caller's belief is true. The
          * typo hazard that argues for raising does not exist here -- this
          * takes a VALUE, not a name. */
-        if (value.as.watcher_id < watcher_count) {
-            watchers[value.as.watcher_id].active = 0;
+        long at = watcher_index_of(value.as.watcher_id);
+        if (at >= 0) {
+            watchers[at].active = 0;
         }
         value_free(value);
         break;
@@ -44864,6 +46827,155 @@ static EvalResult eval_stmt(AstStmt *stmt) {
                 current_column = previous_column;
                 return result;
             }
+        }
+        break;
+    }
+    case AST_STMT_WAIT: {
+        /* wait until <condition> [for <limit>] (docs/watch_scope_design.md §4,
+         * Matthew's rulings 2026-11-07): the event loop runs from HERE, in this
+         * frame, delivering to the watches of every live frame, until the
+         * condition is true. Re-checked after each pass of the loop. */
+        if (wait_depth >= WAIT_MAX_DEPTH) {
+            /* RAISED, NOT SKIPPED: a Qt handler past its cap is not called and
+             * the program goes on (2117), but the code after a wait relies on
+             * its condition being true, so a skipped wait would be a lie */
+            char message[200];
+            snprintf(message, sizeof message, "wait until: nested %d deep, inside watches whose bodies wait; "
+                     "a wait in a watch body that calls a waiting function is usually a cycle", WAIT_MAX_DEPTH);
+            runtime_error_raise(message, 1003, "wait");
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        double limit_s = -1.0;
+        if (stmt->as.wait.limit) {
+            int before_limit = error_generation;
+            Value lv = eval_expr(stmt->as.wait.limit);
+            if (error_generation != before_limit) {
+                value_free(lv);
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+            if (lv.kind == VALUE_NUMBER) {
+                limit_s = lv.as.num.value;
+            } else if (lv.kind == VALUE_DURATION) {
+                long long months = 0, seconds = 0;
+                duration_totals(lv.as.duration, &months, &seconds);
+                limit_s = months ? -2.0 : (double)seconds;
+            } else {
+                limit_s = -3.0;
+            }
+            value_free(lv);
+            if (!(limit_s >= 0.0)) {
+                runtime_error_raise(limit_s == -2.0
+                                        ? "wait until ... for: a month has no fixed length; give the limit in days or less"
+                                        : "wait until ... for: the limit is a duration or a number of seconds, at least 0",
+                                    1003, "wait");
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+        }
+        double deadline = limit_s >= 0.0 ? webserver_now() + limit_s : -1.0;
+        wait_depth++;
+        int failed = 0;
+        /* IN A WATCH BODY, the running drain cannot take this wait's
+         * deliveries: it is busy running the body that is waiting. Its queue is
+         * set aside for the length of the wait (see watcher_queues_set_aside). */
+        int set_aside = watcher_draining;
+        size_t *saved_queue = watcher_queue;
+        Value *saved_principal = watcher_queue_principal;
+        size_t saved_count = watcher_queue_count, saved_next = watcher_drain_next;
+        int saved_line = watcher_drain_origin_line, saved_column = watcher_drain_origin_column;
+        if (set_aside) {
+            /* its unrun entries are pending in IT; for the wait they are not,
+               or a delivery to them would be dropped as already queued (a watch
+               registered in this very body is one of them) */
+            for (size_t i = saved_next; i < saved_count; i++) {
+                if (saved_queue[i] < watcher_count) {
+                    watchers[saved_queue[i]].pending = 0;
+                }
+            }
+            watcher_queue = NULL;
+            watcher_queue_principal = NULL;
+            watcher_queue_count = 0;
+            watcher_draining = 0;
+            watcher_drain_origin_line = 0;
+            watcher_drain_origin_column = 0;
+            watcher_queues_set_aside++;
+        }
+        for (;;) {
+            int before_error = error_generation;
+            Value condition = eval_expr(stmt->as.wait.condition);
+            if (error_generation != before_error) {
+                value_free(condition);
+                failed = 1;
+                break;
+            }
+            int refused = 0;
+            int truth = value_truthy(condition, &refused);
+            value_free(condition);
+            if (refused) {
+                failed = 1;
+                break;
+            }
+            if (truth) {
+                break;
+            }
+            if (deadline >= 0.0 && webserver_now() >= deadline) {
+                char message[200];
+                snprintf(message, sizeof message, "wait until: the limit of %g seconds passed and the condition "
+                         "is still false", limit_s);
+                runtime_error_raise(message, 1003, "wait");
+                failed = 1;
+                break;
+            }
+            /* NOTHING LEFT THAT COULD MAKE IT TRUE: no listener, transfer,
+             * watched inbox, live timer or watched socket. It would block for
+             * ever, so it says so (Matthew's ruling) rather than hang. */
+            if (!(webserver_any_active() || aux_loop_sources_active())) {
+                runtime_error_raise("wait until: no event source is left that could make the condition true "
+                                    "(no server listening, no transfer, no live timer, and no watched inbox or "
+                                    "socket)", 1003, "wait");
+                failed = 1;
+                break;
+            }
+            int idle = 0;
+            if (webserver_loop_iterate(&idle) || error_action_pending()) {
+                failed = 1;
+                break;
+            }
+            if (runtime_stopped) {
+                break;
+            }
+        }
+        wait_depth--;
+        if (set_aside) {
+            /* every drain this wait started has finished, so its queue is empty */
+            for (size_t i = 0; i < watcher_queue_count; i++) {
+                value_free(watcher_queue_principal[i]);
+            }
+            free(watcher_queue_principal);
+            free(watcher_queue);
+            watcher_queue = saved_queue;
+            watcher_queue_principal = saved_principal;
+            watcher_queue_count = saved_count;
+            watcher_drain_next = saved_next;
+            watcher_draining = 1;
+            watcher_drain_origin_line = saved_line;
+            watcher_drain_origin_column = saved_column;
+            watcher_queues_set_aside--;
+            for (size_t i = saved_next; i < saved_count; i++) {
+                if (watcher_queue[i] < watcher_count) {
+                    watchers[watcher_queue[i]].pending = 1;
+                }
+            }
+        }
+        if (failed) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
         }
         break;
     }
