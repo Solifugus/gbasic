@@ -198,6 +198,7 @@ int gbasic_builtin_function(const char *name) {
         "remove_dir",
         "remove_tree",
         "permissions",
+        "disk_space",
         "chmod",
         "set_mtime",
         "is_symlink",

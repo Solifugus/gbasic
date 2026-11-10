@@ -297,6 +297,16 @@ typedef struct {
     char group_name[64];
 } GbPermissions;
 int gb_permissions(const char *path, GbPermissions *out);
+/* The space on the filesystem holding `path` (Transward §11.1), in bytes:
+ * `total` its size, `free` what is not in use, `available` what an
+ * unprivileged writer may still use -- below `free` where the filesystem
+ * keeps a reserve for root (ext4's 5%), and the one that fills first for a
+ * service account. statvfs(3) on POSIX (f_blocks, f_bfree, f_bavail, each
+ * times f_frsize); GetDiskFreeSpaceExW on Windows, given the folder holding
+ * `path` when it is a file, whose `available` is what this user's quota
+ * leaves. 0, or -1 with errno set (ENOENT for a path that is not there). */
+int gb_disk_space(const char *path, unsigned long long *total, unsigned long long *free_bytes,
+                  unsigned long long *available);
 /* This process's user, the one access(2) answers for: its id and name, or -1
  * and "" where the platform does not say. */
 long gb_current_user(char *name, size_t cap);

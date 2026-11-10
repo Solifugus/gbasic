@@ -12127,6 +12127,50 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(1);
     }
 
+    if (strcmp(name, "disk_space") == 0) {
+        /* The filesystem holding a path, in exact bytes (Transward §11.1: a
+         * capacity monitor projecting time-to-full ran `df` once a path a
+         * sweep, and there is no df on Windows). `available` is beside
+         * `free` because they are different questions: what a service
+         * account may still write is f_bavail, which fills first. */
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("disk_space expects one path argument, a file or folder on the filesystem "
+                                "asked about", 1004, "file operation");
+            return value_null();
+        }
+        Value path_value = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(path_value);
+            return value_null();
+        }
+        if (!path_string_reject_nul(name, path_value)) {
+            value_free(path_value);
+            return value_null();
+        }
+        const char *path = directory_path(path_value);
+        if (!path) {
+            runtime_error_raise("disk_space expects a string, file reference, or directory reference", 1004,
+                                "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+        unsigned long long total = 0, free_bytes = 0, available = 0;
+        if (gb_disk_space(path, &total, &free_bytes, &available) != 0) {
+            char message[PATH_MAX + 128];
+            snprintf(message, sizeof(message), "disk_space could not read %s (%s)", path,
+                     strerror(path_open_errno(path, errno)));
+            runtime_error_raise(message, 1004, "file operation");
+            value_free(path_value);
+            return value_null();
+        }
+        Value result = value_record(NULL, 0);
+        record_set(&result, "total", value_number_exact((long long)total));
+        record_set(&result, "free", value_number_exact((long long)free_bytes));
+        record_set(&result, "available", value_number_exact((long long)available));
+        value_free(path_value);
+        return result;
+    }
+
     if (strcmp(name, "permissions") == 0) {
         /* TWO DIFFERENT QUESTIONS, BOTH ANSWERED, because conflating them is
          * the classic bug. `mode` is what the FILE says; `readable`/`writable`/
@@ -35258,18 +35302,38 @@ static Value eval_call(AstExpr *expr) {
             size_t outlen = (size_t)a[5].as.num.value;
             unsigned char *out = malloc(outlen);
             if (!out) abort();
-            /* maxmem 0 means OpenSSL's own default ceiling (32 MB). A cost above
-             * it FAILS rather than silently deriving with less memory, which is
-             * the whole point of a memory-hard KDF. */
-            int ok = EVP_PBE_scrypt(a[0].as.string, string_length(a[0].as.string),
-                                    (const unsigned char *)a[1].as.string,
-                                    string_length(a[1].as.string),
-                                    N, r, pp, 0, out, outlen);
+            /* THE MEMORY IS THE COST, so it is allowed what the cost needs:
+             * 128 x r x (n + p + 2) bytes, OpenSSL's own reckoning of V and B.
+             * maxmem 0 meant OpenSSL's default ceiling of 32 MB, so the cost
+             * the reference recommends (n 65536, r 8: 64 MiB) was refused --
+             * measured by Transward, whose passphrase vault could not derive
+             * its key (§12.1). A cost that cannot be had still fails rather
+             * than deriving with less, which is the point of a memory-hard
+             * KDF; the refusal now says how much it asked for. */
+            uint64_t need = 0;
+            int fits = r <= UINT64_MAX / 128 && N <= UINT64_MAX - pp - 2 &&
+                       (N + pp + 2) <= UINT64_MAX / (128 * r) && (need = 128 * r * (N + pp + 2)) <= SIZE_MAX / 2;
+            int ok = fits && EVP_PBE_scrypt(a[0].as.string, string_length(a[0].as.string),
+                                            (const unsigned char *)a[1].as.string,
+                                            string_length(a[1].as.string),
+                                            N, r, pp, need, out, outlen);
             for (int j = 0; j < 6; j++) value_free(a[j]);
             if (!ok) {
                 free(out);
-                runtime_error_raise("scrypt derivation failed (cost likely exceeds the memory limit)",
-                                    1003, "crypto");
+                char why[300];
+                if (fits) {
+                    const char *unit[] = { "bytes", "KiB", "MiB", "GiB", "TiB", "PiB", "EiB" };
+                    double shown = (double)need;
+                    int u = 0;
+                    while (shown >= 1024 && u < 6) { shown /= 1024; u++; }
+                    snprintf(why, sizeof why, "scrypt could not derive: n %llu, r %llu and p %llu need %.4g %s of "
+                             "memory (128 x r x (n + p + 2) bytes), which could not be had",
+                             (unsigned long long)N, (unsigned long long)r, (unsigned long long)pp, shown, unit[u]);
+                } else {
+                    snprintf(why, sizeof why, "scrypt could not derive: n %llu and r %llu need more memory than "
+                             "this machine can address", (unsigned long long)N, (unsigned long long)r);
+                }
+                runtime_error_raise(why, 1003, "crypto");
                 return value_null();
             }
             Value v = value_string_n((const char *)out, outlen);
@@ -39076,6 +39140,7 @@ static Value eval_call(AstExpr *expr) {
         strcmp(expr->as.call.name, "remove_dir") == 0 ||
         strcmp(expr->as.call.name, "remove_tree") == 0 ||
         strcmp(expr->as.call.name, "permissions") == 0 ||
+        strcmp(expr->as.call.name, "disk_space") == 0 ||
         strcmp(expr->as.call.name, "chmod") == 0 ||
         strcmp(expr->as.call.name, "set_mtime") == 0 ||
         strcmp(expr->as.call.name, "is_symlink") == 0 ||

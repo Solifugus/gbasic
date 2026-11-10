@@ -30,6 +30,7 @@
 #include <sys/socket.h>
 #include <sys/resource.h>
 #include <sys/stat.h>
+#include <sys/statvfs.h>
 #include <sys/time.h>   /* utimes, for gb_set_mtime */
 #include <dirent.h>
 #include <fcntl.h>
@@ -541,6 +542,21 @@ int gb_permissions(const char *path, GbPermissions *out) {
     struct group *gr = getgrgid(info.st_gid);
     snprintf(out->owner_name, sizeof out->owner_name, "%s", pw ? pw->pw_name : "");
     snprintf(out->group_name, sizeof out->group_name, "%s", gr ? gr->gr_name : "");
+    return 0;
+}
+
+int gb_disk_space(const char *path, unsigned long long *total, unsigned long long *free_bytes,
+                  unsigned long long *available) {
+    struct statvfs fs;
+    if (statvfs(path, &fs) != 0) {
+        return -1;
+    }
+    /* f_frsize is the unit the block counts are in; f_bsize is only the
+     * preferred I/O size, and on some filesystems the two differ */
+    unsigned long long unit = fs.f_frsize ? (unsigned long long)fs.f_frsize : (unsigned long long)fs.f_bsize;
+    *total = (unsigned long long)fs.f_blocks * unit;
+    *free_bytes = (unsigned long long)fs.f_bfree * unit;
+    *available = (unsigned long long)fs.f_bavail * unit;
     return 0;
 }
 

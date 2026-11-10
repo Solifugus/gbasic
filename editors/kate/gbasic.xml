@@ -131,6 +131,7 @@
       <item>dh_keypair</item>
       <item>dh_shared</item>
       <item>directory_name</item>
+      <item>disk_space</item>
       <item>ec_keypair</item>
       <item>ec_public</item>
       <item>ecdh_shared</item>

@@ -16,6 +16,24 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### scrypt is allowed the memory its cost needs (Transward §12.1, 2026-11-10)
+
+- **`scrypt` at the recommended `n = 65536, r = 8, p = 1` raised** "scrypt
+  derivation failed (cost likely exceeds the memory limit)": OpenSSL was given
+  no limit and used its own 32 MB, and that cost needs 64 MiB. It is now
+  allowed `128 × r × (n + p + 2)` bytes. A cost that cannot be had is still
+  refused, with a new message naming the memory it asked for:
+  `tests/negative_scrypt_over_memory.err` is rebaselined, and its cost moves
+  from the RFC's 1 GiB vector, which now derives, to 1 PiB.
+
+### disk_space(path) (Transward §11.1, 2026-11-10)
+
+- **`disk_space(p)` answers `{ total, free, available }`** for the filesystem
+  holding `p`, in exact integer bytes. `available` is what an unprivileged
+  writer may still use, and `free` also counts root's reserve. A capacity
+  monitor ran `df` once a path a sweep for this, and there is no `df` on
+  Windows.
+
 ### A readable worksheet, and zip.write (book gap G55, 2026-11-09)
 
 - **`xlsx.set` and `xlsx.set_formula` take `{ format, bold, fill }`.** Each

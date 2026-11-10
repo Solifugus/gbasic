@@ -2128,6 +2128,43 @@ int gb_make_temp_dir(const char *dir, const char *prefix, char *out, size_t out_
     return rc;
 }
 
+int gb_disk_space(const char *path, unsigned long long *total, unsigned long long *free_bytes,
+                  unsigned long long *available) {
+    WCHAR *wpath = utf8_to_wide(path);
+    if (!wpath) {
+        errno = ENOMEM;
+        return -1;
+    }
+    DWORD attrs = GetFileAttributesW(wpath);
+    if (attrs == INVALID_FILE_ATTRIBUTES) {
+        DWORD e = GetLastError();
+        free(wpath);
+        errno = (e == ERROR_FILE_NOT_FOUND || e == ERROR_PATH_NOT_FOUND) ? ENOENT
+              : (e == ERROR_ACCESS_DENIED) ? EACCES : EIO;
+        return -1;
+    }
+    /* GetDiskFreeSpaceExW takes a folder: a file's is the one holding it */
+    if (!(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
+        WCHAR *cut = NULL;
+        for (WCHAR *p = wpath; *p; p++) {
+            if (*p == L'\\' || *p == L'/') cut = p;
+        }
+        if (cut) cut[1] = L'\0';
+        else wcscpy(wpath, L".");
+    }
+    ULARGE_INTEGER avail, size, freeb;
+    BOOL ok = GetDiskFreeSpaceExW(wpath, &avail, &size, &freeb);
+    free(wpath);
+    if (!ok) {
+        errno = GetLastError() == ERROR_ACCESS_DENIED ? EACCES : EIO;
+        return -1;
+    }
+    *total = size.QuadPart;
+    *free_bytes = freeb.QuadPart;
+    *available = avail.QuadPart;
+    return 0;
+}
+
 int gb_permissions(const char *path, GbPermissions *out) {
     out->owner_id = -1;
     out->group_id = -1;

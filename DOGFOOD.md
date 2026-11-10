@@ -13782,3 +13782,32 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   reused, compared with attributes in name order. `fonts` and `fills` are made
   when first needed. Held by `tests/run_xlsx.sh` (tier 2l, LibreOffice as the
   reader that decides).
+
+## 2026-11-10 — Transward (relayed by CC) — while: M34's capacity monitor
+
+- **Type:** missing capability
+- **Severity:** medium
+- **What:** gBASIC could not say how much space a filesystem has. A monitor
+  projecting time-to-full for each directory it depends on ran
+  `df -P -B1 PATH` once a path a sweep and read fields out of its last line,
+  which a warning or a wrapped device name shifts, and Windows has no `df`.
+- **Workaround:** `df` through `process.run` with an argument vector.
+- **Status: FIXED 2026-11-10** (Matthew: useful): `disk_space(p)` answers
+  `{ total, free, available }` in exact bytes. Held by
+  `tests/run_disk_space.sh`, against Python's `os.statvfs` and `df`.
+
+## 2026-11-10 — Transward (relayed by CC) — while: its vault's passphrase mode
+
+- **Type:** bug
+- **Severity:** high (the documented recommendation could not run)
+- **What:** `scrypt("pw", salt, 65536, 8, 1, 32)` raised "scrypt derivation
+  failed (cost likely exceeds the memory limit)", and n=32768 did too;
+  n=16384 worked. The reference recommends n=65536, r=8, p=1, which needs
+  64 MiB, and gBASIC passed OpenSSL a maxmem of 0, meaning OpenSSL's default
+  of 32 MB. Transward's passphrase vault, scrypt at n=65536, could not derive
+  its key.
+- **Workaround:** none that keeps the cost; the keyfile mode was unaffected.
+- **Status: FIXED 2026-11-10**: scrypt is allowed `128 × r × (n + p + 2)`
+  bytes, what its cost needs. Held by `examples/crypto_kdf_test.bas` (n=65536,
+  r=8 against Python's `hashlib.scrypt`) and
+  `tests/negative_scrypt_over_memory` (1 PiB, refused naming it).

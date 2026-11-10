@@ -6300,7 +6300,10 @@ Password-based key derivation — turning a **passphrase** into key bytes:
 - `scrypt(password, salt, n, r, p, length)` — scrypt (RFC 7914). `n` is the CPU
   and memory cost and must be a **power of two greater than 1**; `r` is the block
   size and `p` the parallelisation. Memory-hard, so prefer it when you can afford
-  the memory.
+  the memory: it is allowed exactly what its cost needs, `128 × r × (n + p + 2)`
+  bytes (64 MiB at the recommended `n = 65536, r = 8`), and a cost the machine
+  cannot give is refused, naming how much it asked for, rather than derived
+  with less.
 
 ```basic
 salt = random_bytes(16)                                  ' store this beside the ciphertext
@@ -8980,6 +8983,15 @@ and the other two were taken for the array verb and refused.
 
 **What a file says about itself, and changing it** *(since 0.11.0)*:
 
+- `disk_space(p)` -> `{ total, free, available }`, the filesystem holding `p`
+  (a file or a folder, as a path, `{file}` or `{dir}`), in exact integer bytes.
+  **`available` is what an unprivileged writer may still use, and is the one
+  that fills first for a service account.** `free` also counts the space a
+  filesystem keeps back for root (ext4 keeps 5%), so on such a filesystem
+  `available` is below `free`. A path that is not there raises, naming it.
+  POSIX reads `statvfs(3)`; Windows `GetDiskFreeSpaceExW`, whose `available`
+  is what this user's quota leaves. The suite is `tests/run_disk_space.sh`,
+  held against Python's `os.statvfs` and `df`.
 - `permissions(p)` -> `{ mode, readable, writable, executable, owner, owner_name,
   group, group_name }`. `owner` and `group` (*since 0.11.0*) are the numeric ids
   and their names, `unknown` where the platform does not say (Windows) or an id
