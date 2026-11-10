@@ -49,6 +49,7 @@ live list is:
 |---|---|---|
 | — | ~~**`xml.find_all(node, "a/b")` collects only under the first `a`**: two `<s><n/></s>` answer one for `"s/n"`, where the reference says "all matches". A path through repeated elements misses all but the first. Workaround: walk the path a step at a time, taking every match at each.~~ **FIXED 2026-11-09**: each step is taken from every element the step before reached, so `find_all` answers every element the path reaches in document order, and `find` the first of them (it too had missed an `n` only a later `s` held). A path over 1023 bytes or 64 steps, which was cut short in silence, is refused. Held by `examples/xml_find_paths_test.bas` in `tests/run_examples.sh`. | 2026-11-08 entry |
 | 9 | **Two exact decimals that differ only past a double's 17 digits share an index key**: G-SQL keys a decimal by its nearest double, so a UNIQUE index refuses `0.100000000000000001` beside `0.100000000000000002`, and `ORDER BY` through that index ties them. Answers through an index are still right (the condition is checked on every row). By design, since gBASIC compares a decimal and a double as doubles, which no byte order can follow exactly (`docs/exact_decimal_design.md` §6). | 2026-11-08 entry |
+| 15 | **`gpdf.save(d, path)` as a statement draws warning 2101**, "the result of 'save' is discarded; a gBASIC function cannot change its caller, so an update returns the new value...": `save` returns the bytes it wrote, so the warning fires on the ordinary call and explains a mistake that was not made. Any library function returning something informational does the same. | 2026-11-09 entry |
 | — | ~~**`xml.parse` drops an entity reference in silence**: `<!DOCTYPE a [<!ENTITY y 'Y'>]><a>&y;</a>` parses as an empty `<a>`, no error. Safe against XXE, but silent data loss; an error naming the DTD, or a `refuse_dtd` option, was asked for (Transward M31).~~ **FIXED 2026-11-09** (Matthew: give proper errors): a DTD entity in text is still never expanded, and the parse now raises naming it and its line ("xml: line 1 uses the entity &y; in text, which the document's DTD declares, ..."), as do `parse_file`, `xml.read` and `xml.subtree`. In an attribute libxml2 expands it, so nothing was lost there. Held by `examples/xml_refusals_test.bas` in `tests/run_examples.sh`. | 2026-11-08 entry |
 | — | ~~**`rsa_from_pem` given a CERTIFICATE says** "no RSA key could be read (an encrypted key needs its passphrase)", which points at a passphrase rather than at the certificate; `x509_parse` is requested (Transward M31 §10).~~ **FIXED 2026-11-08**: `x509_parse` shipped, and `rsa_from_pem` given a certificate now says "that text is an X.509 certificate, not a key; x509_parse(text).public_key is the key it holds". Held by `tests/run_xml_sign.sh` (tier x509, text that is neither keeping the passphrase message as the control). | 2026-11-08 entry |
 | — | ~~**`xml.text` of `unknown` answers `""`**: `xml.find(t, "c")` misses when `c` is not a direct child (a path is a chain of CHILD names), answers `unknown`, and `xml.text` of that is the empty text with no error, so a lookup that missed reads as an element with nothing in it. Met as a digest comparing `false` (2026-11-08 entry).~~ **FIXED 2026-11-09** (Matthew: give proper errors): `xml.text` of `unknown` raises, saying a find that matched nothing answers unknown, and of any other kind but an element or text raises naming the kind. `stdlib/insiders.bas` and `ownership.bas` decided a miss through it, and now check `is_unknown` first. Held by `examples/xml_refusals_test.bas`. | 2026-11-08 entry |
@@ -13674,3 +13675,39 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   answer one. Held by `tests/run_exact.sh` ("a whole answer is exact"). The
   two neighbours stay, as designed (Matthew: unknown is gBASIC's NULL); both
   are in `docs/gsql_cookbook.md`, recipes 2 and 10.
+
+## 2026-11-09 — CC — while: making PDF fixtures with gpdf for the G54 design
+
+- **Type:** diagnostic-confusing
+- **Severity:** low
+- **What:** `gpdf.save(d, "text.pdf")` written as a statement, the ordinary
+  way to save, warns `[2101]`: "the result of 'save' is discarded; a gBASIC
+  function cannot change its caller, so an update returns the new value and
+  dropping it does nothing (assign it, or return nothing)". The file is
+  written correctly. `save` returns the bytes it wrote (reference: `n =
+  gpdf.save(...)`), and unused-result warns on any discarded value from a
+  gBASIC function, so the text explains a mistake about updates that was not
+  made. The same warnings on `add_page`, `set_font` and `text_at` were right:
+  those are updates, and dropping them lost the page.
+- **Workaround:** `n = gpdf.save(d, path)`.
+- **Status: OPEN**, for Matthew: live row 15, probed by `run_limitations.sh`
+  (`gpdf_save_warns`). Either `save` returns `nothing` (the reference's `n =`
+  form would change), or a library can mark a result informational.
+
+## 2026-11-09 — CC — while: writing stdlib/pdf.bas (G54), which loads `ocr` by name
+
+- **Type:** bug
+- **Severity:** low (a false warning; the right file is loaded)
+- **What:** a stdlib library that loads a sibling by bare name (`load ocr`
+  inside `library pdf`), run from the tree with `GBASIC_PATH=stdlib`, warns
+  `[2103]` "library 'ocr' resolved to stdlib/ocr.bas; ALSO FOUND and not used:
+  /home/.../gbasic/stdlib/ocr.bas" -- the SAME FILE twice. It is found beside
+  the loading file, under the relative spelling, and again in the tree's own
+  stdlib under the absolute one, and the match list compared path STRINGS. The
+  other stdlib libraries load siblings with `from "x.bas"`, which is perhaps
+  why it had not been met.
+- **Workaround:** none needed for correctness; `load ocr from "ocr.bas"` avoids
+  the warning.
+- **Status: FIXED 2026-11-09**: matches are compared as files
+  (`same_file_path`, already used for a library's identity). Held by
+  `tests/run_pdf.sh` (its loads warn nothing) and `tests/run_library_depth.sh`.

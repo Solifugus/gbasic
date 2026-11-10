@@ -16,6 +16,29 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Reading a PDF: `pdf` (book gap G54, 2026-11-09)
+
+- **`stdlib/pdf.bas`** reads a PDF's pages over poppler's programs, the
+  poppler-utils package, which it runs rather than links. It offers:
+  - `pdf.info`: the page count, title and producer, and each page's size;
+  - `pdf.read_page` and `pdf.read`: words with positions, and the pictures
+    on each page with their places;
+  - `pdf.text`: a page's text laid out as printed;
+  - `pdf.image`: a picture taken out as stored.
+- **Every page says how it was read**: `text`, `scan`, `ocr` or `blank`.
+  OCR runs only with `{ ocr: true }`, through the `ocr` library.
+  Its words come in `ocr.read_page`'s shape, so `ocr.grid` lays out a PDF
+  page as it does a scan.
+- **The awkward pages:**
+  - A searchable scan's text layer is named as a layer, and is set aside
+    when the picture is read.
+  - Small pictures are listed and never read.
+  - Two page-sized pictures are refused, as a value.
+  - A damaged file is a value carrying poppler's own words.
+- **A library found twice is one library.** A stdlib library loading a sibling
+  by name warned `[2103]` "ALSO FOUND and not used", naming the same file
+  under two spellings, and then also named the installed copy.
+
 ### A whole number is exact: file_size, floor, ceil and round (2026-11-09)
 
 - **`file_size` answers an exact integer**, as `len` and `byte_count` do. It

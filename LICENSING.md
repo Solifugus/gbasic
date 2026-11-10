@@ -17,7 +17,7 @@ Copyright 2026 Matthew C. Tedder.
 **Write gBASIC programs, embed the interpreter, build a product on any of it,
 ship it closed-source — nothing here restricts you.** That covers the language,
 the `gbasic` binary, every C module compiled into it — including the whole xlsx
-engine — and all 63 standard libraries.
+engine — and all 64 standard libraries.
 
 There is no copyleft library in this tree, no commercial license to buy, and no
 part of the standard library that reaches into your program's licensing.
@@ -32,7 +32,7 @@ Everything gBASIC wrote, which is everything but one vendored file:
   (the ZIP container, formula evaluator and recalculation engine),
   `src/modules/xml.c`, `src/modules/smtp.c`, `src/modules/ldap.c` and
   `src/modules/rowmodel.c`
-- All 63 standard libraries in `stdlib/`:
+- All 64 standard libraries in `stdlib/`:
 
   `accounting` `agent` `ari_advisor` `ari` `ari_discover` `automation`
   `chart` `consolidate` `credit` `crypto` `dates` `dbframe`
@@ -43,7 +43,7 @@ Everything gBASIC wrote, which is everything but one vendored file:
   `grid` `insiders` `insight` `intake` `lending`
   `llm` `mail`
   `market` `matrix` `mcp` `mdna` `nlq` `notation` `ocr` `otp` `ownership`
-  `persist` `reasoning` `retrieval` `rules` `schedule` `scoring` `screener`
+  `pdf` `persist` `reasoning` `retrieval` `rules` `schedule` `scoring` `screener`
   `stats` `tools` `web` `websocket`
 
 ## Code from elsewhere: OpenSSH's `bcrypt_pbkdf`

@@ -9384,6 +9384,7 @@ other one is pure gBASIC over the core and works on any build.
 | `mcp` | libcurl |
 | `mdna` | libcurl, libxml2 |
 | `ownership` | libxml2 |
+| `pdf` | libxml2 |
 | `retrieval` | libpq |
 | `screener` | libsqlite3 |
 <!--LIBNEEDS:end-->
@@ -11483,6 +11484,56 @@ whole program without needing a call site.
   What `grid` produces is a **print-image report**, which is what `ari` parses
   and `ari_discover` infers a specification from — so this is a front door to
   machinery that already exists rather than a new pipeline.
+
+- `pdf` — **reading a PDF** (`docs/pdf_read_design.md`, *since 2026-11-09*).
+  Pure gBASIC over poppler's programs (`pdfinfo`, `pdftotext`, `pdftohtml`,
+  `pdfimages`, the poppler-utils package), which are run rather than linked:
+  poppler is GPL. `pdf.available()` says whether they are installed, and every
+  other verb raises naming the package without them.
+
+  `pdf.info(path)` is `{ ok, why, pages, title, producer, creator, encrypted,
+  sizes }`, with one `{ width, height, rotation }` per page in points.
+  `pdf.read_page(path, n [, options])` reads page `n` (from 1) as a **page**:
+  `{ ok, why, n, how, width, height, rotation, words, images, text_layer,
+  text_layer_set_aside, skew }`. Words are `ocr.read_page`'s shape (`text`,
+  `left`, `top`, `width`, `height`, `block`, `paragraph`, `line`,
+  `confidence`), so **`ocr.grid` lays out a PDF page as it lays out a scan**.
+  Words and `images` (`left`, `top`, `width`, `height`, `pixels_wide`,
+  `pixels_high`) are in points from the top-left corner. `pdf.read(path [,
+  options])` is `{ ok, why, pages }`, every page in order.
+  `pdf.text(path, n)` is the page's own text laid out as printed.
+  `pdf.image(path, n, index, dir)` writes that page's `index`-th picture
+  (from 0) into `dir` as it is stored, a JPEG staying a JPEG, and answers its
+  path. Its order is the PDF's, which may differ from `images`'.
+  `pdf.option_names()` is `["ocr", "languages"]`, and an unknown option is
+  refused by name.
+
+  **Every page says how it was read** in `how`:
+  - `text`: the PDF's own text. Its `confidence` is `unknown`, since nothing
+    measured it.
+  - `scan`: one picture the size of the page, read only when asked.
+  - `ocr`: a scan read with `{ ocr: true }`, through `ocr`, its words scaled
+    to the page's points with the engine's confidence and `skew`.
+  - `blank`.
+
+  **OCR is never automatic.** A producer's text and an engine's guess are
+  different evidence, and OCR costs seconds a page.
+
+  **The awkward pages:**
+  - A **searchable scan** (a page picture with a text layer over it) answers
+    the layer's words with `text_layer: true`. Read with `ocr: true`, it has
+    `text_layer_set_aside: true`, the layer's origin being unknown.
+  - **Small pictures** on a text page (a logo, a stamp) are listed and never
+    read; take one out with `pdf.image` and give it to `ocr`.
+  - **Two page-sized pictures**, or small pictures with no text, are refused
+    as a value (`ok: false`, `why`).
+  - **A damaged file** is `ok: false` with poppler's own words, such as
+    *"Couldn't find trailer dictionary"*, so a batch meets it as an ordinary
+    case. A page number out of range raises.
+
+  Not measured, so not promised: an encrypted file, a page rotated by
+  `/Rotate`, and a font with no Unicode map, whose wrong text poppler gives
+  and this passes on.
 
 - `ari_advisor` — **Phase 4: the optional LLM advisor** (design §11). A
   *separate* library, because `llm` needs libcurl and a program that discovers a

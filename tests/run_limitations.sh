@@ -119,6 +119,7 @@ spawn_bare_name|resolves a bare function **name**
 nul_string_literal|is refused in a string literal
 deep_value_teardown|segfaults when it is RELEASED
 decimal_key_collision|share an index key
+gpdf_save_warns|as a statement draws warning 2101
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -273,6 +274,18 @@ probe_spawn_bare_name() {
     fi
 }
 
+
+probe_gpdf_save_warns() {
+    # Red when saving as a statement no longer warns 2101.
+    printf 'load gpdf\nd = gpdf.document({ title: "t" })\nd = gpdf.add_page(d)\ngpdf.save(d, "%s/gs.pdf")\n' "$WORK" > "$WORK/gs.bas"
+    gs_out=$(GBASIC_PATH=stdlib timeout 20 ./gbasic "$WORK/gs.bas" 2>&1)
+    if printf '%s' "$gs_out" | grep -q "the result of 'save' is discarded.*\[2101\]" && [ -s "$WORK/gs.pdf" ]; then
+        ok "gpdf.save as a statement still warns 2101, and still writes the file"
+    else
+        printf '     %s\n' "$gs_out"
+        fixed "gpdf.save as a statement no longer warns 2101 (or the probe no longer runs)"
+    fi
+}
 
 probe_decimal_key_collision() {
     # Red when a UNIQUE index takes two decimals that differ past 17 digits

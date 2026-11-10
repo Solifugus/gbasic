@@ -9128,23 +9128,38 @@ static void library_matches_clear(LibraryMatch *matches, size_t count) {
     free(matches);
 }
 
+/* AS FILES, NOT STRINGS: one library found beside the loading file as
+ * `stdlib/ocr.bas` and again in the tree's own stdlib as an absolute path is
+ * one file, and was reported as two in a 2103 "ALSO FOUND" naming it twice. */
+static int same_file_path(const char *a, const char *b);
+
 static int library_match_seen(LibraryMatch *matches, size_t count, const char *path) {
     for (size_t i = 0; i < count; i++) {
-        if (strcmp(matches[i].path, path) == 0) {
+        if (same_file_path(matches[i].path, path)) {
             return 1;
         }
     }
     return 0;
 }
 
+/* Set when a search finds a library it already holds (the same file, reached
+ * again). The stdlib fallbacks are consulted only when GBASIC_PATH found
+ * nothing, and a library found beside the loading file AND on GBASIC_PATH is
+ * one GBASIC_PATH found: without this the list did not grow, so the installed
+ * copy was searched too and reported "ALSO FOUND" (2026-11-09). */
+static int library_search_found_again = 0;
+
 static void search_file_for_library(const char *path,
                                     const char *name,
                                     LibraryMatch **matches,
                                     size_t *match_count) {
+    if (has_bas_extension(path) && library_match_seen(*matches, *match_count, path)) {
+        library_search_found_again = 1;
+        return;
+    }
     if (!has_bas_extension(path) ||
         path_equal(path, root_source_path) ||
-        path_equal(path, current_import_path) ||
-        library_match_seen(*matches, *match_count, path)) {
+        path_equal(path, current_import_path)) {
         return;
     }
 
@@ -9470,6 +9485,7 @@ static void search_gbasic_path_for_library(const char *name,
     const char *gbasic_path = getenv("GBASIC_PATH");
     const char *start = gbasic_path;
     size_t before_path = *match_count;
+    library_search_found_again = 0;
     while (start && *start) {
         const char *end = strchr(start, ':');
         size_t len = end ? (size_t)(end - start) : strlen(start);
@@ -9510,7 +9526,7 @@ static void search_gbasic_path_for_library(const char *name,
      * shipped with over a system install that may be a different version --
      * otherwise extracting 0.2.0 beside an installed 0.1.0 silently runs the
      * older stdlib. */
-    if (*match_count == before_path) {
+    if (*match_count == before_path && !library_search_found_again) {
         const char *relative = gb_exe_relative_stdlib();
         if (relative) {
             search_directory_for_library(relative, name, 1, exact_filename, matches, match_count);
@@ -9521,7 +9537,7 @@ static void search_gbasic_path_for_library(const char *name,
     /* Fallback so an installed gbasic finds its stdlib without GBASIC_PATH set.
      * Only consulted when GBASIC_PATH did not already resolve the library, so a
      * GBASIC_PATH copy is never shadowed by (or warns against) the installed one. */
-    if (*match_count == before_path && GBASIC_DEFAULT_STDLIB[0] != '\0') {
+    if (*match_count == before_path && !library_search_found_again && GBASIC_DEFAULT_STDLIB[0] != '\0') {
         search_directory_for_library(GBASIC_DEFAULT_STDLIB, name, 1, exact_filename, matches, match_count);
     }
 #endif
