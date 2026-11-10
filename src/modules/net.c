@@ -32,12 +32,340 @@
  * reference, and dropping the last value that names it closes it.
  * ========================================================================= */
 
+#ifdef _WIN32
+/* ---- WINDOWS: Winsock behind the POSIX names this file uses -----------------
+ *
+ * A Winsock SOCKET is not a file descriptor: close() and write() on one fail or
+ * leak, and failures are reported through WSAGetLastError, never errno. Every
+ * socket call below goes through a wrapper that keeps the POSIX shape (an int
+ * descriptor, -1 and errno on failure), so the logic of this file is one body on
+ * both platforms. The names are #undef'd at the end of the file, so nothing
+ * later in src/eval.c sees them.
+ *
+ * WHAT DIFFERS, AND IS SAID RATHER THAN HIDDEN:
+ *   - A non-blocking connect answers WSAEWOULDBLOCK where POSIX says
+ *     EINPROGRESS; the connect wrapper translates that one case.
+ *   - A truncated datagram is a FAILURE (WSAEMSGSIZE) with the buffer filled,
+ *     where POSIX returns the bytes and sets MSG_TRUNC; recvmsg here turns the
+ *     first into the second. The size that was SENT is unknowable, as on macOS.
+ *   - The resolver's wake is a loopback socket pair rather than a pipe, because
+ *     WSAPoll takes sockets only.
+ *   - AF_UNIX is stream-only on Windows (afunix.h, Windows 10 1803 and later),
+ *     which is all `net` asks of it; peer credentials have no Windows form and
+ *     answer unknown, as on a POSIX system without SO_PEERCRED.
+ *   - Sockets are made non-inheritable, Windows' FD_CLOEXEC. */
+#include <afunix.h>
+#include <mswsock.h>    /* SIO_UDP_CONNRESET */
+#include <pthread.h>
+
+#ifndef MSG_TRUNC
+#define MSG_TRUNC 0x0100
+#endif
+#define SHUT_WR SD_SEND
+#define SOCK_CLOEXEC 0
+
+struct iovec { void *iov_base; size_t iov_len; };
+struct msghdr {
+    void *msg_name;
+    socklen_t msg_namelen;
+    struct iovec *msg_iov;
+    size_t msg_iovlen;
+    void *msg_control;
+    size_t msg_controllen;
+    int msg_flags;
+};
+
+/* A WSA error code -> errno, for the codes this file's callers distinguish. */
+static int net_w_map(int w) {
+    int e;
+    switch (w) {
+    case WSAEWOULDBLOCK: e = EAGAIN; break;
+    case WSAEINPROGRESS: e = EINPROGRESS; break;
+    case WSAEINTR: e = EINTR; break;
+    case WSAECONNREFUSED: e = ECONNREFUSED; break;
+    case WSAETIMEDOUT: e = ETIMEDOUT; break;
+    case WSAECONNRESET: e = ECONNRESET; break;
+    case WSAECONNABORTED: e = ECONNABORTED; break;
+    case WSAESHUTDOWN: e = EPIPE; break;
+    case WSAENETUNREACH: e = ENETUNREACH; break;
+    case WSAEHOSTUNREACH: e = EHOSTUNREACH; break;
+    case WSAENETDOWN: e = ENETDOWN; break;
+    case WSAEADDRINUSE: e = EADDRINUSE; break;
+    case WSAEADDRNOTAVAIL: e = EADDRNOTAVAIL; break;
+    case WSAEACCES: e = EACCES; break;
+    case WSAEMSGSIZE: e = EMSGSIZE; break;
+    case WSAENOBUFS: e = ENOBUFS; break;
+    case WSAENOTCONN: e = ENOTCONN; break;
+    case WSAEAFNOSUPPORT: e = EAFNOSUPPORT; break;
+    case WSAEINVAL: e = EINVAL; break;
+    case WSAENOTSOCK: e = EBADF; break;
+    case WSAEMFILE: e = EMFILE; break;
+    default: e = EIO; break;
+    }
+    return e;
+}
+
+static int net_w_errno(void) {
+    errno = net_w_map(WSAGetLastError());
+    return errno;
+}
+
+/* The UCRT's strerror has no text for the socket errnos ("Unknown error"), and
+ * a message naming the reason is the whole of P7. */
+static const char *net_w_strerror(int e) {
+    switch (e) {
+    case ECONNREFUSED: return "Connection refused";
+    case ETIMEDOUT: return "Connection timed out";
+    case ECONNRESET: return "Connection reset by peer";
+    case ECONNABORTED: return "Software caused connection abort";
+    case EPIPE: return "Broken pipe";
+    case ENETUNREACH: return "Network is unreachable";
+    case EHOSTUNREACH: return "No route to host";
+    case ENETDOWN: return "Network is down";
+    case EADDRINUSE: return "Address already in use";
+    case EADDRNOTAVAIL: return "Cannot assign requested address";
+    case EMSGSIZE: return "Message too long";
+    case ENOBUFS: return "No buffer space available";
+    case ENOTCONN: return "Transport endpoint is not connected";
+    case EAFNOSUPPORT: return "Address family not supported by protocol";
+    case EINPROGRESS: return "Operation now in progress";
+    default: return strerror(e);
+    }
+}
+
+static int net_w_socket(int family, int type, int protocol) {
+    SOCKET s = WSASocketW(family, type, protocol, NULL, 0, WSA_FLAG_OVERLAPPED | WSA_FLAG_NO_HANDLE_INHERIT);
+    if (s == INVALID_SOCKET) {
+        net_w_errno();
+        return -1;
+    }
+    DWORD no = 0, ignored = 0;
+    if (family == AF_INET6) {
+        /* Windows defaults IPV6_V6ONLY to ON, Linux to off; `::` reaching IPv4
+         * too, mapped, is the contract (tests/net/datagram_test.bas) */
+        setsockopt(s, IPPROTO_IPV6, IPV6_V6ONLY, (const char *)&no, sizeof no);
+    }
+    if (type == SOCK_DGRAM) {
+        /* Without this an ICMP port-unreachable for an EARLIER send_to surfaces
+         * as WSAECONNRESET on the next receive -- a reset on a connectionless
+         * socket, which POSIX never reports. */
+        BOOL off = FALSE;
+        WSAIoctl(s, SIO_UDP_CONNRESET, &off, sizeof off, NULL, 0, &ignored, NULL, NULL);
+    }
+    return (int)s;
+}
+
+/* Windows' AF_UNIX gives the peer's process id and nothing else: there is no
+ * uid or gid to give. -1 when the ioctl is refused. */
+static long net_w_peer_pid(int fd) {
+    ULONG pid = 0;
+    DWORD got = 0;
+    if (WSAIoctl((SOCKET)fd, SIO_AF_UNIX_GETPEERPID, NULL, 0, &pid, sizeof pid, &got, NULL, NULL) != 0) {
+        return -1;
+    }
+    return (long)pid;
+}
+static int net_w_connect(int fd, const struct sockaddr *a, socklen_t n) {
+    if (connect((SOCKET)fd, a, n) == 0) {
+        return 0;
+    }
+    int w = WSAGetLastError();
+    net_w_errno();
+    if (w == WSAEWOULDBLOCK) {
+        errno = EINPROGRESS;      /* the one translation POSIX callers rely on */
+    }
+    return -1;
+}
+static int net_w_bind(int fd, const struct sockaddr *a, socklen_t n) {
+    if (bind((SOCKET)fd, a, n) == 0) {
+        return 0;
+    }
+    net_w_errno();
+    return -1;
+}
+static int net_w_listen(int fd, int backlog) {
+    if (listen((SOCKET)fd, backlog) == 0) {
+        return 0;
+    }
+    net_w_errno();
+    return -1;
+}
+static int net_w_accept(int fd, struct sockaddr *a, socklen_t *n) {
+    int len = n ? (int)*n : 0;
+    SOCKET c = accept((SOCKET)fd, a, n ? &len : NULL);
+    if (c == INVALID_SOCKET) {
+        net_w_errno();
+        return -1;
+    }
+    if (n) {
+        *n = (socklen_t)len;
+    }
+    SetHandleInformation((HANDLE)c, HANDLE_FLAG_INHERIT, 0);
+    return (int)c;
+}
+static ssize_t net_w_recv(int fd, void *b, size_t n, int flags) {
+    int r = recv((SOCKET)fd, (char *)b, n > INT_MAX ? INT_MAX : (int)n, flags);
+    if (r == SOCKET_ERROR) {
+        net_w_errno();
+        return -1;
+    }
+    return r;
+}
+static ssize_t net_w_send(int fd, const void *b, size_t n, int flags) {
+    int r = send((SOCKET)fd, (const char *)b, n > INT_MAX ? INT_MAX : (int)n, flags);
+    if (r == SOCKET_ERROR) {
+        net_w_errno();
+        return -1;
+    }
+    return r;
+}
+static ssize_t net_w_sendto(int fd, const void *b, size_t n, int flags, const struct sockaddr *a, socklen_t al) {
+    int r = sendto((SOCKET)fd, (const char *)b, n > INT_MAX ? INT_MAX : (int)n, flags, a, al);
+    if (r == SOCKET_ERROR) {
+        net_w_errno();
+        return -1;
+    }
+    return r;
+}
+static ssize_t net_w_recvmsg(int fd, struct msghdr *mh, int flags) {
+    int nl = (int)mh->msg_namelen;
+    mh->msg_flags = 0;
+    int r = recvfrom((SOCKET)fd, (char *)mh->msg_iov[0].iov_base, (int)mh->msg_iov[0].iov_len,
+                     flags & ~MSG_TRUNC, (struct sockaddr *)mh->msg_name, &nl);
+    mh->msg_namelen = (socklen_t)nl;
+    if (r == SOCKET_ERROR) {
+        if (WSAGetLastError() == WSAEMSGSIZE) {
+            /* the buffer was filled and the rest discarded: POSIX's MSG_TRUNC */
+            mh->msg_flags |= MSG_TRUNC;
+            return (ssize_t)mh->msg_iov[0].iov_len;
+        }
+        net_w_errno();
+        return -1;
+    }
+    return r;
+}
+static int net_w_setsockopt(int fd, int level, int name, const void *v, socklen_t n) {
+    if (setsockopt((SOCKET)fd, level, name, (const char *)v, (int)n) == 0) {
+        return 0;
+    }
+    net_w_errno();
+    return -1;
+}
+static int net_w_getsockopt(int fd, int level, int name, void *v, socklen_t *n) {
+    int len = (int)*n;
+    if (getsockopt((SOCKET)fd, level, name, (char *)v, &len) != 0) {
+        net_w_errno();
+        return -1;
+    }
+    if (level == SOL_SOCKET && name == SO_ERROR && len == (int)sizeof(int) && *(int *)v != 0) {
+        *(int *)v = net_w_map(*(int *)v);   /* SO_ERROR holds a WSA code */
+    }
+    *n = (socklen_t)len;
+    return 0;
+}
+static int net_w_getsockname(int fd, struct sockaddr *a, socklen_t *n) {
+    int len = (int)*n;
+    if (getsockname((SOCKET)fd, a, &len) != 0) {
+        net_w_errno();
+        return -1;
+    }
+    *n = (socklen_t)len;
+    return 0;
+}
+static int net_w_getpeername(int fd, struct sockaddr *a, socklen_t *n) {
+    int len = (int)*n;
+    if (getpeername((SOCKET)fd, a, &len) != 0) {
+        net_w_errno();
+        return -1;
+    }
+    *n = (socklen_t)len;
+    return 0;
+}
+static int net_w_shutdown(int fd, int how) {
+    if (shutdown((SOCKET)fd, how) == 0) {
+        return 0;
+    }
+    net_w_errno();
+    return -1;
+}
+static int net_w_close(int fd) {
+    return closesocket((SOCKET)fd) == 0 ? 0 : -1;
+}
+/* write() is used on one descriptor here: the resolver's wake. */
+static ssize_t net_w_write(int fd, const void *b, size_t n) {
+    return net_w_send(fd, b, n, 0);
+}
+/* The resolver's wake: a connected loopback TCP pair, since WSAPoll cannot
+ * poll a pipe. The listener lives only for the instant it takes to connect,
+ * and the accepted peer is checked to be the socket this function connected,
+ * so nothing else can slip in as the wake. */
+static int net_w_pipe(int fds[2]) {
+    int l = net_w_socket(AF_INET, SOCK_STREAM, 0);
+    int c = -1, a = -1;
+    struct sockaddr_in in, peer, mine;
+    socklen_t n = sizeof in;
+    memset(&in, 0, sizeof in);
+    in.sin_family = AF_INET;
+    in.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
+    if (l < 0 || net_w_bind(l, (struct sockaddr *)&in, sizeof in) != 0 ||
+        net_w_listen(l, 1) != 0 || net_w_getsockname(l, (struct sockaddr *)&in, &n) != 0) {
+        goto fail;
+    }
+    c = net_w_socket(AF_INET, SOCK_STREAM, 0);
+    if (c < 0 || net_w_connect(c, (struct sockaddr *)&in, sizeof in) != 0) {
+        goto fail;
+    }
+    n = sizeof peer;
+    a = net_w_accept(l, (struct sockaddr *)&peer, &n);
+    socklen_t mn = sizeof mine;
+    if (a < 0 || net_w_getsockname(c, (struct sockaddr *)&mine, &mn) != 0 ||
+        peer.sin_port != mine.sin_port || peer.sin_addr.s_addr != mine.sin_addr.s_addr) {
+        goto fail;
+    }
+    net_w_close(l);
+    fds[0] = a;
+    fds[1] = c;
+    return 0;
+fail:
+    if (a >= 0) {
+        net_w_close(a);
+    }
+    if (c >= 0) {
+        net_w_close(c);
+    }
+    if (l >= 0) {
+        net_w_close(l);
+    }
+    return -1;
+}
+
+#define socket net_w_socket
+#define connect net_w_connect
+#define bind net_w_bind
+#define listen net_w_listen
+#define accept net_w_accept
+#define recv net_w_recv
+#define send net_w_send
+#define sendto net_w_sendto
+#define recvmsg net_w_recvmsg
+#define setsockopt net_w_setsockopt
+#define getsockopt net_w_getsockopt
+#define getsockname net_w_getsockname
+#define getpeername net_w_getpeername
+#define shutdown net_w_shutdown
+#define close net_w_close
+#define write net_w_write
+#define pipe net_w_pipe
+#define strerror net_w_strerror
+#define lstat stat
+#else
 #include <netdb.h>
 #include <netinet/in.h>
 #include <netinet/tcp.h>
 #include <arpa/inet.h>
 #include <sys/un.h>
 #include <pthread.h>
+#endif
 #if HAVE_LIBSSL
 #include <openssl/x509v3.h>
 #endif
@@ -48,6 +376,15 @@
 #define NET_READ_CHUNK 65536
 #define NET_DEFAULT_DATAGRAM 65536u   /* more than any UDP payload (65507 over IPv4) */
 #define NET_DATAGRAMS_PER_PASS 64
+/* What a receive reads into. Linux reports a truncated datagram's SENT size
+ * through MSG_TRUNC; Windows cannot (WSAEMSGSIZE says only that it was cut), so
+ * there the buffer holds the largest datagram UDP carries and the cut to
+ * max_datagram is made here, which gives the same answer. */
+#ifdef _WIN32
+#define NET_DGRAM_RECV_SIZE(max) ((max) > 65536u ? (max) : 65536u)
+#else
+#define NET_DGRAM_RECV_SIZE(max) (max)
+#endif
 
 typedef enum { NET_CONNECTION = 0, NET_LISTENER = 1, NET_DATAGRAM = 2 } NetKind;
 
@@ -664,8 +1001,12 @@ static long net_flush_some(NetSocket *s, const char **code, char *message, size_
 }
 
 static int net_set_nonblocking(int fd) {
+#ifdef _WIN32
+    return gb_sock_set_blocking(fd, 0);
+#else
     int flags = fcntl(fd, F_GETFL, 0);
     return flags >= 0 && fcntl(fd, F_SETFL, flags | O_NONBLOCK) == 0;
+#endif
 }
 
 static void net_socket_options(int fd, int family) {
@@ -954,6 +1295,15 @@ static Value net_peer_credentials(NetSocket *s) {
     record_set(&r, "pid", value_unknown());
     record_set(&r, "uid", value_number_exact(uid));
     record_set(&r, "gid", value_number_exact(gid));
+#elif defined(_WIN32)
+    long pid = net_w_peer_pid(s->fd);
+    if (pid < 0) {
+        value_free(r);
+        return value_unknown();
+    }
+    record_set(&r, "pid", value_number_exact(pid));
+    record_set(&r, "uid", value_unknown());   /* Windows has no uid to give */
+    record_set(&r, "gid", value_unknown());
 #else
     value_free(r);
     return value_unknown();
@@ -2055,7 +2405,15 @@ static Value net_do_listen(AstExpr *expr) {
         fd = socket(res->ai_family, SOCK_STREAM | SOCK_CLOEXEC, 0);
         int one = 1;
         if (fd >= 0) {
+#ifdef _WIN32
+            /* NOT SO_REUSEADDR, which on Windows lets a second socket BIND A
+             * PORT ANOTHER IS LISTENING ON. Windows already permits the
+             * rebind-after-close that POSIX's flag is for; this flag is what
+             * makes a held port refuse, as it does on Linux. */
+            setsockopt(fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, &one, sizeof one);
+#else
             setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
+#endif
         }
         if (fd < 0 || bind(fd, res->ai_addr, res->ai_addrlen) != 0) {
             int e = errno;
@@ -2106,7 +2464,9 @@ static NetSocket *net_accept_one(NetSocket *l, int *refused_for_limit) {
     if (fd < 0) {
         return NULL;
     }
-    fcntl(fd, F_SETFD, FD_CLOEXEC);
+#ifndef _WIN32
+    fcntl(fd, F_SETFD, FD_CLOEXEC);   /* the accept wrapper does this on Windows */
+#endif
     if (l->children >= l->max_connections) {
         close(fd);
         *refused_for_limit = 1;
@@ -3016,7 +3376,7 @@ static int net_dgram_target(NetSocket *s, Value to, AstExpr *expr, struct sockad
  * when none is waiting, -1 on a failure (code and message set). */
 static int net_dgram_recv_one(NetSocket *s, Value *out, const char **code, char *message, size_t msize) {
     struct sockaddr_storage from;
-    struct iovec iov = { s->dgram_buf, s->max_datagram };
+    struct iovec iov = { s->dgram_buf, NET_DGRAM_RECV_SIZE(s->max_datagram) };
     struct msghdr mh;
     memset(&mh, 0, sizeof mh);
     memset(&from, 0, sizeof from);
@@ -3044,7 +3404,7 @@ static int net_dgram_recv_one(NetSocket *s, Value *out, const char **code, char 
     record_set(&r, "data", value_string_n(s->dgram_buf, kept));
     record_set(&r, "from", net_address_record((struct sockaddr *)&from));
     record_set(&r, "truncated", value_bool(truncated));
-#ifdef __linux__
+#if defined(__linux__) || defined(_WIN32)
     record_set(&r, "size", value_number_exact((long long)got));
 #else
     record_set(&r, "size", truncated ? value_unknown() : value_number_exact((long long)got));
@@ -3128,7 +3488,7 @@ static Value net_do_datagram(AstExpr *expr) {
     s->fd = fd;
     s->open = 1;
     s->max_datagram = (size_t)max_datagram;
-    s->dgram_buf = malloc(s->max_datagram);
+    s->dgram_buf = malloc(NET_DGRAM_RECV_SIZE(s->max_datagram));
     if (!s->dgram_buf) {
         abort();
     }
@@ -3417,6 +3777,9 @@ static Value net_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     char verb[64];
     snprintf(verb, sizeof verb, "net.%s", name);
+    if (!gb_net_init()) {      /* WSAStartup on Windows: before it every socket call fails */
+        return net_raise("failed", "net: the system's socket layer could not be started");
+    }
     if (strcmp(name, "connect") == 0) return net_do_connect(expr);
     if (strcmp(name, "listen") == 0) return net_do_listen(expr);
     if (strcmp(name, "resolve") == 0) return net_do_resolve(expr);
@@ -3950,3 +4313,26 @@ static void net_shutdown(void) {
     }
 #endif
 }
+
+#ifdef _WIN32
+/* the Winsock wrappers end with this file (see the block at its top) */
+#undef socket
+#undef connect
+#undef bind
+#undef listen
+#undef accept
+#undef recv
+#undef send
+#undef sendto
+#undef recvmsg
+#undef setsockopt
+#undef getsockopt
+#undef getsockname
+#undef getpeername
+#undef shutdown
+#undef close
+#undef write
+#undef pipe
+#undef strerror
+#undef lstat
+#endif

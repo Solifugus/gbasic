@@ -35,14 +35,22 @@
 
 #ifdef _WIN32
 
+/* winnt.h declares an enumerator `TokenType` (TOKEN_INFORMATION_CLASS), and
+ * the lexer's own type has that name: whichever comes second is a redeclaration.
+ * Renamed for the length of the system headers only -- nothing here uses the
+ * security-token enumerator, and winnt.h's include guard keeps a later
+ * windows.h from reparsing it under the real name. */
+#define TokenType gb_winnt_TokenType
 #include <winsock2.h>   /* must precede windows.h, which anything may include */
 #include <ws2tcpip.h>
 #include <io.h>
 #include <process.h>
+#undef TokenType
 
 #include <errno.h>
 #include <signal.h>
 #include <stddef.h>
+#include <string.h>
 #include <sys/types.h>
 
 typedef unsigned long nfds_t;
@@ -120,6 +128,22 @@ static inline size_t confstr(int name, char *buf, size_t len) {
 #define O_NONBLOCK       0x4000
 #endif
 static inline int fcntl(int fd, int cmd, ...) { (void)fd; (void)cmd; errno = ENOSYS; return -1; }
+
+/* memmem is a GNU/BSD extension the UCRT lacks; this is the whole of it, a
+ * real search rather than a stand-in. */
+static inline void *gb_compat_memmem(const void *hay, size_t hn, const void *needle, size_t nn) {
+    const unsigned char *h = (const unsigned char *)hay;
+    if (nn == 0) {
+        return (void *)h;
+    }
+    for (size_t i = 0; nn <= hn && i <= hn - nn; i++) {
+        if (h[i] == *(const unsigned char *)needle && memcmp(h + i, needle, nn) == 0) {
+            return (void *)(h + i);
+        }
+    }
+    return NULL;
+}
+#define memmem gb_compat_memmem
 
 #else
 

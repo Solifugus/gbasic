@@ -30188,6 +30188,9 @@ static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
          * by its own limit would otherwise write one about the limit's size,
          * against the disk the same caller is metering. A refusal is a launch
          * failure, reported as one. */
+#ifdef _WIN32
+        (void)memory_limit;   /* refused before any launch: this fork path is POSIX's */
+#else
         if (memory_limit > 0) {
             struct rlimit data = { (rlim_t)memory_limit, (rlim_t)memory_limit };
             struct rlimit core = { 0, 0 };
@@ -30197,6 +30200,7 @@ static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
                 _exit(127);
             }
         }
+#endif
         execvp(argv[0], argv);
         int e = errno;
         ssize_t w = write(exec_pipe[1], &e, sizeof(e)); (void)w;

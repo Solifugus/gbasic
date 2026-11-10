@@ -105,7 +105,9 @@ fixture() {
 
 # --- Tier 1 and 2 -----------------------------------------------------------
 FIXTURE_ARGS="" fixture tests/net/pack_test.bas 29 "pack/unpack against Python's struct"
-FIXTURE_ARGS="$work/w.sock $(id -u)" fixture tests/net/waited_test.bas 45 "waited connections, framing, Unix sockets, named failures"
+# Windows has no uid for a peer to carry; the fixture asserts it is unknown there.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) peer_uid=none ;; *) peer_uid=$(id -u) ;; esac
+FIXTURE_ARGS="$work/w.sock $peer_uid" fixture tests/net/waited_test.bas 45 "waited connections, framing, Unix sockets, named failures"
 
 # A queue that reaches EXACTLY its 64 KiB mark must still get `writable`; it
 # did not when the mark armed only above it (a stall, so this is bounded).
@@ -147,7 +149,9 @@ else
     ( ulimit -n 4096 2>/dev/null
       serve line; peer many "$port" 1000; stop; exit "$status" ) || status=1
     serve flood; peer flood "$port"; stop
-    if [ -r /proc/self/status ]; then
+    # /proc must be the KERNEL's: MSYS2 has one too, which describes MSYS
+    # processes and knows nothing of a native gbasic.exe
+    if [ -r /proc/self/status ] && [ "$(uname -s)" = Linux ]; then
         serve hold; peer hold "$port" "$spid"; stop
         if grep -qx full "$work/srv.out"; then
             printf 'PASS   and the program was told: a full event\n'
@@ -185,6 +189,7 @@ PY
     pids="$pids $epid"
     for _ in $(seq 100); do [ -s "$work/echo.txt" ] && break; sleep 0.05; done
     read -r eport dport <"$work/echo.txt"
+    dport=$(printf '%s' "$dport" | tr -d '\r')    # Python's stdout is CRLF on Windows
     FIXTURE_ARGS="$eport $dport" fixture tests/net/watched_client.bas 8 "a watched client: by name, refused, idle"
     kill "$epid" 2>/dev/null
 

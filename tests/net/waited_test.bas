@@ -136,7 +136,12 @@ program main(args)
     uc.write("over unix" + chr(10))
     check("bytes cross a Unix socket", us.read_line(5 seconds), "over unix")
     cred = us.peer_credentials
-    check("peer credentials name this process's user", cred.uid, number(args[1]))
+    if args[1] = "none" then
+        ' Windows: AF_UNIX names the peer's process and has no user id to give
+        check("peer credentials have no uid here", is_unknown(cred.uid), true)
+    else
+        check("peer credentials name this process's user", cred.uid, number(args[1]))
+    end if
     check("  and a process", cred.pid > 0, true)
     q = tcp_pair()
     check("a TCP connection has none", is_unknown(q.server.peer_credentials), true)
