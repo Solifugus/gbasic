@@ -1456,10 +1456,16 @@ library gpdf
         return left(out + "00000000000000", 14) + "Z"
     end function
 
+    ' Writes the document and returns nothing (2026-11-09). It returned the
+    ' bytes written, so the ordinary statement `gpdf.save(d, path)` drew
+    ' unused-result warning 2101, which explains a dropped UPDATE: that warning
+    ' is right for add_page and set_font, and noise here, so callers wrote
+    ' `n = gpdf.save(...)` to quiet it (DOGFOOD row 15). The size is
+    ' file_size(path), exactly, and a failed write raises.
     function save(doc, path)
         f {file}= path
         write(f, render(doc))
-        return bytes(f)
+        return nothing
     end function
 
     ' ---- options ---------------------------------------------------------

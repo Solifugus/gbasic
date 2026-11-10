@@ -16,6 +16,17 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### gpdf.save returns nothing; an error's code is exact (2026-11-09)
+
+- **`gpdf.save(doc, path)` returns `nothing`.** It returned the bytes
+  written, so the ordinary statement drew a 2101 warning about a dropped
+  update. **`n = gpdf.save(...)` still runs, but `n` is now `nothing`**; the
+  size is `file_size(path)`.
+- **`error.code`, `error.line` and `error.column` are exact integers**, and so
+  are `warning`'s, and a trace frame's `line` and `column`. Transward carries a
+  native engine's result codes as error codes into a G-SQL `integer` column,
+  which refused them as inexact.
+
 ### A broken stderr no longer kills a program; process.start's stdout: and stderr: (2026-11-09)
 
 - **A diagnostic can no longer kill a program.** With SIGPIPE at its default,

@@ -8,5 +8,6 @@ program main(args)
     d = gpdf.text_at(d, 72, 590, "gBASIC Consulting")
     d = gpdf.set_font(d, "Helvetica", 11)
     d = gpdf.text_at(d, 72, 570, "Invoice 1041")
-    print string(gpdf.save(d, args[0] + "/logo.pdf"))
+    gpdf.save(d, args[0] + "/logo.pdf")
+    print string(file_size(args[0] + "/logo.pdf"))
 end program

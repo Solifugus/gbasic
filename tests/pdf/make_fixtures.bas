@@ -14,7 +14,7 @@ program main(args)
         d = gpdf.set_font(d, "Helvetica", 12)
         d = gpdf.text_at(d, 72, 700, "Invoice No: FF-10442")
         d = gpdf.text_at(d, 72, 680, "Total 52.04")
-        n = gpdf.save(d, join_path(dir, "text.pdf"))
+        gpdf.save(d, join_path(dir, "text.pdf"))
 
         ' three pages: text, blank, text
         d = gpdf.document({ title: "three" })
@@ -24,7 +24,7 @@ program main(args)
         d = gpdf.add_page(d)
         d = gpdf.add_page(d)
         d = gpdf.text_at(d, 100, 500, "third")
-        n = gpdf.save(d, join_path(dir, "three.pdf"))
+        gpdf.save(d, join_path(dir, "three.pdf"))
         return nothing
     end if
 
@@ -33,7 +33,7 @@ program main(args)
     d = gpdf.document({ title: "scan" })
     d = gpdf.add_page(d)
     d = gpdf.image(d, img, 0, 0, { width: 612, height: 792 })
-    n = gpdf.save(d, join_path(dir, "scan.pdf"))
+    gpdf.save(d, join_path(dir, "scan.pdf"))
 
     ' a searchable scan: the picture, with a text layer over it
     d = gpdf.document({ title: "searchable" })
@@ -41,7 +41,7 @@ program main(args)
     d = gpdf.image(d, img, 0, 0, { width: 612, height: 792 })
     d = gpdf.set_font(d, "Helvetica", 12)
     d = gpdf.text_at(d, 72, 700, "LAYER WORDS")
-    n = gpdf.save(d, join_path(dir, "searchable.pdf"))
+    gpdf.save(d, join_path(dir, "searchable.pdf"))
 
     ' text with a small picture: a logo at x 400, y 650 (its bottom), 61 x 79
     d = gpdf.document({ title: "logo" })
@@ -49,19 +49,19 @@ program main(args)
     d = gpdf.set_font(d, "Helvetica", 12)
     d = gpdf.text_at(d, 72, 700, "Invoice No: FF-10443")
     d = gpdf.image(d, img, 400, 650, { width: 61, height: 79 })
-    n = gpdf.save(d, join_path(dir, "logo.pdf"))
+    gpdf.save(d, join_path(dir, "logo.pdf"))
 
     ' two pictures the size of the page
     d = gpdf.document({ title: "two" })
     d = gpdf.add_page(d)
     d = gpdf.image(d, img, 0, 0, { width: 612, height: 792 })
     d = gpdf.image(d, img, 10, 10, { width: 600, height: 780 })
-    n = gpdf.save(d, join_path(dir, "two.pdf"))
+    gpdf.save(d, join_path(dir, "two.pdf"))
 
     ' small pictures and no text
     d = gpdf.document({ title: "small" })
     d = gpdf.add_page(d)
     d = gpdf.image(d, img, 100, 100, { width: 61, height: 79 })
-    n = gpdf.save(d, join_path(dir, "small.pdf"))
+    gpdf.save(d, join_path(dir, "small.pdf"))
     return nothing
 end program

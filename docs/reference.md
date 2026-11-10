@@ -5996,7 +5996,7 @@ d = gpdf.set_font(d, "Helvetica-Bold", 18)
 d = gpdf.text(d, "Invoice 1041")
 d = gpdf.set_font(d, "Helvetica", 11)
 d = gpdf.paragraph(d, 400, long_text)     ' wraps, and adds pages as needed
-n = gpdf.save(d, "invoice.pdf")
+gpdf.save(d, "invoice.pdf")
 ```
 
 A document is a **value**: `add_page`, `set_font`, `text` and `paragraph` each
@@ -6040,7 +6040,7 @@ has to repair it.
 | `gpdf.number_pages(doc, options)` | `Page 3 of 7` on every page |
 | `gpdf.rule(doc, x1, y, x2, thickness)` | a horizontal line |
 | `gpdf.sizes()` | the named page sizes |
-| `gpdf.render(doc)` / `gpdf.save(doc, path)` | bytes, or bytes written |
+| `gpdf.render(doc)` / `gpdf.save(doc, path)` | bytes, or `nothing` (the file is written; `file_size(path)` is its size) |
 
 ### Tables that flow across pages
 
@@ -8407,7 +8407,7 @@ arithmetic.
 value fits a 64-bit integer; *(since 0.7.1)* **`number("…")` and `{number}`
 on decimal integer text** that fits one; and *(since 0.8.1)* the **counting
 builtins** — `len`, `count`, `byte_count`, a found index from `find`, and
-`epoch` and `file_size` — whose answers are integers by nature, plus **`decode`, `try_decode`
+`epoch`, `file_size`, and an error's or warning's `code`, `line` and `column` (and a trace frame's) — whose answers are integers by nature, plus **`decode`, `try_decode`
 and a JSON HTTP body**, so `decode(encode(x))` is `x`. That round trip did not
 hold before 0.8.1: `encode` wrote all the digits and `decode` read back a double,
 so a value could be written to a file and could not be read from it.

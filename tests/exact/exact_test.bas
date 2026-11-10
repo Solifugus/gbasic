@@ -16,6 +16,15 @@
 ' one digit out, and a golden would record it as expected -- which is exactly how
 ' it survived until now.
 
+' raises on its line 2, column 5 -- raised_line() names that line in the file
+function raise_coded()
+    error { message: "coded", code: 50 }
+end function
+
+function raised_line()
+    return 21
+end function
+
 function check(label, got, want)
     if string(got) = string(want) then
         print "ok   " + label
@@ -244,6 +253,23 @@ program main( args )
     write(tf, "abc")
     check("file_size                ", file_size(tf) + n, 9007199254740993)
     delete(tf)
+
+    print "-- an error's code, line and column are exact integers"
+    ' Transward carries a native engine's result codes as error codes into a
+    ' G-SQL integer column, which refused error.code as inexact (2026-11-09)
+    on error goto next
+    raise_coded()
+    check("error.code               ", error.code + n, 9007199254741040)
+    check("error.line               ", error.line + n, 9007199254740990 + raised_line())
+    check("error.column             ", error.column + n, 9007199254740995)
+    ' the frame's line is the call's, wherever that is; 2*line + 1 is odd, so
+    ' only an exact line gives the sum computed from its own text
+    tl = error.trace[0].line
+    check("a trace frame's line     ", 2 * tl + 1 + n, 2 * number(string(tl)) + 1 + n)
+    e = error
+    error.clear()
+    on error stop
+    check("a snapshot's code        ", e.code + n, 9007199254741040)
 
     print "-- `mod` on exact operands, which was a WRONG answer"
     check("parity of an odd integer ", mod(b, 2), 1)

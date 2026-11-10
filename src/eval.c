@@ -4031,8 +4031,8 @@ static Value error_capture_trace(void) {
          * string before `path` was fixed, and they are different claims. */
         char shown[300];
         *fields[2].value = value_string(frame->library ? library_shown(frame->library, shown, sizeof shown) : "");
-        *fields[3].value = value_number(frame->line);
-        *fields[4].value = value_number(frame->column);
+        *fields[3].value = value_number_exact((long long)frame->line);
+        *fields[4].value = value_number_exact((long long)frame->column);
         items[i] = value_record(fields, 5);
     }
     return value_array(items, count);
@@ -4644,9 +4644,9 @@ static Value value_error_object(void) {
     }
     int on = current_error.active;
     *fields[0].value = value_string(on ? current_error.message : "");
-    *fields[1].value = value_number(on ? current_error.line : 0);
-    *fields[2].value = value_number(on ? current_error.column : 0);
-    *fields[3].value = value_number(on ? current_error.code : 0);
+    *fields[1].value = value_number_exact(on ? (long long)current_error.line : 0);
+    *fields[2].value = value_number_exact(on ? (long long)current_error.column : 0);
+    *fields[3].value = value_number_exact(on ? (long long)current_error.code : 0);
     *fields[4].value = value_string(on ? current_error.source : "");
     *fields[5].value = value_string(on && current_error.path ? current_error.path : "");
     *fields[6].value = on && current_error.details.kind == VALUE_RECORD
@@ -4681,9 +4681,9 @@ static Value value_warning_object(void) {
     }
     int on = current_warning.active;
     *fields[0].value = value_string(on ? current_warning.message : "");
-    *fields[1].value = value_number(on ? current_warning.line : 0);
-    *fields[2].value = value_number(on ? current_warning.column : 0);
-    *fields[3].value = value_number(on ? current_warning.code : 0);
+    *fields[1].value = value_number_exact(on ? (long long)current_warning.line : 0);
+    *fields[2].value = value_number_exact(on ? (long long)current_warning.column : 0);
+    *fields[3].value = value_number_exact(on ? (long long)current_warning.code : 0);
     *fields[4].value = value_string(on ? current_warning.source : "");
     *fields[5].value = value_string(on && current_warning.path ? current_warning.path : "");
     *fields[6].value = on && current_warning.details.kind == VALUE_RECORD
