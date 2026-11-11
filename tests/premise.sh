@@ -72,6 +72,14 @@ premise_mode_bits() {
     [ "$_premise_mode_bits" = yes ]
 }
 
+# Was THIS build linked with KSyntaxHighlighting? Read from the build's own
+# link line, never from what gBASIC answers: a highlighter that broke on a
+# build that has one must fail, not skip. Absent on riscv64's Ubuntu 24.04,
+# which has no KF6 (2026-11-11).
+premise_highlighter_built() {
+    make -s print-ldlibs 2>/dev/null | tr ' ' '\n' | grep -qx -- -lKF6SyntaxHighlighting
+}
+
 # Can a tier read a process's peak resident size from outside? This is the only
 # way a memory claim can be measured at all -- a program cannot watch its own
 # high-water mark -- so where it is absent the claim is NOT measured and the

@@ -49,6 +49,13 @@ if ! make >/dev/null 2>&1; then
     printf 'FAIL run_xlsx: build failed\n'
     exit 1
 fi
+# Several tiers build their workbooks with Info-ZIP's `zip`. Without it they
+# failed one by one as "cannot read" a file never made (riscv64 VM, 2026-11-10),
+# so it is said once, here, as what the machine lacks.
+if ! command -v zip >/dev/null 2>&1; then
+    printf 'FAIL run_xlsx: needs the zip program to build its fixtures (Debian/Ubuntu: apt install zip)\n'
+    exit 1
+fi
 
 out=$(mktemp)
 err=$(mktemp)
@@ -447,8 +454,9 @@ time_check() { # xlsxfile -> seconds (as integer milliseconds)
     printf 'program main(args)\n  wb = xlsx.open("%s")\n  print xlsx.check(wb, "Big").disagree\nend program\n' "$1" >"$tmp/big.bas"
     local s e
     s=$(date +%s%N)
-    timeout 300 ./gbasic "$tmp/big.bas" >/dev/null 2>&1
+    timeout 300 ./gbasic "$tmp/big.bas" >"$tmp/big.out" 2>&1
     e=$(date +%s%N)
+    cp "$tmp/big.out" "$1.out"
     echo $(( (e - s) / 1000000 ))
 }
 make_big 10000 "$tmp/big1"
@@ -471,7 +479,15 @@ printf '     4x rows -> %s.%sx time (%sms -> %sms)\n' $((ratio / 10)) $((ratio %
 # enough that reverting the index fails it. Both figures are recorded here so a
 # later reader can tell whether a new failure means "slower machine" or
 # "quadratic is back".
-if [ "$t4" -le 1200 ]; then
+# A TIME IS ONLY A MEASURE OF A RUN THAT WORKED: on a machine with no `zip` the
+# fixtures were never made, both runs failed at once, and the tier PASSED at
+# "0.9x" (riscv64 port, 2026-11-10). Each run must have checked its sheet and
+# found no disagreement.
+if [ "$(cat "$tmp/big1.xlsx.out" 2>/dev/null)" != "0" ] || [ "$(cat "$tmp/big4.xlsx.out" 2>/dev/null)" != "0" ]; then
+    printf 'FAIL shape the timed runs did not check their sheets: %s / %s\n' \
+        "$(head -c 200 "$tmp/big1.xlsx.out" 2>/dev/null)" "$(head -c 200 "$tmp/big4.xlsx.out" 2>/dev/null)"
+    status=1
+elif [ "$t4" -le 1200 ]; then
     printf 'PASS shape 40k-row sheet evaluated in %sms (ceiling 1200ms; linear scan needs ~2400ms)\n' "$t4"
 else
     printf 'FAIL shape 40k-row sheet took %sms, over the 1200ms ceiling; the (row,col) index may be gone\n' "$t4"

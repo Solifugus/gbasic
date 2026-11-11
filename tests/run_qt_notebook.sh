@@ -34,6 +34,7 @@
 #
 # Skips without Qt in the build; the pixel tier without python3's PIL.
 . "$(dirname "$0")/portable.sh"
+. "$(dirname "$0")/premise.sh"    # premise_highlighter_built
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
@@ -79,7 +80,7 @@ run_fixture() {   # name floor args...
     local rc=$?
     local n
     n=$(sed -n 's/^checks: \([0-9]*\)$/\1/p' "$work/$name.out")
-    grep -v 'This plugin does not support\|^QThreadStorage' "$work/$name.err" >"$work/$name.err2"
+    grep -v 'This plugin does not support\|^QThreadStorage\|built without KSyntaxHighlighting, so it will work as a plain editor' "$work/$name.err" >"$work/$name.err2"
     if [ "$rc" = 0 ] && [ "$(tail -1 "$work/$name.out")" = "mismatches: 0" ] && [ "${n:-0}" -ge "$floor" ] && [ ! -s "$work/$name.err2" ]; then
         printf 'PASS %s (%s checks)\n' "$name" "$n"
         return 0
@@ -92,7 +93,12 @@ run_fixture() {   # name floor args...
 
 printf -- '-- figures and themes\n'
 figs_ran=0
-run_fixture figures_test 25 "$work/figs" && figs_ran=1
+if premise_highlighter_built; then
+    run_fixture figures_test 25 "$work/figs" && figs_ran=1
+else
+    printf 'NOTE this build has no KSyntaxHighlighting: named themes were NOT measured\n'
+    run_fixture figures_test 18 "$work/figs" plain && figs_ran=1
+fi
 
 printf -- '-- blocks, folds and the block event\n'
 mkdir -p "$work/blocks"
@@ -108,9 +114,7 @@ if ! command -v g++ >/dev/null 2>&1; then
 elif ! g++ -std=c++17 -fPIC -Iinclude -Isrc/modules -o "$work/bprobe" \
         tests/qt/blocks_probe.cpp src/modules/qt_backend.o \
         $(pkg-config --cflags --libs Qt6Widgets) \
-        $(pkg-config --libs Qt6Svg 2>/dev/null) \
-        $(pkg-config --libs KF6SyntaxHighlighting 2>/dev/null \
-          || echo -lKF6SyntaxHighlighting) 2>"$work/cxx.err"; then
+        $(make -s print-ldlibs) 2>"$work/cxx.err"; then
     head -8 "$work/cxx.err"
     fail "the blocks probe did not build"
 elif QT_QPA_PLATFORM=offscreen timeout -k 5 60 "$work/bprobe" >"$work/bprobe.out" 2>/dev/null &&
@@ -127,7 +131,7 @@ if [ "$figs_ran" != 1 ]; then
     printf 'SKIP pixels (the fixture did not finish, so there are no pictures)\n'
 elif ! python3 -c 'import PIL' 2>/dev/null; then
     printf 'SKIP pixels (no python3 PIL: the pixels were not measured)\n'
-elif o=$(python3 -I - "$work/figs" $([ "$blocks_ran" = 1 ] && echo "$work/blocks") 2>&1 <<'EOF'
+elif o=$(NOTHEMES=$(premise_highlighter_built && echo 0 || echo 1) python3 -I - "$work/figs" $([ "$blocks_ran" = 1 ] && echo "$work/blocks") 2>&1 <<'EOF'
 import sys
 from PIL import Image
 d = sys.argv[1]
@@ -154,26 +158,31 @@ for name in ("own", "x2"):
     im = Image.open(d + "/%s.png" % name).convert("RGB")
     fringes = sum(1 for p in im.get_flattened_data() if max(p) - min(p) > 3 and p != blue)
     check(name + ": text drawn in gray, no colour fringes (grayscale antialiasing)", fringes == 0, "%d" % fringes)
-for name in ("themes", "plain"):
-    im = Image.open(d + "/%s.png" % name).convert("RGB")
-    w, h = im.size
-    check(name + ": the theme's background", im.getpixel((w - 30, h - 30)) == (0xf2, 0xf2, 0xf2), im.getpixel((w - 30, h - 30)))
-# NOT ASSERTED, MEASURED: qt.capture draws widget text with subpixel
-# antialiasing (colour fringes on glyphs), which drawing into an image with
-# alpha does not change for QWidget::render. A known limit for print figures.
-im = Image.open(d + "/themes.png").convert("RGB")
-print("note: qt.capture's subpixel fringes in the gray editor: %d pixels" % sum(1 for p in im.get_flattened_data() if max(p) - min(p) > 3))
-th = Image.open(d + "/themes.png").convert("RGB")
-dark = sum(1 for p in th.get_flattened_data() if p[0] < 0x90)
-check("themes: text was drawn (dark pixels exist)", dark > 20, dark)
+# the themed captures exist only where the build has a highlighter, which the
+# runner read from the build and says in NOTHEMES
+import os
+if os.environ.get("NOTHEMES") != "1":
+    for name in ("themes", "plain"):
+        im = Image.open(d + "/%s.png" % name).convert("RGB")
+        w, h = im.size
+        check(name + ": the theme's background", im.getpixel((w - 30, h - 30)) == (0xf2, 0xf2, 0xf2), im.getpixel((w - 30, h - 30)))
+    # NOT ASSERTED, MEASURED: qt.capture draws widget text with subpixel
+    # antialiasing (colour fringes on glyphs), which drawing into an image with
+    # alpha does not change for QWidget::render. A known limit for print figures.
+    im = Image.open(d + "/themes.png").convert("RGB")
+    print("note: qt.capture's subpixel fringes in the gray editor: %d pixels" % sum(1 for p in im.get_flattened_data() if max(p) - min(p) > 3))
+    th = Image.open(d + "/themes.png").convert("RGB")
+    dark = sum(1 for p in th.get_flattened_data() if p[0] < 0x90)
+    check("themes: text was drawn (dark pixels exist)", dark > 20, dark)
 if len(sys.argv) > 2:
     b = sys.argv[2]
     k = Image.open(b + "/kinds.png").convert("RGB")
     nblue = sum(1 for p in k.get_flattened_data() if p == blue)
     check("blocks: the SVG image block is drawn, its blue in the capture", nblue > 200, nblue)
-    dk = Image.open(b + "/dark.png").convert("RGB")
-    whites = sum(1 for p in dk.get_flattened_data() if min(p) > 225)
-    check("blocks: a dark editor's block is not a white box", whites < 40, whites)
+    if os.environ.get("NOTHEMES") != "1":   # a dark editor needs a theme
+        dk = Image.open(b + "/dark.png").convert("RGB")
+        whites = sum(1 for p in dk.get_flattened_data() if min(p) > 225)
+        check("blocks: a dark editor's block is not a white box", whites < 40, whites)
 print("checks: %d" % checks)
 sys.exit(1 if bad else 0)
 EOF

@@ -57,6 +57,7 @@
 # QCompleter, an object attached to a widget, which lands in exactly the same
 # place as the highlighter and for the same reason.
 . "$(dirname "$0")/portable.sh"
+. "$(dirname "$0")/premise.sh"    # premise_highlighter_built
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
@@ -85,6 +86,10 @@ fi
 # Asserted rather than assumed, because every tier below sets this variable and
 # a missing directory would make them all report "no definition installed" --
 # a suite agreeing with itself about nothing.
+# A BUILD WITHOUT KSyntaxHighlighting (riscv64's Ubuntu 24.04 has no KF6) has
+# nothing to ask what is highlighting a part, so the tiers that ask are
+# skipped by name; the premise is the build's own link line, so a
+# highlighter that broke on a build that has one still fails (2026-11-11).
 printf 'TIER layout: the definition this repo ships, in the shape the engine wants\n'
 if [ -f editors/kate/syntax/gbasic.xml ]; then
     if cmp -s editors/kate/gbasic.xml editors/kate/syntax/gbasic.xml; then
@@ -99,6 +104,9 @@ export GBASIC_SYNTAX_PATH=editors/kate
 
 # ------------------------------------------------------------------ SEMANTICS
 printf 'TIER semantics: the vocabulary, the oracle, binding, the builder\n'
+if ! premise_highlighter_built; then
+    printf '  SKIP (this build has no KSyntaxHighlighting -- the vocabulary, the oracle and binding was NOT measured)\n'
+else
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
     tests/qt_source_test.bas > "$work/sem.out" 2> "$work/sem.err"
@@ -129,6 +137,7 @@ else
         pass "and clean stderr"
     fi
 fi
+fi   # premise_highlighter_built
 
 # ------------------------------------------------------------- COLOUR
 # THE CLAIM gBASIC CANNOT MAKE. Both halves in one process, so the comparison
@@ -210,6 +219,9 @@ program main()
     qt.stop()
 end program
 BAS
+if ! premise_highlighter_built; then
+    printf '  SKIP (this build has no KSyntaxHighlighting -- where the definition comes from was NOT measured)\n'
+else
 set +e
 XDG_DATA_HOME="$work/empty-home" QT_QPA_PLATFORM=offscreen \
     timeout -k 5 60 ./gbasic --line-buffered "$work/whence.bas" \
@@ -231,6 +243,7 @@ else
         fail "the definition came from $from, which is not the one this repo ships"
     fi
 fi
+fi   # premise_highlighter_built
 
 # --------------------------------------------------------------- RELOCATED
 # A DOWNLOAD IS NOT AN INSTALL, and the obvious implementation gets that wrong
@@ -250,6 +263,9 @@ fi
 # an empty XDG_DATA_HOME, since a developer's own hand-installed copy is
 # exactly what made the original trap invisible.
 printf 'TIER relocated: a moved tree finds its own definition, with no environment\n'
+if ! premise_highlighter_built; then
+    printf '  SKIP (this build has no KSyntaxHighlighting -- relocation was NOT measured)\n'
+else
 relo="$work/relo"
 if ! make install PREFIX=/usr/local DESTDIR="$relo" >/dev/null 2>&1; then
     fail "make install into a scratch DESTDIR did not work"
@@ -281,6 +297,7 @@ else
         fi
     fi
 fi
+fi   # premise_highlighter_built
 
 # ------------------------------------------------------------------ WARNING
 # A MISSING DEFINITION IS A WARNING AND NOT A RAISE, which is the decision
@@ -395,6 +412,8 @@ fi
 printf 'TIER valgrind: no invalid access while an editor is highlighted\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access in the editor was NOT measured)\n'
+elif ! premise_highlighter_built; then
+    printf '  SKIP (this build has no KSyntaxHighlighting -- memory access while highlighting was NOT measured)\n'
 else
     # THE PREMISE FIRST: disabling the JIT must not change what the program
     # does, or the tier below measures a different program from the one that

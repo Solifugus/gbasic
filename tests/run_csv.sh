@@ -125,7 +125,9 @@ with open(sys.argv[1], 'w') as f:
         f.write(chunk)
 " "$work/open.csv"
     printf 'for each r in csv.records({file}"%s")\nend for\n' "$work/open.csv" >"$work/open.bas"
-    /usr/bin/time -f '%M' -o "$work/open.rss" ./gbasic "$work/open.bas" >/dev/null 2>"$work/open.err" </dev/null
+    # run bare: it was under /usr/bin/time writing a figure nothing read, so a
+    # machine without GNU time failed this tier for nothing (riscv64, 2026-11-10)
+    ./gbasic "$work/open.bas" >/dev/null 2>"$work/open.err" </dev/null
     if grep -q 'the record starting on line 3 is over 64 MiB; a quote that never closes?' "$work/open.err"; then
         pass "a 65 MiB unterminated field is refused naming line 3"
     else

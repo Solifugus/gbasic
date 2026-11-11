@@ -100,7 +100,7 @@ for f in $examples; do
     # what widened this from the one message to the whole sentence. Filtered on
     # the SENTENCE and not on the word "plugin", so a real plugin failure
     # ("Could not load the Qt platform plugin") still reddens this.
-    grep -v 'This plugin does not support' "$work/$b.err" > "$work/$b.err2" || true
+    grep -v -e 'This plugin does not support' -e 'built without KSyntaxHighlighting, so it will work as a plain editor' "$work/$b.err" > "$work/$b.err2" || true
     lines=$(grep -c . "$work/$b.out" || true)
     if [ "$rc" = "124" ] || [ "$rc" = "137" ]; then
         fail "$b HUNG -- it reached qt.run() with nobody to close it"

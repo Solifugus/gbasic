@@ -170,13 +170,15 @@ else
 fi
 
 printf 'TIER shape: the memory is constant in the FILE, not proportional\n'
+# made before the premise check: the reopen tier below reads it too, and found
+# it missing where this tier skipped (riscv64 VM, no GNU time, 2026-11-11)
+head -c 33554432 /dev/zero > "$work/small.bin"
 if ! premise_rss_meter; then
     pass "SKIP: /usr/bin/time is absent, so CONSTANT-IN-THE-FILE was NOT measured -- which is the only way to tell a bounded reader from one that happens to fit"
 else
 # The claim is bounded, and the only way to tell a bounded reader from one that
 # merely fits is to grow the file and watch the reader stay still. 4x step,
 # asserted as a RATIO, never an absolute size.
-head -c 33554432 /dev/zero > "$work/small.bin"
 head -c 134217728 /dev/zero > "$work/large.bin"
 s_rss=0; l2_rss=0
 for which in small large; do

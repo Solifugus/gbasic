@@ -16,6 +16,35 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### What the riscv64 port found (2026-11-11)
+
+gBASIC built cleanly on riscv64 (Ubuntu 24.04 under QEMU) and gave no wrong
+answer. The full gate there found these, each fixed here:
+
+- **A crash in a selection handler that refreshes, on every platform.** A table
+  shrunk by the program under its selected row, with a selection handler that
+  refreshes it, crashed in `setRowCount` every run (x86 too). Qt announced the
+  lost selection from inside the rows' removal and the handler changed the
+  table in the middle of it. The tree had the same shape (`qt.refresh` from its
+  own selection handler); Qt 6.10 survived it and 6.4 crashed. Both now announce
+  the lost selection once the rows are gone, so a refreshing handler hears each
+  change and no longer recurses (8 calls where it was 68).
+- **`qt.set(..., "icon", file)` accepted a file that is not an image on Qt 6.4**:
+  `QIcon` is lazy, and whether it says so is Qt's version's. It is asked of the
+  file's contents now (`QImageReader`).
+- **A reordered box read its old positions on Qt 6.4** until the next event;
+  a reorder now lays out at once, as a drop already did.
+- **The test harness:** Qt suites on a build with Qt and no
+  KSyntaxHighlighting (Ubuntu 24.04 has no KF6) skip what needs it, by the
+  build's own link line; C++ probes link what the build linked; G-SQL's
+  sanitizer probes run their program (GCC 13's ASan cannot start one under a
+  riscv64 sv48 kernel) and fall back to UBSan; `sql_parse.c`'s test links
+  `-lm` (x86 inlines `floor`); tiers that needed `zip` or `/usr/bin/time` say
+  so; the xlsx shape tier no longer passes on runs that failed; the mail
+  checker accepts Python 3.12's one header-fold difference.
+- **`tools/check-deps.sh`** lists every library the Makefile probes (it had
+  lost PCRE2, which is required, and six optional modules) and reports drift.
+
 ### A scan fed through sideways (book gap G66, 2026-11-10)
 
 - **`pdf.read_page(..., { ocr: true })`** carries the turn `ocr` found as

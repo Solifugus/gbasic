@@ -37,9 +37,16 @@ window shell( title: "Shell", width: 520, height: 400 )
             field name(  label: "File" )
             field depth( depth: true )
         end tree
+        tree loop to show rows
+            field name(  label: "Loop" )
+            field depth( depth: true )
+        end tree
         table orders to show lines
             field who(   label: "Customer" )
             field total( label: "Total" )
+        end table
+        table stock to show items
+            field sku( label: "SKU" )
         end table
         source code( line_numbers: true, marks: true )
         text status( label: "idle" )
@@ -56,6 +63,36 @@ window shell( title: "Shell", width: 520, height: 400 )
         qt.write(shell, "code", "row " + string(qt.selected(shell, "files")))
         qt.mark(shell, "code", "section", [1])
         qt.set(shell, "status", "text", "chose " + string(g.tree_fired))
+    end on
+
+    ' A HANDLER THAT SELECTS ANOTHER ROW OF ITS OWN TREE: every round really
+    ' changes what it watches, so it calls itself without end. This is the
+    ' loop the bound is for. The refreshing handler above used to loop too,
+    ' but only because Qt announced the old selection from INSIDE the rows'
+    ' removal while the row was still there -- the very call that crashed Qt
+    ' 6.4 (riscv64, 2026-11-11). Announced after the removal, as it is now, a
+    ' refresh empties the selection once and stops.
+    ' MEASURED: the cap bounds the DEPTH, not the count. Each select announces
+    ' twice, so every level calls the next twice and an unchecked loop ran
+    ' 131,070 times (2^17 - 2) before it unwound -- a second here, and long
+    ' enough under valgrind to be killed. So the handler stops itself after 64,
+    ' four times the depth the cap needs.
+    on loop.itemSelectionChanged
+        g.loop_fired = g.loop_fired + 1
+        if g.loop_fired < 64 then
+            qt.select(shell, "loop", mod(g.loop_fired + 1, 2))
+        end if
+    end on
+
+    ' A TABLE SHRINKING UNDER ITS SELECTED ROW, with a handler that
+    ' refreshes it: Qt announced the deselection from inside the rows'
+    ' removal, the handler changed the table in the middle of it, and the
+    ' program's own refresh crashed in setRowCount -- every run, on x86 too
+    ' (found 2026-11-11 from the riscv64 port; nothing here shrank a table).
+    on stock.itemSelectionChanged
+        g.stock_fired = g.stock_fired + 1
+        qt.refresh(shell, "stock")
+        g.stock_seen = qt.cell(shell, "stock", 0, "sku")
     end on
 
     ' AND ONE ON THE TABLE, because the two kinds reach DIFFERENT code --
@@ -93,7 +130,8 @@ end window
 
 program main()
     g = { checks: 0, bad: 0, tree_fired: 0, table_fired: 0, seen: "",
-          vanish_fired: 0 }
+          vanish_fired: 0, loop_fired: 0, stock_fired: 0, stock_seen: "" }
+    items = [ { sku: "A-1" } ]
 
     if not qt.can_display() then
         print "NODISPLAY"
@@ -124,12 +162,36 @@ program main()
     check("a table's selection handler survives its own refresh",
           g.table_fired > 0, true)
 
+    ' ---- A TABLE SHRUNK UNDER ITS SELECTION, by the program --------------
+    for round = 1 to 5
+        items = [ { sku: "A-1" }, { sku: "B-2" }, { sku: "C-3" }, { sku: "D-4" } ]
+        qt.refresh(shell, "stock")
+        qt.select(shell, "stock", 3)
+        items = [ { sku: "A-1" } ]
+        qt.refresh(shell, "stock")
+    next
+    check("a table shrunk under its selected row survives its handler's refresh",
+          qt.cell(shell, "stock", 0, "sku"), "A-1")
+    check("and the handler heard each select and each lost selection",
+          g.stock_fired, 10)
+    check("reading the table as it now is", g.stock_seen, "A-1")
+
     ' ---- THE LOOP IS BROKEN RATHER THAN RUN TO THE END OF THE STACK -------
     ' A handler that changes what it is watching calls itself, and every round
     ' genuinely alters the selection -- so this is a feedback loop in the
     ' PROGRAM. What the backend owes is a bound and a sentence, not a crash.
     ' MEASURED: the deepest legitimate nesting anywhere in this tree is TWO.
+    ' AND THE REFRESHING HANDLER DID NOT RECURSE: measured, 8 calls with the
+    ' lost selection announced after the rows go, 68 when Qt announced it from
+    ' inside their removal (x86's Qt 6.10 survives that; 6.4 crashed in it), so
+    ' this is what fails here when that fix is undone.
+    check("the refreshing handler heard each change, not a recursion",
+          g.tree_fired < 16, true)
     check("the recursion was bounded", g.tree_fired < 200, true)
+    qt.select(shell, "loop", 1)
+    check("a handler selecting in its own tree loops until the bound",
+          g.loop_fired >= 16, true)
+    check("and it ended", g.loop_fired <= 64, true)
 
     ' ---- AND EVERYTHING IS STILL USABLE AFTERWARDS -----------------------
     ' The control on the whole fixture: a window that merely SURVIVED a crash
