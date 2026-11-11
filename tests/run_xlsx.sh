@@ -40,6 +40,7 @@
 # project's optional-dependency convention. Needs no python3: the fixture is
 # committed, and tools/make_xlsx_fixture.py is only how it was authored.
 . "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
+. "$(dirname "$0")/premise.sh"   # premise_time_claims
 set -u
 
 cd "$(dirname "$0")/.."
@@ -487,6 +488,8 @@ if [ "$(cat "$tmp/big1.xlsx.out" 2>/dev/null)" != "0" ] || [ "$(cat "$tmp/big4.x
     printf 'FAIL shape the timed runs did not check their sheets: %s / %s\n' \
         "$(head -c 200 "$tmp/big1.xlsx.out" 2>/dev/null)" "$(head -c 200 "$tmp/big4.xlsx.out" 2>/dev/null)"
     status=1
+elif ! premise_time_claims; then
+    printf 'SKIP shape the 1200ms ceiling (an x86 figure) at GATE_TIME_SCALE=%s: %sms was NOT judged\n' "$GATE_TIME_SCALE" "$t4"
 elif [ "$t4" -le 1200 ]; then
     printf 'PASS shape 40k-row sheet evaluated in %sms (ceiling 1200ms; linear scan needs ~2400ms)\n' "$t4"
 else

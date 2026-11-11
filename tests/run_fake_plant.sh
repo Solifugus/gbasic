@@ -29,6 +29,7 @@ set -uo pipefail
 # Headless, GI-independent, never skips (bar valgrind).
 
 cd "$(dirname "$0")/.."
+. tests/premise.sh   # premise_time_claims
 . "$(dirname "$0")/valgrind_tier.sh"
 make >/dev/null 2>&1 || { echo "FAIL build"; exit 1; }
 
@@ -137,7 +138,9 @@ if [ "$out" = "20000 200 200" ]; then
 else
     fail "200 anomalies on 200 distinct rows of 20 000 (got '$out')"
 fi
-if [ $((t1-t0)) -le 90 ]; then
+if ! premise_time_claims; then
+    printf '  SKIP the 90s ceiling (an x86 figure) at GATE_TIME_SCALE=%s: %ss was NOT judged\n' "$GATE_TIME_SCALE" "$((t1-t0))"
+elif [ $((t1-t0)) -le 90 ]; then
     pass "under the 90s ceiling"
 else
     fail "under the 90s ceiling (took $((t1-t0))s)"

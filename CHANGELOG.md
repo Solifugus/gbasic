@@ -16,6 +16,16 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### `GATE_TIME_SCALE`: the gate on a slow machine (2026-11-11)
+
+- `GATE_TIME_SCALE=N tests/run_all.sh` multiplies every `timeout` bound in the
+  suites (and the gate's own per-suite limit) by N, the `-k` grace with it, so
+  a hang is still caught and only the patience changes; tiers that assert an
+  absolute speed measured on x86 (the xlsx 1200 ms ceiling, fake's 60 s and
+  90 s, G-SQL's commits per sync, the kernel keepalive timers' remaining
+  seconds) skip and say what went unjudged. For riscv64 under QEMU, about 48x
+  slower than x86, where 13 of the first gate's 29 failures were time alone.
+
 ### What the riscv64 port found (2026-11-11)
 
 gBASIC built cleanly on riscv64 (Ubuntu 24.04 under QEMU) and gave no wrong

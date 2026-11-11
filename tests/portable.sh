@@ -143,4 +143,53 @@ gb_have_proc() {
     [ -r /proc/self/status ] && [ ! -e /proc/self/winpid ]
 }
 
+# --- GATE_TIME_SCALE: a slow machine -----------------------------------------------
+# A machine slower than the ones these bounds were measured on -- riscv64 under
+# QEMU runs this interpreter about 48x slower than an x86 desktop (2026-11-11) --
+# fails on TIME rather than on answers: 13 of the 29 failures of the first
+# riscv64 gate. GATE_TIME_SCALE=N (N > 1) multiplies every `timeout` bound, the
+# -k grace with it, so a hang is still caught and only the patience changes.
+# Ceilings that assert a speed (a "40k rows in 1200 ms") are NOT scaled: a
+# figure from one machine is not a claim about another, so premise_time_claims
+# (premise.sh) makes those tiers skip, saying so. Unset or 1: nothing changes,
+# which run_portable asserts.
+gb_time_scale() {   # the scale, or 1
+    case "${GATE_TIME_SCALE:-}" in
+        ''|*[!0-9.]*) echo 1 ;;
+        *) awk -v s="$GATE_TIME_SCALE" 'BEGIN { print (s > 1 ? s : 1) }' ;;
+    esac
+}
+_gb_scale_duration() {   # 120 | 5s | 0.5 | 2m -> scaled, in seconds
+    awk -v d="$1" -v s="$(gb_time_scale)" 'BEGIN {
+        u = substr(d, length(d)); m = 1
+        if (u == "s") { d = substr(d, 1, length(d) - 1) }
+        else if (u == "m") { d = substr(d, 1, length(d) - 1); m = 60 }
+        else if (u == "h") { d = substr(d, 1, length(d) - 1); m = 3600 }
+        else if (u == "d") { d = substr(d, 1, length(d) - 1); m = 86400 }
+        printf "%d\n", d * m * s + 0.999 }'
+}
+if [ "$(gb_time_scale)" != 1 ]; then
+    if [ "$(type -t timeout)" = function ]; then
+        eval "$(declare -f timeout | sed '1s/^timeout/_gb_timeout_inner/')"
+    else
+        _gb_timeout_inner() { command timeout "$@"; }
+    fi
+    timeout() {
+        local args=()
+        while [ $# -gt 0 ]; do
+            case "$1" in
+                -k|-s)  args+=("$1"); [ "$1" = -k ] && args+=("$(_gb_scale_duration "$2")") || args+=("$2"); shift 2 ;;
+                -k*)    args+=(-k "$(_gb_scale_duration "${1#-k}")"); shift ;;
+                --)     shift; break ;;
+                -*)     args+=("$1"); shift ;;
+                *)      break ;;
+            esac
+        done
+        args+=("$(_gb_scale_duration "$1")"); shift
+        _gb_timeout_inner "${args[@]}" "$@"
+    }
+    export -f timeout _gb_timeout_inner _gb_scale_duration gb_time_scale
+    _gb_portable_note "timeout*$(gb_time_scale)"
+fi
+
 export GB_PORTABLE_SHIMS

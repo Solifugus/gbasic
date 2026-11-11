@@ -80,6 +80,9 @@
 #   GATE_JOBS=1 tests/run_all.sh     # the old serial behaviour, exactly
 #   GATE_JOBS=8 tests/run_all.sh     # a different width
 #   SUITE_TIMEOUT=1200 tests/run_all.sh
+#   GATE_TIME_SCALE=50 tests/run_all.sh   # a machine ~50x slower (riscv64 under
+#                                    # QEMU): every timeout bound x50, speed
+#                                    # ceilings skipped as not measured
 #   RUN_MANUAL=1 tests/run_all.sh    # include the manual/very-slow tiers
 #
 # Exit 0 only if every suite that ran passed. A suite that SKIPPED is reported
@@ -105,6 +108,8 @@ done
 # had not failed. 3600 still bounds a genuinely hung suite; override for a
 # slower host.
 timeout_s="${SUITE_TIMEOUT:-3600}"
+# what a suite really gets: portable.sh's `timeout` multiplies by GATE_TIME_SCALE
+timeout_said="$(_gb_scale_duration "$timeout_s" 2>/dev/null || echo "$timeout_s")"
 
 # HOW WIDE. Half the cores rather than all of them, deliberately: the point is
 # to stop wasting 20 idle cores, not to drive the load average to the number
@@ -427,7 +432,7 @@ run_one() {
             printf 'OK\t\t\n' >"$res"
         fi
     elif [ "$rc" -eq 124 ]; then
-        printf 'FAIL\tTIMEOUT after %ss\t\n' "$timeout_s" >"$res"
+        printf 'FAIL\tTIMEOUT after %ss\t\n' "$timeout_said" >"$res"
     else
         printf 'FAIL\texit %d\t\n' "$rc" >"$res"
     fi

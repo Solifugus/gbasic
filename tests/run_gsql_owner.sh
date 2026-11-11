@@ -28,6 +28,7 @@
 # GSQL_OWNER_COST_STRICT=1, since an absolute bound under a parallel gate
 # measures the machine.
 . "$(dirname "$0")/portable.sh"
+. "$(dirname "$0")/premise.sh"   # premise_time_claims
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -132,7 +133,13 @@ tier race "24 clients find no owner at once, 20 times over, and each time exactl
 tier paths "the socket is in the database directory: a symlink finds the same owner, a stale socket is replaced, a long path works, a filesystem with no sockets falls back to the checked runtime directory" 60
 tier handoff "the owner killed: the transaction fails, commits survive, nothing is retried; SIGTERM replays nothing" 60
 tier lifetime "an owner outlives the program that started it while anybody uses it, then stops after its linger" 90
+# THROUGHPUT AGAINST A 5 MS SYNC is a speed claim: where the CPU is ~50x
+# slower the CPU's share swamps the sync's and the ratio is the machine's
+if ! premise_time_claims; then
+    printf 'TIER group: SKIP at GATE_TIME_SCALE=%s -- how far commits share syncs was NOT measured\n' "$GATE_TIME_SCALE"
+else
 tier group "commits share syncs: eight clients at 5 ms a sync make several times one client's commits, one client waits for nothing more, and a failed sync fails every commit it covered" 120
+fi
 tier lease "where the flock is local to each machine: a second machine is refused, takes a dead lease only after watching it, and an owner whose lease was taken writes nothing" 120
 tier window "a client that connects while an owner stops (its socket gone, its lock still held) is served when that owner finishes, not after a 10 s wait" 120
 tier busygone "a client told busy whose winner then went is served at once, a connect and close is not a new owner's first client, and six lost starts in a row are retried rather than given up on (G20-15, each made to happen)" 60

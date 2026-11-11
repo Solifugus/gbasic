@@ -72,6 +72,18 @@ premise_mode_bits() {
     [ "$_premise_mode_bits" = yes ]
 }
 
+# May a tier assert a SPEED here? Not where GATE_TIME_SCALE says the machine is
+# slower than the ones the figures came from (portable.sh): a ceiling measured on
+# an x86 desktop is no claim about riscv64 under QEMU. A tier asks this and
+# SKIPS, naming the figure that went unmeasured. Ratios measured on the machine
+# itself (4x rows -> about 4x time) stay asserted everywhere.
+premise_time_claims() {
+    case "${GATE_TIME_SCALE:-}" in
+        ''|1|1.0) return 0 ;;
+    esac
+    awk -v s="$GATE_TIME_SCALE" 'BEGIN { exit !(s <= 1) }'
+}
+
 # Was THIS build linked with KSyntaxHighlighting? Read from the build's own
 # link line, never from what gBASIC answers: a highlighter that broke on a
 # build that has one must fail, not skip. Absent on riscv64's Ubuntu 24.04,

@@ -31,6 +31,7 @@ set -uo pipefail
 # money and the built-in RNG.
 
 cd "$(dirname "$0")/.."
+. tests/premise.sh   # premise_time_claims
 . "$(dirname "$0")/valgrind_tier.sh"
 make >/dev/null 2>&1 || { echo "FAIL build"; exit 1; }
 
@@ -118,7 +119,9 @@ if [ "$out" = "2000 20000" ]; then
 else
     fail "22 000 rows generated (got '$out')"
 fi
-if [ $((t1-t0)) -le 60 ]; then
+if ! premise_time_claims; then
+    printf '  SKIP the 60s ceiling (an x86 figure) at GATE_TIME_SCALE=%s: %ss was NOT judged\n' "$GATE_TIME_SCALE" "$((t1-t0))"
+elif [ $((t1-t0)) -le 60 ]; then
     pass "under the 60s ceiling"
 else
     fail "under the 60s ceiling (took $((t1-t0))s)"
