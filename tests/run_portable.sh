@@ -92,6 +92,10 @@ is "-k still kills what ignores TERM" "$got" "status=137"
 if [ "$ms" -ge 1800 ] && [ "$ms" -lt 10000 ]; then ok "and its grace is scaled too (${ms}ms for 0.02s + 0.02s, x 50)"
 else bad "the scaled -k fired after ${ms}ms, wanting about 2000"; fi
 is "children of the suite's shell see it too" "$(sc 50 'bash -c "type -t timeout"')" "function"
+# SOURCED TWICE, as run_all.sh and then each suite do: the inherited wrapper must
+# not be wrapped again, which recursed for ever. Bounded by the real timeout.
+is "sourced again in a child, it wraps once and still works" \
+   "$(command timeout 20 env GATE_TIME_SCALE=50 bash -c '. tests/portable.sh; bash -c ". tests/portable.sh; timeout 1 sh -c \"exit 7\"; echo status=\$?"')" "status=7"
 is "the shell fallback is scaled as well" \
    "$(GB_PORTABLE_FORCE=timeout:timeout_shell sc 50 'echo "[$GB_PORTABLE_SHIMS]"')" "[timeout=shell timeout*50]"
 is "premise_time_claims holds unscaled" "$(bash -c '. tests/premise.sh; premise_time_claims && echo yes || echo no')" "yes"

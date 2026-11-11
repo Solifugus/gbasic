@@ -168,7 +168,13 @@ _gb_scale_duration() {   # 120 | 5s | 0.5 | 2m -> scaled, in seconds
         else if (u == "d") { d = substr(d, 1, length(d) - 1); m = 86400 }
         printf "%d\n", d * m * s + 0.999 }'
 }
-if [ "$(gb_time_scale)" != 1 ]; then
+# ONCE: run_all.sh sources this, exports the wrapper, and every suite sources
+# it again -- where `timeout` is already the wrapper, and wrapping it again made
+# the inner call the wrapper itself, recursing for ever (riscv64's first scaled
+# gate sat 90 minutes in its first suite, 2026-11-11).
+if [ "$(gb_time_scale)" != 1 ] && [ "$(type -t _gb_timeout_inner)" = function ]; then
+    _gb_portable_note "timeout*$(gb_time_scale)"
+elif [ "$(gb_time_scale)" != 1 ]; then
     if [ "$(type -t timeout)" = function ]; then
         eval "$(declare -f timeout | sed '1s/^timeout/_gb_timeout_inner/')"
     else
