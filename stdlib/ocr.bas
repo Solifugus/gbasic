@@ -199,8 +199,11 @@ end function
 
 ' `ocr.read(path [, options])` -> a PAGE.
 '
-' { ok, words, rotation, rotation_confidence, script, script_confidence,
-'   languages, skew, why }
+' { ok, words, width, height, units, rotation, rotation_confidence, script,
+'   script_confidence, languages, skew, why }
+'
+' `width` and `height` are the page as read, in `units` ("pixels"): a page the
+' engine turned a quarter to read is as tall as its picture is wide.
 '
 ' `ok` is about whether the ENGINE RAN, not whether it found anything: a blank
 ' scan is an ordinary page with no words, and reporting that as a failure would
@@ -242,6 +245,10 @@ function read_page(path, options = nothing)
     body = read(f)
     delete(f)
 
+    ' THE TURN IS ABOUT THE PICTURE'S OWN SIZE, which tesseract's page row
+    ' (level 1) gives in the frame its boxes are in. It was the words' extent
+    ' until book gap G66: right for a layout, but every box off by the margin
+    ' below and right of the text, which a caller placing words on a page sees.
     words = []
     maxx = 0
     maxy = 0
@@ -250,21 +257,34 @@ function read_page(path, options = nothing)
         if first then
             first = false
         else
-            d = _word_of(split(ln, chr(9)))
+            fields = split(ln, chr(9))
+            if count(fields) >= 10 and fields[0] = "1" then
+                maxx = number(fields[8])
+                maxy = number(fields[9])
+            end if
+            d = _word_of(fields)
             if not is_nothing(d) then
                 if d.confidence >= o.min_confidence then
                     append(words, d)
                 end if
-                if d.left + d.width > maxx then maxx = d.left + d.width
-                if d.top + d.height > maxy then maxy = d.top + d.height
             end if
         end if
     end for
 
     words = _rotate_boxes(words, ori.rotate, maxx, maxy)
+    ' the page as read: a quarter turn swaps its sides
+    wide = maxx
+    high = maxy
+    if not is_unknown(ori.rotate) and (ori.rotate = 90 or ori.rotate = 270) then
+        wide = maxy
+        high = maxx
+    end if
 
     return { ok: true,
              words: words,
+             width: wide,
+             height: high,
+             units: "pixels",
              rotation: ori.rotate,
              rotation_confidence: ori.confidence,
              script: ori.script,
@@ -526,10 +546,16 @@ function _layout(page, options)
         end for
         drift = abs(_tan_small(page.skew * 3.141592653589793 / 180) * (hi - lo))
         if not is_unknown(pitch) and pitch > 0 and drift > pitch / 2 then
+            ' in the page's own units: a page from pdf is in points (book gap G66)
+            units = default(page.units, "pixels")
+            unit = units
+            if ends_with(units, "s") then
+                unit = left(units, len(units) - 1)
+            end if
             error ("ocr.grid: the page is skewed " + string(page.skew) + " degrees, which across its "
-                   + string(round(hi - lo)) + "-pixel span drifts " + string(round(drift))
-                   + " pixels, more than half its " + string(round(pitch))
-                   + "-pixel line pitch -- a row would carry another row's values and nothing would say so")
+                   + string(round(hi - lo)) + "-" + unit + " span drifts " + string(round(drift))
+                   + " " + units + ", more than half its " + string(round(pitch))
+                   + "-" + unit + " line pitch -- a row would carry another row's values and nothing would say so")
         end if
     end if
 

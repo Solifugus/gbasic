@@ -246,7 +246,11 @@ measured this as the dominant real-world failure, ahead of every effect the
 synthetic work found: EXIF applied where present, OSD consulted always, and the
 resulting rotation plus its confidence carried on the page. A page whose
 orientation was *guessed* at confidence 0.6 is not the same evidence as one that
-was certain, and only the caller can decide what to do about it.
+was certain, and only the caller can decide what to do about it. The word
+boxes are turned about the picture's own size (tesseract's page row), and the
+page carries its size as read and its `units` (book gap G66, 2026-11-10: they
+had been turned about the words' extent, which lost the margin; a layout could
+not see that, a page placing the words could).
 
 **R0b. The script is reported against the languages available.** §1.5: reading
 Korean with English data yields words, not an error. A page that looks like a

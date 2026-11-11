@@ -47,6 +47,11 @@ long = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
 ingram = { skew: 2.2, words: [ w("a", 0, 0, 1), w(long, 10, 0, 1), w("c", 0, 37.5, 2), w("d", 0, 75, 3) ] }
 check("G53 a page whose drift passes half its pitch is refused below max_skew",
       contains(refusal(ingram, nothing), "drifts 35 pixels, more than half its 38-pixel line pitch"), true)
+' G66: a page from pdf is in points, and the refusal says so
+inpoints = ingram
+inpoints.units = "points"
+check("G66 the refusal names the page's own units",
+      contains(refusal(inpoints, nothing), "drifts 35 points, more than half its 38-point line pitch"), true)
 ' the control: the same page level, and the same skew on a short span
 level = ingram
 level.skew = 0

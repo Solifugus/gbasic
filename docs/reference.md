@@ -11732,8 +11732,10 @@ whole program without needing a call site.
 
   `ocr.available()` and `ocr.languages()` say what this machine can do.
   `ocr.read_page(path [, options])` returns a **page**, not a string: `words`
-  (each with `text`, `confidence` and a box), plus `rotation`,
-  `rotation_confidence`, `script`, `script_confidence` and `skew`. Options are
+  (each with `text`, `confidence` and a box), plus `width` and `height` (the
+  page as read, in `units`, `"pixels"`: a page turned a quarter to read it is
+  as tall as its picture is wide), `rotation`, `rotation_confidence`,
+  `script`, `script_confidence` and `skew`. Options are
   `{ languages:, psm:, min_confidence: }` and an unknown one is refused by name.
   `ocr.grid(page [, { max_skew: }])` lays the page out as text, always with a
   space between words (*since 0.11.0*, so two words the engine split are not
@@ -11743,7 +11745,8 @@ whole program without needing a call site.
   `ocr.max_skew()` are the measure and the default threshold it refuses past;
   it also refuses a page whose skew, across the words' span, drifts more than
   half its median line pitch, where a row starts to carry the next row's
-  figures (measured on real invoices at 2.2 degrees).
+  figures (measured on real invoices at 2.2 degrees). The refusal names the
+  page's own `units`, so a page from `pdf` says points (*since 2026-11-10*).
 
   **It never returns a bare string, never silently drops a low-confidence word,
   and corrects nothing.** Each is a refusal with a measurement behind it. Plain
@@ -11766,6 +11769,9 @@ whole program without needing a call site.
   out, and a 90° error reads as *87° of skew at 30% confidence* rather than as a
   rotation. EXIF is not enough — a page can be sideways inside a correctly
   oriented photograph. How confidently it was settled travels with the page.
+  The word boxes are turned with it, about the picture's own size, so a word
+  on a sideways page has the box it has on the upright one (before
+  2026-11-10 they were turned about the words' extent and lost the margin).
 
   **`grid` refuses past `max_skew()`.** Beyond about 3° the layout does not
   break, it **misattributes** — a well-formed row carrying another row's money,
@@ -11786,7 +11792,8 @@ whole program without needing a call site.
   sizes }`, with one `{ width, height, rotation }` per page in points.
   `pdf.read_page(path, n [, options])` reads page `n` (from 1) as a **page**:
   `{ ok, why, n, how, width, height, rotation, words, images, text_layer,
-  text_layer_set_aside, skew }`. Words are `ocr.read_page`'s shape (`text`,
+  text_layer_set_aside, skew, units, scan_rotation, scan_rotation_confidence }`.
+  `rotation` is the PDF's own (`/Rotate`); `units` is `"points"`. Words are `ocr.read_page`'s shape (`text`,
   `left`, `top`, `width`, `height`, `block`, `paragraph`, `line`,
   `confidence`), so **`ocr.grid` lays out a PDF page as it lays out a scan**.
   Words and `images` (`left`, `top`, `width`, `height`, `pixels_wide`,
@@ -11805,6 +11812,14 @@ whole program without needing a call site.
   - `scan`: one picture the size of the page, read only when asked.
   - `ocr`: a scan read with `{ ocr: true }`, through `ocr`, its words scaled
     to the page's points with the engine's confidence and `skew`.
+    `scan_rotation` is the turn `ocr` found the scan needed (0, 90, 180 or
+    270 clockwise; `unknown` when the engine could not tell, which tesseract
+    says of a page with few characters) and `scan_rotation_confidence` its
+    confidence. **A turned scan is answered as read** (*since 2026-11-10*,
+    book gap G66): its words, its pictures, `width` and `height` are in the
+    upright page, so a scan fed through sideways is 612 by 792 points with
+    its words where they print, not a 792 by 612 page with its words on
+    their sides.
   - `blank`.
 
   **OCR is never automatic.** A producer's text and an engine's guess are

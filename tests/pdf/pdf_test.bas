@@ -2,12 +2,14 @@
 ' expected answer is what the fixtures told gpdf to put there -- a word's text
 ' and left edge, its baseline (792 - y, as PDF counts y from the bottom), a
 ' picture's place and pixel size -- never poppler's own answer read back.
-' args[0] = the fixtures' directory; args[1] = "ocr" adds the OCR checks.
+' args[0] = the fixtures' directory; args[1] = "ocr" adds the OCR checks, and
+' "turned" the turned scans' (G66).
 program main(args)
     load pdf
     load ocr
     dir = args[0]
     want_ocr = count(args) > 1 and args[1] = "ocr"
+    want_turned = count(args) > 1 and args[1] = "turned"
     checks = { n: 0, bad: 0 }
 
     function check(checks, label, got, want)
@@ -72,6 +74,8 @@ program main(args)
     checks = check(checks, "text: no layer", p.text_layer, false)
     checks = check(checks, "text: skew", is_unknown(p.skew), true)
     checks = check(checks, "text: page width", p.width, 612)
+    checks = check(checks, "text: in points", p.units, "points")
+    checks = check(checks, "text: no scan to have turned", is_unknown(p.scan_rotation), true)
     ' one grid serves both: a text page lays out as ocr lays out a scan
     g = split(ocr.grid(p), chr(10))
     checks = check(checks, "grid: two lines", count(g), 2)
@@ -190,6 +194,61 @@ program main(args)
         checks = check(checks, "ocr searchable: layer set aside", l.text_layer_set_aside, true)
         checks = check(checks, "ocr searchable: the picture's words", contains(texts(l.words), "FF-10442"), true)
         checks = check(checks, "ocr searchable: not the layer's", contains(texts(l.words), "LAYER"), false)
+    end if
+
+    ' --- turned scans (book gap G66) ---------------------------------------
+    ' The fixture placed each picture with margins left 20, top 8, right 12,
+    ' bottom 14. Read upright, the page is 612 x 792 again, and the picture's
+    ' margins are where turning the page puts them, worked out by hand:
+    '   0    as placed                       left 20, top 8   580 x 770
+    '   90   turned clockwise to read: the bottom edge comes to the left and
+    '        the left edge to the top        left 14, top 20  590 x 760
+    '   180  right to left, bottom to top    left 12, top 14  580 x 770
+    '   270  turned anticlockwise: the top edge to the left, the right edge
+    '        to the top                      left 8, top 12   590 x 760
+    ' A word gpdf put at x 72 on baseline 700 of the 612 x 792 page is then at
+    ' left + 72 * (picture width / 612), its ink ending at top + 92 * (picture
+    ' height / 792).
+    if want_turned then
+        turns = [{ a: 0, left: 20, top: 8, w: 580, h: 770 },
+                 { a: 90, left: 14, top: 20, w: 590, h: 760 },
+                 { a: 180, left: 12, top: 14, w: 580, h: 770 },
+                 { a: 270, left: 8, top: 12, w: 590, h: 760 }]
+        for each t in turns
+            k = "turned " + string(t.a) + ": "
+            s = pdf.read_page(f(dir, "turned" + string(t.a)), 1, { ocr: true })
+            checks = check(checks, k + "how", s.how, "ocr")
+            checks = check(checks, k + "the turn ocr found", s.scan_rotation, t.a)
+            checks = check(checks, k + "with its confidence", type(s.scan_rotation_confidence), "number")
+            checks = check(checks, k + "width as read", s.width, 612)
+            checks = check(checks, k + "height as read", s.height, 792)
+            checks = check(checks, k + "in points", s.units, "points")
+            im = s.images[0]
+            checks = check(checks, k + "the picture, turned with the page",
+                           string(im.left) + "," + string(im.top) + " " + string(im.width) + "x" + string(im.height),
+                           string(t.left) + "," + string(t.top) + " " + string(t.w) + "x" + string(t.h))
+            sx = t.w / 612
+            sy = t.h / 792
+            inv = unknown
+            tot = unknown
+            for each w in s.words
+                if w.text = "Invoice" and is_unknown(inv) then
+                    inv = w
+                end if
+                if w.text = "Total" and is_unknown(tot) then
+                    tot = w
+                end if
+            end for
+            checks = check(checks, k + "Invoice read", is_unknown(inv), false)
+            checks = check(checks, k + "Total read", is_unknown(tot), false)
+            if not is_unknown(inv) and not is_unknown(tot) then
+                checks = check(checks, k + "Invoice's left edge", abs(inv.left - (t.left + 72 * sx)) < 3, true)
+                checks = check(checks, k + "on its baseline", abs(inv.top + inv.height - (t.top + 92 * sy)) < 2, true)
+                checks = check(checks, k + "Total on the next", abs(tot.top + tot.height - (t.top + 112 * sy)) < 2, true)
+            end if
+            g = split(ocr.grid(s), chr(10))
+            checks = check(checks, k + "grid's first line", trim(g[0]), "Invoice No: FF-10442")
+        end for
     end if
 
     remove_tree(out)

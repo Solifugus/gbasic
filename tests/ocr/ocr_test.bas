@@ -86,6 +86,15 @@ program main( args )
     sg = ocr.grid(s)
     check("so the sideways page grids correctly too",
           _rowhas(sg, "100294783", "9,004.55"), true)
+    ' AND THEY MOVE ABOUT THE PICTURE, NOT THE TEXT (book gap G66): the turn
+    ' used the words' extent, so every box lost the margin and sat 19 pixels
+    ' higher than the same word on the upright page. A caller placing words on
+    ' a page (pdf does) sees that; grid did not.
+    check("the page as read is the upright page's size",
+          string(s.width) + "x" + string(s.height), string(p.width) + "x" + string(p.height))
+    check("in pixels", s.units, "pixels")
+    check("a word sits where it does on the upright page",
+          _box(s, "100294783"), _box(p, "100294783"))
 
     ' ------------------------------------------------------------------
     print ""
@@ -160,6 +169,15 @@ function _rowhas(g, a, b)
         end if
     end for
     return false
+end function
+
+function _box(page, text)
+    for each w in page.words
+        if w.text = text then
+            return string(w.left) + "," + string(w.top) + " " + string(w.width) + "x" + string(w.height)
+        end if
+    end for
+    return "absent"
 end function
 
 function _small(x, lim)

@@ -16,6 +16,20 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### A scan fed through sideways (book gap G66, 2026-11-10)
+
+- **`pdf.read_page(..., { ocr: true })`** carries the turn `ocr` found as
+  `scan_rotation` and `scan_rotation_confidence` (`rotation` stays the PDF's
+  own `/Rotate`), and answers a turned scan **as read**: its words, pictures,
+  `width` and `height` in the upright page. A quarter-turned scan's words had
+  been scaled on the wrong axes. Every page now carries `units: "points"`.
+- **`ocr.read_page`** turns word boxes about the picture's own size rather
+  than the words' extent, which had moved every box on a sideways page by its
+  margin (19 pixels on the suite's fixture), and answers `width`, `height` and
+  `units: "pixels"` for the page as read.
+- **`ocr.grid`**'s skew refusal names the page's own units: points on a page
+  from `pdf`.
+
 ### Accounting exports for an outside accountant: `acctexport` (2026-11-10)
 
 - **`stdlib/acctexport.bas`**, a companion to `finio` (why not part of it:
