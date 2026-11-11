@@ -173,6 +173,11 @@ while IFS=$'\t' read -r idx line marker; do
     # `app.db` came to be committed by accident in 05c54aa: a test artifact
     # swept up by `git add -A`. A suite must not modify the tree it is testing.
     mkdir -p "$work/cwd"
+    # THE SAME DISPLAY EVERYWHERE: Qt's offscreen platform. A block that opens
+    # a window behind `if not qt.can_display() then return` ran clean on a
+    # headless machine and not on this one, so whether its needs-context
+    # marker was earned depended on the machine (riscv64 VM, 2026-11-11).
+    export QT_QPA_PLATFORM=offscreen
     if [[ "$marker" == "needs-context" ]]; then
         ( cd "$work/cwd" && timeout 2 "$root/gbasic" "$src" ) >/dev/null 2>"$work/rerr" </dev/null
     else

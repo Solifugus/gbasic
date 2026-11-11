@@ -235,14 +235,19 @@ else
     if [ -z "$port" ]; then
         bad "stream (no port announced)"
     else
+        t0=$(date +%s%N)
         timeout 3 curl -sN "http://127.0.0.1:$port/events" >"$scratch/ev.out" 2>&1 || true
+        ms=$(( ($(date +%s%N) - t0) / 1000000 ))
         got="$(grep -c '^event: tick' "$scratch/ev.out" || true)"
-        # A 3s read of a 0.2s timer: about 15. A band, and a floor that a
-        # stream receiving only its opening event fails.
-        if [ "$got" -ge 8 ] && [ "$got" -le 40 ]; then
-            ok "a parked stream received $got timer-driven events it never asked for"
+        # About one per 0.2s of the read: 15 for 3s. Judged against how long
+        # the read MEASURED, because GATE_TIME_SCALE lengthens the window
+        # (riscv64: 748 events in a 150 s read were right, not a flood). A
+        # band, and a floor that a stream receiving only its opening event fails.
+        want=$(( ms / 200 ))
+        if [ "$got" -ge $(( want / 2 )) ] && [ "$got" -ge 8 ] && [ "$got" -le $(( want * 2 + 10 )) ]; then
+            ok "a parked stream received $got timer-driven events it never asked for (in ${ms}ms)"
         else
-            bad "stream: $got tick events in 3s of a 0.2s timer"
+            bad "stream: $got tick events in ${ms}ms of a 0.2s timer (about $want expected)"
         fi
         grep -q '^data: open' "$scratch/ev.out" || bad "stream: the opening event never arrived"
         # AND THE WORKER IS FREE THROUGHOUT, which is the whole point: the
