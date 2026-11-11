@@ -126,7 +126,7 @@ for q in range(nq):
 floor = {"reach": 3, "reach_from_edges": 3, "bounded_all": 3, "bounded_union": 3, "weights": 3, "label_join": 3,
          "self_second": 3, "series": 3, "two_anchors": 3, "cycle": 3, "cyclic graph": 1}
 short = [k for k, n in floor.items() if census.get(k, 0) < n]
-open(out, "w").write("\n".join(lines) + "\n")
+open(out, "w", newline="\n", encoding="utf-8").write("\n".join(lines) + "\n")
 print("census: " + ", ".join("%s %d" % (k, census.get(k, 0)) for k in sorted(floor)))
 if short:
     print("census below its floor: " + ", ".join(short))

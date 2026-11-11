@@ -163,7 +163,7 @@ floor = {k: 3 for k in ["row_number", "rank", "dense_rank", "percent_rank", "cum
                         "first_value", "last_value", "nth_value", "count", "count(*)", "sum", "avg", "min", "max"]}
 floor.update({"frame default": 10, "frame rows": 10, "frame range": 5, "partitioned": 20})
 short = [k for k, n in floor.items() if census.get(k, 0) < n]
-open(out, "w").write("\n".join(lines) + "\n")
+open(out, "w", newline="\n", encoding="utf-8").write("\n".join(lines) + "\n")
 print("census: " + ", ".join("%s %d" % (k, census.get(k, 0)) for k in sorted(floor)))
 if short:
     print("census below its floor: " + ", ".join(short))

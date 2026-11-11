@@ -104,7 +104,7 @@ for q in range(nq):
 
 floor = {"plain": 5, "rollup": 5, "cube": 5, "sets": 5, "several sets": 20, "an empty set": 10}
 short = [k for k, n in floor.items() if census.get(k, 0) < n]
-open(out, "w").write("\n".join(lines) + "\n")
+open(out, "w", newline="\n", encoding="utf-8").write("\n".join(lines) + "\n")
 print("census: " + ", ".join("%s %d" % (k, census.get(k, 0)) for k in sorted(floor)))
 if short:
     print("census below its floor: " + ", ".join(short))

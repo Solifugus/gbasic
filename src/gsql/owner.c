@@ -15,17 +15,16 @@
 #include "v3.h"
 #include "xsort.h"
 
+#include "gsql_sock.h"
+
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/un.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -106,6 +105,26 @@ int gsql_socket_path(const char *db, char *out, size_t cap, uint64_t *device, ui
     /* checked, not trusted: an owner believes every client because only this
      * user can reach the socket (§3). The directory is made 0700; one somebody
      * else owns, or can write in, could hold a socket that is not our owner's */
+#ifdef _WIN32
+    /* the same two questions asked of the ACL, a uid and a mode having no
+     * Windows meaning; the identity is the volume and file index */
+    unsigned long long dev = 0, ino = 0;
+    if (S_ISDIR(st.st_mode)) {
+        int t = gs_dir_trust(db, 0);
+        if (t == 1) {
+            return err_set(err, GSQL_MISUSE, "the database directory %s belongs to another user, so a socket in it "
+                           "could be anybody's", db);
+        }
+        if (t == 2) {
+            return err_set(err, GSQL_MISUSE, "the database directory %s can be written by other users, so a socket "
+                           "in it could be anybody's; make it yours alone (icacls \"%s\" /inheritance:r /grant:r "
+                           "\"%%USERNAME%%:(OI)(CI)F\")", db, db);
+        }
+    }
+    if (gs_dir_identity(db, &dev, &ino) != 0) {
+        return err_set(err, GSQL_STORAGE, "the database %s cannot be examined", db);
+    }
+#else
     if (S_ISDIR(st.st_mode)) {
         if (st.st_uid != getuid()) {
             return err_set(err, GSQL_MISUSE, "the database directory %s belongs to another user (uid %lu), so a "
@@ -116,13 +135,19 @@ int gsql_socket_path(const char *db, char *out, size_t cap, uint64_t *device, ui
                            "so a socket in it could be anybody's; chmod 700 it", db, (unsigned)(st.st_mode & 0777));
         }
     }
+#endif
     int len = g_test_machine ? snprintf(out, cap, "%s/db.sock.%s", db, g_test_machine)
                              : snprintf(out, cap, "%s/db.sock", db);
     if (len < 0 || (size_t)len >= cap) {
         return err_set(err, GSQL_MISUSE, "the database path %s is too long", db);
     }
+#ifdef _WIN32
+    *device = (uint64_t)dev;
+    *inode = (uint64_t)ino;
+#else
     *device = (uint64_t)st.st_dev;
     *inode = (uint64_t)st.st_ino;
+#endif
     return GSQL_OK;
 }
 
@@ -133,6 +158,44 @@ int gsql_socket_fallback(const char *db, int make, char *out, size_t cap, GsqlEr
                        "the database %s cannot be found: %s", db, strerror(errno));
     }
     char dir[512];
+#ifdef _WIN32
+    /* the user's own local application data, which a profile keeps private;
+     * checked as closely as /tmp's is below, by the ACL */
+    const char *lad = getenv("LOCALAPPDATA");
+    if (!lad || !*lad) {
+        return err_set(err, GSQL_STORAGE, "there is no runtime directory: LOCALAPPDATA is not set");
+    }
+    snprintf(dir, sizeof dir, "%s/gbasic-run", lad);
+    if (make && !CreateDirectoryA(dir, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
+        return err_set(err, GSQL_STORAGE, "the runtime directory %s cannot be made", dir);
+    }
+    DWORD attr = GetFileAttributesA(dir);
+    if (attr == INVALID_FILE_ATTRIBUTES) {
+        return err_set(err, GSQL_NOT_FOUND, "the runtime directory %s cannot be examined", dir);
+    }
+    if ((attr & FILE_ATTRIBUTE_REPARSE_POINT) || !(attr & FILE_ATTRIBUTE_DIRECTORY)) {
+        return err_set(err, GSQL_MISUSE, "the runtime directory %s is not a directory of its own (a link or a file)", dir);
+    }
+    int t = gs_dir_trust(dir, 1);
+    if (t == 1) {
+        return err_set(err, GSQL_MISUSE, "the runtime directory %s belongs to another user, so a socket in it could "
+                       "be anybody's", dir);
+    }
+    if (t == 2) {
+        return err_set(err, GSQL_MISUSE, "the runtime directory %s is open to other users, so a socket in it could "
+                       "be anybody's", dir);
+    }
+    unsigned long long dev = 0, ino = 0;
+    if (gs_dir_identity(db, &dev, &ino) != 0) {
+        return err_set(err, GSQL_STORAGE, "the database %s cannot be examined", db);
+    }
+    int len = snprintf(out, cap, "%s/gsql-%llx-%llx%s%s.sock", dir, dev, ino, g_test_machine ? "-" : "",
+                       g_test_machine ? g_test_machine : "");
+    if (len < 0 || (size_t)len >= cap) {
+        return err_set(err, GSQL_MISUSE, "the socket path %s is too long", out);
+    }
+    return GSQL_OK;
+#else
     const char *xdg = getenv("XDG_RUNTIME_DIR");
     if (xdg && *xdg) {
         snprintf(dir, sizeof dir, "%s/gbasic", xdg);
@@ -170,6 +233,7 @@ int gsql_socket_fallback(const char *db, int make, char *out, size_t cap, GsqlEr
         return err_set(err, GSQL_MISUSE, "the socket path %s is too long", out);
     }
     return GSQL_OK;
+#endif
 }
 
 /* A short address for `path`: the path itself when it fits, otherwise one
@@ -234,7 +298,7 @@ static int socket_op(int s, const char *path, int binding) {
                      : connectat(dirfd, s, (struct sockaddr *)&a, sizeof a);
     } else
 #endif
-    rc = binding ? bind(s, (struct sockaddr *)&a, sizeof a) : connect(s, (struct sockaddr *)&a, sizeof a);
+    rc = binding ? gs_sk_bind(s, (struct sockaddr *)&a, sizeof a) : gs_sk_connect(s, (struct sockaddr *)&a, sizeof a);
     int e = errno;
     if (dirfd >= 0) {
         close(dirfd);
@@ -244,14 +308,14 @@ static int socket_op(int s, const char *path, int binding) {
 }
 
 int gsql_socket_connect(const char *path) {
-    int s = socket(AF_UNIX, SOCK_STREAM, 0);
+    int s = gs_sk_unix();
     if (s < 0) {
         return -1;
     }
-    fcntl(s, F_SETFD, FD_CLOEXEC);
+    gs_sk_cloexec(s);
     if (socket_op(s, path, 0) != 0) {
         int e = errno;
-        close(s);
+        gs_sk_close(s);
         errno = e;
         return -1;
     }
@@ -415,7 +479,7 @@ static void send_empty(Conn *c, unsigned type, uint32_t id) {
 /* Writes what the socket takes now; the rest waits for POLLOUT. */
 static void flush_out(Conn *c) {
     while (c->out_pos < c->out.length) {
-        ssize_t w = write(c->fd, c->out.bytes + c->out_pos, c->out.length - c->out_pos);
+        ssize_t w = gs_sk_write(c->fd, c->out.bytes + c->out_pos, c->out.length - c->out_pos);
         if (w < 0) {
             if (errno == EINTR) {
                 continue;
@@ -569,7 +633,7 @@ static void conn_cleanup(Owner *o, Conn *c) {
     gsql_reader_free(&c->rd);
     gsql_buf_free(&c->out);
     if (c->fd >= 0) {
-        close(c->fd);
+        gs_sk_close(c->fd);
     }
     c->fd = -1;
 }
@@ -1385,6 +1449,7 @@ static int g_signal_pipe[2] = { -1, -1 };
 
 static unsigned g_stop_grace_s = 10;
 
+#ifndef _WIN32
 static void on_term(int sig) {
     (void)sig;
     int saved = errno;
@@ -1402,11 +1467,30 @@ static void on_term(int sig) {
     alarm(g_stop_grace_s);
     errno = saved;
 }
-
-static int nonblock(int fd) {
-    int fl = fcntl(fd, F_GETFL);
-    return fl < 0 ? -1 : fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+#else
+/* The deadline's Windows form: a thread that ends the process if the clean
+ * stop has not finished by then. */
+static DWORD WINAPI stop_deadline(LPVOID arg) {
+    (void)arg;
+    Sleep(g_stop_grace_s * 1000u);
+    TerminateProcess(GetCurrentProcess(), 1);
+    return 0;
 }
+
+static BOOL WINAPI on_console_stop(DWORD kind) {
+    (void)kind;
+    if (g_signal_pipe[1] >= 0) {
+        gs_sk_write(g_signal_pipe[1], "t", 1);
+    }
+    HANDLE t = CreateThread(NULL, 0, stop_deadline, NULL, 0, NULL);
+    if (t) {
+        CloseHandle(t);
+    }
+    return TRUE;
+}
+#endif
+
+static int nonblock(int fd) { return gs_sk_nonblock(fd); }
 
 static void enqueue(Owner *o, Conn *c, const GsqlFrame *f) {
     if (f->type == GSQL_M_CANCEL) {
@@ -1476,7 +1560,7 @@ static void enqueue(Owner *o, Conn *c, const GsqlFrame *f) {
 static void read_conn(Owner *o, Conn *c) {
     unsigned char buf[65536];
     for (;;) {
-        ssize_t n = read(c->fd, buf, sizeof buf);
+        ssize_t n = gs_sk_read(c->fd, buf, sizeof buf);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -1518,15 +1602,15 @@ static void read_conn(Owner *o, Conn *c) {
 
 static void accept_all(Owner *o) {
     for (;;) {
-        int fd = accept(o->ls, NULL, NULL);
+        int fd = gs_sk_accept(o->ls);
         if (fd < 0) {
             if (errno == EINTR) {
                 continue;
             }
             return;
         }
-        if (nonblock(fd) != 0 || fcntl(fd, F_SETFD, FD_CLOEXEC) != 0) {
-            close(fd);
+        if (nonblock(fd) != 0 || gs_sk_cloexec(fd) != 0) {
+            gs_sk_close(fd);
             continue;
         }
         Conn *c = calloc(1, sizeof *c);
@@ -1562,7 +1646,7 @@ static int socket_answers(const char *db) {
     if (s < 0) {
         return 0;
     }
-    close(s);
+    gs_sk_close(s);
     return 1;
 }
 
@@ -1714,7 +1798,7 @@ static void serve(Owner *o) {
                 accept_all(o);
                 if (o->nconns == 0) {
                     unlink(o->sock);
-                    close(o->ls);
+                    gs_sk_close(o->ls);
                     o->ls = -1;
                     break;
                 }
@@ -1766,7 +1850,7 @@ static void serve(Owner *o) {
                 wait = (int)due;
             }
         }
-        int n = poll(fds, (nfds_t)(o->nconns + 2), wait);
+        int n = gs_sk_poll(fds, (nfds_t)(o->nconns + 2), wait);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -1841,11 +1925,11 @@ static int listen_on(const char *path, int in_db_dir, int *refused, char *why, s
         return -1;
     }
     unlink(tmp);
-    int s = socket(AF_UNIX, SOCK_STREAM, 0);
-    if (s < 0 || fcntl(s, F_SETFD, FD_CLOEXEC) != 0 || nonblock(s) != 0) {
+    int s = gs_sk_unix();
+    if (s < 0 || gs_sk_cloexec(s) != 0 || nonblock(s) != 0) {
         snprintf(why, wcap, "a socket could not be made: %s", strerror(errno));
         if (s >= 0) {
-            close(s);
+            gs_sk_close(s);
         }
         return -1;
     }
@@ -1854,23 +1938,29 @@ static int listen_on(const char *path, int in_db_dir, int *refused, char *why, s
         int e = errno;
         snprintf(why, wcap, "the socket %s could not be made: %s", tmp, strerror(e));
         *refused = e == EPERM || e == EOPNOTSUPP || e == ENOTSUP;
-        close(s);
+        gs_sk_close(s);
         unlink(tmp);
         return -1;
     }
     /* the directory's mode is the guard (§3); this is the second one, for a
      * directory that lets others in to read */
-    if (chmod(tmp, 0600) != 0 || listen(s, 128) != 0) {
+#ifdef _WIN32
+    /* the socket file inherits the database directory's ACL, which is the
+     * guard there (gsql_socket_path); a mode has no Windows meaning */
+    if (gs_sk_listen(s, 128) != 0) {
+#else
+    if (chmod(tmp, 0600) != 0 || gs_sk_listen(s, 128) != 0) {
+#endif
         snprintf(why, wcap, "the socket %s could not be made: %s", tmp, strerror(errno));
-        close(s);
+        gs_sk_close(s);
         unlink(tmp);
         return -1;
     }
     /* renamed over a stale one in one step: this process holds the lock, so
      * no other owner exists, and a client never finds the name missing (§3) */
-    if (rename(tmp, path) != 0) {
+    if (gs_rename_over(tmp, path) != 0) {
         snprintf(why, wcap, "the socket %s could not be put in place: %s", path, strerror(errno));
-        close(s);
+        gs_sk_close(s);
         unlink(tmp);
         return -1;
     }
@@ -1887,22 +1977,31 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
     } else {
         o.opt.ready_fd = -1;
     }
+#ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);
-    if (pipe(g_signal_pipe) != 0) {
+#endif
+    if (gs_sk_pair(g_signal_pipe) != 0) {
         ready_line(o.opt.ready_fd, "error the owner could not make its signal pipe: %s", strerror(errno));
         return 1;
     }
     nonblock(g_signal_pipe[0]);
     nonblock(g_signal_pipe[1]);
-    fcntl(g_signal_pipe[0], F_SETFD, FD_CLOEXEC);
-    fcntl(g_signal_pipe[1], F_SETFD, FD_CLOEXEC);
+    gs_sk_cloexec(g_signal_pipe[0]);
+    gs_sk_cloexec(g_signal_pipe[1]);
+    g_stop_grace_s = o.opt.stop_grace_s ? o.opt.stop_grace_s : 10;
+#ifdef _WIN32
+    /* Windows has no SIGTERM to send a detached process; a console's close or
+     * break is its nearest form, and a stop from outside is otherwise the
+     * process ending, which the engine survives as it survives a crash. */
+    SetConsoleCtrlHandler(on_console_stop, TRUE);
+#else
     struct sigaction sa;
     memset(&sa, 0, sizeof sa);
     sa.sa_handler = on_term;
     sigemptyset(&sa.sa_mask);
     sigaction(SIGTERM, &sa, NULL);
     signal(SIGALRM, SIG_DFL);   /* the stop's deadline must be able to end us */
-    g_stop_grace_s = o.opt.stop_grace_s ? o.opt.stop_grace_s : 10;
+#endif
     /* what a crashed owner or program left of its sorts and spools */
     gs_xsort_sweep(NULL);
 
@@ -1922,8 +2021,12 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
         if (socket_answers(db)) {
             break;
         }
+#ifdef _WIN32
+        Sleep(5);
+#else
         struct timespec ts = { 0, 5 * 1000000L };
         nanosleep(&ts, NULL);
+#endif
         rc = o.e->open(db, &so, &o.db);
     }
     if (rc == GS_ELSEWHERE) {
@@ -1965,7 +2068,11 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
                          "above it)", parent);
             } else if (!S_ISDIR(st.st_mode)) {
                 snprintf(why, sizeof why, " (%s is not a folder)", parent);
+#ifdef _WIN32
+            } else if (access(parent, W_OK) != 0) {   /* the UCRT refuses X_OK as a mode */
+#else
             } else if (access(parent, W_OK | X_OK) != 0) {
+#endif
                 snprintf(why, sizeof why, " (the folder %s cannot be written by this user)", parent);
             }
         }
@@ -2032,7 +2139,7 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
        started meanwhile finds no socket and waits for the lock (§3) */
     if (o.ls >= 0) {
         unlink(sock);
-        close(o.ls);
+        gs_sk_close(o.ls);
         o.ls = -1;
     }
     if (o.fenced) {
@@ -2052,8 +2159,11 @@ out_pipe:
     }
     free(o.conns);
     free(o.fifo);
-    close(g_signal_pipe[0]);
-    close(g_signal_pipe[1]);
+#ifdef _WIN32
+    SetConsoleCtrlHandler(on_console_stop, FALSE);
+#endif
+    gs_sk_close(g_signal_pipe[0]);
+    gs_sk_close(g_signal_pipe[1]);
     g_signal_pipe[0] = g_signal_pipe[1] = -1;
     return status;
 }

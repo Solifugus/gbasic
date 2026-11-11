@@ -29,7 +29,9 @@ extern const GsEngine gs_engine_wal;
 
 #include <stdio.h>
 #include <stdlib.h>
+#ifndef _WIN32
 #include <sys/resource.h>
+#endif
 #include <unistd.h>
 
 static unsigned checks, failures;
@@ -342,8 +344,15 @@ static void many_files(const char *base, GsqlIo *io, int real) {
     char path[600];
     snprintf(path, sizeof path, "%s.many", base);
     GsOptions o = {1, 512, 0, io, 4096, 1000, 0, 8, NULL};
-    struct rlimit was;
     int lowered = 0;
+#ifdef _WIN32
+    /* Windows has no per-process descriptor limit to lower, so in the real
+     * layer the cap is exercised but not proven: said, not passed */
+    if (real) {
+        printf("  SKIP the descriptor cap in the real layer: Windows has no limit to lower, so it was NOT measured\n");
+    }
+#else
+    struct rlimit was;
     if (real && getrlimit(RLIMIT_NOFILE, &was) == 0) {
         int probe = dup(0);
         if (probe >= 0) {
@@ -354,6 +363,7 @@ static void many_files(const char *base, GsqlIo *io, int real) {
         }
         CHECK(lowered, "could not lower the descriptor limit, so the cap was not measured");
     }
+#endif
     GsStore *db;
     int rc = E->open(path, &o, &db);
     CHECK(rc == GS_OK, "opening the many-file store answered %s", gs_status_name(rc));
@@ -448,7 +458,10 @@ static void many_files(const char *base, GsqlIo *io, int real) {
     }
     free(last);
 out:
+#ifndef _WIN32
     if (lowered) setrlimit(RLIMIT_NOFILE, &was);
+#endif
+    (void)lowered;
 }
 
 /* Many versions of a few keys, so a memtable holds several versions of one

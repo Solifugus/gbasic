@@ -37,7 +37,7 @@ def echo(ready):
     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     s.bind(("127.0.0.1", 0))
     tmp = ready + ".tmp"
-    with open(tmp, "w") as f:
+    with open(tmp, "w", newline="\n", encoding="utf-8") as f:
         f.write(str(s.getsockname()[1]))
     os.rename(tmp, ready)
     s.settimeout(1)

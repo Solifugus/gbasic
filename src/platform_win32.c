@@ -1757,6 +1757,10 @@ int gb_sock_set_blocking(int fd, int blocking) {
     return ioctlsocket((SOCKET)fd, FIONBIO, &nonblocking) == 0;
 }
 
+int gb_sock_would_block(void) {
+    return WSAGetLastError() == WSAEWOULDBLOCK;
+}
+
 /* ---- iconv for libxml2, without the LGPL libiconv ------------------------- */
 /*
  * libxml2 decodes UTF-8, UTF-16 and ISO-8859-x itself and hands every other

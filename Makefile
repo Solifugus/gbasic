@@ -410,19 +410,15 @@ PLATFORM_OBJ ?= src/platform_posix.o
 
 # G-SQL (docs/gsql_design.md): the engine, the table layer, the owner and its
 # protocol, and the SQL layer, linked since increment 3 gave the owner
-# something to answer (docs/gsql_sql_design.md). POSIX only for now: the owner
-# is fork, poll and a local socket, and Windows has an increment of its own.
+# something to answer (docs/gsql_sql_design.md). On Windows too since
+# 2026-11-10: the owner is CreateProcess, WSAPoll and an AF_UNIX socket there
+# (docs/windows_port_status.md §32).
 # Not a HAVE_* switch, which names an optional LIBRARY (run_docs_gate.sh holds
 # each one to a README row): this needs nothing installed, and is per platform.
-ifeq ($(OS),Windows_NT)
-GSQL_OBJS :=
-CFLAGS += -DGBASIC_GSQL=0
-else
 GSQL_OBJS := src/gsql/lsm.o src/gsql/lease.o src/gsql/xsort.o src/gsql/store_common.o src/gsql/store_util.o src/gsql/io.o src/gsql/key.o \
              src/gsql/v3.o src/gsql/table.o src/gsql/wire.o src/gsql/owner.o src/gsql/client.o \
              src/gsql/sql_parse.o src/gsql/sql_plan.o src/gsql/sql_exec.o
 CFLAGS += -DGBASIC_GSQL=1
-endif
 
 LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o src/window_check.o src/csv_reader.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS) $(QT_OBJS) $(GSQL_OBJS)
 OBJS := src/main.o src/repl.o src/lineedit.o $(LIB_OBJS)

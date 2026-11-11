@@ -34,6 +34,31 @@
 /* Answered by a store's own fenced layer for a write after it lost its lease
  * (docs/gsql_lease_design.md §5): another machine owns the database now. */
 #define GSQL_IO_FENCED 100001
+/* Windows: where the lock sits, as the high half of a byte offset (src/gsql/io.c,
+ * win_lock). Shared with gsql.c's probe for a live owner, which must ask about
+ * the same byte. */
+#define GSQL_IO_WIN_LOCK_HIGH 0x7fff0000u
+
+/* Whether a path names its file without a working directory: `/...` on POSIX;
+ * on Windows also a drive (`C:/`, or with a backslash) or a UNC or rooted path
+ * (a leading backslash).
+ * The owner's working directory is not the program's, so every path that
+ * crosses to it must pass this. */
+static inline int gsql_path_absolute(const char *p) {
+    if (p[0] == '/') {
+        return 1;
+    }
+#ifdef _WIN32
+    if (p[0] == '\\') {
+        return 1;
+    }
+    if (((p[0] >= 'A' && p[0] <= 'Z') || (p[0] >= 'a' && p[0] <= 'z')) && p[1] == ':' &&
+        (p[2] == '/' || p[2] == '\\')) {
+        return 1;
+    }
+#endif
+    return 0;
+}
 
 enum {
     GSQL_IO_CREATE = 1,    /* create if absent */
@@ -85,8 +110,9 @@ void gsql_io_sleep_ms(GsqlIo *io, uint64_t ms);
 /* ---- the real layer ---------------------------------------------------- */
 
 /* pread/pwrite, fdatasync (F_FULLFSYNC on macOS, where plain fsync does not
- * reach the platter), flock, and a directory fsync for rule 2. Windows is not
- * implemented: its open answers ENOSYS rather than a layer nobody has run. */
+ * reach the platter), flock, and a directory fsync for rule 2. Windows uses
+ * FlushFileBuffers, POSIX-semantics rename and delete, and a LockFileEx far
+ * past the data (src/gsql/io.c; held to the simulator by run_gsql_io.sh). */
 GsqlIo *gsql_io_real(void);
 
 /* ---- the simulated layer ----------------------------------------------- */

@@ -1776,3 +1776,167 @@ added the same week
 (`src/modules/crypto_ssh.c`, `src/vendor/bcrypt_pbkdf.c`) is not in this count,
 because the probe builds without libcrypto. It is portable C over OpenSSL, and
 is unmeasured on Windows.
+
+## 32. net, G-SQL and the webserver on Windows (2026-11-10)
+
+§31 answered "no" for net and for G-SQL's owner and client. This section is the
+increment that ports them, plus `webserver.listen`, which had been refused by
+name since Tier 1. Each was measured on a native MSYS2 UCRT64 build on
+Windows 11 and, for every file changed, rebuilt and run on Linux (Ubuntu 26.04
+under WSL) to check that the POSIX paths did not move.
+
+### The build after master
+
+Merging master brought three compile breaks: `eval.c` now includes `lexer.h`
+before the system headers, and winnt.h declares an enumerator called
+`TokenType` (renamed for the length of those headers in `posix_compat.h`);
+crypto_ssh uses `memmem`, which the UCRT lacks; process limits added a
+`setrlimit` block, now behind `_WIN32` (limits are refused there first).
+
+### net
+
+One body for both platforms: a block at the top of `src/modules/net.c` wraps
+every socket call in a function with the POSIX shape (an int descriptor, -1
+and errno) and is `#undef`'d at the end of the file. What differs, each found
+by `run_net.sh` rather than by reading:
+
+- `SO_ERROR` and `WSAGetLastError` hold WSA codes, so they are mapped; without
+  that a refused connect reported `failed` instead of `refused`.
+- **`SO_REUSEADDR` on Windows lets a second socket bind a port another is
+  listening on**, so the `address_in_use` check answered instead of refusing.
+  Windows uses `SO_EXCLUSIVEADDRUSE` there (and so does the webserver now).
+- `IPV6_V6ONLY` defaults to on, so `::` did not reach IPv4; it is set off,
+  matching Linux.
+- `SIO_UDP_CONNRESET` is off, or an ICMP unreachable for an earlier `send_to`
+  arrives as a reset on the next receive.
+- A truncated datagram is `WSAEMSGSIZE`, and the size that was sent cannot be
+  known. So the receive buffer is a full 64 KiB on Windows and net.c makes the
+  cut, which means `size` is the sent size, as on Linux.
+- The resolver thread's wake is a loopback socket pair, since WSAPoll takes
+  sockets only.
+- Peer credentials come from `SIO_AF_UNIX_GETPEERPID`, which gives the pid.
+  There is no uid; the fixture asserts it is unknown rather than skipping it.
+
+`run_net.sh` passes natively. Its TLS, Qt, `/proc` and valgrind tiers skip,
+each saying why. The harness now strips Python's CRLF and asks for Linux by
+name before reading `/proc`, because MSYS2 has a `/proc` of its own that knows
+nothing of a native process.
+
+### G-SQL
+
+**The real I/O layer** (`src/gsql/io.c`) replaced the `ENOSYS` stub:
+
+| POSIX call | Windows call |
+|---|---|
+| fsync, fdatasync | `FlushFileBuffers`, through `ReOpenFile` for a read-only handle |
+| rename over an open target | `FileRenameInfoEx` with POSIX semantics, falling back to `MoveFileEx` |
+| unlink of an open file | `FileDispositionInfoEx`, POSIX semantics |
+| directory sync | `FlushFileBuffers` on the directory handle |
+| flock | `LockFileEx` on one byte at `0x7fff0000_00000000`, far past any data |
+| a mode-0700 directory | an owner-only protected DACL |
+
+Windows byte-range locks are mandatory, so a lock over the data would block
+reads through every other handle. A second lock through the same handle is a
+no-op, as flock's is. `run_gsql_io.sh` holds the real layer to the simulator:
+four parity seeds of ~3,700 checks each agree.
+
+**The lease** names a Windows machine by `MachineGuid` and its host by
+`GetComputerNameEx`. Before this every Windows machine was the same `host:`,
+and two machines sharing a database would take each other's lease. There is
+no boot id, so as outside Linux the fast path is never taken.
+
+**The owner and client** share `src/gsql/gsql_sock.h`, where every POSIX
+helper is exactly the call it replaces:
+- The wake is a loopback socket pair. A console break or close stops the owner
+  cleanly, and a thread enforces the stop deadline that `SIGALRM` gives POSIX.
+- The directory trust check asks the ACL the uid and mode questions: the owner
+  must be this user (or Administrators when the user is in that group), and no
+  other account outside SYSTEM and Administrators may write. The remedy names
+  `icacls`.
+- Identity is the volume serial and file index.
+- The runtime fallback is `%LOCALAPPDATA%/gbasic-run`, checked strictly.
+- **The client starts the owner directly**, with `DETACHED_PROCESS`, its own
+  process group and `CREATE_BREAKAWAY_FROM_JOB` where the job allows it. Only
+  the ready pipe and NUL are inherited. POSIX needs an intermediate and
+  `setsid` because of zombies, and Windows has none.
+- Absolute paths for `BACKUP TO` and `DUMP TO` accept a drive or UNC path
+  (`gsql_path_absolute`). Before this `gsql.backup` turned `C:\...` into
+  `cwd/C:\...`.
+
+**A crash restart waited out the whole lease.** The lease's fast path, "a
+restart after a crash on this machine", needs a boot id, and Windows had none.
+So every owner started after a killed one waited out the dead owner's lease,
+which is longer than a client waits for an owner to say it is ready.
+`run_gsql_module`'s `lost` tier showed this: the request after the crash
+failed, and the one after that worked. Windows' `BootId` (a boot counter in
+the registry) is the boot id now. If fast startup leaves it unchanged, that
+is still safe, because the fast path also needs this machine's lock to be
+free and no holder survives a reboot.
+
+### webserver.listen
+
+The refusal is gone. The webserver already went through the socket seam for
+close and blocking mode. What it still needed:
+- `gb_sock_would_block()`: after a failed `recv` it tested `errno`, which
+  Winsock never sets, so a client could be dropped for a stale value.
+- `SO_EXCLUSIVEADDRUSE`, as `net` uses.
+- `gb_sock_close` on listen's error paths.
+- `gb_net_init` BEFORE `getaddrinfo`. Before Winsock starts, `getaddrinfo`
+  fails, and every listen was reported as "address must be numeric".
+- A file served by `webserver.send_file` and `web.static` opened `O_BINARY`.
+  In text mode it stopped at the first `^Z` byte and dropped the CRs (curl
+  reported a partial file).
+
+**The worker pool is still refused, by name.** `workers:` above 1 needs a
+listener inherited by the workers (`process.start`'s `listen_fds`, refused on
+Windows). Draining needs a SIGTERM to the worker. So these tiers fail on
+Windows with that refusal's sentence: `run_web_pool`, `run_web_configure`'s
+live tier, `run_web_server_block`'s `block_drain`, `run_web_handler_errors`'
+`crash_pool`, and `run_web_stream`'s `stream_drain`. The Windows form,
+`WSADuplicateSocket` into each worker and a named event for the drain, is the
+next increment. `run_web_hardening` needs `nc`, which MSYS2 does not have.
+
+### Harness
+
+On Windows the Python oracles wrote CRLF and cp1252. Eighteen writers in
+`tests/**/*.py` now say `newline="\n", encoding="utf-8"`. `csv/roundtrip.py`
+decodes gBASIC's output as UTF-8. `premise_rss_meter` answers no under MSYS2,
+whose `/usr/bin/time` measures its own wrapper (a control read 6020 -> 6024
+kB). `run_gsql_module` finds, tests and kills owners through Windows when it
+runs under MSYS2. Before this, a missing `pgrep` made its leftovers tier pass
+vacuously. The sweep tier names Windows pids (`/proc/PID/winpid`). The G-SQL C
+harnesses `store_test` and `xsort_test` say that the descriptor-cap tier
+measured nothing, since Windows has no per-process limit to lower.
+
+**MSYS2's `timeout` does not stop a native grandchild.** When `run_gsql_store`
+hit the suite's 30-minute bound, the two `crash_store` processes ran on.
+
+### Results, native Windows 11 (MSYS2 UCRT64)
+
+| suite | result |
+|---|---|
+| `run_net` | passes (TLS, Qt, `/proc`, valgrind skip with reasons) |
+| `run_gsql_io` | passes; four parity seeds against the simulator |
+| `run_gsql_key`, `run_gsql_table`, `run_gsql_module` | pass (`privatetmp` and valgrind skip) |
+| `run_gsql_cookbook` | 54/54 |
+| `run_gsql_store` | build, store, version and format tiers pass; the crash gate did not finish in 30 minutes |
+| `run_gsql_owner`, `run_gsql_sql` | NOT RUN: their C harnesses fork and link `platform_posix.c` |
+| `run_webserver`, `run_web_bind`, `run_web_form`, `run_web_routes`, `run_websocket` | pass |
+| `run_web_stream` | passes except `stream_drain` (the pool) |
+| `run_csv`, `run_text_encoding`, `run_portable` | pass |
+
+### What is NOT verified
+
+- **The store crash gate on Windows.** It is CPU-bound in the simulator, and
+  over 30 minutes it did not finish what takes about two on Linux. Slow is not
+  wrong, and nothing has shown which this is.
+- **The owner and SQL suites' C harnesses on Windows.** The SQL layer is
+  exercised there only through `run_gsql_module` and the cookbook.
+- **The owner's console-close stop and its deadline thread**, which no tier
+  sends.
+- **A database on a network share**, and with it the runtime-directory
+  fallback, which only a filesystem refusing AF_UNIX reaches.
+- **The ACL trust check: two branches measured by hand, none in a suite.** A
+  directory made under `C:\` inherits Modify for Authenticated Users and is
+  refused, naming `icacls`. After the `icacls` line the message gives, the
+  same directory is accepted. Ownership by another user was not tried.

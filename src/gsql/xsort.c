@@ -8,6 +8,7 @@
  * gBASIC's order for index keys. */
 
 #define _POSIX_C_SOURCE 200809L
+#define _CRT_RAND_S   /* rand_s, before stdlib.h: Windows' mkdtemp below */
 #include "xsort.h"
 
 #include <dirent.h>
@@ -18,6 +19,10 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#if defined(_WIN32)
+#include <windows.h>
+#include <direct.h>
+#endif
 
 #define DEFAULT_BUDGET ((size_t)64 << 20)
 #define RUN_BUFFER (64 * 1024)
@@ -64,9 +69,59 @@ struct GsXsort {
 
 static const char *temp_base(void) {
     const char *t = getenv("TMPDIR");
+#if defined(_WIN32)
+    /* the user's own temporary directory, which is on disk and private */
+    if (!t || !*t) t = getenv("TEMP");
+    if (!t || !*t) t = getenv("TMP");
+    return t && *t ? t : ".";
+#else
     /* not /tmp: it is RAM on many systems, and a spill there is no spill */
     return t && *t ? t : "/var/tmp";
+#endif
 }
+
+#if defined(_WIN32)
+/* mkdtemp, which the UCRT lacks: the trailing XXXXXX from rand_s, and the
+ * directory made with _mkdir, which fails if the name is taken, so two
+ * sorters can never share one. It inherits the temporary directory's ACL,
+ * this user's alone in a profile. */
+static char *gs_mkdtemp(char *tmpl) {
+    size_t n = strlen(tmpl);
+    if (n < 6 || strcmp(tmpl + n - 6, "XXXXXX") != 0) {
+        errno = EINVAL;
+        return NULL;
+    }
+    static const char digits[] = "abcdefghijklmnopqrstuvwxyz0123456789";
+    for (int attempt = 0; attempt < 100; attempt++) {
+        for (size_t i = n - 6; i < n; i++) {
+            unsigned int v = 0;
+            rand_s(&v);
+            tmpl[i] = digits[v % (sizeof digits - 1)];
+        }
+        if (_mkdir(tmpl) == 0) {
+            return tmpl;
+        }
+        if (errno != EEXIST) {
+            return NULL;
+        }
+    }
+    errno = EEXIST;
+    return NULL;
+}
+#define mkdtemp gs_mkdtemp
+
+/* POSIX's `kill(pid, 0) == 0 || errno != ESRCH`: the process is there, or it
+ * is not ours to ask about */
+static int gs_pid_present(long pid) {
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid);
+    if (!h) {
+        return GetLastError() != ERROR_INVALID_PARAMETER;
+    }
+    int alive = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+    CloseHandle(h);
+    return alive;
+}
+#endif
 
 int gs_xsort_open(const char *tmpdir, size_t budget, GsXsort **out) {
     GsXsort *s = calloc(1, sizeof *s);
@@ -597,18 +652,30 @@ unsigned gs_xsort_sweep(const char *tmpdir) {
     while ((e = readdir(d))) {
         long pid = dir_pid(e->d_name);
         /* a process still there, or one not ours to ask (EPERM), keeps it */
+#if defined(_WIN32)
+        if (pid <= 0 || pid == (long)getpid() || gs_pid_present(pid)) {
+#else
         if (pid <= 0 || pid == (long)getpid() || kill((pid_t)pid, 0) == 0 || errno != ESRCH) {
+#endif
             continue;
         }
         char path[1024];
         if (snprintf(path, sizeof path, "%s/%s", base, e->d_name) >= (int)sizeof path) {
             continue;
         }
-        struct stat st;
         /* a directory of ours, not a link to one */
+#if defined(_WIN32)
+        DWORD attr = GetFileAttributesA(path);
+        if (attr == INVALID_FILE_ATTRIBUTES || !(attr & FILE_ATTRIBUTE_DIRECTORY) ||
+            (attr & FILE_ATTRIBUTE_REPARSE_POINT)) {
+            continue;   /* in the user's own temporary directory, so ours */
+        }
+#else
+        struct stat st;
         if (lstat(path, &st) != 0 || !S_ISDIR(st.st_mode) || st.st_uid != getuid()) {
             continue;
         }
+#endif
         DIR *in = opendir(path);
         if (!in) {
             continue;

@@ -6,19 +6,20 @@
 #include "platform.h"
 #include "v3.h"
 
+#include "gsql_sock.h"
+
 #include <errno.h>
 #include <fcntl.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
-#include <sys/un.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#ifndef _WIN32
+#include <sys/wait.h>
+#endif
 
 #define DEFAULT_WAIT_MS 10000u
 #define ATTEMPTS 5
@@ -54,16 +55,24 @@ static uint64_t now_ms(void) {
 }
 
 static void pause_ms(long ms) {
+#ifdef _WIN32
+    Sleep((DWORD)ms);
+#else
     struct timespec t = { ms / 1000, (ms % 1000) * 1000000L };
     while (nanosleep(&t, &t) != 0 && errno == EINTR) {
     }
+#endif
 }
 
 /* send, not write: a write to a socket whose owner has gone raises SIGPIPE,
  * which would end the CLIENT's process for the owner's exit */
 static int write_all(int fd, const unsigned char *p, size_t n) {
     while (n) {
+#ifdef _WIN32
+        ssize_t w = gs_sk_write(fd, p, n);
+#else
         ssize_t w = send(fd, p, n, MSG_NOSIGNAL);
+#endif
         if (w < 0) {
             if (errno == EINTR) {
                 continue;
@@ -94,14 +103,24 @@ static int connect_to(const char *sock, const char *fallback) {
 /* Reaps an intermediate left waiting on a slow owner. The owner itself is
  * nobody's child (gsql_owner_lifetime_design.md §2). */
 static void reap(GsqlClient *c) {
+#ifdef _WIN32
+    (void)c;   /* nothing to reap: no intermediate, and Windows keeps no zombies */
+#else
     if (c->stray > 0 && waitpid(c->stray, NULL, WNOHANG) == c->stray) {
         c->stray = 0;
     }
+#endif
 }
 
 /* Starts an owner and reads its one line. Answers 'r' ready, 'b' busy, or
  * 0 with err filled. */
+#ifdef _WIN32
+static int start_owner_win(GsqlClient *c, GsqlError *err);
+#endif
 static int start_owner(GsqlClient *c, GsqlError *err) {
+#ifdef _WIN32
+    return start_owner_win(c, err);
+#else
     if (!c->opt.owner_argv || !c->opt.owner_argv[0]) {
         err_set(err, GSQL_NO_OWNER, "no owner is serving %s, and this client was not told how to start one", c->db);
         return 0;
@@ -272,7 +291,191 @@ static int start_owner(GsqlClient *c, GsqlError *err) {
     err_set(err, GSQL_NO_OWNER, "the owner for %s did not say it was ready within %u ms", c->db,
             c->opt.wait_ms ? c->opt.wait_ms : DEFAULT_WAIT_MS);
     return 0;
+#endif
 }
+
+#ifdef _WIN32
+/* An argument for CreateProcess's command line, quoted the way the CRT's
+ * parser undoes: backslashes are literal except before a quote. */
+static void cmd_append(char **cmd, size_t *len, size_t *cap, const char *arg) {
+    size_t need = *len + strlen(arg) * 2 + 4;
+    if (need > *cap) {
+        *cap = need * 2;
+        char *p = realloc(*cmd, *cap);
+        if (!p) {
+            abort();
+        }
+        *cmd = p;
+    }
+    char *o = *cmd + *len;
+    if (*len) {
+        *o++ = ' ';
+    }
+    *o++ = '"';
+    for (const char *s = arg;; s++) {
+        size_t bs = 0;
+        while (*s == '\\') {
+            bs++;
+            s++;
+        }
+        if (!*s) {
+            for (size_t i = 0; i < bs * 2; i++) *o++ = '\\';   /* before the closing quote */
+            break;
+        }
+        if (*s == '"') {
+            for (size_t i = 0; i < bs * 2 + 1; i++) *o++ = '\\';
+        } else {
+            for (size_t i = 0; i < bs; i++) *o++ = '\\';
+        }
+        *o++ = *s;
+    }
+    *o++ = '"';
+    *o = 0;
+    *len = (size_t)(o - *cmd);
+}
+
+/* Windows' start (docs/gsql_owner_lifetime_design.md §2). POSIX needs an
+ * intermediate and setsid so the owner is nobody's child and outlives the
+ * program that started it; on Windows a process is never anybody's zombie,
+ * so the owner is started directly: DETACHED_PROCESS (no console to share),
+ * its own process group, and OUTSIDE the caller's job where the job allows
+ * it -- a job made to end the caller's children with it would otherwise take
+ * the owner too, which the design means to outlive its starter. Exactly two
+ * handles cross: the ready pipe's write end, whose number goes in argv as the
+ * descriptor does on POSIX, and NUL for the standard streams, so an owner
+ * never holds a $(...) capture open. The line is then read with the same
+ * deadline; an owner that ends first has its exit status reported. */
+static int start_owner_win(GsqlClient *c, GsqlError *err) {
+    if (!c->opt.owner_argv || !c->opt.owner_argv[0]) {
+        err_set(err, GSQL_NO_OWNER, "no owner is serving %s, and this client was not told how to start one", c->db);
+        return 0;
+    }
+    SECURITY_ATTRIBUTES inherit = { sizeof inherit, NULL, TRUE };
+    HANDLE rd = NULL, wr = NULL;
+    if (!CreatePipe(&rd, &wr, &inherit, 0)) {
+        err_set(err, GSQL_NO_OWNER, "an owner could not be started: CreatePipe failed (%lu)", GetLastError());
+        return 0;
+    }
+    SetHandleInformation(rd, HANDLE_FLAG_INHERIT, 0);
+    HANDLE nul = CreateFileA("NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &inherit,
+                             OPEN_EXISTING, 0, NULL);
+    char fdtext[32];
+    snprintf(fdtext, sizeof fdtext, "%llu", (unsigned long long)(uintptr_t)wr);
+    char *cmd = NULL;
+    size_t len = 0, cap = 0;
+    for (size_t i = 0; c->opt.owner_argv[i]; i++) {
+        cmd_append(&cmd, &len, &cap, c->opt.owner_argv[i]);
+    }
+    cmd_append(&cmd, &len, &cap, c->db);
+    cmd_append(&cmd, &len, &cap, fdtext);
+    cmd_append(&cmd, &len, &cap, c->opt.create ? "create" : "open");
+
+    HANDLE list[2] = { wr, nul };
+    SIZE_T asz = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &asz);
+    LPPROC_THREAD_ATTRIBUTE_LIST attrs = malloc(asz);
+    STARTUPINFOEXA si;
+    memset(&si, 0, sizeof si);
+    si.StartupInfo.cb = sizeof si;
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdInput = si.StartupInfo.hStdOutput = si.StartupInfo.hStdError = nul;
+    int have_list = attrs && nul != INVALID_HANDLE_VALUE && InitializeProcThreadAttributeList(attrs, 1, 0, &asz) &&
+                    UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, list, sizeof list, NULL, NULL);
+    si.lpAttributeList = have_list ? attrs : NULL;
+    DWORD flags = DETACHED_PROCESS | CREATE_NEW_PROCESS_GROUP |
+                  (have_list ? EXTENDED_STARTUPINFO_PRESENT : 0);
+    PROCESS_INFORMATION pi;
+    memset(&pi, 0, sizeof pi);
+    BOOL ok = CreateProcessA(NULL, cmd, NULL, NULL, TRUE, flags | CREATE_BREAKAWAY_FROM_JOB, NULL, NULL,
+                             &si.StartupInfo, &pi);
+    if (!ok && GetLastError() == ERROR_ACCESS_DENIED) {
+        /* a job that does not allow breakaway: the owner then lives in it,
+           and the next client starts another if the job ends this one */
+        ok = CreateProcessA(NULL, cmd, NULL, NULL, TRUE, flags, NULL, NULL, &si.StartupInfo, &pi);
+    }
+    DWORD create_error = ok ? 0 : GetLastError();
+    if (have_list) {
+        DeleteProcThreadAttributeList(attrs);
+    }
+    free(attrs);
+    free(cmd);
+    CloseHandle(wr);
+    if (nul != INVALID_HANDLE_VALUE) {
+        CloseHandle(nul);
+    }
+    if (!ok) {
+        CloseHandle(rd);
+        err_set(err, GSQL_NO_OWNER, "an owner could not be started: %s could not be run (error %lu)",
+                c->opt.owner_argv[0], create_error);
+        return 0;
+    }
+    CloseHandle(pi.hThread);
+
+    char line[800];
+    size_t n = 0;
+    int eof = 0;
+    uint64_t deadline = now_ms() + (c->opt.wait_ms ? c->opt.wait_ms : DEFAULT_WAIT_MS);
+    while (n < sizeof line - 1 && !memchr(line, '\n', n) && now_ms() < deadline) {
+        DWORD avail = 0;
+        if (!PeekNamedPipe(rd, NULL, 0, NULL, &avail, NULL)) {
+            eof = 1;   /* the owner has closed its end, or ended */
+            break;
+        }
+        if (!avail) {
+            Sleep(2);
+            continue;
+        }
+        DWORD got = 0;
+        DWORD want = (DWORD)(sizeof line - 1 - n);
+        if (!ReadFile(rd, line + n, avail < want ? avail : want, &got, NULL) || got == 0) {
+            eof = 1;
+            break;
+        }
+        n += got;
+    }
+    CloseHandle(rd);
+    line[n] = 0;
+    char *nl = strchr(line, '\n');
+    if (nl) {
+        *nl = 0;
+    }
+    if (!nl && eof) {
+        /* it ended, or closed the pipe, before saying it was ready */
+        DWORD code = 0;
+        WaitForSingleObject(pi.hProcess, 2000);
+        GetExitCodeProcess(pi.hProcess, &code);
+        CloseHandle(pi.hProcess);
+        if (code == STILL_ACTIVE) {
+            err_set(err, GSQL_NO_OWNER, "the owner for %s did not start: it closed its ready line without a word", c->db);
+        } else {
+            err_set(err, GSQL_NO_OWNER, "the owner for %s did not start: it exited with status %lu before saying it "
+                    "was ready", c->db, (unsigned long)code);
+        }
+        return 0;
+    }
+    CloseHandle(pi.hProcess);
+    if (strncmp(line, "ready ", 6) == 0) {
+        c->started = (pid_t)atol(line + 6);
+        return 'r';
+    }
+    if (strcmp(line, "busy") == 0) {
+        c->started = 0;
+        return 'b';
+    }
+    if (strncmp(line, "elsewhere ", 10) == 0) {
+        err_set(err, GSQL_ELSEWHERE, "the database %s is open on another machine, %s; "
+                "a database has one owner, so open it from that machine or close it there first", c->db, line + 10);
+        return 0;
+    }
+    if (strncmp(line, "error ", 6) == 0) {
+        err_set(err, GSQL_NO_OWNER, "the owner for %s did not start: %s", c->db, line + 6);
+        return 0;
+    }
+    err_set(err, GSQL_NO_OWNER, "the owner for %s did not say it was ready within %u ms", c->db,
+            c->opt.wait_ms ? c->opt.wait_ms : DEFAULT_WAIT_MS);
+    return 0;
+}
+#endif
 
 static int recv_frame(GsqlClient *c, GsqlFrame *f, GsqlError *err);
 
@@ -336,7 +539,7 @@ static int handshake(GsqlClient *c, GsqlError *err) {
 
 static void drop(GsqlClient *c) {
     if (c->fd >= 0) {
-        close(c->fd);
+        gs_sk_close(c->fd);
     }
     c->fd = -1;
     gsql_reader_free(&c->rd);
@@ -510,7 +713,7 @@ static int recv_frame(GsqlClient *c, GsqlFrame *f, GsqlError *err) {
                            st == GSQL_READ_SHORT ? "a length under 5" : "longer than the limit");
         }
         unsigned char buf[65536];
-        ssize_t n = read(c->fd, buf, sizeof buf);
+        ssize_t n = gs_sk_read(c->fd, buf, sizeof buf);
         if (n < 0 && errno == EINTR) {
             continue;
         }

@@ -15,6 +15,8 @@
 
 #if !defined(_WIN32)
 #include <unistd.h>
+#else
+#include <windows.h>
 #endif
 
 #include "io_internal.h"
@@ -52,6 +54,7 @@ static void nap(const GsLease *l, uint64_t ms) { gsql_io_sleep_ms(l->io, ms); }
 
 /* ---- who we are ------------------------------------------------------------ */
 
+#if !defined(_WIN32)
 /* The first line of a small file, trimmed; "" where there is none. */
 static void first_line(const char *path, char *out, size_t n) {
     out[0] = 0;
@@ -60,6 +63,7 @@ static void first_line(const char *path, char *out, size_t n) {
     if (fgets(out, (int)n, f)) out[strcspn(out, "\r\n")] = 0;
     fclose(f);
 }
+#endif
 
 static void identify(Rec *r, const GsLeaseOptions *opt) {
     memset(r->machine, 0, sizeof r->machine);
@@ -69,6 +73,13 @@ static void identify(Rec *r, const GsLeaseOptions *opt) {
     gethostname(r->host, HOST_N);
     r->host[HOST_N] = 0;
     r->pid = (uint64_t)getpid();
+#else
+    DWORD hn = HOST_N;
+    if (!GetComputerNameExA(ComputerNameDnsHostname, r->host, &hn)) {
+        r->host[0] = 0;
+    }
+    r->host[HOST_N] = 0;
+    r->pid = (uint64_t)GetCurrentProcessId();
 #endif
     if (opt && opt->machine) {
         /* a test's machine: it is its own boot too */
@@ -77,12 +88,40 @@ static void identify(Rec *r, const GsLeaseOptions *opt) {
         snprintf(r->host, sizeof r->host, "%s", opt->machine);
         return;
     }
+#if defined(_WIN32)
+    /* Windows' machine-id: MachineGuid, written once at installation. Without
+     * it every Windows machine would be "host:" plus a host name, and two
+     * machines that share a name would take each other's lease. There is no
+     * boot id, so as outside Linux the fast path is never taken. */
+    DWORD gl = sizeof r->machine - 1;
+    if (RegGetValueA(HKEY_LOCAL_MACHINE, "SOFTWARE\\Microsoft\\Cryptography", "MachineGuid",
+                     RRF_RT_REG_SZ | RRF_SUBKEY_WOW6464KEY, NULL, r->machine, &gl) != ERROR_SUCCESS) {
+        r->machine[0] = 0;
+    }
+    r->machine[ID_N] = 0;
+#else
     first_line("/etc/machine-id", r->machine, sizeof r->machine);
     if (!r->machine[0]) first_line("/var/lib/dbus/machine-id", r->machine, sizeof r->machine);
+#endif
     if (!r->machine[0]) { memcpy(r->machine, "host:", 5); memcpy(r->machine + 5, r->host, ID_N - 5); r->machine[ID_N] = 0; }
-    /* no boot id (outside Linux): the fast path is never taken, since an
-     * empty boot never matches (same_boot) */
+    /* no boot id (outside Linux and Windows): the fast path is never taken,
+     * since an empty boot never matches (same_boot) */
+#if defined(_WIN32)
+    /* Windows counts its boots in BootId. Without one, every restart after a
+     * crash waited out the dead owner's whole lease -- longer than a client
+     * waits for an owner to say it is ready, so the first request after a
+     * crash failed (run_gsql_module's lost tier). A counter that fast startup
+     * leaves unchanged is safe: the fast path also needs this machine's lock
+     * to be free, and no holder survives a reboot. */
+    DWORD bid = 0, bl = sizeof bid;
+    if (RegGetValueA(HKEY_LOCAL_MACHINE,
+                     "SYSTEM\\CurrentControlSet\\Control\\Session Manager\\Memory Management\\PrefetchParameters",
+                     "BootId", RRF_RT_REG_DWORD, NULL, &bid, &bl) == ERROR_SUCCESS) {
+        snprintf(r->boot, sizeof r->boot, "bootid-%lu", (unsigned long)bid);
+    }
+#else
     first_line("/proc/sys/kernel/random/boot_id", r->boot, sizeof r->boot);
+#endif
 }
 
 static int same_boot(const Rec *a, const Rec *b) {

@@ -477,6 +477,10 @@ int gb_sock_set_blocking(int fd, int blocking) {
     return fcntl(fd, F_SETFL, next) == 0;
 }
 
+int gb_sock_would_block(void) {
+    return errno == EAGAIN || errno == EWOULDBLOCK;
+}
+
 /* The system temp directory, honouring TMPDIR. */
 static const char *posix_temp_root(void) {
     const char *dir = getenv("TMPDIR");

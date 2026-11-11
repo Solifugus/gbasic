@@ -14,6 +14,7 @@
 #include "serialize_tags.h"
 #include "platform.h"
 #include "xsort.h"
+#include "gsql_io.h"   /* gsql_path_absolute */
 #include "gb_number_text.h"
 
 #include <ctype.h>
@@ -10007,7 +10008,7 @@ static int dump_start(SqlCursor *c) {
     if (!path) {
         return xfail(&c->err, GSQL_EXPRESSION, pos, "DUMP TO takes the file's name as text");
     }
-    if (path[0] != '/') {
+    if (!gsql_path_absolute(path)) {
         rc = xfail(&c->err, GSQL_EXPRESSION, pos, "DUMP TO `%.200s`: the file must be named absolutely, since the "
                    "owner's working directory is not the program's (gsql.dump resolves one for you)", path);
         free(path);
@@ -10056,7 +10057,7 @@ static int backup_start(SqlCursor *c, const GsEngine *e, GsTxn *t) {
     if (!path) {
         return xfail(&c->err, GSQL_EXPRESSION, pos, "BACKUP TO takes the copy's directory as text");
     }
-    if (path[0] != '/') {
+    if (!gsql_path_absolute(path)) {
         rc = xfail(&c->err, GSQL_EXPRESSION, pos, "BACKUP TO `%.200s`: the directory must be absolute, since the "
                    "owner's working directory is not the program's (gsql.backup resolves one for you)", path);
         free(path);

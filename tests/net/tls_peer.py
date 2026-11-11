@@ -171,7 +171,7 @@ def serve(d, ports_file):
                     return
                 threading.Thread(target=handler, args=(raw,), daemon=True).start()
         threading.Thread(target=loop, daemon=True).start()
-    with open(ports_file + ".tmp", "w") as f:
+    with open(ports_file + ".tmp", "w", newline="\n", encoding="utf-8") as f:
         json.dump(ports, f)
     os.rename(ports_file + ".tmp", ports_file)
     while True:

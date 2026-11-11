@@ -1448,4 +1448,4 @@ stmt("EXPLAIN SELECT id, rank() OVER (ORDER BY total), sum(total) OVER (PARTITIO
      "= 'Scan on o' | '  Window: rank() OVER (ORDER BY total), sum(total) OVER (PARTITION BY cust), "
      "count(*) OVER (ORDER BY total) (2 orderings, sorted)' | '  Order: id (sorted)'")
 
-open(sys.argv[1], "w").write("\n".join(out) + "\n")
+open(sys.argv[1], "w", newline="\n", encoding="utf-8").write("\n".join(out) + "\n")

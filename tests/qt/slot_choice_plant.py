@@ -17,4 +17,4 @@ src = io.open(sys.argv[1], encoding="utf-8").read()
 bad = src.replace(GOOD, BAD, 1)
 if bad == src:
     sys.exit("the plant did not apply -- the scanner would measure nothing")
-io.open(sys.argv[2], "w", encoding="utf-8").write(bad)
+io.open(sys.argv[2], "w", encoding="utf-8", newline="\n").write(bad)

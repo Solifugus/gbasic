@@ -690,6 +690,7 @@ void gb_gsql_host_teardown(void) {
  * a date arrive as what they were. */
 
 #include "gsql_client.h"
+#include "gsql_io.h"   /* GSQL_IO_WIN_LOCK_HIGH */
 
 /* rows asked for per batch: enough to amortise a round trip, small enough
  * that a batch is never most of a frame */
@@ -2055,7 +2056,6 @@ static Value gsql_eval_exec(AstExpr *expr) {
  * machine sharing the storage is not seen (the lease is its answer). A path
  * with no lock file has no owner, and answers true. */
 static int gsql_owner_holds(const char *db) {
-#ifndef _WIN32
     size_t n = strlen(db);
     char *lock = malloc(n + sizeof "/db.lock");
     if (!lock) {
@@ -2063,6 +2063,26 @@ static int gsql_owner_holds(const char *db) {
     }
     memcpy(lock, db, n);
     memcpy(lock + n, "/db.lock", sizeof "/db.lock");
+#ifdef _WIN32
+    /* the owner's lock is a LockFileEx far past the end of db.lock
+     * (src/gsql/io.c, win_lock); a shared one at the same place is refused
+     * while it is held, exactly as flock's LOCK_SH is */
+    HANDLE h = CreateFileA(lock, GENERIC_READ, FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_EXISTING, 0, NULL);
+    free(lock);
+    if (h == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    OVERLAPPED ov;
+    memset(&ov, 0, sizeof ov);
+    ov.OffsetHigh = GSQL_IO_WIN_LOCK_HIGH;
+    int held = !LockFileEx(h, LOCKFILE_FAIL_IMMEDIATELY, 0, 1, 0, &ov);
+    if (!held) {
+        UnlockFileEx(h, 0, 1, 0, &ov);
+    }
+    CloseHandle(h);
+    return held;
+#else
     int fd = open(lock, O_RDONLY | O_CLOEXEC);
     free(lock);
     if (fd < 0) {
@@ -2074,9 +2094,6 @@ static int gsql_owner_holds(const char *db) {
     }
     close(fd);
     return held;
-#else
-    (void)db;
-    return 0;
 #endif
 }
 
@@ -2463,8 +2480,16 @@ static int gsql_owner_gone(pid_t pid) {
 #ifndef _WIN32
     return pid <= 0 || (kill(pid, 0) != 0 && errno == ESRCH);
 #else
-    (void)pid;
-    return 1;
+    if (pid <= 0) {
+        return 1;
+    }
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid);
+    if (!h) {
+        return GetLastError() == ERROR_INVALID_PARAMETER;   /* no such process */
+    }
+    int gone = WaitForSingleObject(h, 0) == WAIT_OBJECT_0;
+    CloseHandle(h);
+    return gone;
 #endif
 }
 
@@ -2570,7 +2595,7 @@ static Value gsql_eval_backup(AstExpr *expr) {
         return value_null();
     }
     char *path = dir;
-    if (dir[0] != '/') {
+    if (!gsql_path_absolute(dir)) {
         char cwd[4096];
         if (!getcwd(cwd, sizeof cwd)) {
             free(dir);
@@ -2618,7 +2643,7 @@ static Value gsql_eval_backup(AstExpr *expr) {
 /* a path made absolute against the PROGRAM's working directory, which the
    owner's is not; takes `p` */
 static char *gsql_absolute(char *p, const char *verb) {
-    if (p[0] == '/') {
+    if (gsql_path_absolute(p)) {
         return p;
     }
     char cwd[4096];
@@ -3143,9 +3168,10 @@ static Value gsql_eval_call(AstExpr *expr) {
     return value_null();
 }
 
-#ifndef _WIN32
 /* `gbasic --gsql-owner DB FD MODE`: the owner process a client starts
- * (docs/gsql_owner_design.md §6), serving the SQL layer over this host. */
+ * (docs/gsql_owner_design.md §6), serving the SQL layer over this host. On
+ * Windows FD is the inherited HANDLE of the ready pipe, made a descriptor
+ * here so the owner writes its line exactly as it does on POSIX. */
 int gb_gsql_owner_main(int argc, char **argv) {
     GsqlOwnerOptions opt;
     memset(&opt, 0, sizeof opt);
@@ -3159,7 +3185,14 @@ int gb_gsql_owner_main(int argc, char **argv) {
         fprintf(stderr, "gbasic --gsql-owner: wants [--linger=MS] DB FD create|open\n");
         return 2;
     }
+#ifdef _WIN32
+    {
+        unsigned long long h = strtoull(argv[1], NULL, 10);
+        opt.ready_fd = h ? _open_osfhandle((intptr_t)h, _O_WRONLY | _O_BINARY) : -1;
+    }
+#else
     opt.ready_fd = atoi(argv[1]);
+#endif
     opt.create = strcmp(argv[2], "create") == 0;
     GsqlSql *q = gsql_sql_new(&gsql_interpreter_host);
     GsqlService svc = gsql_sql_service(q);
@@ -3168,11 +3201,3 @@ int gb_gsql_owner_main(int argc, char **argv) {
     gb_gsql_host_teardown();
     return rc;
 }
-#else
-int gb_gsql_owner_main(int argc, char **argv) {
-    (void)argc;
-    (void)argv;
-    fprintf(stderr, "gbasic --gsql-owner: G-SQL's owner is not yet available on Windows\n");
-    return 2;
-}
-#endif

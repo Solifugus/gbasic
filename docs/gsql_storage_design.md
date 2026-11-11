@@ -321,7 +321,7 @@ Behaviour that ext4's default `data=ordered` mode, or a particular SSD, happens 
 - **Two places are deliberately harsher than a real filesystem.** Pending namespace operations survive as any subsequence (a journalling filesystem loses a suffix). Pending data writes survive in any subset and order. An engine correct here is correct there; the converse is what this layer exists to prevent.
 - **A cross-directory rename is refused (`EXDEV`) by the simulated layer** rather than modelled loosely. Its durability needs both directories synced, and no candidate needs it.
 - **Parity with the real layer is a tier of its own.** One seeded sequence of 3,000 operations over four files runs through both layers: opens of every kind, writes and reads at random offsets, truncation, sync, rename, remove, `sync_dir` and locking. Every answer, every byte read and every file's final contents must agree. A census requires each run to meet at least 50 errors and to read back at least 100 KB, so it cannot agree about nothing.
-- **Windows is not implemented.** Its `open` answers `ENOSYS` rather than shipping a layer nobody here has run.
+- **Windows** (2026-11-10, `docs/windows_port_status.md` §32): `FlushFileBuffers`; rename and delete with POSIX semantics (`FileRenameInfoEx`, `FileDispositionInfoEx`), so a target another handle has open is replaced as on POSIX; and a `LockFileEx` on one byte far past the data, since Windows byte-range locks are mandatory. `run_gsql_io.sh`'s parity tier holds it to the simulator there.
 
 ## 4. The version store (temporal history, §10D)
 

@@ -23020,7 +23020,13 @@ static void webserver_send_file(WebServer *server, size_t client_index,
                                 const char *path, int status, Value *headers,
                                 Value *cookies) {
     WebServerClient *client = &server->clients[client_index];
+#ifdef O_BINARY
+    /* Windows opens TEXT mode by default: a file served stopped at its first
+     * ^Z byte and lost every CR before an LF (curl reported a partial file) */
+    int fd = open(path, O_RDONLY | O_BINARY);
+#else
     int fd = open(path, O_RDONLY);
+#endif
     struct stat st;
     if (fd < 0 || fstat(fd, &st) != 0 || !S_ISREG(st.st_mode)) {
         if (fd >= 0) {
@@ -23465,7 +23471,7 @@ static void webserver_accept(WebServer *server) {
         if (server->tls_ctx) {
             client->ssl = SSL_new(server->tls_ctx);
             if (!client->ssl) {
-                close(fd);
+                gb_sock_close(fd);
                 server->client_count--;
                 continue;
             }
@@ -23503,7 +23509,7 @@ static void webserver_read_client(WebServer *server, size_t index) {
         }
 #endif
         ssize_t r = recv(client->fd, chunk, sizeof(chunk), 0);
-        if (r == 0 || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+        if (r == 0 || (r < 0 && !gb_sock_would_block())) {
             webserver_client_close(server, index);
         }
         return;
@@ -23524,7 +23530,7 @@ static void webserver_read_client(WebServer *server, size_t index) {
     {
         count = recv(client->fd, chunk, sizeof(chunk), 0);
         if (count <= 0) {
-            if (count == 0 || (errno != EAGAIN && errno != EWOULDBLOCK)) {
+            if (count == 0 || !gb_sock_would_block()) {
                 webserver_client_close(server, index);
             }
             return;
@@ -24388,15 +24394,6 @@ static Value webserver_eval_inherited(AstExpr *expr) {
 }
 
 static Value webserver_eval_listen(AstExpr *expr) {
-#ifdef _WIN32
-    /* Out of Tier 1 (windows_port_plan.md §5), and REFUSED rather than left
-     * half-working: it still close()s sockets and reads errno where Winsock
-     * reports through WSAGetLastError -- the failure class that compiles
-     * cleanly and breaks at runtime (windows_port_status.md §5). */
-    (void)expr;
-    webserver_raise("webserver.listen is not available on Windows yet");
-    return value_null();
-#endif
     if (expr->as.call.args.count < 1 || expr->as.call.args.count > 2) {
         webserver_raise("webserver.listen expects a port and an optional options record");
         return value_null();
@@ -24437,21 +24434,19 @@ static Value webserver_eval_listen(AstExpr *expr) {
     hints.ai_family = AF_UNSPEC;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = AI_PASSIVE | AI_NUMERICHOST | AI_NUMERICSERV;
+    /* Winsock must be started before the first socket call -- getaddrinfo
+     * included, which otherwise fails and was reported as a bad address --
+     * or every one of them fails with WSANOTINITIALISED. A no-op on POSIX. */
+    if (!gb_net_init()) {
+        webserver_raise("webserver.listen could not initialise networking");
+        return value_null();
+    }
     if (getaddrinfo(bind_address, port_text, &hints, &resolved) != 0 || !resolved) {
         if (resolved) {
             freeaddrinfo(resolved);
         }
         webserver_raise("webserver.listen address must be a numeric IP address "
                         "such as \"127.0.0.1\", \"0.0.0.0\" or \"::\"");
-        return value_null();
-    }
-
-    /* Winsock must be started before the first socket call or every one of them
-     * fails with WSANOTINITIALISED. A no-op on POSIX; here so the ONE socket
-     * creation site in this tree cannot be the one that forgets. */
-    if (!gb_net_init()) {
-        freeaddrinfo(resolved);
-        webserver_raise("webserver.listen could not initialise networking");
         return value_null();
     }
     int fd = socket(resolved->ai_family, SOCK_STREAM, 0);
@@ -24463,7 +24458,14 @@ static Value webserver_eval_listen(AstExpr *expr) {
     int reuse = 1;
     /* (const char *): Winsock declares the option value as char *, POSIX as
      * void * -- the cast is correct for both and changes nothing on POSIX. */
+#ifdef _WIN32
+    /* NOT SO_REUSEADDR, which on Windows lets a second socket bind a port
+     * another is LISTENING on; Windows already allows the rebind after close
+     * that POSIX's flag is for (windows_port_status.md §32) */
+    setsockopt(fd, SOL_SOCKET, SO_EXCLUSIVEADDRUSE, (const char *)&reuse, sizeof(reuse));
+#else
     setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, (const char *)&reuse, sizeof(reuse));
+#endif
     if (bind(fd, resolved->ai_addr, resolved->ai_addrlen) != 0 ||
         listen(fd, 16) != 0 ||
         !webserver_set_blocking_mode(fd, 0)) {
@@ -24471,7 +24473,7 @@ static Value webserver_eval_listen(AstExpr *expr) {
         snprintf(message, sizeof(message),
                  "webserver could not bind and listen on %s port %d", bind_address, port);
         freeaddrinfo(resolved);
-        close(fd);
+        gb_sock_close(fd);
         webserver_raise(message);
         return value_null();
     }
@@ -24486,7 +24488,7 @@ static Value webserver_eval_listen(AstExpr *expr) {
     socklen_t length = sizeof(address);
     memset(&address, 0, sizeof(address));
     if (getsockname(fd, (struct sockaddr *)&address, &length) != 0) {
-        close(fd);
+        gb_sock_close(fd);
         webserver_raise("webserver could not determine bound port");
         return value_null();
     }
@@ -24505,7 +24507,7 @@ static Value webserver_eval_listen(AstExpr *expr) {
                                  &tls_default, &sni_hosts, &sni_ctxs, &sni_count)) {
             webserver_raise(tls_err);
             value_free(tls_opts);
-            close(fd);
+            gb_sock_close(fd);
             return value_null();
         }
     }
@@ -24632,7 +24634,7 @@ static Value webserver_eval_emit(AstExpr *expr) {
     {
         char probe;
         ssize_t r = recv(client->fd, &probe, 1, MSG_PEEK | MSG_DONTWAIT);
-        if (r == 0 || (r < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+        if (r == 0 || (r < 0 && !gb_sock_would_block())) {
             value_free(text);
             webserver_client_close(server, index);
             return value_bool(0);

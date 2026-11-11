@@ -30,7 +30,7 @@ for _ in range(3000):
     cases.append(b)
 cases += [b"", b"\xed\xa0\x80", b"\xed\x9f\xbf", b"\xf4\x90\x80\x80", b"\xf4\x8f\xbf\xbf", b"\xc0\x80",
           b"\xe0\x80\xaf", b"\xf0\x80\x80\xaf"]
-with open(sys.argv[1], "w") as f:
+with open(sys.argv[1], "w", newline="\n", encoding="utf-8") as f:
     for b in cases:
         try:
             b.decode("utf-8")

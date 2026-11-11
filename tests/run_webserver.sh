@@ -82,6 +82,8 @@ fi
 # then exits 0, because `set -e` does not fire on a command in an `if`
 # condition -- so this suite reported OK to run_all.sh on a moved golden, which
 # is a gate that cannot go red.
+# Python's stdout is CRLF on Windows; the golden is about the answers, not that
+tr -d '\r' <"$client_stdout" >"$client_stdout.lf" && mv "$client_stdout.lf" "$client_stdout"
 if ! diff -u tests/webserver_integration.out "$client_stdout"; then
     printf 'FAIL tests/webserver_integration.bas (output does not match the golden)\n'
     exit 1

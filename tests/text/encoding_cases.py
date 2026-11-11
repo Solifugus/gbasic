@@ -73,5 +73,5 @@ edges = [b"\xed\xa0\x80", b"a\xed\xbf\xbfb", b"\xed\x9f\xbf", b"\xee\x80\x80", b
 for e in edges:
     for t in names:
         lines.append("%s %s %s %s" % (e.hex(), "utf-8", t, py(e, "utf-8", t)))
-with open(sys.argv[1], "w") as out:
+with open(sys.argv[1], "w", newline="\n", encoding="utf-8") as out:
     out.write("\n".join(lines) + "\n")

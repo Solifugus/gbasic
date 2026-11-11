@@ -3665,7 +3665,7 @@ static int find_backward(Cur *c, const unsigned char *limit, size_t ln) {
     c->forward = 0;
     GsBuf lim = {0};
     gsbuf_set(&lim, limit, ln);
-    for (int guard = 0;; guard++) {
+    for (;;) {
         /* the largest key below the limit across sources */
         GsBuf best = {0};
         int have = 0;

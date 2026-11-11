@@ -143,9 +143,9 @@ def main():
         for line, offset, fields in records:
             expected.append("%d %d %d %s" % (n, line, offset,
                                               json.dumps(fields, separators=(",", ":"), ensure_ascii=False)))
-    with open(outdir + "/manifest", "w") as f:
+    with open(outdir + "/manifest", "w", newline="\n", encoding="utf-8") as f:
         f.write("\n".join(manifest) + "\n")
-    with open(outdir + "/expected", "w") as f:
+    with open(outdir + "/expected", "w", newline="\n", encoding="utf-8") as f:
         f.write("\n".join(expected) + ("\n" if expected else ""))
     print("%d cases, %d records" % (count, len(expected)))
 

@@ -200,7 +200,7 @@ for _ in range(nstmt):
     (delete if rnd.random() < 0.5 else upsert)()
     snapshot()
 
-open(out, "w").write("\n".join(lines) + "\n")
+open(out, "w", newline="\n", encoding="utf-8").write("\n".join(lines) + "\n")
 floor = ["delete", "delete cascaded", "delete refused", "upsert nothing", "upsert update", "upsert returning rows",
          "upsert returning none"]
 print("census: " + ", ".join("%s %d" % (k, census.get(k, 0)) for k in sorted(census)))

@@ -79,9 +79,15 @@ premise_mode_bits() {
 premise_rss_meter() {
     if [ -z "${_premise_rss:-}" ]; then
         _premise_rss=no
-        if /usr/bin/time -f '%M' true >/dev/null 2>&1; then
-            _premise_rss=yes
-        fi
+        # MSYS2 has a /usr/bin/time, and what it reports for a native program
+        # is its own wrapper's memory: measured, a control that should grow by
+        # megabytes read 6020 -> 6024 kB. So there it is not a meter at all.
+        case "$(uname -s)" in
+            MINGW*|MSYS*|CYGWIN*) ;;
+            *) if /usr/bin/time -f '%M' true >/dev/null 2>&1; then
+                   _premise_rss=yes
+               fi ;;
+        esac
     fi
     [ "$_premise_rss" = yes ]
 }

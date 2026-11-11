@@ -30,7 +30,9 @@ def records(rng, d, n):
 
 
 def gbasic(args):
-    r = subprocess.run(args, capture_output=True, text=True)
+    # utf-8 named: text=True alone decodes in the locale's code page, which on
+    # Windows is cp1252 and turned every non-ASCII field into mojibake
+    r = subprocess.run(args, capture_output=True, text=True, encoding="utf-8")
     if r.returncode != 0:
         sys.stderr.write(r.stderr)
         sys.exit("gbasic failed: %s" % " ".join(args))
@@ -51,7 +53,7 @@ def main():
         recs = records(rng, d, rng.choice([1, 3, 10, 30]))
         src = "%s/w%d.jsonl" % (work, case)
         out = "%s/w%d.csv" % (work, case)
-        with open(src, "w") as f:
+        with open(src, "w", newline="\n", encoding="utf-8") as f:
             for r in recs:
                 f.write(json.dumps(r, ensure_ascii=False) + "\n")
         gbasic([gb, "tests/csv/write_lines.bas", src, out, dname, ending])
@@ -84,7 +86,7 @@ def main():
         manifest.append("%d\t%s\t%s\tdq" % (case, path, dname))
         for r in recs:
             want.append("%d %s" % (case, json.dumps(r, separators=(",", ":"), ensure_ascii=False)))
-    with open(work + "/manifest", "w") as f:
+    with open(work + "/manifest", "w", newline="\n", encoding="utf-8") as f:
         f.write("\n".join(manifest) + "\n")
     got = gbasic([gb, "tests/csv/diff.bas", work + "/manifest"]).splitlines()
     # diff.bas prints case, line, offset, fields: keep case and fields

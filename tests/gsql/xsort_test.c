@@ -4,10 +4,16 @@
 #define _XOPEN_SOURCE 700
 #include "xsort.h"
 #include <dirent.h>
-#include <sys/resource.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include <windows.h>
+#include <direct.h>
+#define mkdir(p, m) _mkdir(p)
+#else
+#include <sys/resource.h>
+#include <sys/wait.h>
+#endif
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -58,6 +64,11 @@ int main(int argc, char **argv) {
     one(tmp, 200000, 64 * 1024, 256, 5, 1);
     /* thousands of runs, merged in passes: with at most 256 files open, a
        merge of every run at once cannot open them (measured: it failed) */
+#ifdef _WIN32
+    /* Windows has no per-process descriptor limit to lower: the passes run,
+       and that they are NEEDED is measured on POSIX only */
+    one(tmp, 300000, 4096, 4, 6, 2);
+#else
     struct rlimit rl;
     getrlimit(RLIMIT_NOFILE, &rl);
     struct rlimit low = rl;
@@ -65,13 +76,32 @@ int main(int argc, char **argv) {
     setrlimit(RLIMIT_NOFILE, &low);
     one(tmp, 300000, 4096, 4, 6, 2);
     setrlimit(RLIMIT_NOFILE, &rl);
+#endif
     /* the sweep: a gone process's directories removed, files and all; this
        process's, and a name not the sorter's, kept */
+#ifdef _WIN32
+    /* a process that has exited: started and waited for */
+    long child = 0;
+    {
+        STARTUPINFOA si;
+        PROCESS_INFORMATION pi;
+        memset(&si, 0, sizeof si);
+        si.cb = sizeof si;
+        char cmd[] = "cmd.exe /c exit 0";
+        if (CreateProcessA(NULL, cmd, NULL, NULL, FALSE, CREATE_NO_WINDOW, NULL, NULL, &si, &pi)) {
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            child = (long)pi.dwProcessId;
+            CloseHandle(pi.hThread);
+            CloseHandle(pi.hProcess);
+        }
+    }
+#else
     pid_t child = fork();
     if (child == 0) {
         _exit(0);
     }
     waitpid(child, NULL, 0);
+#endif
     char p1[600], p2[600], p3[600], p4[600], f1[700];
     snprintf(p1, sizeof p1, "%s/gsql-sort-%ld-abcdef", tmp, (long)child);
     snprintf(p2, sizeof p2, "%s/gsql-spool-%ld-abcdef", tmp, (long)child);

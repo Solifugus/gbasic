@@ -158,7 +158,7 @@ def main():
         finally:
             try: conn.close()
             except Exception: pass
-    with open(args.transcript, "w") as fh:
+    with open(args.transcript, "w", newline="\n", encoding="utf-8") as fh:
         json.dump(out, fh, indent=1)
 
 if __name__ == "__main__":

@@ -393,7 +393,7 @@ async def serve_main(ports_file, certdir):
             tls_srv = await ws_serve(handler, "127.0.0.1", 0, ssl=ctx)
             ports["wss"] = tls_srv.sockets[0].getsockname()[1]
         tmp = ports_file + ".tmp"
-        with open(tmp, "w") as f:
+        with open(tmp, "w", newline="\n", encoding="utf-8") as f:
             json.dump(ports, f)
         os.rename(tmp, ports_file)
         await asyncio.sleep(120)

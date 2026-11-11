@@ -177,6 +177,11 @@ void gb_arm_parent_death(void);
 int gb_net_init(void);                        /* WSAStartup; nothing on POSIX */
 int gb_sock_close(int fd);                    /* close vs closesocket */
 int gb_sock_set_blocking(int fd, int blocking); /* fcntl vs ioctlsocket FIONBIO */
+/* After a failed recv/send/accept on a non-blocking socket: was it only "not
+ * yet"? errno EAGAIN/EWOULDBLOCK on POSIX; WSAEWOULDBLOCK on Windows, where a
+ * socket call never sets errno, so testing errno there reads whatever an
+ * unrelated call left in it -- and a client was dropped for a stale value. */
+int gb_sock_would_block(void);
 
 /* ---------------------------------------------------------------------------
  * PORTABLE C LIBRARY GAPS.

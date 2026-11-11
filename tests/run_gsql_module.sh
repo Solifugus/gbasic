@@ -55,6 +55,35 @@ status=0
 pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; status=1; }
 
+# Finding, testing and killing an OWNER. Under MSYS2 the owner is a native
+# Windows process that MSYS's pgrep, kill and ps cannot see -- pgrep is not
+# even installed, and a lookup that finds nothing reads as "no owner left",
+# which is how the leftovers tier passed vacuously on Windows before this. So
+# there they are asked of Windows, whose pids are the ones gBASIC reports.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) native_win=1 ;; *) native_win=0 ;; esac
+find_owners() {   # an ERE over owners' command lines -> their pids, one a line
+    if [ "$native_win" = 1 ]; then
+        powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='gbasic.exe'\" | ForEach-Object { [string]\$_.ProcessId + ' ' + (\$_.CommandLine -replace '\"','') }" \
+            2>/dev/null | tr -d '\r' | grep -E -- "$1" | cut -d' ' -f1
+    else
+        pgrep -f -- "$1"
+    fi
+}
+proc_alive() {
+    if [ "$native_win" = 1 ]; then
+        tasklist //NH //FI "PID eq $1" 2>/dev/null | grep -qw -- "$1"
+    else
+        kill -0 "$1" 2>/dev/null
+    fi
+}
+proc_kill() {   # SIGKILL's form: no handler runs, no planned handoff
+    if [ "$native_win" = 1 ]; then
+        taskkill //F //PID "$1" >/dev/null 2>&1
+    else
+        kill -9 "$1"
+    fi
+}
+
 if ! make -s gbasic >"$work/make.out" 2>&1; then
     tail -20 "$work/make.out"
     printf 'run_gsql_module: FAILED (./gbasic did not build)\n'
@@ -279,11 +308,13 @@ printf 'TIER sweep: an owner starting removes a crashed process sorts and spools
 # directory named for it, in a TMPDIR of their own; an owner the program
 # starts must remove the first and keep the second (gs_xsort_sweep)
 mkdir -p "$work/sweep/tmp"
-sh -c 'exit 0' &
-gone=$!
-wait "$gone"
+# the process ids the OWNER sees: under MSYS2 a shell's $$ is MSYS's own
+# number and the Windows one is in /proc/PID/winpid (Linux has no such file,
+# and there the shell's pid is the kernel's)
+gone=$(sh -c 'cat /proc/self/winpid 2>/dev/null || echo $$')
+live=$(cat "/proc/$$/winpid" 2>/dev/null || echo $$)
 mkdir -p "$work/sweep/tmp/gsql-sort-$gone-abcdef" "$work/sweep/tmp/gsql-spool-$gone-abcdef" \
-    "$work/sweep/tmp/gsql-sort-$$-abcdef"
+    "$work/sweep/tmp/gsql-sort-$live-abcdef"
 printf 'x' >"$work/sweep/tmp/gsql-sort-$gone-abcdef/run-0"
 cat >"$work/sweep/s.bas" <<'GB'
 load gsql
@@ -293,7 +324,7 @@ d.close()
 GB
 sout=$(cd "$work/sweep" && TMPDIR="$work/sweep/tmp" timeout -k 5 60 "$OLDPWD/gbasic" s.bas 2>&1)
 if [ "$sout" = 1 ] && [ ! -e "$work/sweep/tmp/gsql-sort-$gone-abcdef" ] && \
-   [ ! -e "$work/sweep/tmp/gsql-spool-$gone-abcdef" ] && [ -d "$work/sweep/tmp/gsql-sort-$$-abcdef" ]; then
+   [ ! -e "$work/sweep/tmp/gsql-spool-$gone-abcdef" ] && [ -d "$work/sweep/tmp/gsql-sort-$live-abcdef" ]; then
     pass "sweep: the gone process's sort and spool were removed at the owner's start, a live one's kept"
 else
     printf '       %s\n' "$sout" "$(ls "$work/sweep/tmp")"
@@ -386,7 +417,7 @@ for _ in $(seq 1 400); do
 done
 owner=""
 if [ -e "$work/lost/ready" ]; then
-    owner=$(pgrep -f -- "--gsql-owner $work/lost/lost " | head -1)
+    owner=$(find_owners "--gsql-owner $work/lost/lost " | head -1)
 fi
 if [ -z "$owner" ]; then
     fail "lost: the fixture never said it was ready, or no owner was found to kill"
@@ -395,12 +426,16 @@ if [ -z "$owner" ]; then
 else
     # SIGKILL, not SIGTERM: the owner gets no planned handoff, so the next
     # owner's recovery is the crash path
-    kill -9 "$owner"
+    proc_kill "$owner"
     # gone, or a zombie for the moment before init reaps it: the owner is
     # nobody's child (docs/gsql_owner_lifetime_design.md)
     for _ in $(seq 1 250); do
-        st=$(ps -o stat= -p "$owner" 2>/dev/null | tr -d ' ')
-        case "$st" in ''|Z*) break ;; esac
+        if [ "$native_win" = 1 ]; then
+            proc_alive "$owner" || break
+        else
+            st=$(ps -o stat= -p "$owner" 2>/dev/null | tr -d ' ')
+            case "$st" in ''|Z*) break ;; esac
+        fi
         sleep 0.02
     done
     touch "$work/lost/killed"
@@ -417,7 +452,7 @@ LIFE="$PWD/tests/gsql/lifetime_test.bas"
 L="$work/life"
 mkdir -p "$L"
 life_owner() {   # the owner serving database $1, or nothing
-    pgrep -f -- "--gsql-owner (--linger=[0-9]+ )?$1 " | head -1
+    find_owners "--gsql-owner (--linger=[0-9]+ )?$1 " | head -1
 }
 GSQL_ROLE=starter GSQL_DB="$L/shared" GSQL_GATE="$L/g1" timeout -k 5 60 ./gbasic "$LIFE" >"$L/a.out" 2>&1 &
 a=$!
@@ -439,14 +474,14 @@ else
 fi
 # the owner went once both had: after its linger (3 s by default), not with
 # either program
-if [ -n "$owner" ] && kill -0 "$owner" 2>/dev/null; then
+if [ -n "$owner" ] && proc_alive "$owner"; then
     pass "lifetime: the owner is still there just after its last program went"
 else
     fail "lifetime: the owner (${owner:-not found}) went with its last program, before its linger"
 fi
 gone=0
 for _ in $(seq 1 80); do
-    kill -0 "$owner" 2>/dev/null || { gone=1; break; }
+    proc_alive "$owner" || { gone=1; break; }
     sleep 0.1
 done
 [ "$gone" = 1 ] && pass "lifetime: and gone once its linger had passed" \
@@ -1002,7 +1037,7 @@ printf 'TIER leftovers: no owner outlives the suite\n'
 # (3 s by default), so this waits that long and more
 left=""
 for _ in $(seq 1 100); do
-    left=$(pgrep -f -- "--gsql-owner (--linger=[0-9]+ )?$work/" | tr '\n' ' ')
+    left=$(find_owners "--gsql-owner (--linger=[0-9]+ )?$work/" | tr '\n' ' ')
     [ -z "$left" ] && break
     sleep 0.1
 done

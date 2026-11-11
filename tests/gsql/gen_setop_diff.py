@@ -108,8 +108,8 @@ for q in range(nq):
     lu.append("> " + sql)
     lu.append("= ?")
 
-open(out_o, "w").write("\n".join(lo) + "\n")
-open(out_u, "w").write("\n".join(lu) + "\n")
+open(out_o, "w", newline="\n", encoding="utf-8").write("\n".join(lo) + "\n")
+open(out_u, "w", newline="\n", encoding="utf-8").write("\n".join(lu) + "\n")
 floor = {"DISTINCT": 10, "UNION": 5, "UNION ALL": 5, "INTERSECT": 5, "INTERSECT ALL": 5, "EXCEPT": 5,
          "EXCEPT ALL": 5}
 short = [k for k, v in floor.items() if census.get(k, 0) < v]
