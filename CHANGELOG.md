@@ -28,7 +28,12 @@ answer. The full gate there found these, each fixed here:
   table in the middle of it. The tree had the same shape (`qt.refresh` from its
   own selection handler); Qt 6.10 survived it and 6.4 crashed. Both now announce
   the lost selection once the rows are gone, so a refreshing handler hears each
-  change and no longer recurses (8 calls where it was 68).
+  change and no longer recurses (8 calls where it was 68). And `qt.select` on a
+  tree makes the selection with Qt's signals held and announces it once Qt is
+  done: a handler run from inside `setCurrentItem` that refreshed the tree
+  removed the row Qt was making current, and 6.4 crashed in Qt's own handling
+  (19 of 20 runs on riscv64). The handler still runs before `qt.select`
+  returns.
 - **`qt.set(..., "icon", file)` accepted a file that is not an image on Qt 6.4**:
   `QIcon` is lazy, and whether it says so is Qt's version's. It is asked of the
   file's contents now (`QImageReader`).

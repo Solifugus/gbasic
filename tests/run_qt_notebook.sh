@@ -144,6 +144,10 @@ def check(label, ok, detail=""):
         bad += 1
         print("MISMATCH", label, detail)
 blue = (0x33, 0x66, 0xcc)
+# get_flattened_data is Pillow 12's name for what 10 called getdata (riscv64's
+# Ubuntu 24.04 has 10.2; 2026-11-11), and 12 warns about getdata
+def pixels(im):
+    return im.get_flattened_data() if hasattr(im, "get_flattened_data") else im.getdata()
 own = Image.open(d + "/own.png")
 check("own.png has no alpha", own.mode == "RGB", own.mode)
 check("the box is blue where the SVG put it", own.getpixel((50, 40))[:3] == blue, own.getpixel((50, 40)))
@@ -152,11 +156,11 @@ check("and past its right edge", own.getpixel((95, 40))[:3] == (255, 255, 255), 
 x2 = Image.open(d + "/x2.png")
 check("at scale 2 the box is twice as far in", x2.getpixel((100, 80))[:3] == blue and x2.getpixel((185, 80))[:3] == (255, 255, 255),
       (x2.getpixel((100, 80)), x2.getpixel((185, 80))))
-check("drawn at 2, not stretched: the line is smooth at its own resolution", len(set(x2.get_flattened_data())) > len(set(own.get_flattened_data())),
-      (len(set(x2.get_flattened_data())), len(set(own.get_flattened_data()))))
+check("drawn at 2, not stretched: the line is smooth at its own resolution", len(set(pixels(x2))) > len(set(pixels(own))),
+      (len(set(pixels(x2))), len(set(pixels(own)))))
 for name in ("own", "x2"):
     im = Image.open(d + "/%s.png" % name).convert("RGB")
-    fringes = sum(1 for p in im.get_flattened_data() if max(p) - min(p) > 3 and p != blue)
+    fringes = sum(1 for p in pixels(im) if max(p) - min(p) > 3 and p != blue)
     check(name + ": text drawn in gray, no colour fringes (grayscale antialiasing)", fringes == 0, "%d" % fringes)
 # the themed captures exist only where the build has a highlighter, which the
 # runner read from the build and says in NOTHEMES
@@ -170,18 +174,18 @@ if os.environ.get("NOTHEMES") != "1":
     # antialiasing (colour fringes on glyphs), which drawing into an image with
     # alpha does not change for QWidget::render. A known limit for print figures.
     im = Image.open(d + "/themes.png").convert("RGB")
-    print("note: qt.capture's subpixel fringes in the gray editor: %d pixels" % sum(1 for p in im.get_flattened_data() if max(p) - min(p) > 3))
+    print("note: qt.capture's subpixel fringes in the gray editor: %d pixels" % sum(1 for p in pixels(im) if max(p) - min(p) > 3))
     th = Image.open(d + "/themes.png").convert("RGB")
-    dark = sum(1 for p in th.get_flattened_data() if p[0] < 0x90)
+    dark = sum(1 for p in pixels(th) if p[0] < 0x90)
     check("themes: text was drawn (dark pixels exist)", dark > 20, dark)
 if len(sys.argv) > 2:
     b = sys.argv[2]
     k = Image.open(b + "/kinds.png").convert("RGB")
-    nblue = sum(1 for p in k.get_flattened_data() if p == blue)
+    nblue = sum(1 for p in pixels(k) if p == blue)
     check("blocks: the SVG image block is drawn, its blue in the capture", nblue > 200, nblue)
     if os.environ.get("NOTHEMES") != "1":   # a dark editor needs a theme
         dk = Image.open(b + "/dark.png").convert("RGB")
-        whites = sum(1 for p in dk.get_flattened_data() if min(p) > 225)
+        whites = sum(1 for p in pixels(dk) if min(p) > 225)
         check("blocks: a dark editor's block is not a white box", whites < 40, whites)
 print("checks: %d" % checks)
 sys.exit(1 if bad else 0)
