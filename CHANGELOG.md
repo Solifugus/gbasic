@@ -16,6 +16,43 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Accounting exports for an outside accountant: `acctexport` (2026-11-10)
+
+- **`stdlib/acctexport.bas`**, a companion to `finio` (why not part of it:
+  docs/accounting_export_design.md §2). An application's customers, invoices
+  and credit notes with their lines, payments with their allocations, refunds,
+  processor fees and payouts become files under an explicit **target profile**:
+  `general` (one CSV per record type and link, a README, nothing lost),
+  `qbo.invoices`, `qbo.bank`, `xero.invoices`, `xero.credit_notes`,
+  `xero.bank` and `qbd.iif`. Each batch carries a **manifest**: batch id,
+  profile and version, every file's rows, bytes and SHA-256, every record and
+  where it went, counts and totals by type and currency, what was skipped and
+  every accepted loss. Output is deterministic.
+- **Researched from the vendors' own pages** on 2026-11-10, with the sources and
+  dates in each profile's registry entry (checked by
+  `finio.check_registry_entry`): QuickBooks Online's invoice import (1,000 rows,
+  100 invoices, no negative charges, US sales tax refused) and bank upload;
+  Xero's invoice, credit note and bank statement imports; Intuit's IIF Import
+  Kit for QuickBooks Desktop. Payments, refunds and payouts are not file
+  imports in QuickBooks Online or Xero; they go as bank or clearing-account
+  statements. Gaps are recorded in the design doc.
+- **Validation before anything is written:** line amounts against quantity x
+  price - discount under the application's declared rounding, totals, currencies,
+  allocations against what is left of an invoice, refunds against their payment,
+  payouts against their payments less refunds and fees, a payment paid out twice.
+  Every export is classified representable, lossy or impossible; a lossy one is
+  refused unless each loss is named, an unsupported record type unless it is
+  skipped by name, and a missing account, tax or item mapping always. No account,
+  tax treatment, conversion or journal entry is invented, and the manifest says
+  the files were generated, not imported.
+- New suite `tests/run_acctexport.sh`: 51 semantic checks; a layout tier where
+  Python's csv and decimal hold 13 rendered batches to the documented layouts and
+  hand-worked amounts (24,038 checks), optionally against Intuit's own kit files;
+  determinism; two runnable examples; the cookbook's every block quoted from
+  them; valgrind. 25 perturbations each went red; the one that first stayed green
+  (Xero dates written month-first) produced checks on date values, not shapes.
+  Nothing has been imported into a vendor's product.
+
 ### Studio's notebook, part 3: mcp content blocks, stdin in the loop (2026-11-10)
 
 - **`mcp.content([mcp.text(t), mcp.image(bytes, mime_type)])`** (§0.38 D2):

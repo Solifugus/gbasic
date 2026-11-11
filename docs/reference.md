@@ -9676,12 +9676,13 @@ tier each move all three together.
 
 **A library can `load` perfectly and still not work**, which is the half the
 table above misses and the worse half, because the failure is deferred to the
-call. These 6 call a **builtin** whose availability moves with the build, so
+call. These 7 call a **builtin** whose availability moves with the build, so
 nothing in their `load` lines gives them away:
 
 <!--LIBNEEDS:calls-->
 | library | loads anywhere, but its functions need |
 | --- | --- |
+| `acctexport` | libcrypto |
 | `crypto` | libcrypto |
 | `gpdf` | zlib |
 | `intake` | libcrypto |
@@ -11316,6 +11317,30 @@ whole program without needing a call site.
   message definitions without charge, so there is a specification to name. It
   does **not** say `verified`: this adapter has never met a statement produced
   by a bank.
+- `acctexport` — business records exported for an outside accountant
+  (`docs/accounting_export_design.md`, recipes in `docs/acctexport_cookbook.md`).
+  *After 0.10.0.* `acctexport.bundle(spec)` checks the records' fields (closed
+  sets: organization, customers, invoices and credit notes with lines, payments
+  with allocations, refunds, fees, payouts); `acctexport.validate(b)` answers
+  `{ ok, problems }` (line arithmetic under the declared `rounding`, totals,
+  currencies, allocations, refunds, payouts against their parts, a payment
+  paid out twice); `acctexport.plan(b, profile [, options])` answers what an
+  export would do, classified **representable**, **lossy** or **impossible**
+  (finio §16), with unsupported types and missing mappings;
+  `acctexport.render(b, profile [, options])` answers `{ batch_id, files,
+  manifest, manifest_text, plan }`; `acctexport.save(result, dir [, {
+  overwrite }])` writes them; `acctexport.profiles()` and
+  `acctexport.registry_entry(profile)` describe the targets. Profiles:
+  `general` (every record type, nothing lost), `qbo.invoices`, `qbo.bank`,
+  `xero.invoices`, `xero.credit_notes`, `xero.bank`, `qbd.iif`. Options:
+  `batch_id`, `skip` (record types to leave out, named in the manifest),
+  `allow_lossy` (each kind of loss accepted), and per profile `region`,
+  `home_currency`, `date_format`, `account`, `currency`, `processor`,
+  `mappings` (`accounts`, `tax_types`, `tax_codes`, `income_accounts`,
+  `items`, `customers`), `line_end`, `bom`. It **generates** files: it does
+  not import them, and stable ids and manifests do not prevent duplicates in
+  the receiving product. It invents no account, tax treatment, conversion or
+  journal entry. Checksums need libcrypto.
 - `accounting` — double-entry bookkeeping, pure gBASIC over exact `money`
   (`docs/accounting_design.md`). `accounting.chart(accounts)` validates a chart
   of accounts and fixes each one's normal balance side from its `kind`

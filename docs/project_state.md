@@ -497,6 +497,11 @@ document list, with a status column, is `docs/README.md`.
   as a fold over events so a balance is always explainable by replay; payoff
   with per-diem; underwriting ratios; and journal entries emitted for the
   caller's own ledger. Worked recipes: docs/lending_cookbook.md.
+- **accounting export** — `acctexport`, records handed to an outside
+  accountant under explicit target profiles (general bundle, QuickBooks Online,
+  Xero, QuickBooks Desktop IIF), validated, classified representable, lossy or
+  impossible before writing, with a manifest per batch; it generates files and
+  invents no accounting. Design: docs/accounting_export_design.md.
 - **accounting** — `accounting`, double-entry bookkeeping over the exact
   money type: a validated chart of accounts, journal entries that must balance
   in every currency or are refused where they are written, ledger, trial
