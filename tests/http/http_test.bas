@@ -86,7 +86,11 @@ check("request headers reach the server",
 ' --- incremental reads ------------------------------------------------------
 ' The reason the module exists: bytes are available BEFORE the transfer ends.
 ' A single-read assertion passes on a module that buffers the whole body.
-s = http.start({ url: base + "/slow?n=4&ms=120" })
+tick_ms = env("HTTP_TICK_MS")   ' 120, longer on a slow machine (run_http.sh)
+if tick_ms = "" then
+    tick_ms = "120"
+end if
+s = http.start({ url: base + "/slow?n=4&ms=" + tick_ms })
 reads = 0
 seen = ""
 while true

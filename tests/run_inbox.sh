@@ -60,16 +60,22 @@ else
 fi
 
 printf 'TIER the control: no watcher, no loop\n'
-start=$(date +%s%N)
-if timeout -k 5 30 ./gbasic tests/inbox_no_watch.bas >"$work/n.out" 2>"$work/n.err"; then
-    ms=$(( ($(date +%s%N) - start) / 1000000 ))
-    if [ "$ms" -gt 1500 ]; then
-        fail "took ${ms}ms; with no watcher an outstanding reply must not hold the program open"
-    else
-        pass "${ms}ms, the 2s reply abandoned"
-    fi
-else
+# Against a BASELINE, as run_http's NO_WATCH is: the same program whose reply
+# comes after 0 s costs the same start-up, spawn and exit, and one held open
+# would take the baseline plus the whole wait. "Under 1500 ms" held on x86
+# only: the s390x VM took 2832 ms with nothing wrong (2026-11-13).
+late_s=$(awk -v s="$(gb_time_scale)" 'BEGIN { printf "%d", 2 * (s > 10 ? 10 : s) }')
+inbox_elapsed() {   # inbox_elapsed LATE_S: run the control, print its milliseconds
+    local t0=$(date +%s%N)
+    INBOX_LATE_S="$1" timeout -k 5 $(( 30 + $1 )) ./gbasic tests/inbox_no_watch.bas >"$work/n.out" 2>"$work/n.err" || return 1
+    echo $(( ($(date +%s%N) - t0) / 1000000 ))
+}
+if ! base_ms=$(inbox_elapsed 0) || ! ms=$(inbox_elapsed "$late_s"); then
     cat "$work/n.err"; fail "the control program failed"
+elif [ "$ms" -gt $(( base_ms + late_s * 500 )) ]; then
+    fail "took ${ms}ms against ${base_ms}ms for a reply after 0 s; with no watcher an outstanding reply (${late_s}s) must not hold the program open"
+else
+    pass "${ms}ms against ${base_ms}ms for a reply after 0 s: the ${late_s}s reply abandoned"
 fi
 
 printf 'TIER the control: receive() is unchanged\n'

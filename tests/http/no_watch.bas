@@ -5,5 +5,9 @@
 load http
 
 port = env("HTTP_FIXTURE_PORT")
-h = http.start({ url: "http://127.0.0.1:" + port + "/wait?ms=3000" })
+wait_ms = env("HTTP_NOWATCH_MS")   ' the runner's; 3000 when run by hand
+if wait_ms = "" then
+    wait_ms = "3000"
+end if
+h = http.start({ url: "http://127.0.0.1:" + port + "/wait?ms=" + wait_ms })
 print "started, no watcher, returning"

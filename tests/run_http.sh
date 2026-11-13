@@ -81,6 +81,13 @@ if [[ -z "$port" ]]; then
     exit 0
 fi
 export HTTP_FIXTURE_PORT="$port"
+# How much longer the server's waits are on a slow machine: GATE_TIME_SCALE,
+# capped at 10 so every request stays inside the clients' 30 s timeout (at the
+# s390x VM's 100x, 400 ms scaled fully was 40 s and timed the request out).
+http_scale=$(awk -v s="$(gb_time_scale)" 'BEGIN { print (s > 10 ? 10 : s) }')
+# the incremental-read tier's chunks, 120 ms apart: at 100x one pass of the
+# polling loop outlasted all four, and the body came in a single read
+export HTTP_TICK_MS=$(awk -v s="$http_scale" 'BEGIN { printf "%d", 120 * s }')
 
 fail=0
 note() { printf '%s\n' "$1"; }
@@ -122,11 +129,11 @@ elapsed_ms() {
     finish=$(date +%s%N)
     echo $(( (finish - start) / 1000000 ))
 }
-# Each request waits 400ms on the server, times GATE_TIME_SCALE: on riscv64
+# Each request waits 400ms on the server, times http_scale: on riscv64
 # under QEMU the interpreter's own start and teardown (about a second, the
 # same in both runs) outweighed four unscaled waits, and 1.7x was measured
 # for transfers that did overlap.
-wait_ms=$(awk -v s="$(gb_time_scale)" 'BEGIN { printf "%d", 400 * s }')
+wait_ms=$(awk -v s="$http_scale" 'BEGIN { printf "%d", 400 * s }')
 if ! seq_ms="$(elapsed_ms tests/http/sequential.bas)"; then
     cat "$work/sequential.bas.err"; bad "CONCURRENCY: the sequential baseline failed"
 elif ! con_ms="$(elapsed_ms tests/http/concurrent.bas)"; then
@@ -179,16 +186,22 @@ fi
 # Same shape, no watcher, and a request that would take three seconds. The
 # program must return at once and deliver nothing, or "the loop runs after
 # main" would be true of every program rather than of a watched one.
-start=$(date +%s%N)
-if ! timeout -k 5 30 ./gbasic tests/http/no_watch.bas >"$work/nowatch.out" 2>"$work/nowatch.err"; then
+# Judged against a BASELINE: the same program whose request takes 0 ms costs
+# the same start-up and exit, and a program held open would take the baseline
+# plus the whole wait. "Under 1500 ms" was the same claim on x86 only: on the
+# s390x VM start-up alone took longer (1875 ms, 2026-11-13).
+nowatch_ms=$(awk -v s="$http_scale" 'BEGIN { printf "%d", 3000 * s }')
+elapsed() {   # elapsed WAIT_MS: run no_watch.bas, print its milliseconds
+    local t0=$(date +%s%N)
+    HTTP_NOWATCH_MS="$1" timeout -k 5 $(( 30 + $1 / 1000 )) ./gbasic tests/http/no_watch.bas >"$work/nowatch.out" 2>"$work/nowatch.err" || return 1
+    echo $(( ($(date +%s%N) - t0) / 1000000 ))
+}
+if ! base_ms=$(elapsed 0) || ! ms=$(elapsed "$nowatch_ms"); then
     cat "$work/nowatch.err"; bad "NO_WATCH: the program failed"
+elif (( ms > base_ms + nowatch_ms / 2 )); then
+    bad "NO_WATCH: took ${ms}ms against ${base_ms}ms for a 0 ms request; with no watcher an outstanding ${nowatch_ms}ms request must not hold the program open"
 else
-    ms=$(( ($(date +%s%N) - start) / 1000000 ))
-    if (( ms > 1500 )); then
-        bad "NO_WATCH: took ${ms}ms; with no watcher an outstanding request must not hold the program open"
-    else
-        note "PASS NO_WATCH (${ms}ms, the 3s request abandoned)"
-    fi
+    note "PASS NO_WATCH (${ms}ms against ${base_ms}ms for a 0 ms request: the ${nowatch_ms}ms request abandoned)"
 fi
 
 # --- IGNORED: a watcher that never reads the body still terminates ----------
