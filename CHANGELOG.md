@@ -48,6 +48,12 @@ reader sees.
   status: 0 on x86 by luck, 127 on riscv64. It now waits for the process to
   be gone, with SIGTERM sent while a client is still connected (with none, the
   owner leaves on its own and the check passed with the kill deleted).
+- s390x's valgrind found the SQLite3 ODBC driver (Debian 0.99991-2) reading
+  an uninitialised value in `SQLColumns` when no column pattern is given, as
+  `discovery` gives none. `tests/odbc_driver_probe.c` now makes that call too,
+  from plain C with literal arguments, which reproduces it; `tests/odbc.supp`
+  suppresses it narrowly (innermost frame inside the driver), and the probe's
+  deliberate caller defect is still reported under it.
 - Also: `run_net`'s TLS floor counts the expired-certificate checks only where
   openssl can make one; `run_http`'s concurrency waits scale; `run_portable`
   clears the scaled `timeout` an outer gate exported; `run_absence` uses

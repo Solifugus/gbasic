@@ -189,6 +189,17 @@ int main(int argc, char **argv)
     while (SQLFetch(st) == SQL_SUCCESS) { }
     SQLFreeHandle(SQL_HANDLE_STMT, st);
 
+    /* AND THE SHAPE discovery.scan MAKES IT IN NOW: an explicit "%" schema and
+     * NO column pattern (discovery passes none). The call above, with a "%"
+     * column, is clean on every driver here; this one is what found the
+     * SQLite3 ODBC driver's defect on s390x (Debian 0.99991-2, 2026-11-13),
+     * which an omitted column pattern alone triggers. */
+    if (!OK(SQLAllocHandle(SQL_HANDLE_STMT, dbc, &st))) bail("alloc stmt", SQL_HANDLE_DBC, dbc);
+    r = SQLColumns(st, NULL, 0, (SQLCHAR *)"%", SQL_NTS, (SQLCHAR *)"vgprobe%", SQL_NTS, NULL, 0);
+    if (!OK(r)) bail("SQLColumns (no column pattern)", SQL_HANDLE_STMT, st);
+    while (SQLFetch(st) == SQL_SUCCESS) { }
+    SQLFreeHandle(SQL_HANDLE_STMT, st);
+
     if (!OK(SQLAllocHandle(SQL_HANDLE_STMT, dbc, &st))) bail("alloc stmt", SQL_HANDLE_DBC, dbc);
     r = SQLPrimaryKeys(st, NULL, 0, NULL, 0, (SQLCHAR *)"vgprobe_parent", SQL_NTS);
     if (!OK(r)) bail("SQLPrimaryKeys", SQL_HANDLE_STMT, st);

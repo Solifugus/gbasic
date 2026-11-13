@@ -99,6 +99,22 @@
    ...
 }
 
+# SQLite3 ODBC driver 0.99991 (Debian's -2 on s390x; Ubuntu's -5 on x86 is
+# clean) reads an uninitialised value inside SQLColumns when the column
+# pattern is omitted (NULL), whatever the schema; a "%" column is clean. Found
+# by run_discovery's valgrind tier on the s390x VM, 2026-11-13, and reproduced
+# by tests/odbc_driver_probe.c's second SQLColumns call -- literal arguments,
+# nothing of gBASIC's in the stack. Whether it is the architecture or the
+# package revision was not separated: both differ between the two machines.
+{
+   sqliteodbc-sqlcolumns-no-column-pattern-uninitialised
+   Memcheck:Cond
+   obj:*/odbc/libsqlite3odbc*.so
+   fun:SQLColumns
+   fun:SQLColumns
+   ...
+}
+
 # NOT SUPPRESSED: the same driver defect is reachable through SQLExecDirect,
 # which the probe once used to create its own fixture tables. gBASIC does not
 # call SQLExecDirect -- it prepares and executes -- and the probe now takes the
