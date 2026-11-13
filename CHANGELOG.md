@@ -54,6 +54,15 @@ reader sees.
   from plain C with literal arguments, which reproduces it; `tests/odbc.supp`
   suppresses it narrowly (innermost frame inside the driver), and the probe's
   deliberate caller defect is still reported under it.
+- `run_gsql_key`'s checker read serialize v3's little-endian double with a
+  `memcpy` into a host double, byte-swapped on s390x, and classified values by
+  converting doubles outside `long long`'s range (undefined; x86 and s390x
+  answered differently): 8 false mismatches there. Fixed, both machines now
+  agree exactly (180 values held to their bytes, 234 204 checks, 0
+  mismatches); the key encoding itself was right on big-endian throughout.
+- `run_gsql_module`'s capture check asks whether the owner is still lingering
+  when `$(...)` returns, rather than whether it returned in 2.5 s: the program
+  alone took 2.8 s on s390x, and a scaled bound would have hidden a 3 s hold.
 - Also: `run_net`'s TLS floor counts the expired-certificate checks only where
   openssl can make one; `run_http`'s concurrency waits scale; `run_portable`
   clears the scaled `timeout` an outer gate exported; `run_absence` uses

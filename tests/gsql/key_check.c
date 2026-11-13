@@ -11,6 +11,7 @@
 
 #include "gsql_key.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -294,9 +295,24 @@ int main(void) {
                 int lossless = v[0] == 5 || v[0] == 8 || v[0] == 3 || v[0] == 2 ||
                                (v[0] == 4 && v[1] == 1);
                 if (v[0] == 4 && v[1] == 0) {
+                    /* serialize v3 writes the double LITTLE-ENDIAN on every
+                     * machine; a memcpy into a host double read it byte-swapped
+                     * on s390x, so -0.0 and 2^53 looked lossless there and 8
+                     * values were held to bytes a key rightly normalises
+                     * (2026-11-13) */
+                    uint64_t bits = 0;
+                    for (int b = 7; b >= 0; b--) {
+                        bits = (bits << 8) | v[2 + b];
+                    }
                     double x;
-                    memcpy(&x, v + 2, 8);
-                    lossless = x == x && x != 0 && x != (double)(long long)x && x - x == 0;
+                    memcpy(&x, &bits, 8);
+                    /* integral AND inside long long's range: converting a
+                     * double outside it is undefined, and x86 (INT64_MIN) and
+                     * s390x (saturating) answered differently, so two values
+                     * were held to their bytes on one and not the other */
+                    int integral = x >= -9223372036854775808.0 && x < 9223372036854775808.0 &&
+                                   x == (double)(long long)x;
+                    lossless = x == x && x != 0 && !integral && x - x == 0;
                 }
                 if (lossless) {
                     checks++;

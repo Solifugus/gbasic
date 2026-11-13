@@ -479,14 +479,20 @@ for role in quick block; do
 done
 
 # an owner holds none of the program's streams, so capturing a program's
-# output returns when the PROGRAM does, not after its owner's linger
+# output returns when the PROGRAM does, not after its owner's linger. Judged
+# by whether the owner is STILL THERE when $(...) returns: one holding the
+# output would have to be gone before $(...) could return. That is a fact on
+# any machine; the 2500 ms bound it replaces was not -- on the s390x VM (about
+# 100x) the program alone took 2788 ms (2026-11-13), and scaling the bound
+# would have let a 3 s hold through.
 t0=$(date +%s%N)
 out=$(GSQL_ROLE=starter GSQL_DB="$L/capture" GSQL_GATE=/ timeout -k 5 60 ./gbasic "$LIFE" 2>&1)
+lingering=$(life_owner "$L/capture")
 ms=$(( ($(date +%s%N) - t0) / 1000000 ))
-if [ "$ms" -lt 2500 ] && printf '%s\n' "$out" | grep -q "starter exits"; then
-    pass "lifetime: \$(...) returned in $ms ms, without waiting out the owner's 3 s linger"
+if [ -n "$lingering" ] && printf '%s\n' "$out" | grep -q "starter exits"; then
+    pass "lifetime: \$(...) returned in $ms ms with the owner still lingering: it held none of the output"
 else
-    fail "lifetime: \$(...) took $ms ms: the owner holds the program's output open"
+    fail "lifetime: \$(...) took $ms ms and the owner had already gone: it held the program's output open"
 fi
 
 GSQL_ROLE=refusals GSQL_DB="$L/refuse" timeout -k 5 60 ./gbasic "$LIFE" >"$L/refuse.out" 2>&1
