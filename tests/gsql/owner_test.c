@@ -2645,8 +2645,14 @@ static int window_main(const char *dir) {
  * winner's socket answered -- waited 10 s to connect to a winner that had
  * already gone: lock free, no socket, no owner, for the client's whole wait.
  * Here clients open, ping and close at once, all together, so owners come
- * and go under them; no open may take more than CHURN_BOUND_MS. */
-#define CHURN_BOUND_MS 2000.0
+ * and go under them; no open may take more than CHURN_BOUND_MS.
+ *
+ * The defect waits out the client's WHOLE wait (10 s, DEFAULT_WAIT_MS in
+ * client.c), so the bound only has to sit clearly below that. On a machine
+ * GATE_TIME_SCALE calls slow it is 8 s, not 2 s scaled: the s390x VM (about
+ * 100x) opened in up to 2.5 s with nothing wrong (2026-11-13), and a bound
+ * scaled past 10 s would let the defect through. */
+#define CHURN_BOUND_MS (time_scale() > 1 ? 8000.0 : 2000.0)
 static int churn_main(const char *dir, int n, int rounds) {
     char db[600];
     snprintf(db, sizeof db, "%s/churn", dir);

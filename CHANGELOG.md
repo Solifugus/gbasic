@@ -63,6 +63,9 @@ reader sees.
 - `run_gsql_module`'s capture check asks whether the owner is still lingering
   when `$(...)` returns, rather than whether it returned in 2.5 s: the program
   alone took 2.8 s on s390x, and a scaled bound would have hidden a 3 s hold.
+- `run_gsql_owner`'s churn bound is 8 s on a slow machine rather than 2 s:
+  it separates an ordinary open from a client sitting out its whole 10 s wait,
+  s390x opened in up to 2.5 s, and a bound scaled past 10 s would hide it.
 - Also: `run_net`'s TLS floor counts the expired-certificate checks only where
   openssl can make one; `run_http`'s concurrency waits scale; `run_portable`
   clears the scaled `timeout` an outer gate exported; `run_absence` uses
