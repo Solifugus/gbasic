@@ -2,7 +2,7 @@
 ' Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
 '
 ' qt.render_svg and named syntax themes (Qt design §0.38 C and D1). args[0] is
-' a scratch directory; the runner put a theme called "Gray Print" on the
+' a scratch directory, and args[1] "plain" leaves the themes out; the runner put a theme called "Gray Print" on the
 ' syntax path (GBASIC_SYNTAX_PATH/themes/gray.theme). Sizes are read from each
 ' PNG's own header bytes; pixels are the runner's PIL tier. Each refusal is
 ' cleared where it was caught: `error` is the frame's own, so a helper
@@ -87,38 +87,46 @@ program main(args)
     n {file}= join_path(dir, "n.png")
     check("and no refusal wrote a file", exists(n), false)
 
-    print ""
-    print "-- named themes"
-    win = { kind: "window", name: "themes", options: { title: "Themes", width: 600, height: 300 },
-            items: [ { kind: "container", word: "row", options: {}, items: [
-                { kind: "part", word: "source", name: "gray", options: { language: "gBASIC", theme: "Gray Print" } },
-                { kind: "part", word: "source", name: "printing", options: { language: "gBASIC", theme: "Printing" } },
-                { kind: "part", word: "source", name: "dark", options: { language: "gBASIC", theme: "dark" } },
-                { kind: "part", word: "source", name: "plain", options: { theme: "Gray Print" } } ] } ] }
-    qt.open(win)
-    qt.set(win, "gray", "plainText", "' a comment\nx = 42\n")
-    check("a theme from the syntax path's themes/", qt.highlighting(win, "gray").theme, "Gray Print")
-    check("one KSyntaxHighlighting ships", qt.highlighting(win, "printing").theme, "Printing")
-    check("dark still names the theme it resolved to", qt.highlighting(win, "dark").theme, "Breeze Dark")
-    check("a themed plain editor has no highlighter to ask", is_unknown(qt.highlighting(win, "plain")), true)
-    shot = qt.capture(win, join_path(dir, "themes.png"), { part: "gray" })
-    check("the themed editor is captured", shot.width > 0, true)
-    shot = qt.capture(win, join_path(dir, "plain.png"), { part: "plain" })
-    qt.close(win)
+    ' THEMES BELONG TO THE HIGHLIGHTER: a build without KSyntaxHighlighting
+    ' (riscv64's Ubuntu 24.04 has no KF6) has none to name, so the runner,
+    ' which reads the build, passes "plain" and these are not run
+    if count(args) > 1 and args[1] = "plain" then
+        print ""
+        print "-- named themes: NOT run (this build has no highlighter)"
+    else
+        print ""
+        print "-- named themes"
+        win = { kind: "window", name: "themes", options: { title: "Themes", width: 600, height: 300 },
+                items: [ { kind: "container", word: "row", options: {}, items: [
+                    { kind: "part", word: "source", name: "gray", options: { language: "gBASIC", theme: "Gray Print" } },
+                    { kind: "part", word: "source", name: "printing", options: { language: "gBASIC", theme: "Printing" } },
+                    { kind: "part", word: "source", name: "dark", options: { language: "gBASIC", theme: "dark" } },
+                    { kind: "part", word: "source", name: "plain", options: { theme: "Gray Print" } } ] } ] }
+        qt.open(win)
+        qt.set(win, "gray", "plainText", "' a comment\nx = 42\n")
+        check("a theme from the syntax path's themes/", qt.highlighting(win, "gray").theme, "Gray Print")
+        check("one KSyntaxHighlighting ships", qt.highlighting(win, "printing").theme, "Printing")
+        check("dark still names the theme it resolved to", qt.highlighting(win, "dark").theme, "Breeze Dark")
+        check("a themed plain editor has no highlighter to ask", is_unknown(qt.highlighting(win, "plain")), true)
+        shot = qt.capture(win, join_path(dir, "themes.png"), { part: "gray" })
+        check("the themed editor is captured", shot.width > 0, true)
+        shot = qt.capture(win, join_path(dir, "plain.png"), { part: "plain" })
+        qt.close(win)
 
-    print ""
-    print "-- an unknown theme, refused"
-    on error goto next
-    bad = { kind: "window", name: "bad", options: { title: "B" },
-            items: [ { kind: "part", word: "source", name: "s", options: { theme: "Gray Prnt" } } ] }
-    qt.open(bad)
-    check("a near miss is named", contains(default(error.message, ""), "is not a theme -- did you mean \"Gray Print\"?"), true)
-    error.clear()
-    bad.items[0].options.theme = "Nothing Like It"
-    qt.open(bad)
-    check("otherwise the names are listed", contains(default(error.message, ""), "a theme's name: \"Atom One Dark\""), true)
-    error.clear()
-    on error stop
+        print ""
+        print "-- an unknown theme, refused"
+        on error goto next
+        bad = { kind: "window", name: "bad", options: { title: "B" },
+                items: [ { kind: "part", word: "source", name: "s", options: { theme: "Gray Prnt" } } ] }
+        qt.open(bad)
+        check("a near miss is named", contains(default(error.message, ""), "is not a theme -- did you mean \"Gray Print\"?"), true)
+        error.clear()
+        bad.items[0].options.theme = "Nothing Like It"
+        qt.open(bad)
+        check("otherwise the names are listed", contains(default(error.message, ""), "a theme's name: \"Atom One Dark\""), true)
+        error.clear()
+        on error stop
+    end if
 
     print ""
     print "checks: " + string(G.checks)

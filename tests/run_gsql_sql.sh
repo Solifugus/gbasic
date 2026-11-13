@@ -74,8 +74,18 @@ ENGINE="src/gsql/lsm.c src/gsql/lease.c src/gsql/store_common.c src/gsql/store_u
 LAYER="src/gsql/v3.c src/gsql/table.c src/gsql/xsort.c src/gsql/key.c src/gsql/wire.c"
 SAN=""
 printf 'int main(void){return 0;}\n' > "$work/probe.c"
-if "$CC" -fsanitize=address,undefined -o "$work/probe" "$work/probe.c" 2>/dev/null; then
+# A SANITIZER MUST RUN, NOT ONLY BUILD: on riscv64 GCC 13's AddressSanitizer
+# builds and then cannot start any program on a kernel using sv48 (its shadow
+# assumes sv39), and every tier died in the sanitizer's own start-up as
+# "the sanitizers objected" (2026-11-10). So the probe is run, and without a
+# working ASan this says so and keeps UBSan.
+if "$CC" -fsanitize=address,undefined -o "$work/probe" "$work/probe.c" 2>/dev/null &&
+   "$work/probe" >/dev/null 2>&1; then
     SAN="-fsanitize=address,undefined -fno-omit-frame-pointer"
+elif "$CC" -fsanitize=undefined -o "$work/probe" "$work/probe.c" 2>/dev/null &&
+     "$work/probe" >/dev/null 2>&1; then
+    SAN="-fsanitize=undefined -fno-omit-frame-pointer"
+    printf 'NOTE AddressSanitizer cannot run a program here, so memory errors are not measured (UBSan only)\n'
 fi
 bounded() { timeout -k 5 "$1" "${@:2}"; }
 
@@ -109,7 +119,9 @@ if ! make -s gbasic libgbasic.a >"$work/make.out" 2>&1; then
 fi
 LIBS=$(make -s print-ldlibs)
 # shellcheck disable=SC2086
-if "$CC" $FLAGS -g -O1 $SAN -o "$work/parse_test" tests/gsql/sql_parse_test.c src/gsql/sql_parse.c $LAYER $ENGINE \
+# -lm: sql_parse.c calls floor(), which x86-64's GCC inlines and riscv64's
+# does not, so without it the link failed there alone (2026-11-10)
+if "$CC" $FLAGS -g -O1 $SAN -o "$work/parse_test" tests/gsql/sql_parse_test.c src/gsql/sql_parse.c $LAYER $ENGINE -lm \
         2>"$work/build.err" &&
    "$CC" $FLAGS -g -o "$work/sql_test" tests/gsql/sql_test.c libgbasic.a $LIBS 2>>"$work/build.err" &&
    "$CC" $FLAGS -g -O1 $SAN -D_POSIX_C_SOURCE=200809L -o "$work/owner_test" tests/gsql/sql_owner_test.c \

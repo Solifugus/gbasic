@@ -83,7 +83,8 @@ info = pdf.info(path)
 '   sizes: [ { width, height, rotation } ] }     ' points, one per page
 
 p = pdf.read_page(path, n, options)               ' n from 1
-' { ok, why, n, how, width, height, rotation,
+' { ok, why, n, how, width, height, rotation, units,
+'   scan_rotation, scan_rotation_confidence,
 '   words: [ { text, left, top, width, height, block, paragraph, line,
 '              confidence } ],
 '   images: [ { left, top, width, height, pixels_wide, pixels_high } ],
@@ -100,7 +101,17 @@ f = pdf.image(path, n, index, dir)                ' that picture, as stored, fro
 - **`confidence`** is `unknown` for a PDF's own text. It is not 100: nothing
   measured it. On an `ocr` page it is the engine's.
 - **`skew`** is `unknown` for a text page and the engine's for an `ocr` page,
-  so `ocr.grid`'s refusal of a crooked page applies unchanged.
+  so `ocr.grid`'s refusal of a crooked page applies unchanged. That refusal
+  names the page's `units` (`"points"` here, `"pixels"` from `ocr`).
+- **A turned scan** (book gap G66, 2026-11-10). `ocr` reports the turn it
+  found and answers its words in the page as read. `scan_rotation` and
+  `scan_rotation_confidence` carry that onto the pdf page; `rotation` stays
+  the PDF's own `/Rotate`, a different thing. The picture's place is turned
+  the same way inside the page, the words are scaled from the turned
+  picture's pixels to its turned place, the pictures are turned with it, and
+  `width` and `height` become the page as read. A turn tesseract could not
+  tell (a page with few characters: the two-line fixture, at 100 and at
+  300 dpi) is `unknown` and nothing is turned.
 - **Failure is a value, not a raise.** `ok: false` comes with poppler's own
   words, such as *"Couldn't find trailer dictionary"*. A batch over a
   supplier's mailbox meets damaged files as an ordinary case. A missing
@@ -117,6 +128,9 @@ known places, and a scan of it rendered by `pdftoppm`:
 - a text page;
 - a scan;
 - a searchable scan;
+- the fuller page at 300 dpi turned 0, 90, 180 and 270 degrees (by PIL), each
+  placed with a different margin on every side, where each word and picture
+  should land worked out by hand from those margins (skips without PIL);
 - a text page with a logo;
 - two page-sized pictures;
 - a blank page;
@@ -150,8 +164,10 @@ it.
   points. `pdfimages -list` gives pixel sizes but no position. The file
   `pdftohtml` writes is read for its PNG header's pixel size, then removed.
 - **A scan's picture** for OCR is taken out by `pdfimages -png`. The words OCR
-  finds are in its pixels, and are scaled to the page's points by the
-  picture's placed size over its pixel size.
+  finds are in its pixels, turned upright, and are scaled to the page's points
+  by the picture's placed size, turned the same way, over its turned pixel
+  size. Not measured: a picture the PDF itself draws turned (a rotating
+  matrix), whose stored pixels are on their side of how it shows.
 - **`pdf.image`** uses `pdfimages -all`, which keeps a JPEG a JPEG. Its order is
   the PDF's object order, which may differ from `images`', and the reference
   says so.

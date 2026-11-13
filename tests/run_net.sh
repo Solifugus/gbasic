@@ -68,6 +68,7 @@
 #
 # Tiers 3-6 and 8's Python parts need python3 and skip, saying so, without it.
 . "$(dirname "$0")/portable.sh"   # GNU coreutils behaviour where the tools are BSD
+. "$(dirname "$0")/premise.sh"   # premise_time_claims
 set -u
 
 cd "$(dirname "$0")/.."
@@ -405,7 +406,11 @@ else
         grep -E '^MISMATCH' "$work/ka.out" | head -5
         head -3 "$work/ka.err"
     fi
-    if awk -v a="${accepted:-0}" -v c="${client:-0}" 'BEGIN { exit !(a > 4 && a <= 7 && c > 8 && c <= 11) }'; then
+    if ! premise_time_claims; then
+        # read by ss seconds after the socket was made: on a slow machine the
+        # 7 s timer has nearly run out by then (6.72 ms left on riscv64)
+        printf 'SKIP   the seconds left on the kernel timers at GATE_TIME_SCALE=%s (%ss and %ss read) were NOT judged\n' "$GATE_TIME_SCALE" "${accepted:-none}" "${client:-none}"
+    elif awk -v a="${accepted:-0}" -v c="${client:-0}" 'BEGIN { exit !(a > 4 && a <= 7 && c > 8 && c <= 11) }'; then
         printf 'PASS   and the kernel runs those timers: %ss left of 7 (accepted), %ss of 11 (connected)\n' "$accepted" "$client"
     else
         fail "the kernel's keepalive timers were ${accepted:-none} and ${client:-none}, wanting at most 7 and 11"

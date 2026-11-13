@@ -16,6 +16,101 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### `GATE_TIME_SCALE`: the gate on a slow machine (2026-11-11)
+
+- `GATE_TIME_SCALE=N tests/run_all.sh` multiplies every `timeout` bound in the
+  suites (and the gate's own per-suite limit) by N, the `-k` grace with it, so
+  a hang is still caught and only the patience changes; tiers that assert an
+  absolute speed measured on x86 (the xlsx 1200 ms ceiling, fake's 60 s and
+  90 s, G-SQL's commits per sync, the kernel keepalive timers' remaining
+  seconds) skip and say what went unjudged. For riscv64 under QEMU, about 48x
+  slower than x86, where 13 of the first gate's 29 failures were time alone.
+
+### What the riscv64 port found (2026-11-11)
+
+gBASIC built cleanly on riscv64 (Ubuntu 24.04 under QEMU) and gave no wrong
+answer. The full gate there found these, each fixed here:
+
+- **A crash in a selection handler that refreshes, on every platform.** A table
+  shrunk by the program under its selected row, with a selection handler that
+  refreshes it, crashed in `setRowCount` every run (x86 too). Qt announced the
+  lost selection from inside the rows' removal and the handler changed the
+  table in the middle of it. The tree had the same shape (`qt.refresh` from its
+  own selection handler); Qt 6.10 survived it and 6.4 crashed. Both now announce
+  the lost selection once the rows are gone, so a refreshing handler hears each
+  change and no longer recurses (8 calls where it was 68). And `qt.select` on a
+  tree makes the selection with Qt's signals held and announces it once Qt is
+  done: a handler run from inside `setCurrentItem` that refreshed the tree
+  removed the row Qt was making current, and 6.4 crashed in Qt's own handling
+  (19 of 20 runs on riscv64). The handler still runs before `qt.select`
+  returns.
+- **`qt.set(..., "icon", file)` accepted a file that is not an image on Qt 6.4**:
+  `QIcon` is lazy, and whether it says so is Qt's version's. It is asked of the
+  file's contents now (`QImageReader`).
+- **A reordered box read its old positions on Qt 6.4** until the next event;
+  a reorder now lays out at once, as a drop already did.
+- **The test harness:** Qt suites on a build with Qt and no
+  KSyntaxHighlighting (Ubuntu 24.04 has no KF6) skip what needs it, by the
+  build's own link line; C++ probes link what the build linked; G-SQL's
+  sanitizer probes run their program (GCC 13's ASan cannot start one under a
+  riscv64 sv48 kernel) and fall back to UBSan; `sql_parse.c`'s test links
+  `-lm` (x86 inlines `floor`); tiers that needed `zip` or `/usr/bin/time` say
+  so; the xlsx shape tier no longer passes on runs that failed; the mail
+  checker accepts Python 3.12's one header-fold difference.
+- **`tools/check-deps.sh`** lists every library the Makefile probes (it had
+  lost PCRE2, which is required, and six optional modules) and reports drift.
+
+### A scan fed through sideways (book gap G66, 2026-11-10)
+
+- **`pdf.read_page(..., { ocr: true })`** carries the turn `ocr` found as
+  `scan_rotation` and `scan_rotation_confidence` (`rotation` stays the PDF's
+  own `/Rotate`), and answers a turned scan **as read**: its words, pictures,
+  `width` and `height` in the upright page. A quarter-turned scan's words had
+  been scaled on the wrong axes. Every page now carries `units: "points"`.
+- **`ocr.read_page`** turns word boxes about the picture's own size rather
+  than the words' extent, which had moved every box on a sideways page by its
+  margin (19 pixels on the suite's fixture), and answers `width`, `height` and
+  `units: "pixels"` for the page as read.
+- **`ocr.grid`**'s skew refusal names the page's own units: points on a page
+  from `pdf`.
+
+### Accounting exports for an outside accountant: `acctexport` (2026-11-10)
+
+- **`stdlib/acctexport.bas`**, a companion to `finio` (why not part of it:
+  docs/accounting_export_design.md §2). An application's customers, invoices
+  and credit notes with their lines, payments with their allocations, refunds,
+  processor fees and payouts become files under an explicit **target profile**:
+  `general` (one CSV per record type and link, a README, nothing lost),
+  `qbo.invoices`, `qbo.bank`, `xero.invoices`, `xero.credit_notes`,
+  `xero.bank` and `qbd.iif`. Each batch carries a **manifest**: batch id,
+  profile and version, every file's rows, bytes and SHA-256, every record and
+  where it went, counts and totals by type and currency, what was skipped and
+  every accepted loss. Output is deterministic.
+- **Researched from the vendors' own pages** on 2026-11-10, with the sources and
+  dates in each profile's registry entry (checked by
+  `finio.check_registry_entry`): QuickBooks Online's invoice import (1,000 rows,
+  100 invoices, no negative charges, US sales tax refused) and bank upload;
+  Xero's invoice, credit note and bank statement imports; Intuit's IIF Import
+  Kit for QuickBooks Desktop. Payments, refunds and payouts are not file
+  imports in QuickBooks Online or Xero; they go as bank or clearing-account
+  statements. Gaps are recorded in the design doc.
+- **Validation before anything is written:** line amounts against quantity x
+  price - discount under the application's declared rounding, totals, currencies,
+  allocations against what is left of an invoice, refunds against their payment,
+  payouts against their payments less refunds and fees, a payment paid out twice.
+  Every export is classified representable, lossy or impossible; a lossy one is
+  refused unless each loss is named, an unsupported record type unless it is
+  skipped by name, and a missing account, tax or item mapping always. No account,
+  tax treatment, conversion or journal entry is invented, and the manifest says
+  the files were generated, not imported.
+- New suite `tests/run_acctexport.sh`: 51 semantic checks; a layout tier where
+  Python's csv and decimal hold 13 rendered batches to the documented layouts and
+  hand-worked amounts (24,038 checks), optionally against Intuit's own kit files;
+  determinism; two runnable examples; the cookbook's every block quoted from
+  them; valgrind. 25 perturbations each went red; the one that first stayed green
+  (Xero dates written month-first) produced checks on date values, not shapes.
+  Nothing has been imported into a vendor's product.
+
 ### Studio's notebook, part 3: mcp content blocks, stdin in the loop (2026-11-10)
 
 - **`mcp.content([mcp.text(t), mcp.image(bytes, mime_type)])`** (§0.38 D2):

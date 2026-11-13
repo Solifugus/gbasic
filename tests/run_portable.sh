@@ -14,6 +14,10 @@
 # it fails if the shim lets a hang through.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+# portable.sh is tested under conditions this suite sets: a gate run with
+# GATE_TIME_SCALE would otherwise change what every tier below asserts. The
+# scale has its own tier, which sets it.
+unset GATE_TIME_SCALE
 
 pass=0; fail=0
 ok()   { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
@@ -61,6 +65,41 @@ got="$(timeout 30 env GB_PORTABLE_FORCE=timeout:timeout_shell bash -c '
     . tests/portable.sh
     timeout 30 sh -c "kill -TERM \$\$" ; echo "status=$?"' 2>/dev/null)"
 is "a command SIGTERMed by someone else is NOT called a timeout" "$got" "status=143"
+
+echo "TIER GATE_TIME_SCALE: a slow machine's patience, nothing else"
+# riscv64 under QEMU runs ~48x slower (2026-11-11); the scale multiplies every
+# bound and keeps every other property of `timeout`
+sc() { GATE_TIME_SCALE="$1" bash -c '. tests/portable.sh; '"$2"; }
+is "durations are multiplied, rounded up to whole seconds" \
+   "$(sc 50 'echo $(_gb_scale_duration 120) $(_gb_scale_duration 0.2) $(_gb_scale_duration 2m)')" "6000 10 6000"
+is "a scale of 1 installs nothing" "$(sc 1 'echo "[$GB_PORTABLE_SHIMS] $(type -t timeout)"')" "[] file"
+is "a scale below 1 is no scale" "$(sc 0.5 'echo "[$GB_PORTABLE_SHIMS]"')" "[]"
+is "and nonsense is no scale" "$(sc abc 'echo "[$GB_PORTABLE_SHIMS]"')" "[]"
+is "a scale says so among the shims" "$(sc 50 'echo "[$GB_PORTABLE_SHIMS]"')" "[timeout*50]"
+is "a command that finishes keeps its own exit status" "$(sc 50 'timeout 1 sh -c "exit 7"; echo "status=$?"')" "status=7"
+# the bound is real, and later: 0.02 s x 50 is 1 s, and a 1 s kill still comes
+t0=$(date +%s%N)
+got="$(sc 50 'timeout 0.02 sleep 30; echo "status=$?"')"
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+is "a hang is still killed and reported 124" "$got" "status=124"
+if [ "$ms" -ge 900 ] && [ "$ms" -lt 10000 ]; then ok "and only after the scaled bound (${ms}ms for 0.02s x 50)"
+else bad "the scaled bound fired after ${ms}ms, wanting about 1000"; fi
+# GNU timeout answers 137 when -k had to KILL (124 is for a TERM that worked)
+t0=$(date +%s%N)
+got="$(sc 50 'timeout -k 0.02 0.02 sh -c "trap \"\" TERM; exec sleep 30"; echo "status=$?"')"
+ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+is "-k still kills what ignores TERM" "$got" "status=137"
+if [ "$ms" -ge 1800 ] && [ "$ms" -lt 10000 ]; then ok "and its grace is scaled too (${ms}ms for 0.02s + 0.02s, x 50)"
+else bad "the scaled -k fired after ${ms}ms, wanting about 2000"; fi
+is "children of the suite's shell see it too" "$(sc 50 'bash -c "type -t timeout"')" "function"
+# SOURCED TWICE, as run_all.sh and then each suite do: the inherited wrapper must
+# not be wrapped again, which recursed for ever. Bounded by the real timeout.
+is "sourced again in a child, it wraps once and still works" \
+   "$(command timeout 20 env GATE_TIME_SCALE=50 bash -c '. tests/portable.sh; bash -c ". tests/portable.sh; timeout 1 sh -c \"exit 7\"; echo status=\$?"')" "status=7"
+is "the shell fallback is scaled as well" \
+   "$(GB_PORTABLE_FORCE=timeout:timeout_shell sc 50 'echo "[$GB_PORTABLE_SHIMS]"')" "[timeout=shell timeout*50]"
+is "premise_time_claims holds unscaled" "$(bash -c '. tests/premise.sh; premise_time_claims && echo yes || echo no')" "yes"
+is "and not at a scale" "$(GATE_TIME_SCALE=50 bash -c '. tests/premise.sh; premise_time_claims && echo yes || echo no')" "no"
 
 echo "TIER stat helpers"
 tmp="$(mktemp -d)"; trap 'rm -rf "$tmp"' EXIT

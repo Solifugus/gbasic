@@ -87,6 +87,7 @@
 #include <QMetaEnum>
 #include <QStyle>
 #include <QIcon>
+#include <QSignalBlocker>
 #include <QPainter>
 #include <QPaintEvent>
 #include <QResizeEvent>
@@ -131,6 +132,7 @@
 #include <QSvgRenderer>
 #endif
 #include <QImage>
+#include <QImageReader>
 #include <QImageWriter>
 #include <fcntl.h>
 #include <stdio.h>
@@ -2270,7 +2272,12 @@ static int icon_from_text(const QString &text, QIcon *out, char *err,
     QFileInfo info(text);
     if (info.isFile()) {
         *out = QIcon(text);
-        if (out->isNull()) {
+        /* ASKED OF THE FILE'S CONTENTS, not only of the icon: QIcon loads a
+         * file lazily, and whether isNull() says so of one that is not an
+         * image is Qt's version's business -- 6.10 says null, 6.4 does not
+         * (measured on riscv64's Ubuntu 24.04, 2026-11-11). QImageReader reads
+         * the bytes and answered alike on both. */
+        if (out->isNull() || !QImageReader(text).canRead()) {
             /* THE FILE IS THERE AND IS NOT AN IMAGE, which is a fact about the
              * file and so a refusal like a missing one. */
             say(err, err_size,
@@ -6067,7 +6074,43 @@ extern "C" int gb_qt_table_size(void *window, const char *name, int rows,
         say(err, err_size, QByteArray("`") + name + "` is not a table here");
         return 0;
     }
-    t->setRowCount(rows);
+    /* A TABLE SHRINKING UNDER ITS SELECTED ROW, the tree's case again (see
+     * gb_qt_tree_clear): Qt announces the deselection from inside the rows'
+     * removal, a selection handler that refreshes changed the table in the
+     * middle of it, and setRowCount crashed when it went on -- on x86's Qt
+     * 6.10 as well as riscv64's 6.4, every run (found 2026-11-11 from the
+     * riscv64 port; no suite shrank a table under a handler). So the change
+     * is announced once the rows are gone. */
+    QItemSelectionModel *sm = t->selectionModel();
+    const bool shrinking = sm && rows < t->rowCount();
+    /* rows, not indexes: an index into a removed row is not comparable after */
+    QList<int> before;
+    int current_before = -1;
+    if (shrinking) {
+        for (const QModelIndex &i : sm->selectedIndexes()) {
+            before.append(i.row());
+        }
+        current_before = sm->currentIndex().isValid() ? sm->currentIndex().row() : -1;
+    }
+    {
+        QSignalBlocker quiet(shrinking ? sm : nullptr);
+        QSignalBlocker quiet_view(shrinking ? (QObject *)t : nullptr);
+        t->setRowCount(rows);
+    }
+    if (shrinking) {
+        QList<int> after;
+        for (const QModelIndex &i : sm->selectedIndexes()) {
+            after.append(i.row());
+        }
+        const int current_after = sm->currentIndex().isValid() ? sm->currentIndex().row() : -1;
+        /* announced only when it changed, as Qt would have */
+        if (current_after != current_before) {
+            emit sm->currentChanged(sm->currentIndex(), QModelIndex());
+        }
+        if (after != before) {
+            emit sm->selectionChanged(sm->selection(), QItemSelection());
+        }
+    }
     return 1;
 }
 
@@ -6381,17 +6424,37 @@ extern "C" int gb_qt_table_select(void *window, const char *name, int row,
             say(err, err_size, "that tree has no such row");
             return 0;
         }
-        tr->setCurrentItem(item);
-        /* RE-ENTRY. See the note above this function: the handler that just
-         * ran may have refreshed the tree and deleted `item`, so it is looked
-         * up again rather than held. A tree that is gone, or a row that is no
-         * longer there, is an ORDINARY outcome of a handler that redrew --
-         * not a failure, since the program got what it asked for and then
-         * changed its mind. */
-        tr = tree_of(window, name);
-        item = tr ? tree_item_at(tr, row) : nullptr;
-        if (item) {
+        /* THE SELECTION IS MADE QUIETLY AND ANNOUNCED AFTERWARDS. A handler
+         * run from inside setCurrentItem that refreshed this tree removed the
+         * row Qt was making current, from inside Qt's own selection change,
+         * and Qt 6.4 crashed in it (riscv64, 19 of 20 runs, 2026-11-11; no
+         * blocker inside the refresh helps, the crash is in Qt's handling).
+         * So Qt finishes selecting first, and the changes are then announced
+         * as Qt would have announced them: the handler still runs before
+         * qt.select returns, just never inside Qt. */
+        QItemSelectionModel *sm = tr->selectionModel();
+        const QModelIndex was_current = sm ? QModelIndex(sm->currentIndex()) : QModelIndex();
+        const QItemSelection was_selected = sm ? sm->selection() : QItemSelection();
+        {
+            QSignalBlocker quiet(sm);
+            QSignalBlocker quiet_view(tr);
+            tr->setCurrentItem(item);
             item->setSelected(true);
+        }
+        if (sm) {
+            const QModelIndex now_current = sm->currentIndex();
+            const QItemSelection now_selected = sm->selection();
+            if (now_current != was_current) {
+                emit sm->currentChanged(now_current, was_current);
+            }
+            /* RE-ENTRY: the handler that runs here may have refreshed the
+             * tree, so nothing below holds `item` or the selection model. */
+            if (now_selected != was_selected) {
+                tr = tree_of(window, name);
+                if (tr && tr->selectionModel() == sm) {
+                    emit sm->selectionChanged(now_selected, was_selected);
+                }
+            }
         }
         return 1;
     }
@@ -7258,6 +7321,11 @@ extern "C" int gb_qt_child_place(void *container, void *child, int position,
         }
         b->insertWidget(index, k->widget);
         k->widget->setVisible(true);
+        /* LAID OUT NOW, as a drop is (below): Qt 6.10 had the moved part in
+         * place when it was read straight after, Qt 6.4 still had it where it
+         * was (y 356 where a fresh box says 100; riscv64's Ubuntu 24.04,
+         * 2026-11-11), so the answer was the Qt version's rather than ours. */
+        b->activate();
         return 1;
     }
     say(err, err_size, "that container cannot order its children");
@@ -7533,20 +7601,47 @@ extern "C" int gb_qt_tree_clear(void *window, const char *name) {
     if (!t) {
         return 0;
     }
-    if (g_handler_depth == 0) {
-        /* THE ORDINARY PATH IS UNCHANGED, which is what keeps this fix from
-         * being a behaviour change: with no handler on the stack there is no
-         * Qt call to outlive, so the items are deleted now as they always
-         * were. */
-        t->clear();
-        return 1;
+    /* THE SELECTION'S CHANGE IS ANNOUNCED AFTER THE ROWS ARE GONE, NOT FROM
+     * INSIDE THEIR REMOVAL. Qt 6.4 emits selectionChanged from within
+     * takeTopLevelItem's beginRemoveRows when a selected row goes, so a
+     * selection handler that refreshes this tree removed rows from inside
+     * that removal, and Qt crashed in it (riscv64's Ubuntu 24.04, 6 of 10 runs
+     * of run_qt_reentry, 2026-11-11). Qt 6.10 announces it once the removal is
+     * over. So the selection model is held quiet while the rows go, and the
+     * change -- the selection and the current item emptied -- is announced
+     * afterwards, as 6.10 does: a handler still hears it (run_qt_reentry's
+     * 2117 depends on that), just never mid-removal. */
+    QItemSelectionModel *sm = t->selectionModel();
+    const bool had_selection = sm && sm->hasSelection();
+    const bool had_current = sm && sm->currentIndex().isValid();
+    {
+        /* the view too: Qt 6.4 also reached a handler through the tree's own
+         * signals from inside takeChild's removal, with the selection model
+         * already quiet (measured on the riscv64 VM, 9 of 10 runs) */
+        QSignalBlocker quiet(sm);
+        QSignalBlocker quiet_view(t);
+        if (g_handler_depth == 0) {
+            /* THE ORDINARY PATH IS UNCHANGED, which is what keeps this fix
+             * from being a behaviour change: with no handler on the stack
+             * there is no Qt call to outlive, so the items are deleted now as
+             * they always were. */
+            t->clear();
+        } else {
+            /* INSIDE A HANDLER: taken out rather than deleted.
+             * `takeTopLevelItem` removes the row and hands us the item,
+             * children and all, so the tree is empty -- which is what a
+             * refresh means -- while every item stays ALIVE until the
+             * outermost handler returns. See the note on `invoke_handler`. */
+            while (t->topLevelItemCount() > 0) {
+                g_retired_items.append(t->takeTopLevelItem(0));
+            }
+        }
     }
-    /* INSIDE A HANDLER: taken out rather than deleted. `takeTopLevelItem`
-     * removes the row and hands us the item, children and all, so the tree is
-     * empty -- which is what a refresh means -- while every item stays ALIVE
-     * until the outermost handler returns. See the note on `invoke_handler`. */
-    while (t->topLevelItemCount() > 0) {
-        g_retired_items.append(t->takeTopLevelItem(0));
+    if (sm && had_current) {
+        emit sm->currentChanged(QModelIndex(), QModelIndex());
+    }
+    if (sm && had_selection) {
+        emit sm->selectionChanged(QItemSelection(), QItemSelection());
     }
     return 1;
 }

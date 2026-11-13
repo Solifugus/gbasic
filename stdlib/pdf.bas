@@ -257,8 +257,11 @@ end function
 ' ---------------------------------------------------------------------------
 
 ' `pdf.read_page(path, n [, options])` -> { ok, why, n, how, width, height,
-' words, images, text_layer, text_layer_set_aside, skew }. `how` is text,
-' scan, ocr or blank. Words and pictures are in points from the top-left.
+' rotation, words, images, text_layer, text_layer_set_aside, skew, units,
+' scan_rotation, scan_rotation_confidence }. `how` is text, scan, ocr or
+' blank. Words and pictures are in points from the top-left. On an ocr page
+' `scan_rotation` is the turn ocr found the scan needed (unknown if it could
+' not tell), and everything is in the page as read.
 function read_page(path, n, options = nothing)
     _need("read_page")
     o = _options(options, "read_page")
@@ -275,7 +278,8 @@ function _read(p, d, n, o)
     sz = d.sizes[n - 1]
     page = { ok: true, why: "", n: n, how: "", width: sz.width, height: sz.height,
              rotation: sz.rotation, words: _text_words(p, n), images: _images(p, n),
-             text_layer: false, text_layer_set_aside: false, skew: unknown }
+             text_layer: false, text_layer_set_aside: false, skew: unknown,
+             units: "points", scan_rotation: unknown, scan_rotation_confidence: unknown }
     big = 0
     for each im in page.images
         if _page_sized(im, page.width, page.height) then
@@ -342,12 +346,41 @@ function _ocr_page(p, n, page, o)
             im = m
         end if
     end for
-    sx = im.width / im.pixels_wide
-    sy = im.height / im.pixels_high
+    ' A SCAN FED THROUGH SIDEWAYS (book gap G66): ocr turns it to read it and
+    ' answers its words in the page as read. The picture's place is turned the
+    ' same way inside the page, so the words land in points on the page as
+    ' read, whose width and height the page then reports, and its pictures
+    ' are turned with it; `scan_rotation` says so. Scaling by the picture's own width over its pixel width, as
+    ' this did, put a quarter-turned page's words on the wrong axes.
+    turn = q.rotation
+    if is_unknown(turn) then
+        turn = 0
+    end if
+    at = _turned({ left: im.left, top: im.top, width: im.width, height: im.height },
+                 turn, page.width, page.height)
+    wide = im.pixels_wide
+    high = im.pixels_high
+    turned = []
+    for each m in page.images
+        t = _turned(m, turn, page.width, page.height)
+        t.pixels_wide = m.pixels_wide
+        t.pixels_high = m.pixels_high
+        append(turned, t)
+    end for
+    page.images = turned
+    if turn = 90 or turn = 270 then
+        wide = im.pixels_high
+        high = im.pixels_wide
+        w0 = page.width
+        page.width = page.height
+        page.height = w0
+    end if
+    sx = at.width / wide
+    sy = at.height / high
     words = []
     for each w in q.words
-        w.left = im.left + w.left * sx
-        w.top = im.top + w.top * sy
+        w.left = at.left + w.left * sx
+        w.top = at.top + w.top * sy
         w.width = w.width * sx
         w.height = w.height * sy
         append(words, w)
@@ -355,8 +388,23 @@ function _ocr_page(p, n, page, o)
     page.text_layer_set_aside = page.text_layer
     page.words = words
     page.skew = q.skew
+    page.scan_rotation = q.rotation
+    page.scan_rotation_confidence = q.rotation_confidence
     page.how = "ocr"
     return page
+end function
+
+' A box in a page `w` by `h`, turned clockwise by `turn` degrees as ocr turns
+' a picture to read it (ocr._rotate_boxes, the same arithmetic).
+function _turned(b, turn, w, h)
+    if turn = 90 then
+        return { left: h - (b.top + b.height), top: b.left, width: b.height, height: b.width }
+    else if turn = 180 then
+        return { left: w - (b.left + b.width), top: h - (b.top + b.height), width: b.width, height: b.height }
+    else if turn = 270 then
+        return { left: b.top, top: w - (b.left + b.width), width: b.height, height: b.width }
+    end if
+    return b
 end function
 
 ' `pdf.read(path [, options])` -> { ok, why, pages: [ page ] }: every page, in

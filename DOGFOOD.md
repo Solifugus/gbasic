@@ -13890,3 +13890,41 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Status: FIXED 2026-11-10** (src/lexer.c, both the one-word and the
   phrase form). Held by tests/source_comments_test.bas (three columns after a
   modifier) and the corpus tier of tests/run_source_comments.sh.
+
+## 2026-11-10 — CC — while: acctexport, naming the library's verbs
+
+- **Type:** language-surprise
+- **Severity:** low (a parse error at once, naming the word)
+- **What:** `export` and `to` are reserved words, so the natural verb
+  `acctexport.export(...)` and a local `to` (a credit note's target invoice)
+  did not parse. The verb became `acctexport.render`.
+- **Workaround:** other names.
+- **Status:** open, by design; recorded for the next library that exports.
+
+## 2026-11-10 — CC — while: acctexport, a library function called `write`
+
+- **Type:** language-surprise
+- **Severity:** medium (a confusing error, far from its cause)
+- **What:** the library's public `write(result, dir)` shadowed the builtin
+  `write` inside the library, as library scope says it should (a library's
+  unqualified call resolves to its own function first). A helper's
+  `write(temp, text)` therefore called the library's own `write`, which failed
+  with "the folder '<the file's text>' does not exist". Nothing at the call site
+  hinted that `write` was no longer the builtin.
+- **Workaround:** the public verb became `acctexport.save`.
+- **Status:** open; a note when a library function shadows a builtin that the
+  same library also calls would have named it.
+
+## 2026-11-10 — CC — while: Studio §0.38, a test helper clearing errors
+
+- **Type:** language-surprise
+- **Severity:** medium (a fixture stopped early, and an error was reported at exit)
+- **What:** `error` is the frame's own, so a helper function that checks
+  `error.message` and calls `error.clear()` clears its OWN frame's error, not
+  its caller's. The caller's caught error stayed uncleared, the anti-silence rule
+  reported it at exit (status 1), and the next raise in the caller ended the
+  program. Reading `error.message` in the helper worked, which made the clear
+  look like it had worked too.
+- **Workaround:** clear where the error was caught.
+- **Status:** open, by design (frame-scoped errors); recorded because the shape
+  `refused(label, want)` is the obvious one to write.

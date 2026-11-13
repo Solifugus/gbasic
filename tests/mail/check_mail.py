@@ -103,7 +103,15 @@ def compare(where, m, got):
     for (name, value), (gname, gvalue) in zip(m.items(), got["headers"]):
         lname = name.lower()
         if lname == "subject" or lname.startswith("x-"):
-            check(where, "header " + name, gvalue, str(value))
+            want = str(value)
+            # A header whose first line is empty ("Subject:" then a folded
+            # line): Python 3.12 keeps the fold's leading space in the value,
+            # 3.14 does not, and neither does gBASIC (RFC 5322 unfolding; the
+            # space begins the fold, not the subject). Measured on the riscv64
+            # VM's 3.12.3 against 3.14.4, 2026-11-11. Only that case is let by.
+            if want != gvalue and want[:1] in (" ", "\t") and gvalue == want.lstrip(" \t"):
+                want = gvalue
+            check(where, "header " + name, gvalue, want)
     raw = {}
     for name, value in m.raw_items():
         raw.setdefault(name.lower(), "")

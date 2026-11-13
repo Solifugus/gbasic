@@ -51,7 +51,7 @@ else
     else
         pass "$checks checks, 0 mismatches"
     fi
-    grep -v 'This plugin does not support' "$work/sem.err" > "$work/sem.err2"
+    grep -v -e 'This plugin does not support' -e 'built without KSyntaxHighlighting, so it will work as a plain editor' "$work/sem.err" > "$work/sem.err2"
     if [ -s "$work/sem.err2" ]; then
         head -3 "$work/sem.err2"; fail "the fixture wrote to stderr"
     else

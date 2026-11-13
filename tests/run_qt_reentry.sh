@@ -138,7 +138,7 @@ elif grep -q NODISPLAY "$work/r1.out" 2>/dev/null; then
     printf '  SKIP (no display)\n'
 else
     if grep -qE "\[2117\]" "$work/r1.err"; then
-        pass "warning 2117 fired on the handler that refreshes its own subject"
+        pass "warning 2117 fired on the handler that keeps changing its own selection"
     else
         head -2 "$work/r1.err"
         fail "the recursion was not reported -- 2117 never fired"

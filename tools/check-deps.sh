@@ -25,6 +25,7 @@
 # worse the reverse. The self-check at the bottom compares this list against the
 # Makefile's own `pkg-config --exists` calls and complains if they drift.
 set -u
+drift=0
 
 cd "$(dirname "$0")/.."
 
@@ -38,13 +39,21 @@ libxml-2.0|libxml2-dev|REQUIRED BY xlsx (with zlib): reader, writer, formula eng
 zlib|zlib1g-dev|REQUIRED BY xlsx (with libxml2): the ZIP container
 libcrypto|libssl-dev|crypto builtins (hashing, HMAC, AES-GCM, Ed25519) + crypto.bas
 libcurl|libcurl4-openssl-dev|webclient module
+libssl|libssl-dev|TLS in net and the web server (with libcrypto)
 libpq|libpq-dev|pg.* PostgreSQL module (its tests are opt-in regardless)
 libxcrypt|libcrypt-dev|password_hash / password_verify
+odbc|unixodbc-dev|odbc.* module (any ODBC-reachable database)
+ldap|libldap-dev|ldap.* module (bind and search)
+Qt6Widgets|qt6-base-dev qt6-base-dev-tools|the qt module and window declarations (needs moc too)
+Qt6Svg|qt6-svg-dev|qt.render_svg (with Qt6Widgets)
 "
 
 REQUIRED="cc|build-essential|the C11 compiler
 make|build-essential|the build
 bison|bison|regenerates src/parser.y"
+
+# libraries the build cannot do without, probed as the Makefile probes them
+REQUIRED_LIBS="libpcre2-8|libpcre2-dev|regex (PCRE2), which is core"
 
 printf '=== required to build at all ===\n'
 missing_req=""
@@ -58,6 +67,17 @@ while IFS='|' read -r tool pkg what; do
     fi
 done <<EOF
 $REQUIRED
+EOF
+while IFS='|' read -r mod pkg what; do
+    [ -z "$mod" ] && continue
+    if pkg-config --exists "$mod" 2>/dev/null; then
+        printf '  %-22s present   %s\n' "$mod" "$what"
+    else
+        printf '  %-22s MISSING   %s\n' "$mod" "$what"
+        missing_req="$missing_req $pkg"
+    fi
+done <<EOF
+$REQUIRED_LIBS
 EOF
 
 printf '\n=== optional: each is compiled out cleanly when absent ===\n'
@@ -81,6 +101,26 @@ done <<EOF
 $OPTIONAL
 EOF
 
+# KDE Frameworks ship no .pc, so the Makefile looks for the header directory,
+# and so does this (it rides Qt's switch: no Qt, no highlighter)
+if [ -d /usr/include/KF6/KSyntaxHighlighting ] || [ -d /usr/local/include/KF6/KSyntaxHighlighting ]; then
+    printf '  %-22s present   %s\n' "KF6SyntaxHighlighting" "the source widget's highlighting (with Qt)"
+else
+    printf '  %-22s MISSING   %s\n' "KF6SyntaxHighlighting" "the source widget's highlighting (with Qt)"
+    missing_opt="$missing_opt libkf6syntaxhighlighting-dev"
+fi
+
+# THE SELF-CHECK the header promises: every library the Makefile probes (outside
+# its comments) is in a list above. It had been promised and never written, and
+# the lists had lost PCRE2, which the build requires, and six optional modules.
+listed="$(printf '%s\n%s\n' "$OPTIONAL" "$REQUIRED_LIBS" | cut -d'|' -f1)"
+for mod in $(grep -v '^[[:space:]]*#' Makefile | grep -oE 'pkg-config --(exists|libs) [A-Za-z0-9_.+-]+' | awk '{print $3}' | sort -u); do
+    if ! printf '%s\n' "$listed" | grep -qx "$mod"; then
+        printf '\n  DRIFT: the Makefile probes %s, which this script does not list\n' "$mod"
+        drift=1
+    fi
+done
+
 # xlsx needs BOTH, and half of the pair is the confusing case: everything builds,
 # and xlsx is silently absent with no indication which of the two was missing.
 if [ "$have_pkgconfig" = "1" ]; then
@@ -97,7 +137,7 @@ printf '\n'
 missing="$(echo "$missing_req $missing_opt" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')"
 if [ -z "$(echo "$missing" | tr -d ' ')" ]; then
     printf 'Everything is present. `make` will build with all modules enabled.\n'
-    exit 0
+    exit $drift
 fi
 
 printf 'To install what is missing (Debian/Ubuntu):\n\n    sudo apt-get install %s\n\n' "$missing"

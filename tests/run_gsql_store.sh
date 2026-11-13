@@ -69,8 +69,18 @@ ENGINE="src/gsql/lsm.c src/gsql/lease.c src/gsql/store_common.c src/gsql/store_u
 SAN=""
 probe="$work/probe.c"
 printf 'int main(void){return 0;}\n' > "$probe"
-if "$CC" -fsanitize=address,undefined -o "$work/probe" "$probe" 2>/dev/null; then
+# A SANITIZER MUST RUN, NOT ONLY BUILD: on riscv64 GCC 13's AddressSanitizer
+# builds and then cannot start any program on a kernel using sv48 (its shadow
+# assumes sv39), and every tier died in the sanitizer's own start-up as
+# "the sanitizers objected" (2026-11-10). So the probe is run, and without a
+# working ASan this says so and keeps UBSan.
+if "$CC" -fsanitize=address,undefined -o "$work/probe" "$probe" 2>/dev/null &&
+   "$work/probe" >/dev/null 2>&1; then
     SAN="-fsanitize=address,undefined -fno-omit-frame-pointer"
+elif "$CC" -fsanitize=undefined -o "$work/probe" "$probe" 2>/dev/null &&
+     "$work/probe" >/dev/null 2>&1; then
+    SAN="-fsanitize=undefined -fno-omit-frame-pointer"
+    printf 'NOTE AddressSanitizer cannot run a program here, so memory errors are not measured (UBSan only)\n'
 fi
 
 printf 'TIER build: the engine, the version store and the harnesses, -Wpedantic -Werror\n'

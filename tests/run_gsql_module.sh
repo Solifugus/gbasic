@@ -223,7 +223,12 @@ fi
 # 0.02 s against 1.80 s; a 5x floor leaves room for a loaded machine.
 mkdir -p "$work/cmpseek"
 G="$PWD/gbasic"; F="$PWD/tests/gsql/compare_seek.bas"
-if (cd "$work/cmpseek" && "$G" "$F" setup >/dev/null 2>&1); then
+if [ ! -x /usr/bin/time ]; then
+    # GNU time, which the seek is timed by; without it the lookups' output went
+    # unread and the tier said they "did not each find their row" (riscv64 VM,
+    # 2026-11-10), which is a claim about gBASIC it had not measured
+    fail "compare text: the seek is timed by /usr/bin/time, which is not installed (Debian/Ubuntu: apt install time)"
+elif (cd "$work/cmpseek" && "$G" "$F" setup >/dev/null 2>&1); then
     (cd "$work/cmpseek" && /usr/bin/time -f '%e' -o "$work/cmpseek.ttext" "$G" "$F" text >"$work/cmpseek.text" 2>/dev/null)
     (cd "$work/cmpseek" && /usr/bin/time -f '%e' -o "$work/cmpseek.tscan" "$G" "$F" scan >"$work/cmpseek.scan" 2>/dev/null)
     t_text=$(tail -1 "$work/cmpseek.ttext"); t_scan=$(tail -1 "$work/cmpseek.tscan")
