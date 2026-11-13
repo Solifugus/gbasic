@@ -15,6 +15,8 @@
 #include "platform.h"
 
 #include <windows.h>
+#include <tlhelp32.h>
+#include <psapi.h>
 #include <bcrypt.h>
 #include <sddl.h>
 #include <direct.h>
@@ -811,12 +813,19 @@ static void retire_job(HANDLE job) {
  * be NULL where the system refused a job, in which case ending the child ends
  * that process alone -- or 1 with `why` saying why it could not be launched. */
 /* `extra` names further handles the child inherits beside its three standard
- * ones (an actor's control pipe); they must already be inheritable. */
+ * ones (an actor's control pipe, a worker's listening sockets); they must
+ * already be inheritable. At most WIN_LAUNCH_EXTRA_MAX of them.
+ *
+ * `memory_limit` > 0 is the job's per-process committed-memory limit, set
+ * while the child is still suspended. It needs the job, so a system that
+ * refuses one fails the launch rather than running the child unlimited. */
+#define WIN_LAUNCH_EXTRA_MAX 68
 static int win_launch_ex(char *const argv[], const char *cwd,
                          const char *const *env_names, const char *const *env_values,
                          size_t env_count, HANDLE in, HANDLE out, HANDLE err,
                          const HANDLE *extra, size_t extra_count,
-                         DWORD extra_flags, PROCESS_INFORMATION *pi, HANDLE *job_out,
+                         DWORD extra_flags, long long memory_limit,
+                         PROCESS_INFORMATION *pi, HANDLE *job_out,
                          char *why, size_t why_size) {
     *job_out = NULL;
     memset(pi, 0, sizeof *pi);
@@ -849,10 +858,33 @@ static int win_launch_ex(char *const argv[], const char *cwd,
 
     int ready = 1;
     LPPROC_THREAD_ATTRIBUTE_LIST attrs = NULL;
-    HANDLE inherit[3 + 4] = { in, out, err };
-    size_t inherit_count = 3;
-    for (size_t i = 0; i < extra_count && inherit_count < sizeof inherit / sizeof inherit[0]; i++) {
-        inherit[inherit_count++] = extra[i];
+    /* Each handle once: the list refuses a repeat, and `inherit` can name the
+     * same handle for two streams. */
+    HANDLE inherit[3 + WIN_LAUNCH_EXTRA_MAX];
+    size_t inherit_count = 0;
+    HANDLE wanted[3 + WIN_LAUNCH_EXTRA_MAX];
+    size_t wanted_count = 0;
+    wanted[wanted_count++] = in;
+    wanted[wanted_count++] = out;
+    wanted[wanted_count++] = err;
+    if (extra_count > WIN_LAUNCH_EXTRA_MAX) {
+        free(cmdline.buf);
+        free(wcwd);
+        free(envblock);
+        snprintf(why, why_size, "too many handles to hand to the child");
+        return 1;
+    }
+    for (size_t i = 0; i < extra_count; i++) {
+        wanted[wanted_count++] = extra[i];
+    }
+    for (size_t i = 0; i < wanted_count; i++) {
+        int seen = 0;
+        for (size_t j = 0; j < inherit_count; j++) {
+            seen |= inherit[j] == wanted[i];
+        }
+        if (!seen) {
+            inherit[inherit_count++] = wanted[i];
+        }
     }
     SIZE_T attr_size = 0;
     InitializeProcThreadAttributeList(NULL, 1, 0, &attr_size);
@@ -872,10 +904,25 @@ static int win_launch_ex(char *const argv[], const char *cwd,
         JOBOBJECT_EXTENDED_LIMIT_INFORMATION li;
         memset(&li, 0, sizeof li);
         li.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+        if (memory_limit > 0) {
+            li.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PROCESS_MEMORY;
+            li.ProcessMemoryLimit = (SIZE_T)memory_limit;
+        }
         if (!SetInformationJobObject(job, JobObjectExtendedLimitInformation, &li, sizeof li)) {
             CloseHandle(job);
             job = NULL;
         }
+    }
+    if (memory_limit > 0 && !job) {
+        if (attrs) {
+            DeleteProcThreadAttributeList(attrs);
+            free(attrs);
+        }
+        free(cmdline.buf);
+        free(wcwd);
+        free(envblock);
+        snprintf(why, why_size, "the system refused the job object a memory limit needs");
+        return 1;
     }
 
     BOOL launched = FALSE;
@@ -913,6 +960,15 @@ static int win_launch_ex(char *const argv[], const char *cwd,
     if (job && !AssignProcessToJobObject(job, pi->hProcess)) {
         CloseHandle(job);
         job = NULL;
+        if (memory_limit > 0) {
+            /* Unlimited is not what was asked for: end it before it runs. */
+            TerminateProcess(pi->hProcess, 1);
+            CloseHandle(pi->hThread);
+            CloseHandle(pi->hProcess);
+            memset(pi, 0, sizeof *pi);
+            snprintf(why, why_size, "the child could not be put in the job its memory limit needs");
+            return 1;
+        }
     }
     ResumeThread(pi->hThread);
     CloseHandle(pi->hThread);
@@ -927,7 +983,7 @@ static int win_launch(char *const argv[], const char *cwd,
                       DWORD extra_flags, PROCESS_INFORMATION *pi, HANDLE *job_out,
                       char *why, size_t why_size) {
     return win_launch_ex(argv, cwd, env_names, env_values, env_count, in, out, err,
-                         NULL, 0, extra_flags, pi, job_out, why, why_size);
+                         NULL, 0, extra_flags, 0, pi, job_out, why, why_size);
 }
 
 /* The parent's stdin, duplicated inheritable for a child -- inherited, as on
@@ -1428,19 +1484,49 @@ char *gb_which(const char *name) {
 
 /* ---- process.start: the same launch, handed back running ----------------- */
 
+static HANDLE inheritable_std(DWORD which, int writing);
+
+/* An inheritable copy of the caller's CRT fd, for a child's stdout/stderr. */
+static HANDLE inheritable_copy_of_fd(int fd) {
+    HANDLE h = (HANDLE)_get_osfhandle(fd);
+    HANDLE dup = NULL;
+    if (h == INVALID_HANDLE_VALUE ||
+        !DuplicateHandle(GetCurrentProcess(), h, GetCurrentProcess(), &dup,
+                         0, TRUE, DUPLICATE_SAME_ACCESS)) {
+        return NULL;
+    }
+    return dup;
+}
+
+/* The child's end of one output stream, per GbChildOptions; *parent_end is set
+ * only for a pipe. NULL on failure. */
+static HANDLE child_output(int spec, DWORD which, HANDLE *parent_end) {
+    *parent_end = NULL;
+    if (spec == -1) {
+        HANDLE child_end = NULL;
+        return child_pipe(parent_end, &child_end, 0) ? child_end : NULL;
+    }
+    if (spec == -2) {
+        return inheritable_std(which, 1);
+    }
+    return inheritable_copy_of_fd(spec);
+}
+
 int gb_child_start(char *const argv[], const char *cwd,
                    const char *const *env_names, const char *const *env_values,
-                   size_t env_count, int want_stdin, GbChild *child,
+                   size_t env_count, const GbChildOptions *options, GbChild *child,
                    char *why, size_t why_size) {
     memset(child, 0, sizeof *child);
     child->out_fd = child->err_fd = child->in_fd = -1;
 
     HANDLE out_r = NULL, out_w = NULL, err_r = NULL, err_w = NULL;
     HANDLE in_parent = NULL, in_child = NULL;
-    int ok = child_pipe(&out_r, &out_w, 0) && child_pipe(&err_r, &err_w, 0);
+    out_w = child_output(options->out_fd, STD_OUTPUT_HANDLE, &out_r);
+    err_w = out_w ? child_output(options->err_fd, STD_ERROR_HANDLE, &err_r) : NULL;
+    int ok = out_w && err_w;
     if (ok) {
-        ok = want_stdin ? child_pipe(&in_parent, &in_child, 1)
-                        : (in_child = inheritable_stdin()) != NULL;
+        ok = options->want_stdin ? child_pipe(&in_parent, &in_child, 1)
+                                 : (in_child = inheritable_stdin()) != NULL;
     }
     if (!ok) {
         HANDLE all[] = { out_r, out_w, err_r, err_w, in_parent, in_child };
@@ -1451,30 +1537,105 @@ int gb_child_start(char *const argv[], const char *cwd,
         return 1;
     }
 
+    /* Listening sockets go in the inherit list, inheritable only while the
+     * launch runs: the rest of the time a listener is not inheritable, so no
+     * other launch (one not using an explicit list) can carry it off. */
+    HANDLE socks[WIN_LAUNCH_EXTRA_MAX];
+    size_t nsocks = options->share_count;
+    if (nsocks > WIN_LAUNCH_EXTRA_MAX) {
+        nsocks = WIN_LAUNCH_EXTRA_MAX;
+    }
+    int socks_ok = 1;
+    for (size_t i = 0; i < nsocks; i++) {
+        socks[i] = (HANDLE)(uintptr_t)(SOCKET)options->share_sockets[i];
+        socks_ok &= SetHandleInformation(socks[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) != 0;
+    }
+
     PROCESS_INFORMATION pi;
     HANDLE job = NULL;
-    int rc = win_launch(argv, cwd, env_names, env_values, env_count,
-                        in_child, out_w, err_w, CREATE_NEW_PROCESS_GROUP,
-                        &pi, &job, why, why_size);
+    int rc = 1;
+    if (socks_ok) {
+        rc = win_launch_ex(argv, cwd, env_names, env_values, env_count,
+                           in_child, out_w, err_w, socks, nsocks, CREATE_NEW_PROCESS_GROUP,
+                           options->memory_limit, &pi, &job, why, why_size);
+    } else {
+        snprintf(why, why_size, "a listening socket could not be made inheritable");
+    }
+    for (size_t i = 0; i < nsocks; i++) {
+        SetHandleInformation(socks[i], HANDLE_FLAG_INHERIT, 0);
+    }
     CloseHandle(out_w);
     CloseHandle(err_w);
     CloseHandle(in_child);
     if (rc != 0) {
-        CloseHandle(out_r);
-        CloseHandle(err_r);
+        if (out_r) CloseHandle(out_r);
+        if (err_r) CloseHandle(err_r);
         if (in_parent) CloseHandle(in_parent);
         return 1;
     }
 
     /* Ours become C-runtime fds: eval.c reads, writes and closes them with the
-     * same calls it uses on POSIX, and closing the fd closes the handle. */
-    child->out_fd = _open_osfhandle((intptr_t)out_r, _O_RDONLY | _O_BINARY);
-    child->err_fd = _open_osfhandle((intptr_t)err_r, _O_RDONLY | _O_BINARY);
+     * same calls it uses on POSIX, and closing the fd closes the handle. A
+     * stream not piped has no fd here (-1), as on POSIX. */
+    child->out_fd = out_r ? _open_osfhandle((intptr_t)out_r, _O_RDONLY | _O_BINARY) : -1;
+    child->err_fd = err_r ? _open_osfhandle((intptr_t)err_r, _O_RDONLY | _O_BINARY) : -1;
     child->in_fd = in_parent ? _open_osfhandle((intptr_t)in_parent, _O_WRONLY | _O_BINARY) : -1;
     child->pid = (long)pi.dwProcessId;
     child->process = pi.hProcess;
     child->job = job;
     return 0;
+}
+
+long long gb_child_peak_memory(GbChild *child) {
+    PROCESS_MEMORY_COUNTERS pmc;
+    memset(&pmc, 0, sizeof pmc);
+    if (!child->process ||
+        !K32GetProcessMemoryInfo((HANDLE)child->process, &pmc, sizeof pmc)) {
+        return -1;
+    }
+    return (long long)pmc.PeakWorkingSetSize;
+}
+
+int gb_open_append(const char *path) {
+    WCHAR *w = utf8_to_wide(path);
+    if (!w) {
+        errno = EINVAL;
+        return -1;
+    }
+    HANDLE h = CreateFileW(w, FILE_APPEND_DATA | FILE_READ_ATTRIBUTES | FILE_WRITE_ATTRIBUTES |
+                               FILE_READ_EA | READ_CONTROL | SYNCHRONIZE,
+                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE, NULL,
+                           OPEN_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+    DWORD e = h == INVALID_HANDLE_VALUE ? GetLastError() : 0;
+    free(w);
+    if (h == INVALID_HANDLE_VALUE) {
+        errno = errno_from_win(e);
+        return -1;
+    }
+    int fd = _open_osfhandle((intptr_t)h, _O_WRONLY | _O_APPEND | _O_BINARY);
+    if (fd < 0) {
+        CloseHandle(h);
+    }
+    return fd;
+}
+
+long gb_parent_pid(void) {
+    DWORD me = GetCurrentProcessId();
+    HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (snap == INVALID_HANDLE_VALUE) {
+        return -1;
+    }
+    long parent = -1;
+    PROCESSENTRY32W pe;
+    pe.dwSize = sizeof pe;
+    for (BOOL more = Process32FirstW(snap, &pe); more; more = Process32NextW(snap, &pe)) {
+        if (pe.th32ProcessID == me) {
+            parent = (long)pe.th32ParentProcessID;
+            break;
+        }
+    }
+    CloseHandle(snap);
+    return parent;
 }
 
 /* Anonymous pipes cannot be made non-blocking or polled, so ask how much is
@@ -1591,7 +1752,7 @@ int gb_actor_launch(const char *exe, const char *entry, const char *program,
         /* CREATE_NEW_PROCESS_GROUP, as POSIX puts actors in their own process
          * group: a Ctrl-C at the console is the parent's, not the actors'. */
         rc = win_launch_ex(argv, NULL, NULL, NULL, 0, in, out, err, &ctl_child, 1,
-                           CREATE_NEW_PROCESS_GROUP, &pi, &job, why, why_size);
+                           CREATE_NEW_PROCESS_GROUP, 0, &pi, &job, why, why_size);
     } else {
         snprintf(why, why_size, "could not pass the standard handles");
     }
@@ -1746,6 +1907,11 @@ int gb_net_init(void) {
  * wrapper exists to prevent. */
 int gb_sock_close(int fd) {
     return closesocket((SOCKET)fd) == 0;
+}
+
+int gb_sock_set_inherit(int fd, int inherit) {
+    return SetHandleInformation((HANDLE)(uintptr_t)(SOCKET)fd, HANDLE_FLAG_INHERIT,
+                                inherit ? HANDLE_FLAG_INHERIT : 0) != 0;
 }
 
 /* FIONBIO rather than fcntl: there is no F_GETFL on a socket, and Windows

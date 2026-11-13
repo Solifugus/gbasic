@@ -16,6 +16,23 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Windows: the worker pool, process.start's streams and limits, TLS (2026-11-12)
+
+- **`web.pool` and `server` blocks with `workers:` above 1 run on Windows.**
+  Workers get the listener by handle inheritance. `webserver.inherited()`
+  reads `LISTEN_SOCKETS` and checks that its parent is the process named in
+  `LISTEN_PARENT`. A worker drains on `process.stop`'s Ctrl-Break.
+- **`process.start`'s `stdout:`/`stderr:` (`"null"`, `"inherit"`, a file) and
+  `limits: { memory }` work on Windows.** A file is appended to at the handle,
+  which MSYS2/Cygwin programs cannot write through. The memory limit is the
+  child's Job Object limit, and `peak_memory` is its peak working set.
+- **TLS on Windows**: the webserver and `net` terminate and make TLS
+  connections. A refusal whose alert is followed by a reset reads as `reset`
+  there, because Windows discards the alert when the reset arrives.
+- **`net`: closing a TLS connection behind a slow reader now sends
+  close_notify** once the send buffer has room, on every platform. It was
+  dropped when the kernel's buffer was full, and the peer saw a truncation.
+
 ### `GATE_TIME_SCALE`: the gate on a slow machine (2026-11-11)
 
 - `GATE_TIME_SCALE=N tests/run_all.sh` multiplies every `timeout` bound in the
@@ -363,8 +380,8 @@ reads like a notebook. Every ask was measured first with an offscreen probe
   program goes on.
 - **`process.start` takes `stdout:` and `stderr:`**: `"pipe"` (the default),
   `"null"`, `"inherit"`, or a file such as `{file}"run.log"`, which is
-  appended to. A bare string other than those words is refused. On Windows
-  only `"pipe"` is taken.
+  appended to. A bare string other than those words is refused. (On Windows
+  only `"pipe"` was taken until 2026-11-12, above.)
 
 ### Reading a PDF: `pdf` (book gap G54, 2026-11-09)
 

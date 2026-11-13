@@ -184,6 +184,48 @@ t0 = epoch(now())
 process.release(h)
 ok("release returns at once", epoch(now()) - t0 < 3, true)
 
+print("-- stdout: and stderr: (pipe, null, inherit, a file appended to) --")
+' "inherit" is not asserted here: the child's line would land in THIS
+' program's output, where a check cannot see it. What can be seen is that the
+' pipe for that stream reads nothing.
+h = process.start({ command: me.interpreter, args: ["--line-buffered", child, "streams"], stderr: "inherit" })
+s = process.wait(h, 10)
+r = process.read(h)
+ok("stderr inherit: stdout still piped", trim(r.stdout), "out")
+ok("stderr inherit: the stderr pipe reads nothing", r.stderr, "")
+h = process.start({ command: me.interpreter, args: [child, "streams"], stdout: "null", stderr: "null" })
+s = process.wait(h, 10)
+r = process.read(h)
+ok("null: nothing on either pipe", r.stdout + r.stderr, "")
+ok("null: the child ran to its end", s.exit_code, 0)
+logf {file}= here + "start_streams.log.tmp"
+write(logf, "already here" + chr(10))
+' twice, by two children: each must land after what is there, which a
+' handle that merely STARTS at the end would not do for the second
+h = process.start({ command: me.interpreter, args: [child, "streams"], stderr: logf })
+s = process.wait(h, 10)
+r = process.read(h)
+ok("a file: stdout still piped", trim(r.stdout), "out")
+ok("a file: the stderr pipe reads nothing", r.stderr, "")
+h = process.start({ command: me.interpreter, args: [child, "streams"], stderr: logf })
+s = process.wait(h, 10)
+ok("a file is appended to, by each child in turn",
+   replace(read(logf), chr(13), ""), "already here" + chr(10) + "oops" + chr(10) + "oops" + chr(10))
+delete(logf)
+
+print("-- limits: { memory } and peak_memory --")
+h = process.start({ command: me.interpreter, args: [child, "hog", "5000000"],
+                    limits: { memory: 200000000 } })
+s = process.wait(h, 30)
+ok("under its limit the child holds 5 MB", trim(process.read(h).stdout), "held 5000000")
+ok("and succeeds", s.success, true)
+ok("peak_memory is known once it has exited", s.peak_memory > 5000000, true)
+h = process.start({ command: me.interpreter, args: [child, "hog", "400000000"],
+                    limits: { memory: 200000000 } })
+s = process.wait(h, 30)
+ok("past its limit the child never holds 400 MB", contains(process.read(h).stdout, "held"), false)
+ok("and does not succeed", s.success, false)
+
 print("-- launch failure --")
 on error goto next
 h = process.start({ command: "gbasic-no-such-program-xyz" })

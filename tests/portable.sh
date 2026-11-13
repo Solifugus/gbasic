@@ -124,6 +124,22 @@ if _gb_portable_need sha256sum; then
     fi
 fi
 
+# --- MSYS2's argument conversion ----------------------------------------------
+# MSYS2 rewrites an argument that LOOKS like a POSIX path into a Windows one on
+# its way to a native program, and an X.509 subject is such an argument:
+# `openssl req -subj "/CN=localhost"` reached openssl as
+# 'C:/msys64/CN=localhost' and was refused, so every certificate-making tier
+# failed before it tested anything (block_tls, 2026-11-12). Subjects are
+# excluded by their prefix; exported so a helper script inherits it.
+case "$(uname -s 2>/dev/null)" in
+    MSYS_NT*|MINGW*)
+        case ";${MSYS2_ARG_CONV_EXCL:-};" in
+            *";/CN=;"*) ;;
+            *) export MSYS2_ARG_CONV_EXCL="${MSYS2_ARG_CONV_EXCL:+$MSYS2_ARG_CONV_EXCL;}/CN=;/O=" ;;
+        esac
+        ;;
+esac
+
 # --- /proc ---------------------------------------------------------------------
 # NOT SHIMMED, DELIBERATELY. Six suites read /proc to measure something about a
 # live process -- a peak RSS from VmHWM, an open-descriptor audit, a pid's

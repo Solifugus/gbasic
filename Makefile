@@ -171,12 +171,18 @@ YESCRYPT_VENDORED := 1
 # nothing is downloaded. It is the largest single cost in the binary (measured
 # stripped 4.5 -> 9.3 MB, OpenSSL 3 linking its provider layer for the thirteen
 # builtins used); Windows' own CNG was the alternative and lacks Ed25519 and
-# scrypt outright (status doc §21). libssl stays off: it serves only the
-# webserver's TLS, which needs a listener this port does not have yet.
+# scrypt outright (status doc §21).
 LIBCRYPTO_AVAILABLE := 1
 LIBCRYPTO_CFLAGS :=
 LIBCRYPTO_LIBS := -lcrypto -lws2_32 -lcrypt32 -luser32 -ladvapi32 -lbcrypt
-LIBSSL_AVAILABLE := 0
+# libssl, STATICALLY, from the same MSYS2 openssl package: TLS for the
+# webserver and for net (status doc §33). It was off while Windows had no
+# listener to put it on. Same licence as libcrypto (Apache-2.0); the notices
+# already name OpenSSL. curl stays on SCHANNEL, so the client side still
+# trusts the Windows certificate store.
+LIBSSL_AVAILABLE := 1
+LIBSSL_CFLAGS :=
+LIBSSL_LIBS := -lssl -lcrypto -lws2_32 -lcrypt32 -luser32 -ladvapi32 -lbcrypt
 # M3: zlib + libxml2, STATICALLY, for xml and xlsx -- the headline Windows
 # feature (docs/windows_port_plan.md §4: the Linux tarballs omit xlsx because
 # libxml2's soname varies across distributions, a problem a static Windows

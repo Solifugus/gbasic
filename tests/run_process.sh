@@ -32,12 +32,16 @@ trap 'rm -f "$stdout_file" "$stderr_file"' EXIT
 # that needs a `#!` script: where that is refused, the POSIX-shaped cases are
 # skipped BY NAME and tests/run_windows_suite.sh holds process.run/start to the
 # same shape with gBASIC itself as the child. The cases left run everywhere.
+# plat_proc_streams is skipped for another reason: its `sh` is MSYS's, and a
+# Cygwin program cannot write to the append-only handle a file given as
+# `stdout:`/`stderr:` is on Windows (native programs append through it; see
+# windows_port_status §33). tests/windows/process_start.bas holds the streams.
 posix_only=""
 probe_out="$(./gbasic tests/native_platform/nap6_streams.bas 2>&1 || true)"
 if printf '%s' "$probe_out" | grep -q 'not a valid Win32 application'; then
     posix_only=" nap6_streams nap6_argv nap6_bigstreams nap6_binary nap6_cwd nap6_timeout nap6_which
                  plat_proc_basic plat_proc_exit plat_proc_big plat_proc_stop plat_proc_ignore
-                 plat_proc_interleave plat_proc_bytes plat_proc_actor
+                 plat_proc_interleave plat_proc_bytes plat_proc_actor plat_proc_streams
                  negative_nap6_missing negative_plat_proc_missing "
     posix_only=" $(echo $posix_only) "   # one space between names, and around them
 fi
@@ -304,7 +308,26 @@ printf 'PASS wait_timeout_busy_child (%s checks: a timed wait drains a 2MB produ
 # process.self().pid (Transward's ask), against the KERNEL's answer: the shell
 # prints its own $$ and then execs gbasic, so the two must be one number, and a
 # spawned actor (a process of its own) must answer a different one.
-pid_out="$(bash -c 'echo "shell $$"; exec ./gbasic tests/process/self_pid.bas' 2>&1 || true)"
+if [ -e /proc/self/winpid ]; then
+    # MSYS2: $$ is MSYS's number for the shell, and the kernel's (Windows') pid
+    # of what it exec-ed is /proc/PID/winpid, readable only while it lives --
+    # so the fixture holds on a gate until it has been read.
+    pid_dir="$(mktemp -d)"
+    bash -c 'echo "shell $$"; exec ./gbasic tests/process/self_pid.bas "$1"' _ "$pid_dir/gate" \
+        >"$pid_dir/out" 2>&1 &
+    pid_bg=$!
+    for _ in $(seq 1 500); do
+        grep -qx 'actor differs\|actor SAME' "$pid_dir/out" 2>/dev/null && break
+        sleep 0.02
+    done
+    win_pid="$(cat "/proc/$pid_bg/winpid" 2>/dev/null || true)"
+    : >"$pid_dir/gate"
+    wait "$pid_bg" || true
+    pid_out="$(sed "s/^shell .*/shell $win_pid/" "$pid_dir/out")"
+    rm -rf "$pid_dir"
+else
+    pid_out="$(bash -c 'echo "shell $$"; exec ./gbasic tests/process/self_pid.bas' 2>&1 || true)"
+fi
 shell_pid="$(printf '%s\n' "$pid_out" | sed -n 's/^shell //p')"
 self_pid="$(printf '%s\n' "$pid_out" | sed -n 's/^pid //p')"
 if [ -z "$shell_pid" ] || [ "$shell_pid" != "$self_pid" ]; then

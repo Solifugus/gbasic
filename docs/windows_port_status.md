@@ -1894,7 +1894,8 @@ Windows with that refusal's sentence: `run_web_pool`, `run_web_configure`'s
 live tier, `run_web_server_block`'s `block_drain`, `run_web_handler_errors`'
 `crash_pool`, and `run_web_stream`'s `stream_drain`. The Windows form,
 `WSADuplicateSocket` into each worker and a named event for the drain, is the
-next increment. `run_web_hardening` needs `nc`, which MSYS2 does not have.
+next increment (**done in §33**, without the named event: Ctrl-Break was
+already the polite stop). `run_web_hardening` needs `nc`, which MSYS2 does not have.
 
 ### Harness
 
@@ -1940,3 +1941,162 @@ hit the suite's 30-minute bound, the two `crash_store` processes ran on.
   directory made under `C:\` inherits Modify for Authenticated Users and is
   refused, naming `icacls`. After the `icacls` line the message gives, the
   same directory is accepted. Ownership by another user was not tried.
+
+---
+
+## 33. The worker pool, process.start's streams and limits, and TLS (2026-11-12)
+
+§32 left the worker pool refused by name. This increment ports the pool,
+`process.start`'s `stdout:`/`stderr:` and `limits:`, and TLS for the
+webserver and `net`. Everything was measured on a native MSYS2 UCRT64 build
+on Windows 11. Linux (Ubuntu 26.04 in WSL) was rebuilt from the same tree
+twice: once lean, and once against libssl-dev unpacked without root, so that
+the shared TLS change below ran on Linux too.
+
+### The build after master
+
+Merging master (six commits) brought no C changes that touch Windows. It still
+needs `OS=Windows_NT` in the environment. Without it the Makefile takes the
+POSIX branch, compiles `platform_posix.c` (no `poll.h`), and probes libssl
+through pkg-config. `ssl.h` then reaches winsock2.h before `posix_compat.h`
+renames winnt.h's `TokenType`. The OpenSSL includes in `eval.c` now come after
+`posix_compat.h`, so that order holds in either build.
+
+### The pool
+
+**Listeners go to workers by handle inheritance.** `process.start`'s
+`listen_fds:` was refused on Windows. Now each socket is made inheritable for
+the length of one launch only, and added to the launch's explicit
+`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`. Its handle value is the same in the
+child. The rest of the time a listener is not inheritable.
+`webserver_register` called `gb_set_cloexec` on the socket. That function
+takes a C-runtime fd, so on Windows it looked the socket's value up as an fd.
+It is `gb_sock_set_inherit` now.
+
+**LISTEN_PID cannot exist on Windows.** The environment is fixed at
+CreateProcess, before the child's pid is known. So the supervisor names
+itself in `LISTEN_PARENT`, and `webserver.inherited()` adopts only when that
+is its real parent (`gb_parent_pid`, from a Toolhelp snapshot). A grandchild
+that inherited the variables has another parent and adopts nothing, which is
+the case LISTEN_PID is there for. The handle values are in `LISTEN_SOCKETS`
+and the count is in `LISTEN_FDS`. All three are consumed on adoption.
+
+**A worker must start Winsock before asking about its socket.** The first run
+failed with `socket 376 is not a listening socket`: `getsockopt(SO_ACCEPTCONN)`
+answers nothing before `WSAStartup`. This is §32's `getaddrinfo` trap again.
+
+**Drain is Ctrl-Break.** `process.stop` already sends `CTRL_BREAK_EVENT` to the
+child's process group. The C runtime raises that as `SIGBREAK`, and the
+webserver now treats `SIGBREAK` as its drain, as it treats SIGTERM on POSIX.
+The named event that §32 proposed was not needed.
+
+WSADuplicateSocket was weighed and not used. It needs the child's pid, so the
+protocol info would have to reach a suspended child by a pipe or file. Handle
+inheritance is documented to fail only behind a non-IFS LSP, and those have
+been deprecated since Windows 8. If one is installed, the worker's
+`SO_ACCEPTCONN` check raises and names the socket; it does not serve nothing
+quietly.
+
+### process.start's streams and limits
+
+- **`stdout:`/`stderr:`** `"inherit"`, `"null"` (`NUL`) and a file are taken.
+  The child gets an inheritable copy, and the parent's own fd is opened
+  non-inheritable.
+- **A file is opened append-only at the handle** (`FILE_APPEND_DATA` without
+  `FILE_WRITE_DATA`, in `gb_open_append`). The C runtime's `O_APPEND` is the
+  runtime seeking before each of its own writes. A child given a copy of that
+  handle wrote at offset 0: the golden read `err` then `ady here`. With the
+  append-only handle, two children in turn both append.
+  - **A Cygwin or MSYS2 program cannot write to an append-only handle.** MSYS
+    `sh` exits 1, and adding attribute access to the handle did not change
+    that. A shared file pointer would work for it, but would silently overwrite
+    anything another writer appended. So the append-only handle stays, and the
+    reference says so. `plat_proc_streams` (whose children are MSYS `sh`) is
+    skipped on Windows with that reason, and `tests/windows/process_start.bas`
+    holds the streams with gBASIC itself as the child.
+- **`limits: { memory }`** is the job's `JOB_OBJECT_LIMIT_PROCESS_MEMORY`, set
+  while the child is suspended. It is committed memory, the nearest analogue
+  of RLIMIT_DATA. If the system refuses the job, the launch fails rather than
+  running the child unlimited. The control was measured: the same child holds
+  400 MB without the limit, and under a 200 MB limit fails with
+  `repeat: memory allocation failed`, exit 1, peak 7.98 MB.
+- **`peak_memory`** is `PeakWorkingSetSize` (the analogue of `ru_maxrss`), read
+  at reap.
+
+### TLS
+
+**libssl is on, statically.** It is the same MSYS2 openssl package as
+libcrypto, with the same licence. It had been left off because "it serves
+only the webserver's TLS, which needs a listener this port does not have
+yet". Clients still use curl over SCHANNEL. The debug binary grew from
+14.9 MB to 16.1 MB; the stripped size was not measured.
+
+- **The webserver**: `run_web_tls` passes on Windows, including SNI, the pool
+  terminating TLS on the supervisor's socket, and client certificates.
+- **net**, two Windows differences:
+  - **libssl's socket BIO leaves failures in `WSAGetLastError`, not errno.** A
+    queued system error carries the WSA code. `net_tls_errno` maps both, and
+    the error is cleared wherever errno already was. Without this a reset
+    reached the program as `failed`.
+  - **Windows discards received, unread bytes when a reset lands.** A server
+    that refuses a client certificate sends its alert and closes. The client's
+    next write draws the reset, and the alert has gone by then, so Linux's
+    `tls_failed: certificate required` is `reset` on Windows. Reading ahead
+    before each write did not catch it and broke the `pending` tier, so it was
+    reverted. `tls_client.bas` asserts `reset` there on Windows and says why.
+- **close_notify behind a slow reader was dropped (a general defect).**
+  `net_close_fd`'s `SSL_shutdown` does not wait. When a closing connection's
+  queue had drained into a full kernel buffer, the shutdown was refused for
+  want of room and never retried, so the peer saw a truncation (tls_peer's
+  `drip`: `UNEXPECTED_EOF_WHILE_READING`). Windows' smaller send buffer
+  exposed it. A graceful close now writes close_notify when there is room,
+  asking the loop for POLLOUT until then. Linux with libssl passes `run_net`
+  (valgrind included), `run_web_tls` and `run_websocket`.
+
+### Harness
+
+- **MSYS2 rewrote `openssl req -subj "/CN=..."`** into `C:/msys64/CN=...`, so
+  every certificate-making tier failed before testing anything.
+  `tests/portable.sh` exports `MSYS2_ARG_CONV_EXCL` for `/CN=` and `/O=`.
+- **`self_pid`**: MSYS's `$$` is its own number. Under MSYS2 the runner reads
+  the Windows pid of the process that was exec-ed from `/proc/PID/winpid`,
+  while the fixture waits on a gate.
+- **`block_tls` raced on any build without libssl, on Linux too.** The runner
+  checked the server's stderr just after starting it in the background, so a
+  lean build failed with "no port announced", and that message was swallowed
+  inside a `$(...)`. `build_has tls` now decides the skip before the server
+  starts, and `wait_port` reports to stderr.
+- MSYS's `cmd` is a script running `$COMSPEC`. A shell that does not have
+  `COMSPEC` set runs nothing, and the junction tiers of `run_windows_suite`
+  failed for that reason alone.
+
+### Results
+
+Windows 11, native MSYS2 UCRT64 build:
+
+| suite | result |
+|---|---|
+| `run_web_pool`, `run_web_configure`, `run_web_server_block` (block_pool, block_drain, block_tls), `run_web_handler_errors` (crash_pool), `run_web_stream` (stream_drain) | pass |
+| `run_web_tls` | passes; `mtls_wss` skips (no Python websockets) |
+| `run_net` | passes with TLS; Qt, `/proc`, keepalive and valgrind skip with reasons |
+| `run_process` | passes; `plat_proc_streams` skipped as above; `memory_limit` skips (no `/proc/self/limits`) |
+| `run_windows_suite` | passes; `process_start.bas` has 49 checks, 11 of them new |
+| `run_webserver`, `run_web_bind`, `run_web_form`, `run_web_routes`, `run_websocket`, `run_smtp`, `run_http`, `run_webclient`, `run_crypto`, `run_principal` | pass |
+
+Linux (WSL), lean build: `run_net`, `run_web_pool`, `run_process` (with its
+`memory_limit` tier), `run_web_server_block`, `run_portable`, `run_make_deps`,
+`run_webserver` and `run_web_stream` pass. With libssl: `run_net`,
+`run_web_tls`, `run_websocket`, `run_web_server_block`, `run_web_pool` and
+`run_crypto` pass.
+
+### What is NOT verified
+
+- **A supervisor with no console.** Ctrl-Break needs one shared with the
+  worker. A pool run as a service would drain nothing politely and fall to
+  `force_after`. No tier runs without a console.
+- **Socket inheritance behind a non-IFS LSP.** It is claimed to fail loudly;
+  no LSP was installed to show it.
+- **The websocket and wss tiers against Python's websockets**, on both
+  platforms: the package is not installed.
+- **`run_web_hardening` on Windows**: it still needs `nc`.
+- **The stripped binary's size** with libssl.

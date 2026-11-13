@@ -495,6 +495,8 @@ struct NetSocket {
     int tls_read_wants_write;
     int tls_write_wants_read;
     int tls_no_notify;       /* abort: close without TLS's close_notify */
+    int tls_notified;        /* close_notify is written: net_close_fd sends none */
+    int tls_notify_wait;     /* a graceful close's close_notify is waiting for room */
     int tls_event_pending;   /* a `tls` event is owed: a watched start_tls finished */
     int announced;           /* the program has been handed this connection */
     Value tls_info;          /* what the handshake established; null before it finishes */
@@ -700,7 +702,7 @@ static void net_close_fd(NetSocket *s) {
     if (s->ssl) {
         /* close_notify, once and without waiting: it tells the peer the end
          * was meant, which is how it tells a close from a truncation. */
-        if (s->fd >= 0 && !s->tls_handshaking && !s->tls_no_notify) {
+        if (s->fd >= 0 && !s->tls_handshaking && !s->tls_no_notify && !s->tls_notified) {
             ERR_clear_error();
             SSL_shutdown(s->ssl);
         }
@@ -1388,9 +1390,23 @@ static int net_tls_errno(void) {
     if (errno) {
         return errno;
     }
+#ifdef _WIN32
+    /* libssl's socket BIO leaves a failed send or recv in WSAGetLastError, and
+     * a system error it queues carries that WSA code: both are mapped, or a
+     * reset reached the caller as "failed" rather than as a reset (and an
+     * alert waiting behind it went unread). */
+    if (WSAGetLastError() != 0) {
+        return net_w_map(WSAGetLastError());
+    }
+#endif
 #ifdef ERR_SYSTEM_ERROR
     unsigned long e = ERR_peek_last_error();
     if (e && ERR_SYSTEM_ERROR(e)) {
+#ifdef _WIN32
+        if (ERR_GET_REASON(e) >= WSABASEERR) {
+            return net_w_map(ERR_GET_REASON(e));
+        }
+#endif
         return ERR_GET_REASON(e);
     }
 #endif
@@ -1727,6 +1743,9 @@ static Value net_tls_snapshot(SSL *ssl) {
 static int net_tls_step(NetSocket *s, const char **code, char *msg, size_t msize, char *reason, size_t rsize) {
     ERR_clear_error();
     errno = 0;
+#ifdef _WIN32
+    WSASetLastError(0);   /* net_tls_errno reads it */
+#endif
     int r = SSL_do_handshake(s->ssl);
     if (r == 1) {
         int why = s->tls_handshaking;
@@ -1814,6 +1833,9 @@ static int net_tls_read_alert(NetSocket *s, char *reason, size_t rsize) {
     for (int guard = 0; guard < 64; guard++) {
         ERR_clear_error();
         errno = 0;
+#ifdef _WIN32
+        WSASetLastError(0);   /* net_tls_errno reads it */
+#endif
         int n = SSL_read(s->ssl, chunk, (int)sizeof chunk);
         if (n > 0) {
             netbuf_append(&s->in, chunk, (size_t)n);
@@ -1840,6 +1862,9 @@ static long net_tls_fill(NetSocket *s, const char **code, char *message, size_t 
         size_t room = s->in_ceiling - s->in.len;
         ERR_clear_error();
         errno = 0;
+#ifdef _WIN32
+        WSASetLastError(0);   /* net_tls_errno reads it */
+#endif
         int n = SSL_read(s->ssl, chunk, (int)(room < sizeof chunk ? room : sizeof chunk));
         if (n > 0) {
             netbuf_append(&s->in, chunk, (size_t)n);
@@ -1883,6 +1908,29 @@ static long net_tls_fill(NetSocket *s, const char **code, char *message, size_t 
     return total;
 }
 
+/* A GRACEFUL close's close_notify, written when the send buffer has room for
+ * it. net_close_fd's own SSL_shutdown does not wait, and behind a slow reader
+ * the kernel's buffer is still full when the queue has drained into it: the
+ * shutdown was refused for want of room, never retried, and the peer saw a
+ * truncation instead of an end (tls_peer's drip on Windows, whose send buffer
+ * is smaller). 1 written or not owed, 0 waiting (the loop asks for POLLOUT). */
+static int net_tls_close_notify(NetSocket *s) {
+    if (!s->ssl || s->fd < 0 || s->tls_handshaking || s->tls_no_notify || s->tls_notified) {
+        return 1;
+    }
+    ERR_clear_error();
+    int r = SSL_shutdown(s->ssl);
+    if (r < 0 && SSL_get_error(s->ssl, r) == SSL_ERROR_WANT_WRITE) {
+        s->tls_notify_wait = 1;
+        ERR_clear_error();
+        return 0;
+    }
+    s->tls_notified = 1;
+    s->tls_notify_wait = 0;
+    ERR_clear_error();
+    return 1;
+}
+
 static long net_tls_flush(NetSocket *s, const char **code, char *message, size_t msize) {
     long total = 0;
     s->tls_write_wants_read = 0;
@@ -1890,6 +1938,9 @@ static long net_tls_flush(NetSocket *s, const char **code, char *message, size_t
         size_t len = s->out.len < (1u << 30) ? s->out.len : (1u << 30);
         ERR_clear_error();
         errno = 0;
+#ifdef _WIN32
+        WSASetLastError(0);   /* net_tls_errno reads it */
+#endif
         int n = SSL_write(s->ssl, s->out.data + s->out.off, (int)len);
         if (n > 0) {
             netbuf_consume(&s->out, (size_t)n);
@@ -3924,7 +3975,7 @@ static size_t net_collect_fds(struct pollfd *p, NetSocket **who, size_t max) {
             if ((!s->paused && !s->peer_closed) || s->tls_write_wants_read) {
                 ev |= POLLIN;
             }
-            if (s->out.len > 0 || s->tls_read_wants_write) {
+            if (s->out.len > 0 || s->tls_read_wants_write || s->tls_notify_wait) {
                 ev |= POLLOUT;
             }
         }
@@ -4158,6 +4209,11 @@ static void net_service_time(void) {
             s->closed_pending = 1;
         }
         if (s->closing && s->out.len == 0 && s->open) {
+#if HAVE_LIBSSL
+            if (!net_tls_close_notify(s)) {
+                continue;            /* no room for close_notify yet: next POLLOUT */
+            }
+#endif
             net_mark_closed(s, "local");
         }
     }

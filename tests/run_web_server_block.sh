@@ -23,7 +23,7 @@ wait_port() { # logfile name
         [ -n "$port" ] && { printf '%s' "$port"; return 0; }
         sleep 0.05
     done
-    fail "$2 (no port announced)"
+    fail "$2 (no port announced)" >&2   # called inside $(...): stdout would be swallowed
 }
 
 # --- offline: routes as data, dispatch with no socket, the outline ---------
@@ -185,7 +185,13 @@ diff -u tests/web_server_block/pool_driver.out "$scratch/pool.got" \
 printf 'PASS block_pool (workers: 2 via process.self, drained on TERM)\n'
 
 # --- TLS from the head -----------------------------------------------------
-if command -v openssl >/dev/null 2>&1; then
+# Decided BEFORE the server starts: asking its stderr just after starting it in
+# the background raced the write, so a build without libssl FAILED here ("no
+# port announced", and the message itself swallowed by the $(...)) instead of
+# skipping.
+if ! build_has tls; then
+    printf 'SKIP block_tls (gbasic built without libssl)\n'
+elif command -v openssl >/dev/null 2>&1; then
     mkdir -p tests/web_server_block/.certs
     openssl req -x509 -newkey rsa:2048 -nodes \
         -keyout tests/web_server_block/.certs/main.key \
@@ -194,14 +200,10 @@ if command -v openssl >/dev/null 2>&1; then
     log="$scratch/tls.log"
     timeout 60 ./gbasic --line-buffered tests/web_server_block/block_tls.bas >"$log" 2>"$scratch/tls.err" &
     srv=$!
-    if grep -q "not available in this build" "$scratch/tls.err" 2>/dev/null; then
-        printf 'SKIP block_tls (gbasic built without libssl)\n'
-    else
-        port="$(wait_port "$log" block_tls)"
-        body="$(curl -sk -m 5 "https://127.0.0.1:$port/")"
-        [ "$body" = "secure https" ] || fail "block_tls (got '$body')"
-        printf 'PASS block_tls (cert on the head becomes the default pair)\n'
-    fi
+    port="$(wait_port "$log" block_tls)"
+    body="$(curl -sk -m 5 "https://127.0.0.1:$port/")"
+    [ "$body" = "secure https" ] || fail "block_tls (got '$body')"
+    printf 'PASS block_tls (cert on the head becomes the default pair)\n'
     kill "$srv" 2>/dev/null || true
     wait "$srv" 2>/dev/null || true
 else

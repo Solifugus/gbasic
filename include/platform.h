@@ -177,6 +177,10 @@ void gb_arm_parent_death(void);
 int gb_net_init(void);                        /* WSAStartup; nothing on POSIX */
 int gb_sock_close(int fd);                    /* close vs closesocket */
 int gb_sock_set_blocking(int fd, int blocking); /* fcntl vs ioctlsocket FIONBIO */
+/* Whether a child inherits the socket: FD_CLOEXEC vs HANDLE_FLAG_INHERIT. Not
+ * gb_set_cloexec, which takes a C-runtime fd and on Windows would look the
+ * socket's value up as one. */
+int gb_sock_set_inherit(int fd, int inherit);
 /* After a failed recv/send/accept on a non-blocking socket: was it only "not
  * yet"? errno EAGAIN/EWOULDBLOCK on POSIX; WSAEWOULDBLOCK on Windows, where a
  * socket call never sets errno, so testing errno there reads whatever an
@@ -539,11 +543,56 @@ int gb_zone_offset(const char *zone, long long utc_epoch, int *offset_seconds);
  * answer is written with `/`, like gb_realpath. */
 char *gb_which(const char *name);
 
+/* What process.start asks of the launch beyond argv, cwd and env.
+ *
+ * out_fd / err_fd: -1 is a pipe the parent reads (the default); -2 is the
+ * parent's own handle (`inherit`); any other value is a C-runtime fd the
+ * caller opened (`null` is NUL, a file is opened for append) that the child
+ * gets a copy of. The caller still owns and closes it.
+ *
+ * share_sockets: listening sockets (SOCKET values) handed to the child BY
+ * HANDLE INHERITANCE, in the explicit inherit list like the standard handles,
+ * made inheritable only for the length of the launch. Their handle values are
+ * the same in the child, which reads them from LISTEN_SOCKETS (see
+ * gb_parent_pid for why there is no LISTEN_PID).
+ *
+ * memory_limit: > 0 sets the job's per-process committed-memory limit
+ * (JOB_OBJECT_LIMIT_PROCESS_MEMORY), the Windows form of RLIMIT_DATA: an
+ * allocation past it fails in the child. Set before the child is resumed, so
+ * no allocation of its own precedes it. A job the system refuses is a launch
+ * failure when a limit was asked for, never a limit silently not applied. */
+typedef struct {
+    int want_stdin;
+    int out_fd;
+    int err_fd;
+    const int *share_sockets;
+    size_t share_count;
+    long long memory_limit;
+} GbChildOptions;
+
 /* 0 started (*child filled), 1 could not be launched (why says why). */
 int gb_child_start(char *const argv[], const char *cwd,
                    const char *const *env_names, const char *const *env_values,
-                   size_t env_count, int want_stdin, GbChild *child,
+                   size_t env_count, const GbChildOptions *options, GbChild *child,
                    char *why, size_t why_size);
+
+/* A file opened for APPEND AT THE HANDLE (FILE_APPEND_DATA without
+ * FILE_WRITE_DATA), created if absent, as a non-inheritable CRT fd, or -1 with
+ * errno. The C runtime's O_APPEND is the runtime seeking before each of ITS
+ * writes; a child given a copy of that handle writes at offset 0 over what
+ * was there. Only an append-only handle appends whoever writes through it. */
+int gb_open_append(const char *path);
+
+/* The process that created this one, or -1. LISTEN_PID cannot exist on
+ * Windows: the environment is fixed at CreateProcess, before the child's pid
+ * is known. So the supervisor names ITSELF (LISTEN_PARENT) and the child
+ * checks that against its real parent -- which a grandchild that inherited
+ * the variables does not share, the case LISTEN_PID is there to catch. */
+long gb_parent_pid(void);
+
+/* The child's peak working set in bytes (POSIX's ru_maxrss), or -1. Asked of
+ * the process handle, which stays valid after exit until released. */
+long long gb_child_peak_memory(GbChild *child);
 
 /* NEVER BLOCKS. >0 bytes read into buf; 0 end of file (the child closed its end
  * and nothing is left); -1 nothing available right now; -2 an error. */

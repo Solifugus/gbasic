@@ -26,6 +26,11 @@ program main(args)
             print(line)
             print to error line
         next
+    else if mode = "hog" then
+        ' Hold args[1] bytes at once, then say so: a child under a memory
+        ' limit smaller than that never gets to the line.
+        held = repeat("x", number(args[1]))
+        print("held " + string(len(held)))
     else if mode = "sleep" then
         sleep(number(args[1]))
     else if mode = "cat" then

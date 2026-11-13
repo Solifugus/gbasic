@@ -28,15 +28,17 @@
 #if HAVE_ZLIB
 #include <zlib.h>
 #endif
-#if HAVE_LIBSSL
-#include <openssl/ssl.h>
-#include <openssl/err.h>
-#endif
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include "posix_compat.h"   /* poll, sockets, wait, flock: see the header */
+#if HAVE_LIBSSL
+/* AFTER posix_compat.h: on Windows ssl.h reaches winsock2.h and winnt.h, whose
+ * `TokenType` the compat header renames for the length of those headers. */
+#include <openssl/ssl.h>
+#include <openssl/err.h>
+#endif
 #include <sys/stat.h>
 #ifndef _WIN32
 #include <sys/resource.h>   /* process.start limits: setrlimit, and wait4's rusage */
@@ -21946,6 +21948,12 @@ static void webserver_install_term_handler(void) {
         return;
     }
     gb_on_signal(SIGTERM, webserver_term_handler, 0);
+#ifdef SIGBREAK
+    /* Windows has no SIGTERM to send: process.stop's polite form is
+     * CTRL_BREAK to the child's process group, which the C runtime raises as
+     * SIGBREAK. It is this server's drain, as SIGTERM is on POSIX. */
+    gb_on_signal(SIGBREAK, webserver_term_handler, 0);
+#endif
     /* PLAT-WEB-4: writing to a client that already left must be an ERROR,
      * never a process death. Plain sends pass MSG_NOSIGNAL, but SSL_write
      * cannot, and with streaming, dead-peer writes stop being rare -- an
@@ -24209,7 +24217,7 @@ fail:
  * process.start, never by leaking through an unrelated process.run. */
 static Value webserver_register(int fd, const char *bound_address, int bound_port,
                                 int hold, double timeout_s) {
-    gb_set_cloexec(fd, 1);
+    gb_sock_set_inherit(fd, 0);
     webserver_install_term_handler();
 
     WebServer *servers = realloc(webservers, sizeof(WebServer) * (webserver_count + 1));
@@ -24312,6 +24320,42 @@ static Value webserver_eval_inherited(AstExpr *expr) {
         return value_null();
     }
 #endif
+#ifdef _WIN32
+    /* WINDOWS: the sockets came by handle inheritance with their values in
+     * LISTEN_SOCKETS, and the supervisor named itself in LISTEN_PARENT, since
+     * the environment is fixed before the child's pid exists (gb_parent_pid).
+     * A grandchild that inherited the variables has another parent, and
+     * adopts nothing, as one with someone else's LISTEN_PID does. */
+    const char *pid_text = getenv("LISTEN_PARENT");
+    const char *count_text = getenv("LISTEN_FDS");
+    const char *socks_text = getenv("LISTEN_SOCKETS");
+    if (!pid_text || !count_text || !socks_text) {
+        return value_array(NULL, 0);
+    }
+    char *end = NULL;
+    long claimed_pid = strtol(pid_text, &end, 10);
+    if (!end || *end != '\0' || claimed_pid != gb_parent_pid()) {
+        return value_array(NULL, 0);
+    }
+    long count = strtol(count_text, &end, 10);
+    if (!end || *end != '\0' || count <= 0 || count > 64) {
+        return value_array(NULL, 0);
+    }
+    int inherited_socks[64];
+    gb_net_init();   /* no socket call answers before WSAStartup */
+    {
+        const char *at = socks_text;
+        for (long i = 0; i < count; i++) {
+            unsigned long long v = strtoull(at, &end, 10);
+            if (end == at || (i + 1 < count ? *end != ',' : *end != '\0')) {
+                webserver_raise("webserver.inherited: LISTEN_SOCKETS does not name LISTEN_FDS sockets");
+                return value_null();
+            }
+            inherited_socks[i] = (int)v;
+            at = end + 1;
+        }
+    }
+#else
     const char *pid_text = getenv("LISTEN_PID");
     const char *count_text = getenv("LISTEN_FDS");
     if (!pid_text || !count_text) {
@@ -24326,13 +24370,18 @@ static Value webserver_eval_inherited(AstExpr *expr) {
     if (!end || *end != '\0' || count <= 0 || count > 64) {
         return value_array(NULL, 0);
     }
+#endif
 
     Value *items = calloc((size_t)count, sizeof(Value));
     if (!items) {
         abort();
     }
     for (long i = 0; i < count; i++) {
+#ifdef _WIN32
+        int fd = inherited_socks[i];
+#else
         int fd = 3 + (int)i;
+#endif
         int accepting = 0;
         socklen_t opt_len = sizeof(accepting);
         if (getsockopt(fd, SOL_SOCKET, SO_ACCEPTCONN, (char *)&accepting, &opt_len) != 0 ||
@@ -24342,8 +24391,13 @@ static Value webserver_eval_inherited(AstExpr *expr) {
             }
             free(items);
             char message[160];
+#ifdef _WIN32
+            snprintf(message, sizeof(message),
+                     "webserver.inherited: socket %u is not a listening socket", (unsigned)fd);
+#else
             snprintf(message, sizeof(message),
                      "webserver.inherited: fd %d is not a listening socket", fd);
+#endif
             webserver_raise(message);
             return value_null();
         }
@@ -24390,6 +24444,10 @@ static Value webserver_eval_inherited(AstExpr *expr) {
     value_free(tls_opts);
     gb_unsetenv("LISTEN_FDS");
     gb_unsetenv("LISTEN_PID");
+#ifdef _WIN32
+    gb_unsetenv("LISTEN_SOCKETS");
+    gb_unsetenv("LISTEN_PARENT");
+#endif
     return value_array(items, (size_t)count);
 }
 
@@ -30083,6 +30141,11 @@ static int process_parse_options(Value *opts, const char *label, ProcLaunch *out
  * stream went elsewhere, and process.read answers "" for it. */
 #define PROC_TO_PIPE (-1)
 #define PROC_TO_INHERIT (-2)
+#ifdef _WIN32
+#define PROC_NULL_DEVICE "NUL"
+#else
+#define PROC_NULL_DEVICE "/dev/null"
+#endif
 static pid_t process_launch(char **argv, const char *cwd, Value *launch_env,
                             const int *share_fds, size_t share_count,
                             int *out_fd, int *err_fd, int *launch_errno,
@@ -30316,6 +30379,7 @@ static void process_try_reap(ProcessHandle *h) {
         if (h->status != -1) {
             h->status = code;
         }
+        h->peak_memory = gb_child_peak_memory(&h->win);
         h->reaped = 1;
     }
 #else
@@ -30589,17 +30653,9 @@ static Value process_do_start(AstExpr *expr) {
         }
     }
 
+    /* On Windows the sockets go by handle inheritance instead of at fds 3..,
+     * and the child finds them in LISTEN_SOCKETS (webserver_eval_inherited). */
     RecordField *lf = record_find(&opts, "listen_fds");
-#ifdef _WIN32
-    /* Handing a listening socket to a child is the worker pool's mechanism
-     * (LISTEN_FDS), and the webserver is refused on Windows; a socket is also
-     * not inherited the way an fd is. Refused by name rather than ignored. */
-    if (lf) {
-        free(launch.argv);
-        value_free(opts);
-        return process_raise("process.start: options.listen_fds is not available on Windows");
-    }
-#endif
     if (lf) {
         if (lf->value->kind != VALUE_ARRAY) {
             free(launch.argv);
@@ -30673,11 +30729,6 @@ static Value process_do_start(AstExpr *expr) {
                     }
                 }
             }
-#ifdef _WIN32
-            if (!why) {
-                why = "process.start: limits are not available on Windows (they are POSIX rlimits)";
-            }
-#endif
             if (why) {
                 free(launch.argv);
                 value_free(opts);
@@ -30706,33 +30757,29 @@ static Value process_do_start(AstExpr *expr) {
             if (v->kind == VALUE_STRING && strcmp(v->as.string, "pipe") == 0) {
                 stream_to[k] = PROC_TO_PIPE;
             } else if (v->kind == VALUE_STRING && strcmp(v->as.string, "inherit") == 0) {
-#ifdef _WIN32
-                /* the Windows launch is process.run's and takes no redirect, so
-                 * this is refused rather than accepted and not applied */
-                snprintf(why, sizeof why, "process.start: options.%s is not available on Windows", names[k]);
-#else
                 stream_to[k] = PROC_TO_INHERIT;
-#endif
             } else if (v->kind == VALUE_STRING && strcmp(v->as.string, "null") == 0) {
 #ifdef _WIN32
-                snprintf(why, sizeof why, "process.start: options.%s is not available on Windows", names[k]);
+                /* The child gets an inheritable COPY (gb_child_start); this fd
+                 * itself is never inherited. */
+                stream_to[k] = open("NUL", O_WRONLY | O_BINARY | O_NOINHERIT);
 #else
                 stream_to[k] = open("/dev/null", O_WRONLY | O_CLOEXEC);
-                if (stream_to[k] < 0) {
-                    snprintf(why, sizeof why, "process.start: options.%s: could not open /dev/null: %s",
-                             names[k], strerror(errno));
-                }
 #endif
+                if (stream_to[k] < 0) {
+                    snprintf(why, sizeof why, "process.start: options.%s: could not open %s: %s",
+                             names[k], PROC_NULL_DEVICE, strerror(errno));
+                }
             } else if (v->kind == VALUE_FILE) {
 #ifdef _WIN32
-                snprintf(why, sizeof why, "process.start: options.%s is not available on Windows", names[k]);
+                stream_to[k] = gb_open_append(v->as.file_path);
 #else
                 stream_to[k] = open(v->as.file_path, O_WRONLY | O_CREAT | O_APPEND | O_CLOEXEC, 0644);
+#endif
                 if (stream_to[k] < 0) {
                     snprintf(why, sizeof why, "process.start: options.%s: could not open '%.400s': %s",
                              names[k], v->as.file_path, strerror(errno));
                 }
-#endif
             } else {
                 snprintf(why, sizeof why,
                          "process.start: options.%s must be \"pipe\" (the default), \"null\", "
@@ -30754,17 +30801,76 @@ static Value process_do_start(AstExpr *expr) {
 #ifdef _WIN32
     /* Everything above -- options, refusals, env validation -- is shared with
      * POSIX; only the launch differs, and it is process.run's launch. */
-    (void)share_fds;
-    (void)share_count;
     {
+        /* LISTEN_FDS, LISTEN_SOCKETS and LISTEN_PARENT go in BEFORE the
+         * caller's env, so a caller could deliberately override them, as the
+         * POSIX child sets them before process_apply_env. */
+        char env_count[24], env_socks[64 * 24], env_parent[32];
+        const char *listen_names[3] = { "LISTEN_FDS", "LISTEN_SOCKETS", "LISTEN_PARENT" };
+        const char *listen_values[3] = { env_count, env_socks, env_parent };
+        size_t nlisten = 0;
+        if (share_count > 0) {
+            snprintf(env_count, sizeof env_count, "%zu", share_count);
+            size_t used = 0;
+            env_socks[0] = '\0';
+            for (size_t i = 0; i < share_count; i++) {
+                used += (size_t)snprintf(env_socks + used, sizeof env_socks - used, "%s%llu",
+                                         i ? "," : "",
+                                         (unsigned long long)(unsigned int)share_fds[i]);
+            }
+            snprintf(env_parent, sizeof env_parent, "%ld", (long)getpid());
+            nlisten = 3;
+        }
+        const char **user_names = NULL, **user_values = NULL;
+        size_t nuser = process_env_arrays(launch.env, &user_names, &user_values);
+        size_t nenv = nlisten + nuser;
         const char **env_names = NULL, **env_values = NULL;
-        size_t nenv = process_env_arrays(launch.env, &env_names, &env_values);
+        if (nenv > 0) {
+            env_names = malloc(nenv * sizeof *env_names);
+            env_values = malloc(nenv * sizeof *env_values);
+            if (!env_names || !env_values) {
+                abort();
+            }
+            /* A name the caller set wins, and is written once: the block
+             * must not carry a name twice. */
+            size_t at = 0;
+            for (size_t i = 0; i < nlisten; i++) {
+                int overridden = 0;
+                for (size_t j = 0; j < nuser; j++) {
+                    overridden |= _stricmp(user_names[j], listen_names[i]) == 0;
+                }
+                if (!overridden) {
+                    env_names[at] = listen_names[i];
+                    env_values[at++] = listen_values[i];
+                }
+            }
+            for (size_t i = 0; i < nuser; i++) {
+                env_names[at] = user_names[i];
+                env_values[at++] = user_values[i];
+            }
+            nenv = at;
+        }
+        free(user_names);
+        free(user_values);
+        GbChildOptions copts;
+        memset(&copts, 0, sizeof copts);
+        copts.want_stdin = want_stdin;
+        copts.out_fd = stream_to[0];
+        copts.err_fd = stream_to[1];
+        copts.share_sockets = share_fds;
+        copts.share_count = share_count;
+        copts.memory_limit = memory_limit;
         GbChild child;
         char why[512];
         int rc = gb_child_start(launch.argv, launch.cwd, env_names, env_values, nenv,
-                                want_stdin, &child, why, sizeof why);
+                                &copts, &child, why, sizeof why);
         free(env_names);
         free(env_values);
+        for (int j = 0; j < 2; j++) {
+            if (stream_to[j] >= 0) {
+                close(stream_to[j]);     /* the child has its own copy now */
+            }
+        }
         if (rc != 0) {
             char msg[700];
             snprintf(msg, sizeof(msg), "process.start: could not execute '%s': %s",
@@ -30784,6 +30890,8 @@ static Value process_do_start(AstExpr *expr) {
         h->err_fd = child.err_fd;
         h->in_fd = child.in_fd;
         h->win = child;
+        h->memory_limit = memory_limit;
+        h->peak_memory = -1;
         h->ref_count = 1;
         return value_process(h);
     }

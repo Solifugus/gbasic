@@ -56,6 +56,9 @@ build_has() {
         # that really listened would leave the event loop serving after main.
         actors)   probe='x = self()' ;;
         listen)   probe=$'load webserver\ns = webserver.listen(70000)' ;;
+        # the webserver's TLS (libssl): a certificate that does not exist is
+        # refused for its path by a build with TLS, and by one without for that
+        tls)      probe=$'load webserver\ns = webserver.listen(0, { tls: { cert: "/no/such/cert.pem", key: "/no/such/key.pem" } })' ;;
         # POSIX SIGNALS -- a child that DIES BY a signal, with no cleanup run.
         # Windows has none: process.stop ends a child with a console control
         # event it handles and exits through. Not a refusal, so asked of the

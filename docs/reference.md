@@ -4701,6 +4701,17 @@ reaches a child. A supervisor binds once with `hold: true` (keeping the
 privilege of the port and none of the serving) and every worker accepts from
 the shared socket; the kernel distributes connections.
 
+**On Windows** a socket is not an fd, and the environment is fixed before the
+child's pid exists. So the sockets go by handle inheritance, in the launch's
+explicit inherit list. The child finds their handle values in
+`LISTEN_SOCKETS`, with the count in `LISTEN_FDS`, and adopts them only if its
+parent is the process named in `LISTEN_PARENT`. A grandchild that inherited
+the variables has a different parent and adopts nothing, which is the case
+`LISTEN_PID` guards against. A worker drains on `process.stop`'s Ctrl-Break, as
+it does on SIGTERM elsewhere. Ctrl-Break reaches the worker only through a
+console it shares with the supervisor, so a supervisor running with no console
+cannot drain its workers politely.
+
 **Behind a reverse proxy**, `web.trust_proxy(req, ["127.0.0.1"])` rewrites
 `remote_ip`/`scheme` from `X-Forwarded-For`/`-Proto` — only when the direct
 peer is one of the named proxies, and taking the **rightmost** forwarded
@@ -6779,8 +6790,11 @@ and exited nonzero. `type(h)` is `"process"`.
 
 A stream sent elsewhere reads as `""` from `process.read`. A bare string other
 than the three words is refused, so a file named `null` is never mistaken for
-the device. A file that cannot be opened raises naming it. On Windows only
-`"pipe"` is taken.
+the device. A file that cannot be opened raises naming it. **On Windows** all
+four are taken. A file there is opened append-only at the handle, so every
+writer through it appends. A Windows program writes to such a handle. An MSYS2
+or Cygwin program (`sh` from Git Bash or MSYS2) cannot, and its writes to that
+stream fail.
 
 This is how a detached child gets an output that cannot break. A child whose
 stderr is a pipe nobody reads any more no longer dies writing to it. gBASIC
@@ -6805,7 +6819,12 @@ it does then is its own runtime's, and **a gBASIC child dies by SIGABRT**
 a limited child gains the evidence rather than a verdict: **`memory_limit`**,
 as given, and **`peak_memory`**, its peak resident bytes when it was reaped
 (`unknown` before). A child with no limit has the status it always had. An
-unknown limit is refused by name; `limits` is refused on Windows. **A limit too
+unknown limit is refused by name. **On Windows** the limit is the child's Job
+Object per-process committed-memory limit (`JOB_OBJECT_LIMIT_PROCESS_MEMORY`),
+set before the child runs; an allocation past it fails in the child, and
+`peak_memory` is its peak working set. There a gBASIC child reports the failed
+allocation as a runtime error and exits 1 rather than dying by a signal, which
+Windows does not have, so check `success` rather than `signal`. **A limit too
 small to start the program in** fails differently: measured on a build linking
 Qt (86 shared libraries), gbasic under 3.5 MB never runs, the dynamic loader
 failing to map a library, and exits **127** with signal 0; from 4 MB it starts.

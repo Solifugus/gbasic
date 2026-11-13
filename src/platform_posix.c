@@ -468,6 +468,10 @@ int gb_sock_close(int fd) {
     return close(fd) == 0;
 }
 
+int gb_sock_set_inherit(int fd, int inherit) {
+    return gb_set_cloexec(fd, !inherit) == 0;
+}
+
 int gb_sock_set_blocking(int fd, int blocking) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags < 0) {

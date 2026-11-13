@@ -151,8 +151,17 @@ program main(args)
     check("no client certificate where one is required", f.code, "tls_failed")
     check("  the server's alert is the reason", contains(f.message, "certificate required"), true)
     f = failure(try_exchange_late, tls_to(P.mtls, { ca: ca }), nothing)
-    check("  the same when the refusal is already waiting at the write", f.code, "tls_failed")
-    check("    named the same", contains(f.message, "certificate required"), true)
+    if contains(lower(process.self().interpreter), ".exe") then
+        ' WINDOWS DISCARDS RECEIVED, UNREAD BYTES WHEN A RESET LANDS: the
+        ' alert came before the reset our second write drew, and is gone by
+        ' the time anything reads (windows_port_status §33). What is left to
+        ' say is that the connection was reset.
+        check("  refused late, the alert lost to the reset (Windows)", f.code, "reset")
+        check("    and the message says the connection was reset", contains(lower(f.message), "reset"), true)
+    else
+        check("  the same when the refusal is already waiting at the write", f.code, "tls_failed")
+        check("    named the same", contains(f.message, "certificate required"), true)
+    end if
     c = net.connect(tls_to(P.mtls, { ca: ca, cert: d + "/client.pem", key: d + "/client.key" }))
     check("a client certificate the server's CA signed", c.read_line(10 seconds), "client:gBASIC Client")
     c.close()
