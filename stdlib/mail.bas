@@ -648,6 +648,53 @@ library mail
         return { text: r.text, problem: "" }
     end function
 
+    ' A token that is one encoded word, or several written with nothing
+    ' between them: `=?utf-8?q?_?==?utf-8?q?M=C3=BCller?=`. RFC 2047 says
+    ' encoded words are separated by white space, but Python 3.13 and older
+    ' fold headers into exactly this (Orange Pi RV, 2026-11-13), and Python and
+    ' other mail readers decode it, so a reader that kept the bytes would show
+    ' a person `=?utf-8?q?...` for a name the sender wrote. The words are joined
+    ' with nothing, as adjacent words are (6.2). Only a token made ENTIRELY of
+    ' encoded words: text glued to one is left as it is. Unknown otherwise.
+    ' { text, problem }
+    function _encoded_words(token)
+        one = _encoded_word(token)
+        if not is_unknown(one) then
+            return one
+        end if
+        n = byte_count(token)
+        parts = []
+        at = 0
+        while at < n
+            if byte_slice(token, at, 2) != "=?" then
+                return unknown
+            end if
+            ' =?charset?X?data?=: the data holds no `?`, so the word ends at
+            ' the first `?=` after the second `?` following the charset
+            q1 = byte_find(token, "?", at + 2)
+            if is_nothing(q1) then
+                return unknown
+            end if
+            endq = byte_find(token, "?=", q1 + 3)
+            if is_nothing(endq) then
+                return unknown
+            end if
+            w = _encoded_word(byte_slice(token, at, endq + 2 - at))
+            if is_unknown(w) then
+                return unknown
+            end if
+            if w.problem != "" then
+                return w
+            end if
+            append(parts, w.text)
+            at = endq + 2
+        end while
+        if count(parts) < 2 then
+            return unknown
+        end if
+        return { text: join(parts, ""), problem: "" }
+    end function
+
     ' Header text as bytes with no line breaks: a valid UTF-8 value stays as
     ' it is (RFC 6532 allows it), anything else is read as Latin-1 and said.
     function _header_bytes(value)
@@ -688,7 +735,7 @@ library mail
                     j = j + 1
                 end while
                 token = byte_slice(value, i, j - i)
-                w = _encoded_word(token)
+                w = _encoded_words(token)
                 if not is_unknown(w) and w.problem = "" then
                     if not last_encoded then
                         append(out, pending_space)
@@ -1097,7 +1144,7 @@ library mail
         for each w in words
             decoded = unknown
             if not w.quoted then
-                decoded = _encoded_word(w.text)
+                decoded = _encoded_words(w.text)
             end if
             if not is_unknown(decoded) and decoded.problem = "" then
                 if count(out) > 0 and not last_encoded then

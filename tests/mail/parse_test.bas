@@ -59,6 +59,15 @@ program main(args)
     check("windows-1252's euro", subject_of("=?windows-1252?Q?=809?="), "€9")
     check("a language suffix (RFC 2231) is read past", subject_of("=?utf-8*pl?Q?=C5=81?="), "Ł")
     check("text that only looks encoded is text", subject_of("price =? none"), "price =? none")
+    ' Encoded words with NOTHING between them, which RFC 2047 forbids and
+    ' Python 3.13 writes when it folds a header (Orange Pi RV, 2026-11-13).
+    ' Decoded, as Python and mail readers do; text glued to a word is not.
+    check("words with no space between them decode", subject_of("is =?utf-8?q?_?==?utf-8?q?M=C3=BCller?= done"), "is  Müller done")
+    check("three of them", subject_of("=?utf-8?q?a?==?iso-8859-1?q?b?==?utf-8?b?Yw==?="), "abc")
+    check("text glued to a word is left as written", subject_of("glued=?utf-8?q?M=C3=BCller?=x"), "glued=?utf-8?q?M=C3=BCller?=x")
+    check("and a word glued to text", subject_of("=?utf-8?q?a?=b"), "=?utf-8?q?a?=b")
+    m = mail.parse(msg(["From: =?utf-8?q?Zak?==?utf-8?q?=C5=82ad?= <z@b.example>", "", "x"]))
+    check("in a display name too", m.from.name, "Zakład")
     m = mail.parse(msg(["Subject: =?x-unknown?Q?abc?= tail", "", "x"]))
     check("a charset gBASIC does not read leaves the word as written", m.subject, "=?x-unknown?Q?abc?= tail")
     check("and says so", said(m, "header Subject: the encoded word =?x-unknown?Q?abc?=: its charset 'x-unknown'"), true)
