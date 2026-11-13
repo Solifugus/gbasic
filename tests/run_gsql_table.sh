@@ -54,6 +54,7 @@
 # no line for one. The model keeps what it sends apart from what it expects
 # stored now, and requires more than ten bound nothings per run.
 . "$(dirname "$0")/portable.sh"
+. "$(dirname "$0")/premise.sh"    # premise_leak_scan
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -86,6 +87,7 @@ elif "$CC" -fsanitize=undefined -o "$work/probe" "$work/probe.c" 2>/dev/null &&
     SAN="-fsanitize=undefined -fno-omit-frame-pointer"
     printf 'NOTE AddressSanitizer cannot run a program here, so memory errors are not measured (UBSan only)\n'
 fi
+premise_leak_scan
 bounded() { timeout -k 5 "$1" "${@:2}"; }
 
 printf 'TIER build: the layer and its test, -Wpedantic -Werror\n'

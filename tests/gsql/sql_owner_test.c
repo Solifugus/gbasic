@@ -10,15 +10,36 @@
 #include "serialize_tags.h"
 #include "../../src/gsql/v3.h"
 
+#include <errno.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
+#include <time.h>
 #include <unistd.h>
 
 static int checks, mismatches;
+
+/* The owner is detached -- its own session, re-parented away from this
+ * process (client.c) -- so it is not our child and waitpid cannot see it: it
+ * failed with ECHILD and left the status unset, and what this test checked
+ * was whatever was on the stack (0 on x86, 127 on riscv64). All that can be
+ * seen of a process that is not ours is whether it is still there. The bound
+ * is 20 s, times GATE_TIME_SCALE on a slow machine (tests/portable.sh). */
+static int gone_within(pid_t pid) {
+    const char *scale = getenv("GATE_TIME_SCALE");
+    double s = scale ? atof(scale) : 1;
+    long tries = (long)(20 * 10 * (s > 1 ? s : 1));
+    for (long i = 0; i < tries; i++) {
+        if (kill(pid, 0) != 0 && errno == ESRCH) {
+            return 1;
+        }
+        struct timespec ts = { 0, 100 * 1000000L };
+        nanosleep(&ts, NULL);
+    }
+    return 0;
+}
 
 static void check(int ok, const char *fmt, ...) {
     checks++;
@@ -318,25 +339,23 @@ int main(int argc, char **argv) {
     } else {
         check(0, "a second client could not connect: %s", err.message);
     }
-    gsql_client_close(c);
-
-    /* the owner is this process's child: end it the planned way, and the
-     * next owner opens the same database */
+    /* end the owner the planned way, and the next owner opens the same
+     * database. The client is still connected when SIGTERM is sent: with
+     * nobody connected the owner leaves on its own after its linger, and the
+     * check below then passed with the kill deleted. */
     if (owner > 0) {
         kill(owner, SIGTERM);
-        int st;
-        waitpid(owner, &st, 0);
-        check(WIFEXITED(st) && WEXITSTATUS(st) == 0, "the owner did not stop cleanly on SIGTERM");
+        check(gone_within(owner), "the owner did not stop on SIGTERM");
     }
+    gsql_client_close(c);
     if (gsql_client_open(db, &o, &c, &err) == 0) {
         EXPECT(c, "SELECT id, v, n FROM t ORDER BY v DESC", "ROWS 3, 'c', 0 | 2, 'b', 0 | 1, 'a', 5");
         pid_t again = gsql_client_started(c);
-        gsql_client_close(c);
         if (again > 0) {
             kill(again, SIGTERM);
-            int st;
-            waitpid(again, &st, 0);
+            check(gone_within(again), "the second owner did not stop on SIGTERM");
         }
+        gsql_client_close(c);
     } else {
         check(0, "a new owner could not open the database: %s", err.message);
     }

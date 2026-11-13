@@ -17,8 +17,18 @@ import select
 import sys
 import time
 
-TOTAL_TIMEOUT = float(os.environ.get("GBASIC_PTY_TOTAL", "20.0"))
-IDLE_TIMEOUT = 1.0       # quiet for this long with the child still alive = done
+# GATE_TIME_SCALE (tests/portable.sh): how many times slower than an x86
+# desktop this machine is said to be. Every wait below is a bound or a guess
+# about how fast the machine is, so each is multiplied by it; the key delay
+# models a person and is not. On the s390x VM (about 100x) the editor under
+# valgrind had not drawn its first prompt when the 20 s total ran out
+# (2026-11-13), and the tier's control said that run never happened.
+try:
+    SCALE = max(1.0, float(os.environ.get("GATE_TIME_SCALE", "1") or "1"))
+except ValueError:
+    SCALE = 1.0
+TOTAL_TIMEOUT = float(os.environ.get("GBASIC_PTY_TOTAL", "20.0")) * SCALE
+IDLE_TIMEOUT = 1.0 * SCALE   # quiet for this long with the child still alive = done
 # The prompt the editor prints when it is ready for a line, and the one it
 # prints while a statement is still open. Waiting for one of these is a
 # POSITIVE SIGNAL; waiting for silence is a guess about how fast the machine
@@ -27,7 +37,7 @@ IDLE_TIMEOUT = 1.0       # quiet for this long with the child still alive = done
 PROMPTS = (b"> ", b"... ")
 # The fallback when no prompt comes back (after `quit`, or a line that ends the
 # session): how long the output must stay quiet before the driver types on.
-QUIET_AFTER_LINE = float(os.environ.get("GBASIC_PTY_QUIET", "0.5"))
+QUIET_AFTER_LINE = float(os.environ.get("GBASIC_PTY_QUIET", "0.5")) * SCALE
 # Seconds to wait after each key. The default models a person; a tier MEASURING
 # the editor rather than driving it sets it low, or the driver's own pacing is
 # what gets measured.

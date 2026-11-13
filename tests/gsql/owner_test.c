@@ -774,8 +774,22 @@ static void raw_send(int fd, unsigned type, uint32_t id, const GsqlBuf *body) {
     gsql_buf_free(&f);
 }
 
-/* 1 a frame, 0 nothing within `ms`, -1 the connection ended. */
+/* GATE_TIME_SCALE (tests/portable.sh), or 1: how many times slower than an
+ * x86 desktop this machine is said to be. */
+static double time_scale(void) {
+    const char *s = getenv("GATE_TIME_SCALE");
+    double v = s ? atof(s) : 1;
+    return v > 1 ? v : 1;
+}
+
+/* 1 a frame, 0 nothing within `ms`, -1 the connection ended. `ms` is a bound
+ * on a reply that must come, scaled by GATE_TIME_SCALE: draining 50 000
+ * pipelined pings paused 34 ms here and 7.2 s on the Orange Pi RV under ASan
+ * (2026-11-11), so a 5 s bound failed there on an owner that answered every
+ * one. No caller waits for nothing (0) as a success, so a longer bound only
+ * makes a failure slower to report. */
 static int raw_recv(int fd, GsqlReader *rd, GsqlFrame *f, int ms) {
+    ms = (int)(ms * time_scale());
     for (;;) {
         int st = gsql_reader_next(rd, f);
         if (st == GSQL_READ_FRAME) {
@@ -2173,8 +2187,12 @@ static int lifetime_main(const char *dir) {
        last connection went: measured 13 to 40 on the build that introduced
        this check, and 5 once under the suite's load, so a floor of 20 was
        flaky from the start. This only says owners did come and go; the
-       window itself is held open deterministically below. */
-    EXPECT(owners >= 3, "only %d owners served 40 opens with no linger, so leaving was not exercised", owners);
+       window itself is held open deterministically below. On a machine
+       GATE_TIME_SCALE calls slow, with a suite running beside it, it was 2
+       (Orange Pi RV, 2026-11-11): one owner left and another came, which is
+       still the claim, so there the floor is the least that shows it. */
+    int floor = time_scale() > 1 ? 2 : 3;
+    EXPECT(owners >= floor, "only %d owners served 40 opens with no linger, so leaving was not exercised", owners);
     gone_within((pid_t)last_owner, 5000);
     snprintf(lms, sizeof lms, "%d", LINGER_MS);
     setenv("GSQL_TEST_LINGER_MS", lms, 1);

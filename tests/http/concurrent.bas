@@ -9,9 +9,10 @@
 load http
 
 port = env("HTTP_FIXTURE_PORT")
+wait_ms = env("HTTP_WAIT_MS")
 handles = []
 for i = 1 to 4
-    append(handles, http.start({ url: "http://127.0.0.1:" + port + "/wait?ms=400" }))
+    append(handles, http.start({ url: "http://127.0.0.1:" + port + "/wait?ms=" + wait_ms }))
 end for
 ok = 0
 for each h in handles

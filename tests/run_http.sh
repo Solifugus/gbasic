@@ -118,10 +118,15 @@ fi
 elapsed_ms() {
     local start finish
     start=$(date +%s%N)
-    timeout -k 5 120 ./gbasic "$1" >"$work/$(basename "$1").out" 2>"$work/$(basename "$1").err" || return 1
+    HTTP_WAIT_MS="$wait_ms" timeout -k 5 120 ./gbasic "$1" >"$work/$(basename "$1").out" 2>"$work/$(basename "$1").err" || return 1
     finish=$(date +%s%N)
     echo $(( (finish - start) / 1000000 ))
 }
+# Each request waits 400ms on the server, times GATE_TIME_SCALE: on riscv64
+# under QEMU the interpreter's own start and teardown (about a second, the
+# same in both runs) outweighed four unscaled waits, and 1.7x was measured
+# for transfers that did overlap.
+wait_ms=$(awk -v s="$(gb_time_scale)" 'BEGIN { printf "%d", 400 * s }')
 if ! seq_ms="$(elapsed_ms tests/http/sequential.bas)"; then
     cat "$work/sequential.bas.err"; bad "CONCURRENCY: the sequential baseline failed"
 elif ! con_ms="$(elapsed_ms tests/http/concurrent.bas)"; then
@@ -134,7 +139,7 @@ else
         bad "CONCURRENCY: the concurrent run took no measurable time"
     else
         ratio_x10=$(( seq_ms * 10 / con_ms ))
-        # Four 400ms requests: ideal is 4x, the gate is 2x. A `start` that
+        # Four equal requests: ideal is 4x, the gate is 2x. A `start` that
         # performed the request would land at 1x.
         if (( ratio_x10 < 20 )); then
             bad "CONCURRENCY: sequential ${seq_ms}ms vs concurrent ${con_ms}ms is only ${ratio_x10}/10x; four overlapping requests must beat four sequential ones by at least 2x"

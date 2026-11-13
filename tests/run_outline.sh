@@ -15,6 +15,7 @@
 set -u
 
 cd "$(dirname "$0")/.."
+. "$(dirname "$0")/portable.sh"   # gb_time_scale
 . "$(dirname "$0")/valgrind_tier.sh"
 
 if [ ! -x ./gbasic ]; then
@@ -75,10 +76,14 @@ else
     status=1
 fi
 # Generous ceiling: a single 40k-line parse+convert is sub-second in-process;
-# 20s catches only pathological (e.g. accidental O(n^2)) regressions.
-over=$(awk "BEGIN{print ($elapsed>20.0)?1:0}")
+# 20s catches only pathological (e.g. accidental O(n^2)) regressions. That is
+# a claim about the shape of the work, not this machine's speed, so on a
+# machine GATE_TIME_SCALE calls slow it is scaled rather than skipped: the
+# s390x VM (about 100x) took 28.67 s for work that is right (2026-11-13).
+ceiling=$(awk -v s="$(gb_time_scale)" 'BEGIN { printf "%g", 20 * s }')
+over=$(awk -v e="$elapsed" -v c="$ceiling" 'BEGIN { print (e > c) ? 1 : 0 }')
 if [ "$over" = "1" ]; then
-    echo "FAIL outline:large-file too slow (${elapsed}s > 20s)"
+    echo "FAIL outline:large-file too slow (${elapsed}s > ${ceiling}s)"
     status=1
 fi
 

@@ -16,6 +16,43 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### `mail.parse` decodes encoded words written with no space between (2026-11-13)
+
+- `=?utf-8?q?_?==?utf-8?q?M=C3=BCller?=`, encoded words with nothing
+  between them, is now decoded (` Müller`) in unstructured headers and display
+  names, where it was left as written. RFC 2047 says encoded words are
+  separated by white space, but Python 3.13 and older fold headers into this
+  form, and Python and other mail readers decode it; found by the Orange Pi
+  RV's gate, whose Python is 3.13. Only a token made entirely of encoded words
+  is read so: text glued to a word (`glued=?utf-8?q?a?=x`) is still left as
+  written.
+
+### The gate on real riscv64 hardware and on s390x (2026-11-13)
+
+- First full gate on real riscv64 hardware (Orange Pi RV, StarFive JH7110,
+  3.8 GB): 227 passed, the one failure the `mail.parse` change above. No
+  wrong answer from gBASIC; what it found was the harness's:
+- On a machine `GATE_TIME_SCALE` calls slow, suites built with AddressSanitizer
+  turn LeakSanitizer off and say so (`premise_leak_scan`): its scan at every
+  exit took seconds there, the G-SQL owner tiers end owners in bursts, and 958
+  waiting processes held 3 GB until the board stopped answering.
+- `run_gsql_store` starts its jobs within a memory budget (60% of
+  MemAvailable, each job at its measured peak) instead of all at once: its
+  store tier needs 5.6 GB together even on x86, so any machine with less
+  failed, and the 3.8 GB board stopped answering.
+- `owner_test`'s reply bound and `repl_pty.py`'s waits scale with
+  `GATE_TIME_SCALE`; `run_outline`'s 20 s pathology ceiling scales rather than
+  skips; the `lifetime` turnover floor is 2 on a slow machine.
+- `sql_owner_test` waited on a detached owner with `waitpid`, which fails
+  (ECHILD) for a process that is not your child, and read an uninitialised
+  status: 0 on x86 by luck, 127 on riscv64. It now waits for the process to
+  be gone, with SIGTERM sent while a client is still connected (with none, the
+  owner leaves on its own and the check passed with the kill deleted).
+- Also: `run_net`'s TLS floor counts the expired-certificate checks only where
+  openssl can make one; `run_http`'s concurrency waits scale; `run_portable`
+  clears the scaled `timeout` an outer gate exported; `run_absence` uses
+  `match()` as POSIX awk has it (mawk, Debian's default, refused gawk's form).
+
 ### `GATE_TIME_SCALE`: the gate on a slow machine (2026-11-11)
 
 - `GATE_TIME_SCALE=N tests/run_all.sh` multiplies every `timeout` bound in the

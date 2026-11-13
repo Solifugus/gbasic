@@ -18,6 +18,10 @@ cd "$(dirname "$0")/.."
 # GATE_TIME_SCALE would otherwise change what every tier below asserts. The
 # scale has its own tier, which sets it.
 unset GATE_TIME_SCALE
+# ...and the wrapper a scaled gate exported to this shell (export -f), which
+# unsetting the variable leaves in place: every child bash would inherit it,
+# and the first tier would see a function where the real binary should be.
+unset -f timeout _gb_timeout_inner _gb_scale_duration gb_time_scale 2>/dev/null
 
 pass=0; fail=0
 ok()   { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }

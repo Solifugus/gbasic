@@ -194,9 +194,13 @@ fi
 # appears 136 times in stdlib and most of them are not this pattern at all, so a
 # line count would be measuring something else and would never be re-measured.
 remaining="$(for f in stdlib/*.bas; do awk '
+  # the name after the opening bracket of what match() found. match() takes two
+  # arguments in POSIX awk; a capture array as the third is a gawk extension, and
+  # mawk (the default awk on Debian, so the Orange Pi RV) refuses the program.
+  function name(  s) { s = substr($0, RSTART, RLENGTH); sub(/^[^(]*\(/, "", s); return s }
   /for each/ { inloop=1; hay=""; dst=""; n=0 }
-  inloop && match($0, /if +not +contains\(([A-Za-z_][A-Za-z0-9_.]*)/, m) { hay=m[1] }
-  inloop && match($0, /append\(([A-Za-z_][A-Za-z0-9_.]*)/, m) { dst=m[1]; n++ }
+  inloop && match($0, /if +not +contains\([A-Za-z_][A-Za-z0-9_.]*/) { hay=name() }
+  inloop && match($0, /append\([A-Za-z_][A-Za-z0-9_.]*/) { dst=name(); n++ }
   inloop && (/^[ \t]*next/ || /end for/) {
       if (hay != "" && n == 1 && dst != "") { print "x" }
       inloop=0; hay=""; dst=""; n=0 }' "$f"; done | wc -l | tr -d " ")"

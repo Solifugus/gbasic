@@ -84,6 +84,21 @@ premise_time_claims() {
     awk -v s="$GATE_TIME_SCALE" 'BEGIN { exit !(s <= 1) }'
 }
 
+# LeakSanitizer scans a process's memory as it exits, in a forked helper that
+# holds the process stopped until it is done: milliseconds on x86, seconds on
+# the Orange Pi RV (2026-11-11). The G-SQL owner tiers end owners in bursts --
+# a race round is 24 clients of which 23 lose and exit at once -- and there the
+# scans fell behind: 958 waiting processes held 3 GB, and the board stopped
+# answering until it was power-cycled. So on a machine GATE_TIME_SCALE calls
+# slow, a suite that runs ASan turns the leak scan off and SAYS so; ASan's
+# other checks (overflow, use after free) stay on. Call after setting SAN.
+premise_leak_scan() {
+    case "${SAN:-}" in *address*) ;; *) return 0 ;; esac
+    premise_time_claims && return 0
+    export ASAN_OPTIONS="${ASAN_OPTIONS:+$ASAN_OPTIONS:}detect_leaks=0"
+    printf 'NOTE leaks are not checked at GATE_TIME_SCALE=%s: LeakSanitizer'"'"'s scan at every exit is too slow here (ASan'"'"'s other checks stay on)\n' "$GATE_TIME_SCALE"
+}
+
 # Was THIS build linked with KSyntaxHighlighting? Read from the build's own
 # link line, never from what gBASIC answers: a highlighter that broke on a
 # build that has one must fail, not skip. Absent on riscv64's Ubuntu 24.04,

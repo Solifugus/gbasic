@@ -49,6 +49,7 @@
 #   owner        `gbasic --gsql-owner` started by the client, end to end
 #   leftovers    no owner outlives the suite, read-only
 . "$(dirname "$0")/portable.sh"
+. "$(dirname "$0")/premise.sh"    # premise_leak_scan
 . "$(dirname "$0")/valgrind_tier.sh"
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -87,6 +88,7 @@ elif "$CC" -fsanitize=undefined -o "$work/probe" "$work/probe.c" 2>/dev/null &&
     SAN="-fsanitize=undefined -fno-omit-frame-pointer"
     printf 'NOTE AddressSanitizer cannot run a program here, so memory errors are not measured (UBSan only)\n'
 fi
+premise_leak_scan
 bounded() { timeout -k 5 "$1" "${@:2}"; }
 
 # one test program's verdict line: the last line, "ok N checks, 0 mismatches"
@@ -455,8 +457,13 @@ verdict stall "$work/stall.out" $?
 grep -E '^(GROUP BY|sort):' "$work/stall.out" | sed 's/^/       /'
 
 printf 'TIER leftovers: no owner outlives the suite\n'
-sleep 0.3
-left=$(pgrep -f -- "--gsql-owner $work/" | tr '\n' ' ')
+# An owner told to stop, or past its linger, takes a moment to go: 0.3 s was
+# enough on x86 and not on riscv64 under QEMU. Wait up to 5 s (scaled) for it.
+for _ in $(seq 1 $(awk -v s="$(gb_time_scale)" 'BEGIN { printf "%d", 50 * s }')); do
+    left=$(pgrep -f -- "--gsql-owner $work/" | tr '\n' ' ')
+    [ -z "$left" ] && break
+    sleep 0.1
+done
 if [ -z "$left" ]; then
     pass "no owner process is left"
 else

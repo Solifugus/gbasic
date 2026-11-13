@@ -275,9 +275,14 @@ tls_client() {        # tls_client CHECK PORT
     fi
 }
 if [ "$tls" = 1 ]; then
-    [ -f "$certs/expired.pem" ] || printf 'NOTE this openssl cannot backdate, so the expired case is skipped\n'
+    # The floor counts the expired case's two checks only where they can run.
+    tls_floor=66
+    if [ ! -f "$certs/expired.pem" ]; then
+        printf 'NOTE this openssl cannot backdate, so the expired case is skipped\n'
+        tls_floor=64
+    fi
     tls_peer_serve
-    FIXTURE_ARGS="$certs $work/ports.json" fixture tests/net/tls_client.bas 66 "TLS client: verification, start_tls, mutual TLS, watched"
+    FIXTURE_ARGS="$certs $work/ports.json" fixture tests/net/tls_client.bas "$tls_floor" "TLS client: verification, start_tls, mutual TLS, watched"
     tls_serve ""
     for c in sni client_cert split plaintext flood drip; do tls_client "$c" "$tport1"; done
     tls_client starttls "$tport2"

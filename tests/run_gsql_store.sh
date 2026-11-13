@@ -50,6 +50,7 @@
 # the transaction itself made is unobservable, since it sits at that
 # transaction's own id, so the guard against it is a saving, not a rule.
 . "$(dirname "$0")/portable.sh"
+. "$(dirname "$0")/premise.sh"    # premise_leak_scan
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -82,6 +83,7 @@ elif "$CC" -fsanitize=undefined -o "$work/probe" "$probe" 2>/dev/null &&
     SAN="-fsanitize=undefined -fno-omit-frame-pointer"
     printf 'NOTE AddressSanitizer cannot run a program here, so memory errors are not measured (UBSan only)\n'
 fi
+premise_leak_scan
 
 printf 'TIER build: the engine, the version store and the harnesses, -Wpedantic -Werror\n'
 built=1
@@ -108,12 +110,45 @@ bounded() { timeout -k 5 "$1" "${@:2}"; }
 # The model runs and the crash specs are independent, so each tier starts
 # them together and reads the verdicts in order: measured serial, the suite
 # took 7m39s on this machine, most of it waiting on one process at a time.
+#
+# ...as many together as memory allows. A store_test under ASan peaks at
+# about 1.1 GB (x86, 2026-11-11), so the store tier's ten processes need
+# 5.6 GB at once: on the Orange Pi RV's 3.8 GB they took the board down until
+# it was power-cycled. `launch MB cmd...` starts a job only while the jobs
+# running, at their measured peaks, fit in 60% of MemAvailable (the rest is
+# for whatever runs beside this suite); one job always starts, so a small
+# machine runs them one at a time rather than not at all. Without
+# /proc/meminfo there is no budget and everything starts at once, as before.
+declare -A job_mb=()
+mem_budget=""
+if [ -r /proc/meminfo ]; then
+    mem_budget=$(awk '/^MemAvailable:/ { printf "%d", $2 / 1024 * 0.6 }' /proc/meminfo)
+fi
+launch() {
+    local mb=$1 used p; shift
+    while [ -n "$mem_budget" ]; do
+        used=0
+        for p in "${!job_mb[@]}"; do
+            if kill -0 "$p" 2>/dev/null; then used=$((used + job_mb[$p])); else unset "job_mb[$p]"; fi
+        done
+        if [ "${#job_mb[@]}" -eq 0 ] || [ $((used + mb)) -le "$mem_budget" ]; then break; fi
+        sleep 0.2
+    done
+    "$@" &
+    job_mb[$!]=$mb
+}
+budget_note() {   # budget_note TIER TOTAL_MB
+    if [ -n "$mem_budget" ] && [ "$2" -gt "$mem_budget" ]; then
+        printf '  note %s needs about %d MB at once and %d MB is the budget: its jobs run in turns\n' "$1" "$2" "$mem_budget"
+    fi
+}
 printf 'TIER store: the interface against a model%s\n' "${SAN:+, under ASan and UBSan}"
 mkdir -p "$work/real" "$work/vreal"
-for seed in 1 2 3 4 5; do bounded 300 "$work/store_test" lsm "$seed" > "$work/store.$seed" 2>&1 & done
-bounded 300 "$work/store_test" lsm 9 real "$work/real" > "$work/store.real" 2>&1 &
-for seed in 1 2 3; do bounded 300 "$work/version_test" "$seed" > "$work/version.$seed" 2>&1 & done
-bounded 300 "$work/version_test" 4 real "$work/vreal" > "$work/version.real" 2>&1 &
+budget_note "the store tier" $((6 * 1200 + 4 * 260))
+for seed in 1 2 3 4 5; do launch 1200 bounded 300 "$work/store_test" lsm "$seed" > "$work/store.$seed" 2>&1; done
+launch 1200 bounded 300 "$work/store_test" lsm 9 real "$work/real" > "$work/store.real" 2>&1
+for seed in 1 2 3; do launch 260 bounded 300 "$work/version_test" "$seed" > "$work/version.$seed" 2>&1; done
+launch 260 bounded 300 "$work/version_test" 4 real "$work/vreal" > "$work/version.real" 2>&1
 wait
 for seed in 1 2 3 4 5; do
     last=$(tail -1 "$work/store.$seed")
@@ -196,9 +231,9 @@ for i in "${!specs[@]}"; do
     # only when wanted: an EMPTY GS_TUNE_A reads as 0, which is the engine's
     # own 32 MiB default, not the adapter's 2,000 bytes
     if [ -n "$tune" ]; then
-        GS_TUNE_A=$tune GSQL_CRASH_REPORTS=5 bounded 3600 "$work/crash_store" lsm $spec > "$work/crash.$i" 2>&1 &
+        GS_TUNE_A=$tune GSQL_CRASH_REPORTS=5 launch 170 bounded 3600 "$work/crash_store" lsm $spec > "$work/crash.$i" 2>&1
     else
-        GSQL_CRASH_REPORTS=5 bounded 3600 "$work/crash_store" lsm $spec > "$work/crash.$i" 2>&1 &
+        GSQL_CRASH_REPORTS=5 launch 170 bounded 3600 "$work/crash_store" lsm $spec > "$work/crash.$i" 2>&1
     fi
 done
 wait

@@ -28,7 +28,7 @@
 # GSQL_OWNER_COST_STRICT=1, since an absolute bound under a parallel gate
 # measures the machine.
 . "$(dirname "$0")/portable.sh"
-. "$(dirname "$0")/premise.sh"   # premise_time_claims
+. "$(dirname "$0")/premise.sh"   # premise_time_claims, premise_leak_scan
 set -uo pipefail
 cd "$(dirname "$0")/.."
 
@@ -69,6 +69,7 @@ elif "$CC" -fsanitize=undefined -o "$work/probe" "$work/probe.c" 2>/dev/null &&
     SAN="-fsanitize=undefined -fno-omit-frame-pointer"
     printf 'NOTE AddressSanitizer cannot run a program here, so memory errors are not measured (UBSan only)\n'
 fi
+premise_leak_scan
 bounded() { timeout -k 5 "$1" "${@:2}"; }
 
 printf 'TIER build: the owner, the client and their test, -Wpedantic -Werror\n'
