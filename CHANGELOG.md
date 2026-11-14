@@ -82,8 +82,10 @@ reader sees.
   MemAvailable, each job at its measured peak) instead of all at once: its
   store tier needs 5.6 GB together even on x86, so any machine with less
   failed, and the 3.8 GB board stopped answering.
-- `owner_test`'s reply bound and `repl_pty.py`'s waits scale with
-  `GATE_TIME_SCALE`; `run_outline`'s 20 s pathology ceiling scales rather than
+- `owner_test`'s reply bound and `repl_pty.py`'s total timeout scale with
+  `GATE_TIME_SCALE` (only the total: scaling its idle and quiet windows as
+  well put 15 s of waiting into the tier that measures the editor, and its
+  linear-redraw ratio read 39.55x on the Orange Pi RV); `run_outline`'s 20 s pathology ceiling scales rather than
   skips; the `lifetime` turnover floor is 2 on a slow machine.
 - `sql_owner_test` waited on a detached owner with `waitpid`, which fails
   (ECHILD) for a process that is not your child, and read an uninitialised
