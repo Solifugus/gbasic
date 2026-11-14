@@ -2096,9 +2096,8 @@ Linux (WSL), lean build: `run_net`, `run_web_pool`, `run_process` (with its
   `force_after`. No tier runs without a console.
 - **Socket inheritance behind a non-IFS LSP.** It is claimed to fail loudly;
   no LSP was installed to show it.
-- **The websocket and wss tiers against Python's websockets**, on both
-  platforms: the package is not installed.
-- **`run_web_hardening` on Windows**: it still needs `nc`.
+- **The websocket and wss tiers against Python's websockets** on Linux
+  (WSL has no websockets package). On Windows they pass (§35).
 - **The stripped binary's size** with libssl.
 
 ## 34. G-SQL's SQL harnesses on Windows, and a manifest swap NTFS refuses (2026-11-13)
@@ -2248,3 +2247,28 @@ time under `GATE_TIME_SCALE`).
 - `run_gsql_owner` (`owner_test.c`) on Windows. It still forks in twelve
   places and passes its `ready_fd` as a number where Windows passes a handle.
   It is not ported.
+
+## 35. The websocket and web tiers that waited on tools (2026-11-13)
+
+Matthew installed two MSYS2 packages: `mingw-w64-ucrt-x86_64-python-websockets`
+(17.1) and `openbsd-netcat`. With them, §33's two remaining tool gaps were
+measured, using a `gbasic.exe` rebuilt from the tree after commit 6ed14960.
+
+| suite | result on Windows |
+|---|---|
+| `run_websocket` | all checks passed, 40 s. 21 checks, including the client against Python's websockets servers and wss. Only valgrind skipped (not installed). |
+| `run_web_hardening` | all cases passed, 20 s |
+| `run_web_tls` | all cases passed, 31 s. `mtls_wss`, skipped in §33, now passes. |
+
+**One defect, in the runner, not the interpreter.** The first
+`run_websocket` run failed the client tier with `number conversion failed:
+invalid numeric string` at `stdlib/websocket.bas:82`. The runner reads the
+three port numbers from a line printed by `python3`. Native Windows Python
+ends that line with CRLF, and `read` left the CR on the last field. The wss
+port therefore reached `ws_client.bas` as `"NNNNN\r"`, and `number()`
+refused it, as it should. `tests/run_websocket.sh` now pipes the line
+through `tr -d '\r'`.
+
+This closes §33's items for the websocket tiers and `run_web_hardening`.
+The Linux side of the websocket tiers was not rerun here: the change is a
+`tr` on the runner's input, and WSL has no websockets package installed.

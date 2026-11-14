@@ -156,7 +156,10 @@ if [ "$have_ws" = 1 ]; then
     ppid=$!
     pids="$pids $ppid"
     for _ in $(seq 100); do [ -s "$work/ports.json" ] && break; sleep 0.05; done
-    read -r p_ws p_raw p_wss < <(python3 -I -c "import json,sys;p=json.load(open(sys.argv[1]));print(p['ws'],p['raw'],p.get('wss',''))" "$work/ports.json")
+    # tr: a native Windows python3 ends the line with CRLF, and read leaves
+    # the CR on the last field -- the wss port reached ws_client.bas as
+    # "NNNNN\r", which number() rightly refused
+    read -r p_ws p_raw p_wss < <(python3 -I -c "import json,sys;p=json.load(open(sys.argv[1]));print(p['ws'],p['raw'],p.get('wss',''))" "$work/ports.json" | tr -d '\r')
     if [ "$tls" = 1 ]; then
         fixture "the client, waited and watched, against Python's servers, and wss" 35 \
             ./gbasic tests/websocket/ws_client.bas "$p_ws" "$p_raw" "$p_wss" "$certs_here/ca.pem"
