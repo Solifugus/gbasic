@@ -509,6 +509,7 @@ typedef struct {
     int   out_fd;
     int   err_fd;
     int   in_fd;
+    void *stop_event;   /* HANDLE: the polite stop that needs no console (gb_stop_event_watch) */
 } GbChild;
 
 /* NAMED TIME ZONES on Windows, through the ICU that ships with Windows 10 1903
@@ -603,8 +604,11 @@ int gb_child_exited(GbChild *child, int *exit_code);
 
 /* force = 0: the POLITE stop -- CTRL_BREAK to the child's process group, the
  * nearest Windows has to SIGTERM; a child may handle it and keep running, which
- * is the same bargain SIGTERM strikes. Needs a shared console; without one it
- * does nothing, and the caller reports the child as still running.
+ * is the same bargain SIGTERM strikes. Ctrl-Break needs a console shared with
+ * the child, which a supervisor run as a service or a scheduled task does not
+ * have, so the child's stop event is signalled too, and a gbasic child acts on
+ * either the same way (gb_stop_event_watch; docs/windows_port_status.md §36).
+ * A child that is not gbasic and has no console hears neither.
  * force = 1: TerminateJobObject (the whole tree), the form of SIGKILL. */
 void gb_child_stop(GbChild *child, int force);
 
@@ -726,6 +730,20 @@ void gb_stdout_line_buffered(void);
  * a child started by exec gets the default back, as it always had. Windows has
  * no SIGPIPE, and this does nothing there. */
 void gb_pipe_guard_install(void);
+
+/* THE POLITE STOP WITHOUT A CONSOLE (Windows; 2026-11-13). process.stop's
+ * polite form is CTRL_BREAK, and Ctrl-Break reaches only a process sharing the
+ * sender's console: under a supervisor with none -- a service, a scheduled
+ * task -- every drain waited out force_after and was killed (measured, §36).
+ * So gb_child_start hands each child an event too, its handle named in
+ * GBASIC_STOP_EVENT, and gb_child_stop signals it. This, called at start-up,
+ * watches that event on a thread and, when it is signalled, does what
+ * Ctrl-Break does: the program's SIGBREAK handler if it has one (the
+ * webserver's drain), otherwise the end the console would give it
+ * (STATUS_CONTROL_C_EXIT), so either arriving first comes to the same thing.
+ * The variable is consumed, so a grandchild does not watch its parent's event.
+ * POSIX: nothing (SIGTERM reaches a process with no terminal). */
+void gb_stop_event_watch(void);
 
 /* HOW MUCH C STACK THIS PROCESS HAS, in KB, or 0 when it cannot be known.
  *

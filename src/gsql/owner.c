@@ -159,15 +159,32 @@ int gsql_socket_fallback(const char *db, int make, char *out, size_t cap, GsqlEr
     }
     char dir[512];
 #ifdef _WIN32
-    /* the user's own local application data, which a profile keeps private;
-     * checked as closely as /tmp's is below, by the ACL */
-    const char *lad = getenv("LOCALAPPDATA");
-    if (!lad || !*lad) {
-        return err_set(err, GSQL_STORAGE, "there is no runtime directory: LOCALAPPDATA is not set");
+    /* Under the user's temporary directory, checked as closely as /tmp's is
+     * below, by the ACL (docs/windows_port_status.md §36). NOT under
+     * LOCALAPPDATA, where it was: measured 2026-11-13, a socket file made in
+     * a direct child of AppData\Local or AppData\Roaming could be bound but
+     * not opened afterwards (ERROR_CANT_ACCESS_FILE, 1920), so it could be
+     * neither renamed into place nor removed, while one in AppData\Local\Temp
+     * or anywhere else in the profile could -- the pattern of the file system
+     * redirection Windows applies to packaged apps, which leaves Temp alone.
+     * And an MSIX-installed gbasic has its LOCALAPPDATA redirected into its
+     * own package, so its owner and an unpackaged client would not have
+     * looked in the same place. Made private as mode 0700 makes it, NOT
+     * inheriting the parent's entries, which may grant more than this user
+     * (a LOCALAPPDATA was measured carrying an AppContainer capability,
+     * S-1-15-3-..., with full control). */
+    char tdir[MAX_PATH + 1];
+    DWORD tn = GetTempPathA(sizeof tdir, tdir);
+    if (!tn || tn >= sizeof tdir) {
+        return err_set(err, GSQL_STORAGE, "there is no runtime directory: the temporary directory is unknown");
     }
-    snprintf(dir, sizeof dir, "%s/gbasic-run", lad);
-    if (make && !CreateDirectoryA(dir, NULL) && GetLastError() != ERROR_ALREADY_EXISTS) {
-        return err_set(err, GSQL_STORAGE, "the runtime directory %s cannot be made", dir);
+    while (tn > 3 && (tdir[tn - 1] == '\\' || tdir[tn - 1] == '/')) {
+        tdir[--tn] = 0;
+    }
+    snprintf(dir, sizeof dir, "%s/gbasic-run", tdir);
+    int made = make ? gsql_io_mkdir(gsql_io_real(), dir) : 0;
+    if (made && made != EEXIST) {
+        return err_set(err, GSQL_STORAGE, "the runtime directory %s cannot be made: %s", dir, strerror(made));
     }
     DWORD attr = GetFileAttributesA(dir);
     if (attr == INVALID_FILE_ATTRIBUTES) {
@@ -1937,7 +1954,11 @@ static int listen_on(const char *path, int in_db_dir, int *refused, char *why, s
     if (rc != 0) {
         int e = errno;
         snprintf(why, wcap, "the socket %s could not be made: %s", tmp, strerror(e));
-        *refused = e == EPERM || e == EOPNOTSUPP || e == ENOTSUP;
+        /* refused, so the runtime directory is tried: a filesystem with no
+         * sockets, or a path no socket address holds where no directory
+         * handle can stand in for it (Windows, macOS; socket_address) -- the
+         * runtime directory's name is short, and every client looks there */
+        *refused = e == EPERM || e == EOPNOTSUPP || e == ENOTSUP || (in_db_dir && e == ENAMETOOLONG);
         gs_sk_close(s);
         unlink(tmp);
         return -1;
@@ -2022,7 +2043,20 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
             break;
         }
 #ifdef _WIN32
-        Sleep(5);
+        /* Sleep(5) lasts a whole 15.6 ms tick; a high-resolution timer waits
+         * the 5 ms meant (as the client's pause_ms, §36) */
+        HANDLE pt = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */,
+                                           TIMER_ALL_ACCESS);
+        LARGE_INTEGER due;
+        due.QuadPart = -50000;   /* 5 ms, relative, in 100 ns units */
+        if (pt && SetWaitableTimer(pt, &due, 0, NULL, NULL, FALSE)) {
+            WaitForSingleObject(pt, INFINITE);
+        } else {
+            Sleep(5);
+        }
+        if (pt) {
+            CloseHandle(pt);
+        }
 #else
         struct timespec ts = { 0, 5 * 1000000L };
         nanosleep(&ts, NULL);

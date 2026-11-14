@@ -38,19 +38,29 @@
 
 #include <errno.h>
 #include <fcntl.h>
-#include <sys/file.h>
-#include <poll.h>
 #include <signal.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/socket.h>
 #include <sys/stat.h>
-#include <sys/un.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
+#ifdef _WIN32
+#include "gsql_sock.h"   /* Winsock, AF_UNIX, and the gs_sk_* calls the owner itself uses */
+#include <io.h>
+#define MSG_NOSIGNAL 0   /* Winsock raises no SIGPIPE */
+/* every directory the test makes is this user's alone, as mode 0700 makes it
+ * on POSIX: the store's own private mkdir. An inherited ACL may let other
+ * accounts write, and the owner then refuses the directory (gs_dir_trust) */
+#define mkdir(p, m) gsql_io_mkdir(gsql_io_real(), (p))
+#else
+#include <sys/file.h>
+#include <poll.h>
+#include <sys/socket.h>
+#include <sys/un.h>
+#include <sys/wait.h>
+#endif
 
 static const GsEngine *E = &gs_engine_lsm;
 static long checks, mismatches;
@@ -92,6 +102,291 @@ static void sleep_ms(long ms) {
     while (nanosleep(&t, &t) != 0 && errno == EINTR) {
     }
 }
+
+/* ==== processes, pipes and sockets on both platforms ====================== *
+ *
+ * The tiers start processes of their own -- racing clients, a starter that is
+ * killed, pretend machines -- and talk to them over pipes. POSIX forks, and
+ * the child runs its part with the pipes it inherited. Windows cannot fork, so
+ * the test runs ITSELF again (`owner_test child ROLE N H1..HN ARGS...`), with
+ * exactly the pipe handles that part needs made inheritable, and the child
+ * turns them back into descriptors. Both run the same function for a role
+ * (child_main), so the code under test is what both platforms run; only the
+ * way into it differs. `keep` are the descriptors the child uses, in order;
+ * `drop` are the parent's other ends, which a forked child must close (a
+ * Windows child never receives them).
+ *
+ * A Windows owner has no SIGTERM: it is DETACHED, so no console signal reaches
+ * it, and its planned stop is its linger (test_proc.h). The tiers that send
+ * SIGTERM say so on Windows and check the linger instead, or skip. SIGKILL is
+ * TerminateProcess; SIGSTOP and SIGCONT are NtSuspendProcess and
+ * NtResumeProcess, which a process may do to its own user's processes. */
+
+static int child_main(const char *role, char **args, const int *fds);
+
+#ifdef _WIN32
+static char self_exe[MAX_PATH];
+
+static int setenv(const char *name, const char *value, int overwrite) {
+    (void)overwrite;
+    SetEnvironmentVariableA(name, value);   /* what a child process is given */
+    return _putenv_s(name, value) == 0 ? 0 : -1;   /* what getenv reads here */
+}
+static int unsetenv(const char *name) {
+    SetEnvironmentVariableA(name, NULL);
+    return _putenv_s(name, "") == 0 ? 0 : -1;
+}
+
+static int tp_pipe(int p[2]) {
+    return _pipe(p, 1 << 16, _O_BINARY | _O_NOINHERIT);
+}
+
+/* one argument for CreateProcess's command line, quoted as the CRT undoes it */
+static void tp_quote(char *out, size_t cap, size_t *len, const char *arg) {
+    size_t n = *len;
+    if (n && n + 1 < cap) {
+        out[n++] = ' ';
+    }
+    if (n + 1 < cap) {
+        out[n++] = '"';
+    }
+    for (const char *s = arg;; s++) {
+        size_t bs = 0;
+        while (*s == '\\') {
+            bs++;
+            s++;
+        }
+        size_t times = !*s ? bs * 2 : *s == '"' ? bs * 2 + 1 : bs;
+        for (size_t i = 0; i < times && n + 1 < cap; i++) {
+            out[n++] = '\\';
+        }
+        if (!*s) {
+            break;
+        }
+        if (n + 1 < cap) {
+            out[n++] = *s;
+        }
+    }
+    if (n + 1 < cap) {
+        out[n++] = '"';
+    }
+    out[n] = 0;
+    *len = n;
+}
+
+/* the children this process started, by pid, for waiting on */
+static struct { DWORD pid; HANDLE h; } tp_kids[512];
+
+static pid_t tp_child(const char *role, const char *const *args, int nargs, const int *keep, int nkeep,
+                      const int *drop, int ndrop) {
+    (void)drop;
+    (void)ndrop;
+    HANDLE inherit[20];
+    int ninherit = 0;
+    char cmd[8192], num[32];
+    size_t len = 0;
+    tp_quote(cmd, sizeof cmd, &len, self_exe);
+    tp_quote(cmd, sizeof cmd, &len, "child");
+    tp_quote(cmd, sizeof cmd, &len, role);
+    snprintf(num, sizeof num, "%d", nkeep);
+    tp_quote(cmd, sizeof cmd, &len, num);
+    for (int i = 0; i < nkeep && ninherit < 16; i++) {
+        HANDLE dup = NULL;
+        DuplicateHandle(GetCurrentProcess(), (HANDLE)_get_osfhandle(keep[i]), GetCurrentProcess(), &dup, 0, TRUE,
+                        DUPLICATE_SAME_ACCESS);
+        inherit[ninherit++] = dup;
+        snprintf(num, sizeof num, "%llu", (unsigned long long)(uintptr_t)dup);
+        tp_quote(cmd, sizeof cmd, &len, num);
+    }
+    for (int i = 0; i < nargs; i++) {
+        tp_quote(cmd, sizeof cmd, &len, args[i]);
+    }
+    /* stdin and stdout NUL, stderr this process's: a child's stdout must not
+     * reach the line the runner reads, and on POSIX none writes there */
+    SECURITY_ATTRIBUTES sa = { sizeof sa, NULL, TRUE };
+    HANDLE nul = CreateFileA("NUL", GENERIC_READ | GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                             OPEN_EXISTING, 0, NULL);
+    HANDLE err = NULL;
+    DuplicateHandle(GetCurrentProcess(), GetStdHandle(STD_ERROR_HANDLE), GetCurrentProcess(), &err, 0, TRUE,
+                    DUPLICATE_SAME_ACCESS);
+    inherit[ninherit++] = nul;
+    if (err) {
+        inherit[ninherit++] = err;
+    }
+    SIZE_T asz = 0;
+    InitializeProcThreadAttributeList(NULL, 1, 0, &asz);
+    LPPROC_THREAD_ATTRIBUTE_LIST attrs = malloc(asz);
+    STARTUPINFOEXA si;
+    memset(&si, 0, sizeof si);
+    si.StartupInfo.cb = sizeof si;
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdInput = si.StartupInfo.hStdOutput = nul;
+    si.StartupInfo.hStdError = err ? err : nul;
+    int listed = attrs && InitializeProcThreadAttributeList(attrs, 1, 0, &asz) &&
+                 UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, inherit,
+                                           (SIZE_T)ninherit * sizeof(HANDLE), NULL, NULL);
+    si.lpAttributeList = listed ? attrs : NULL;
+    PROCESS_INFORMATION pi;
+    memset(&pi, 0, sizeof pi);
+    BOOL ok = listed && CreateProcessA(NULL, cmd, NULL, NULL, TRUE, EXTENDED_STARTUPINFO_PRESENT, NULL, NULL,
+                                       &si.StartupInfo, &pi);
+    if (listed) {
+        DeleteProcThreadAttributeList(attrs);
+    }
+    free(attrs);
+    for (int i = 0; i < ninherit; i++) {
+        CloseHandle(inherit[i]);
+    }
+    if (!ok) {
+        fprintf(stderr, "owner_test: could not start a child for %s (error %lu)\n", role, GetLastError());
+        return -1;
+    }
+    CloseHandle(pi.hThread);
+    for (size_t i = 0; i < sizeof tp_kids / sizeof tp_kids[0]; i++) {
+        if (!tp_kids[i].h) {
+            tp_kids[i].pid = pi.dwProcessId;
+            tp_kids[i].h = pi.hProcess;
+            return (pid_t)pi.dwProcessId;
+        }
+    }
+    CloseHandle(pi.hProcess);
+    return (pid_t)pi.dwProcessId;
+}
+
+/* a child's exit code, once it has exited; -1 if it is not one of ours */
+static int tp_wait(pid_t pid) {
+    for (size_t i = 0; i < sizeof tp_kids / sizeof tp_kids[0]; i++) {
+        if (tp_kids[i].h && tp_kids[i].pid == (DWORD)pid) {
+            DWORD code = 0;
+            WaitForSingleObject(tp_kids[i].h, INFINITE);
+            GetExitCodeProcess(tp_kids[i].h, &code);
+            CloseHandle(tp_kids[i].h);
+            tp_kids[i].h = NULL;
+            return (int)code;
+        }
+    }
+    return -1;
+}
+
+/* whether a child has exited within ms, and its code then */
+static int tp_exited(pid_t pid, int ms, int *code) {
+    for (size_t i = 0; i < sizeof tp_kids / sizeof tp_kids[0]; i++) {
+        if (tp_kids[i].h && tp_kids[i].pid == (DWORD)pid) {
+            if (WaitForSingleObject(tp_kids[i].h, (DWORD)ms) != WAIT_OBJECT_0) {
+                return 0;
+            }
+            *code = tp_wait(pid);
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static void tp_kill(pid_t pid) {
+    HANDLE h = OpenProcess(PROCESS_TERMINATE, FALSE, (DWORD)pid);
+    if (h) {
+        TerminateProcess(h, 137);
+        CloseHandle(h);
+    }
+}
+
+static int tp_alive(pid_t pid) {
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid);
+    if (!h) {
+        return 0;
+    }
+    int alive = WaitForSingleObject(h, 0) == WAIT_TIMEOUT;
+    CloseHandle(h);
+    return alive;
+}
+
+typedef LONG(__stdcall *TpNtSuspend)(HANDLE);
+static void tp_suspend(pid_t pid, int resume) {
+    TpNtSuspend f = (TpNtSuspend)(void (*)(void))GetProcAddress(GetModuleHandleA("ntdll.dll"),
+                                                                 resume ? "NtResumeProcess" : "NtSuspendProcess");
+    HANDLE h = OpenProcess(PROCESS_SUSPEND_RESUME, FALSE, (DWORD)pid);
+    if (h && f) {
+        f(h);
+    }
+    if (h) {
+        CloseHandle(h);
+    }
+}
+
+/* the owner has no SIGTERM on Windows: callers that send one check first */
+#define TP_HAVE_SIGTERM 0
+
+static void tp_pause_forever(void) {
+    for (;;) {
+        Sleep(INFINITE);
+    }
+}
+
+static int sk_close(int fd) { return gs_sk_close(fd); }
+static ssize_t sk_send(int fd, const void *b, size_t n) { return gs_sk_write(fd, b, n); }
+static ssize_t sk_recv(int fd, void *b, size_t n) { return gs_sk_read(fd, b, n); }
+static void sk_nonblock(int fd, int on) {
+    u_long v = on ? 1 : 0;
+    ioctlsocket((SOCKET)fd, FIONBIO, &v);
+}
+#define poll gs_sk_poll
+#else
+static int tp_pipe(int p[2]) { return pipe(p); }
+
+static pid_t tp_child(const char *role, const char *const *args, int nargs, const int *keep, int nkeep,
+                      const int *drop, int ndrop) {
+    (void)nargs;
+    (void)nkeep;
+    pid_t kid = fork();
+    if (kid == 0) {
+        for (int i = 0; i < ndrop; i++) {
+            close(drop[i]);
+        }
+        _exit(child_main(role, (char **)args, keep));
+    }
+    return kid;
+}
+
+static int tp_wait(pid_t pid) {
+    int status = 0;
+    if (waitpid(pid, &status, 0) != pid) {
+        return -1;
+    }
+    return WIFEXITED(status) ? WEXITSTATUS(status) : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+}
+
+static int tp_exited(pid_t pid, int ms, int *code) {
+    for (int t = 0; t <= ms / 10; t++) {
+        int status = 0;
+        if (waitpid(pid, &status, WNOHANG) == pid) {
+            *code = WIFEXITED(status) ? WEXITSTATUS(status) : 128 + (WIFSIGNALED(status) ? WTERMSIG(status) : 0);
+            return 1;
+        }
+        sleep_ms(10);
+    }
+    return 0;
+}
+
+static void tp_kill(pid_t pid) { kill(pid, SIGKILL); }
+static int tp_alive(pid_t pid) { return kill(pid, 0) == 0; }
+static void tp_suspend(pid_t pid, int resume) { kill(pid, resume ? SIGCONT : SIGSTOP); }
+
+#define TP_HAVE_SIGTERM 1
+
+static void tp_pause_forever(void) {
+    for (;;) {
+        pause();
+    }
+}
+
+static int sk_close(int fd) { return close(fd); }
+static ssize_t sk_send(int fd, const void *b, size_t n) { return send(fd, b, n, MSG_NOSIGNAL); }
+static ssize_t sk_recv(int fd, void *b, size_t n) { return read(fd, b, n); }
+static void sk_nonblock(int fd, int on) {
+    int fl = fcntl(fd, F_GETFL);
+    fcntl(fd, F_SETFL, on ? fl | O_NONBLOCK : fl & ~O_NONBLOCK);
+}
+#endif
 
 /* ==== the test service =================================================== */
 
@@ -210,6 +505,8 @@ static void columns(GsqlResult *out) {
     v3_w_text(&out->columns, "value");
 }
 
+static volatile unsigned long spin_count;   /* the spin statement's work (svc_run) */
+
 static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *s, GsqlResult *out, GsqlError *err) {
     (void)ctx;
     Stmt st;
@@ -272,9 +569,8 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
     if (!strcmp(st.word, "spin")) {
         /* a statement that never ends: the owner busy in user code, where no
          * signal it handles gently is ever looked at */
-        volatile unsigned long n = 0;
         for (;;) {
-            n++;
+            spin_count++;   /* volatile, at file scope: newer GCCs call a local one unused */
         }
     }
     if (!strcmp(st.word, "poison")) {
@@ -397,8 +693,28 @@ static GsqlIoOps g_slow_ops;
 static const GsqlIoOps *g_real_ops;
 static int slow_sync(GsqlFile *f) {
     if (g_sync_delay_us) {
+#ifdef _WIN32
+        /* a sleep lasts a whole timer tick on Windows, 15.6 ms by default, so
+         * nanosleep(5 ms) made a 15.6 ms disk and the group tier measured
+         * that (one client, 56 commits/s); a high-resolution timer waits the
+         * delay asked for */
+        /* one per wait: syncs may come from more than one thread */
+        HANDLE timer = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */,
+                                              TIMER_ALL_ACCESS);
+        LARGE_INTEGER due;
+        due.QuadPart = -(LONGLONG)g_sync_delay_us * 10;   /* relative, in 100 ns units */
+        if (timer && SetWaitableTimer(timer, &due, 0, NULL, NULL, FALSE)) {
+            WaitForSingleObject(timer, INFINITE);
+        } else {
+            Sleep((DWORD)(g_sync_delay_us / 1000));
+        }
+        if (timer) {
+            CloseHandle(timer);
+        }
+#else
         struct timespec ts = { g_sync_delay_us / 1000000, (g_sync_delay_us % 1000000) * 1000 };
         nanosleep(&ts, NULL);
+#endif
     }
     if (g_sync_fail_file && access(g_sync_fail_file, F_OK) == 0) {
         return EIO;
@@ -495,16 +811,15 @@ static int owner_relay_main(const char *db, const char *fd, const char *mode) {
         }
     }
     int p[2];
-    if (pipe(p) != 0) {
+    if (tp_pipe(p) != 0) {
         return 1;
     }
-    pid_t kid = fork();
-    if (kid == 0) {
-        close(p[0]);
-        char f[16];
-        snprintf(f, sizeof f, "%d", p[1]);
-        close(atoi(fd));
-        _exit(owner_main(db, f, mode));
+    /* the real owner, writing its line to this process; it never holds
+       this process's own ready pipe */
+    const char *oargs[] = { db, mode };
+    int okeep[] = { p[1] }, odrop[] = { p[0], atoi(fd) };
+    if (tp_child("owner", oargs, 2, okeep, 1, odrop, 2) < 0) {
+        return 1;
     }
     close(p[1]);
     char line[800];
@@ -519,7 +834,7 @@ static int owner_relay_main(const char *db, const char *fd, const char *mode) {
         if (gsql_socket_path(db, sock, sizeof sock, &d, &i, &err) == GSQL_OK) {
             int s = gsql_socket_connect(sock);
             if (s >= 0) {
-                close(s);
+                sk_close(s);
             }
         }
         sleep_ms(100);
@@ -546,6 +861,15 @@ static int owner_relay_main(const char *db, const char *fd, const char *mode) {
  * cannot be waited for: whether pid is gone within ms, read from /proc (a
  * zombie counts as gone). */
 static int gone_within(pid_t pid, int ms) {
+#ifdef _WIN32
+    HANDLE h = OpenProcess(SYNCHRONIZE, FALSE, (DWORD)pid);
+    if (!h) {
+        return 1;
+    }
+    int gone = WaitForSingleObject(h, (DWORD)ms) == WAIT_OBJECT_0;
+    CloseHandle(h);
+    return gone;
+#else
     char stat_path[64], buf[256];
     snprintf(stat_path, sizeof stat_path, "/proc/%ld/stat", (long)pid);
     for (int t = 0; t <= ms / 10; t++) {
@@ -563,12 +887,14 @@ static int gone_within(pid_t pid, int ms) {
         sleep_ms(10);
     }
     return 0;
+#endif
 }
 
 /* ==== the client side's helpers ========================================== */
 
-static const char *const OWNER_ARGV[] = { "/proc/self/exe", "owner", NULL };
-static const char *const RELAY_ARGV[] = { "/proc/self/exe", "owner-relay", NULL };
+/* [0] is this program: /proc/self/exe, or on Windows its path (main) */
+static const char *OWNER_ARGV[] = { "/proc/self/exe", "owner", NULL };
+static const char *RELAY_ARGV[] = { "/proc/self/exe", "owner-relay", NULL };
 
 static GsqlClient *open_db(const char *db, int create) {
     GsqlClientOptions o;
@@ -758,7 +1084,7 @@ static int raw_connect(const char *db) {
 static void raw_bytes(int fd, const void *p, size_t n) {
     const unsigned char *b = p;
     while (n) {
-        ssize_t w = send(fd, b, n, MSG_NOSIGNAL);
+        ssize_t w = sk_send(fd, b, n);
         if (w <= 0) {
             return;
         }
@@ -787,7 +1113,7 @@ static int raw_recv(int fd, GsqlReader *rd, GsqlFrame *f, int ms) {
             return 0;
         }
         unsigned char buf[65536];
-        ssize_t n = read(fd, buf, sizeof buf);
+        ssize_t n = sk_recv(fd, buf, sizeof buf);
         if (n <= 0) {
             return -1;
         }
@@ -1123,7 +1449,7 @@ static int protocol_main(const char *dir) {
         raw_send(fd, GSQL_M_QUERY, 2, &bb);
         int r1 = raw_recv(fd, &rd, &f, 5000), r2 = raw_recv(fd, &rd, &f, 5000);
         EXPECT(r1 == 1 && r2 == 1 && f.type == GSQL_M_DONE, "the raw writer's put was not answered DONE");
-        close(fd);
+        sk_close(fd);
         gsql_reader_free(&rd);
         gsql_buf_free(&bb);
         double t0 = now_us();
@@ -1285,7 +1611,7 @@ static int protocol_main(const char *dir) {
         EXPECT(strstr(last_message, "HELLO") && strstr(last_message, "PING"), "the refusal does not say why: %s",
                last_message);
         EXPECT(raw_recv(fd, &rd, &f, 5000) == -1, "after refusing, the owner kept the connection open");
-        close(fd);
+        sk_close(fd);
         gsql_reader_free(&rd);
 
         fd = raw_connect(db);
@@ -1295,7 +1621,7 @@ static int protocol_main(const char *dir) {
         remember_message(&f);
         EXPECT(strstr(last_message, "2.0") && strstr(last_message, "1.0"), "the version refusal does not name both: %s",
                last_message);
-        close(fd);
+        sk_close(fd);
         gsql_reader_free(&rd);
 
         fd = raw_connect(db);
@@ -1320,7 +1646,7 @@ static int protocol_main(const char *dir) {
         EXPECT(r == 1 && !strcmp(word_of(&f, last_word, sizeof last_word), "ERROR:PROTOCOL"),
                "a frame length of 3 answered %s", last_word);
         EXPECT(raw_recv(fd, &rd, &f, 5000) == -1, "after a short length the connection stayed open");
-        close(fd);
+        sk_close(fd);
         gsql_reader_free(&rd);
 
         fd = raw_connect(db);
@@ -1331,7 +1657,7 @@ static int protocol_main(const char *dir) {
         EXPECT(r == 1 && !strcmp(word_of(&f, last_word, sizeof last_word), "ERROR:TOO_LARGE"),
                "a 32 MiB frame length answered %s", last_word);
         EXPECT(raw_recv(fd, &rd, &f, 5000) == -1, "after a frame too large the connection stayed open");
-        close(fd);
+        sk_close(fd);
         gsql_reader_free(&rd);
     }
     /* the client's own refusal: a major this owner does not speak */
@@ -1496,8 +1822,7 @@ static int stall_main(const char *dir) {
 
     /* a client that never reads: the owner stops reading it (bounded), and
      * serves the rest meanwhile */
-    int fl = fcntl(fd, F_GETFL);
-    fcntl(fd, F_SETFL, fl | O_NONBLOCK);
+    sk_nonblock(fd, 1);
     GsqlBuf burst = {0};
     for (int i = 0; i < 2000; i++) {
         gsql_frame_put(&burst, GSQL_M_PING, (uint32_t)(1000 + i), NULL, 0);
@@ -1507,7 +1832,7 @@ static int stall_main(const char *dir) {
     while (rounds < 20000 && !blocked) {
         size_t at = 0;
         while (at < burst.length) {
-            ssize_t w = send(fd, burst.bytes + at, burst.length - at, MSG_NOSIGNAL);
+            ssize_t w = sk_send(fd, burst.bytes + at, burst.length - at);
             if (w < 0) {
                 blocked = errno == EAGAIN || errno == EWOULDBLOCK;
                 break;
@@ -1524,7 +1849,7 @@ static int stall_main(const char *dir) {
     EXPECT(blocked, "a client that never read its replies could send %ld bytes: the owner never stopped reading it", sent);
     EXPECT(!strcmp(call(a, GSQL_M_PING, NULL), "PONG"), "while one client's backlog was full the others were not served");
     /* drain: every reply arrives, in order, none lost */
-    fcntl(fd, F_SETFL, fl);
+    sk_nonblock(fd, 0);
     long frames_sent = sent / 9, got = 0;
     int in_order = 1;
     int r;
@@ -1546,7 +1871,7 @@ static int stall_main(const char *dir) {
     }
     EXPECT(got == frames_sent && in_order, "of %ld pipelined pings %ld were answered", frames_sent, got);
     gsql_buf_free(&burst);
-    close(fd);
+    sk_close(fd);
     gsql_reader_free(&rd);
     gsql_client_close(a);
     return finish();
@@ -1565,44 +1890,14 @@ static int race_round(const char *dir, int round, int n) {
      * fast child took a slow one's start byte as its release, exited, and
      * left the slow one waiting for ever (it hung 3 runs in 30) */
     int go[2], rep[2], hold[2];
-    if (pipe(go) || pipe(rep) || pipe(hold)) {
+    if (tp_pipe(go) || tp_pipe(rep) || tp_pipe(hold)) {
         return 1;
     }
     pid_t *kids = calloc((size_t)n, sizeof *kids);
+    const char *args[] = { db };
+    int keep[] = { go[0], rep[1], hold[0] }, drop[] = { go[1], rep[0], hold[1] };
     for (int i = 0; i < n; i++) {
-        kids[i] = fork();
-        if (kids[i] == 0) {
-            close(go[1]);
-            close(rep[0]);
-            close(hold[1]);
-            char x;
-            if (read(go[0], &x, 1) != 1) {
-                _exit(2);
-            }
-            GsqlClientOptions o;
-            memset(&o, 0, sizeof o);
-            o.owner_argv = OWNER_ARGV;
-            o.create = 1;
-            GsqlClient *c = NULL;
-            GsqlError err;
-            long line[3] = { 0, 0, 0 };
-            if (gsql_client_open(db, &o, &c, &err) == GSQL_OK) {
-                line[0] = (long)gsql_client_owner_pid(c);
-                line[1] = (long)gsql_client_started(c);
-                line[2] = strcmp(call(c, GSQL_M_PING, NULL), "PONG") == 0;
-            } else {
-                fprintf(stderr, "race client: %s\n", err.message);
-            }
-            if (write(rep[1], line, sizeof line) != (ssize_t)sizeof line) {
-                _exit(3);
-            }
-            /* hold the connection until the parent has read everyone */
-            if (read(hold[0], &x, 1) < 0) {
-                _exit(4);
-            }
-            gsql_client_close(c);
-            _exit(0);
-        }
+        kids[i] = tp_child("race", args, 1, keep, 3, drop, 3);
     }
     close(go[0]);
     close(rep[1]);
@@ -1637,7 +1932,7 @@ static int race_round(const char *dir, int round, int n) {
     close(go[1]);
     close(hold[1]);   /* EOF: the children close and exit */
     for (int i = 0; i < n; i++) {
-        waitpid(kids[i], NULL, 0);
+        tp_wait(kids[i]);
     }
     free(kids);
     return 0;
@@ -1657,8 +1952,13 @@ static int race_main(const char *dir, int n, int rounds) {
 /* ==== paths ============================================================== */
 
 static int exists(const char *p) {
+#ifdef _WIN32
+    /* the name itself, as lstat: a socket is a reparse point stat may not open */
+    return GetFileAttributesA(p) != INVALID_FILE_ATTRIBUTES;
+#else
     struct stat st;
     return lstat(p, &st) == 0;
+#endif
 }
 
 static int paths_main(const char *dir) {
@@ -1682,18 +1982,31 @@ static int paths_main(const char *dir) {
     if (!a) {
         return finish();
     }
-    if (symlink(real, lnk) != 0) {
+#ifdef _WIN32
+    /* a directory symlink needs Developer Mode or the privilege to make one;
+     * without either, nothing about symlinks is measured, and that is said */
+    int linked = CreateSymbolicLinkA(lnk, real, SYMBOLIC_LINK_FLAG_DIRECTORY | 0x2 /* unprivileged */) != 0;
+    if (!linked) {
+        printf("NOTE no directory symlink could be made (error %lu): a symlink reaching the same owner was NOT "
+               "measured\n", GetLastError());
+    }
+#else
+    int linked = symlink(real, lnk) == 0;
+    if (!linked) {
         mismatch("symlink: %s", strerror(errno));
     }
-    GsqlClient *b = open_db(lnk, 0);
-    EXPECT(b && gsql_client_owner_pid(b) == gsql_client_owner_pid(a) && gsql_client_started(b) == 0,
-           "a symlink to the database reached another owner");
-    gsql_client_close(b);
+#endif
+    if (linked) {
+        GsqlClient *b = open_db(lnk, 0);
+        EXPECT(b && gsql_client_owner_pid(b) == gsql_client_owner_pid(a) && gsql_client_started(b) == 0,
+               "a symlink to the database reached another owner");
+        gsql_client_close(b);
+    }
 
     /* a stale socket, left by an owner killed outright, is replaced */
     gsql_socket_path(real, sock, sizeof sock, &d, &i, &err);
     pid_t first = gsql_client_owner_pid(a);
-    kill(first, SIGKILL);
+    tp_kill(first);
     gone_within(first, 10000);
     EXPECT(exists(sock), "a killed owner left no socket file, so this tier measures nothing");
     EXPECT(!strcmp(call(a, GSQL_M_PING, NULL), "client:LOST"), "after its owner was killed the client answered %s",
@@ -1719,22 +2032,35 @@ static int paths_main(const char *dir) {
         pid_t yowner = y ? gsql_client_owner_pid(y) : 0;
         gsql_client_close(y);
         if (yowner > 0) {
+#if TP_HAVE_SIGTERM
             kill(yowner, SIGTERM);
-            gone_within(yowner, 10000);
+#endif
+            gone_within(yowner, 10000);   /* on Windows, its linger */
         }
         /* `other` has no owner now; its socket's name is made to lead to
          * `real`'s owner */
         gsql_socket_path(other, osock, sizeof osock, &d, &i, &err);
         gsql_socket_path(real, sock, sizeof sock, &d, &i, &err);
+#ifdef _WIN32
+        int misled = x && CreateHardLinkA(osock, sock, NULL);
+        if (x && !misled) {
+            printf("NOTE the socket file could not be hard-linked (error %lu): a socket leading to another "
+                   "database's owner was NOT measured\n", GetLastError());
+        }
+#else
+        int misled = 1;
         if (x && link(sock, osock) != 0) {
             mismatch("link: %s", strerror(errno));
         }
-        o.create = 0;
-        o.owner_argv = NULL;   /* never start one: only the misdirected socket answers */
-        int rc = gsql_client_open(other, &o, &y, &err);
-        EXPECT(rc == GSQL_PROTOCOL && strstr(err.message, "different database"),
-               "a socket leading to another database's owner answered %s: %s", gsql_error_name(rc), err.message);
-        gsql_client_close(y);
+#endif
+        if (misled) {
+            o.create = 0;
+            o.owner_argv = NULL;   /* never start one: only the misdirected socket answers */
+            int rc = gsql_client_open(other, &o, &y, &err);
+            EXPECT(rc == GSQL_PROTOCOL && strstr(err.message, "different database"),
+                   "a socket leading to another database's owner answered %s: %s", gsql_error_name(rc), err.message);
+            gsql_client_close(y);
+        }
         unlink(osock);
         gsql_client_close(x);
     }
@@ -1749,14 +2075,24 @@ static int paths_main(const char *dir) {
         EXPECT(gsql_socket_path(real, sock, sizeof sock, &d, &i, &err) == GSQL_OK, "socket path: %s", err.message);
         snprintf(fb, sizeof fb, "%s", "");
         gsql_socket_fallback(real, 1, fb, sizeof fb, &ignored);
+#ifdef _WIN32
+        (void)st;   /* no mode: the directory's ACL is the guard (gsql_socket_path) */
+        EXPECT(x && exists(sock), "the database's socket %s is not inside it", sock);
+#else
         EXPECT(x && lstat(sock, &st) == 0 && S_ISSOCK(st.st_mode) && (st.st_mode & 0777) == 0600,
                "the database's socket %s is not a socket at 0600 inside it", sock);
+#endif
         EXPECT(fb[0] && !exists(fb), "a socket was also made in the runtime directory (%s)", fb);
         gsql_client_close(x);
     }
+    int rc;
+#ifdef _WIN32
+    printf("NOTE Windows: a database directory others can write in (an ACL, not a mode) was NOT measured, nor the "
+           "runtime directory's checks\n");
+#else
     /* a directory others can write in could hold anybody's socket */
     chmod(real, 0770);
-    int rc = gsql_socket_path(real, sock, sizeof sock, &d, &i, &err);
+    rc = gsql_socket_path(real, sock, sizeof sock, &d, &i, &err);
     EXPECT(rc == GSQL_MISUSE && strstr(err.message, "written by other users") && strstr(err.message, "chmod 700"),
            "a database directory at 0770 answered %s: %s", gsql_error_name(rc), err.message);
     {
@@ -1773,6 +2109,7 @@ static int paths_main(const char *dir) {
     EXPECT(gsql_socket_path(real, sock, sizeof sock, &d, &i, &err) == GSQL_OK,
            "a database directory others may only read (0750) was refused: %s", err.message);
     chmod(real, 0700);
+#endif
 
     /* a path no socket address can hold (108 bytes) is reached through a
      * handle on its directory */
@@ -1812,6 +2149,7 @@ static int paths_main(const char *dir) {
         unsetenv("GSQL_TEST_NO_DIR_SOCKET");
     }
 
+#ifndef _WIN32
     /* the runtime directory is checked, not trusted */
     /* beside the runtime directory in use, since that one is short enough for
      * a socket and the test directory need not be */
@@ -1863,6 +2201,7 @@ static int paths_main(const char *dir) {
         unsetenv("GSQL_TEST_NO_DIR_SOCKET");
     }
     setenv("XDG_RUNTIME_DIR", keep, 1);
+#endif
 
     /* an owner that cannot start says why, through the client */
     {
@@ -1875,7 +2214,12 @@ static int paths_main(const char *dir) {
         snprintf(other, sizeof other, "%s/never", dir);
         GsqlClient *x = NULL;
         rc = gsql_client_open(other, &o, &x, &err);
-        EXPECT(rc == GSQL_NO_OWNER && strstr(err.message, "127"), "an owner program that cannot run answered %s: %s",
+#ifdef _WIN32
+        const char *cannot = "could not be run";   /* CreateProcess refuses it */
+#else
+        const char *cannot = "127";                /* the exec failed in the child */
+#endif
+        EXPECT(rc == GSQL_NO_OWNER && strstr(err.message, cannot), "an owner program that cannot run answered %s: %s",
                gsql_error_name(rc), err.message);
         /* a directory that is not a database: the owner's open is refused,
          * and the client hears the engine's word for it */
@@ -1911,7 +2255,7 @@ static int handoff_main(const char *dir) {
     EXPECT(!strcmp(begin(a, "write"), "DONE") && !strcmp(put(a, "inflight", "2"), "DONE"), "the open transaction: %s",
            last_word);
     pid_t first = gsql_client_owner_pid(a);
-    kill(first, SIGKILL);
+    tp_kill(first);
     gone_within(first, 10000);
     double t0 = now_us();
     EXPECT(!strcmp(put(a, "next", "3"), "client:LOST") && strstr(last_message, "rolled back") &&
@@ -1955,8 +2299,15 @@ static int handoff_main(const char *dir) {
     pid_t second = gsql_client_owner_pid(a);
     gsql_client_close(b);
     gsql_client_close(a);
+#if TP_HAVE_SIGTERM
     kill(second, SIGTERM);
     EXPECT(gone_within(second, 10000), "the owner did not stop on SIGTERM");
+#else
+    /* no SIGTERM reaches a detached owner: its planned stop is its linger,
+     * which must replay nothing just the same */
+    printf("NOTE Windows: the planned stop checked is the owner's linger, not SIGTERM\n");
+    EXPECT(gone_within(second, 10000), "the owner did not stop after its linger");
+#endif
     char sock[200];
     uint64_t d, i;
     GsqlError err;
@@ -1988,7 +2339,7 @@ static int handoff_main(const char *dir) {
         put(a, "x1", "v");
         put(a, "x2", "v");
         pid_t third = gsql_client_owner_pid(a);
-        kill(third, SIGKILL);
+        tp_kill(third);
         gone_within(third, 10000);
         gsql_client_close(a);
         if (E->open(db, &o, &st) == GS_OK) {
@@ -2012,21 +2363,12 @@ static int handoff_main(const char *dir) {
  * the pipe, and waits to be killed. */
 static pid_t starter(const char *db, long *owner_out) {
     int p[2];
-    if (pipe(p)) {
+    if (tp_pipe(p)) {
         return -1;
     }
-    pid_t kid = fork();
-    if (kid == 0) {
-        close(p[0]);
-        GsqlClient *c = open_db(db, 1);
-        long owner = c ? (long)gsql_client_owner_pid(c) : -1;
-        if (write(p[1], &owner, sizeof owner) != (ssize_t)sizeof owner) {
-            _exit(2);
-        }
-        for (;;) {
-            pause();
-        }
-    }
+    const char *args[] = { db };
+    int keep[] = { p[1] }, drop[] = { p[0] };
+    pid_t kid = tp_child("starter", args, 1, keep, 1, drop, 1);
     close(p[1]);
     *owner_out = -1;
     if (read(p[0], owner_out, sizeof *owner_out) != (ssize_t)sizeof *owner_out) {
@@ -2054,12 +2396,12 @@ static int lifetime_main(const char *dir) {
         return finish();
     }
     gsql_socket_path(db, sock, sizeof sock, &d, &i, &err);
-    EXPECT(kill((pid_t)owner, 0) == 0 && exists(sock), "the owner is not running while its client is");
+    EXPECT(tp_alive((pid_t)owner) && exists(sock), "the owner is not running while its client is");
     double t0 = now_us();
-    kill(kid, SIGKILL);
-    waitpid(kid, NULL, 0);
+    tp_kill(kid);
+    tp_wait(kid);
     sleep_ms(LINGER_MS / 3);
-    EXPECT(kill((pid_t)owner, 0) == 0 && exists(sock),
+    EXPECT(tp_alive((pid_t)owner) && exists(sock),
            "the owner went with the program that started it: it is still that program's child");
     EXPECT(gone_within((pid_t)owner, 5000), "the owner (pid %ld) was still there 5 s after its last connection went",
            owner);
@@ -2092,8 +2434,8 @@ static int lifetime_main(const char *dir) {
         return finish();
     }
     EXPECT(gsql_client_owner_pid(b) == owner && gsql_client_started(b) == 0, "the second client reached another owner");
-    kill(kid, SIGKILL);
-    waitpid(kid, NULL, 0);
+    tp_kill(kid);
+    tp_wait(kid);
     sleep_ms(LINGER_MS * 2);
     EXPECT(!strcmp(call(b, GSQL_M_PING, NULL), "PONG") && gsql_client_owner_pid(b) == owner,
            "the starter's death cost another program its connection: %s %s", last_word, last_message);
@@ -2117,31 +2459,20 @@ static int lifetime_main(const char *dir) {
     snprintf(db, sizeof db, "%s/never", dir);
     {
         int p[2];
-        if (pipe(p)) {
+        if (tp_pipe(p)) {
             return 1;
         }
-        pid_t op = fork();
-        if (op == 0) {
-            close(p[0]);
-            char fd[16];
-            snprintf(fd, sizeof fd, "%d", p[1]);
-            execl("/proc/self/exe", "owner_test", "owner", db, fd, "create", (char *)NULL);
-            _exit(127);
-        }
+        const char *oargs[] = { db, "create" };
+        int okeep[] = { p[1] }, odrop[] = { p[0] };
+        pid_t op = tp_child("owner", oargs, 2, okeep, 1, odrop, 1);
         close(p[1]);
         char line[64] = {0};
         ssize_t got = read(p[0], line, sizeof line - 1);
         close(p[0]);
         EXPECT(got > 0 && !strncmp(line, "ready ", 6), "a lone owner said %s", got > 0 ? line : "nothing");
-        int status = 0;
-        int done = 0;
-        for (int t = 0; t < 500 && !done; t++) {
-            done = waitpid(op, &status, WNOHANG) == op;
-            if (!done) {
-                sleep_ms(10);
-            }
-        }
-        EXPECT(done && WIFEXITED(status) && WEXITSTATUS(status) == 0,
+        int status = -1;
+        int done = op > 0 && tp_exited(op, 5000, &status);
+        EXPECT(done && status == 0,
                "an owner nobody connected to did not stop cleanly on its own (status %d)", status);
     }
 
@@ -2193,25 +2524,12 @@ static int lifetime_main(const char *dir) {
         /* the opener is forked BEFORE the lock is taken: a child inheriting
            the lock's descriptor would hold it after this process let go */
         int p2[2], go[2];
-        if (pipe(p2) || pipe(go)) {
+        if (tp_pipe(p2) || tp_pipe(go)) {
             return 1;
         }
-        pid_t opener = fork();
-        if (opener == 0) {
-            close(p2[0]);
-            close(go[1]);
-            char g;
-            if (read(go[0], &g, 1) != 1) {
-                _exit(2);
-            }
-            GsqlClient *y = open_db(db, 0);
-            char ok = y && !strcmp(call(y, GSQL_M_PING, NULL), "PONG");
-            if (write(p2[1], &ok, 1) != 1) {
-                _exit(2);
-            }
-            gsql_client_close(y);
-            _exit(0);
-        }
+        const char *args[] = { db };
+        int keep[] = { go[0], p2[1] }, drop[] = { p2[0], go[1] };
+        pid_t opener = tp_child("opener", args, 1, keep, 2, drop, 2);
         close(p2[1]);
         close(go[0]);
         GsOptions o;
@@ -2237,7 +2555,7 @@ static int lifetime_main(const char *dir) {
             EXPECT(ms > 250, "the open finished in %.0f ms, before the lock was let go, so it never met it", ms);
         }
         close(p2[0]);
-        waitpid(opener, NULL, 0);
+        tp_wait(opener);
     }
 
     /* an owner STUCK in a statement cannot notice its connection going, so
@@ -2246,28 +2564,14 @@ static int lifetime_main(const char *dir) {
        for ever */
     snprintf(db, sizeof db, "%s/stuck", dir);
     int p[2];
-    if (pipe(p)) {
+    if (tp_pipe(p)) {
         return 1;
     }
     setenv("GSQL_TEST_STOP_GRACE_S", "1", 1);
-    kid = fork();
-    if (kid == 0) {
-        close(p[0]);
-        GsqlClient *x = open_db(db, 1);
-        long o = x ? (long)gsql_client_owner_pid(x) : -1;
-        if (x) {
-            GsqlBuf qb = {0};
-            b_query(&qb, "spin", 0, NULL, 0);
-            uint32_t id;
-            GsqlError e2;
-            gsql_client_send(x, GSQL_M_QUERY, &qb, &id, &e2);
-        }
-        if (write(p[1], &o, sizeof o) != (ssize_t)sizeof o) {
-            _exit(2);
-        }
-        for (;;) {
-            pause();
-        }
+    {
+        const char *args[] = { db };
+        int keep[] = { p[1] }, drop[] = { p[0] };
+        kid = tp_child("stuck", args, 1, keep, 1, drop, 1);
     }
     unsetenv("GSQL_TEST_STOP_GRACE_S");
     close(p[1]);
@@ -2277,11 +2581,21 @@ static int lifetime_main(const char *dir) {
         return finish();
     }
     sleep_ms(300);   /* the owner is inside the statement now */
-    kill(kid, SIGKILL);
-    waitpid(kid, NULL, 0);
+    tp_kill(kid);
+    tp_wait(kid);
     sleep_ms(LINGER_MS * 2);
-    EXPECT(kill((pid_t)owner, 0) == 0, "the stuck owner was gone before anything stopped it, so this check measures "
+    EXPECT(tp_alive((pid_t)owner), "the stuck owner was gone before anything stopped it, so this check measures "
            "nothing");
+#if !TP_HAVE_SIGTERM
+    /* WINDOWS HAS NO STOP FOR IT: no signal reaches a detached owner, and one
+     * spinning in a statement never reaches its linger. It is ended outright
+     * here, which the engine survives as a crash; that it lingers on is the
+     * premise checked above, and the gap is said rather than passed */
+    printf("NOTE Windows: an owner stuck in a statement has no planned stop (no SIGTERM); only TerminateProcess "
+           "ends it, so the stop's deadline was NOT measured\n");
+    tp_kill((pid_t)owner);
+    gone_within((pid_t)owner, 10000);
+#else
     t0 = now_us();
     kill((pid_t)owner, SIGTERM);
     int gone = gone_within((pid_t)owner, 10000);
@@ -2293,8 +2607,9 @@ static int lifetime_main(const char *dir) {
         /* the check has failed; the owner must not go on spinning after it
            (measured 2026-11-02: one left by a failed run on Nov 1 had spun at
            100% CPU for 35 hours, under every timing tier since) */
-        kill((pid_t)owner, SIGKILL);
+        tp_kill((pid_t)owner);
     }
+#endif
     return finish();
 }
 
@@ -2306,37 +2621,19 @@ static int lifetime_main(const char *dir) {
  * second across all of them, and how many replies were not DONE. */
 static double commit_rate(const char *db, int n, int per, long *refused) {
     int res[2];
-    if (pipe(res)) {
+    if (tp_pipe(res)) {
         return -1;
     }
     double t0 = now_us();
-    for (int k = 0; k < n; k++) {
-        if (fork() == 0) {
-            close(res[0]);
-            GsqlClient *c = open_db(db, 1);
-            long bad = c ? 0 : per;
-            for (int i = 0; c && i < per; i++) {
-                char key[48];
-                snprintf(key, sizeof key, "c%d-%d-%d", n, k, i);
-                /* odd clients commit explicitly, even ones in autocommit: the
-                   two paths each make a commit without a sync */
-                if (k % 2) {
-                    if (strcmp(begin(c, "write"), "DONE") || strcmp(put(c, key, "v"), "DONE") ||
-                        strcmp(call(c, GSQL_M_COMMIT, NULL), "DONE")) {
-                        bad++;
-                    }
-                } else if (strcmp(put(c, key, "v"), "DONE")) {
-                    bad++;
-                }
-            }
-            if (c) {
-                gsql_client_close(c);
-            }
-            if (write(res[1], &bad, sizeof bad) != (ssize_t)sizeof bad) {
-                _exit(2);
-            }
-            _exit(0);
-        }
+    pid_t kids[64];
+    char nt[16], kt[16], pt[16];
+    snprintf(nt, sizeof nt, "%d", n);
+    snprintf(pt, sizeof pt, "%d", per);
+    int keep[] = { res[1] }, drop[] = { res[0] };
+    for (int k = 0; k < n && k < 64; k++) {
+        snprintf(kt, sizeof kt, "%d", k);
+        const char *args[] = { db, nt, kt, pt };
+        kids[k] = tp_child("commit", args, 4, keep, 1, drop, 1);
     }
     close(res[1]);
     *refused = 0;
@@ -2348,7 +2645,9 @@ static double commit_rate(const char *db, int n, int per, long *refused) {
         *refused += bad;
     }
     close(res[0]);
-    while (wait(NULL) > 0) {}
+    for (int k = 0; k < n && k < 64; k++) {
+        tp_wait(kids[k]);
+    }
     return n * per / ((now_us() - t0) / 1e6);
 }
 
@@ -2406,7 +2705,7 @@ static int group_main(const char *dir) {
                last_message);
         long fo = (long)gsql_client_owner_pid(f);
         gsql_client_close(f);
-        kill((pid_t)fo, SIGKILL);
+        tp_kill((pid_t)fo);
         gone_within((pid_t)fo, 5000);
     }
     unlink(marker);
@@ -2468,39 +2767,15 @@ static int file_there(const char *p) {
  * not a violation -- the first version of this check did exactly that. */
 static int contend(const char *dir, const char *db, int create, const char *m1, const char *m2, long *owners) {
     int go[2], res[2], rel[2];
-    if (pipe(go) || pipe(res) || pipe(rel)) {
+    if (tp_pipe(go) || tp_pipe(res) || tp_pipe(rel)) {
         return -1;
     }
     pid_t kids[2];
     const char *names[2] = { m1, m2 };
+    int keep[] = { go[0], res[1], rel[0] }, drop[] = { go[1], res[0], rel[1] };
     for (int k = 0; k < 2; k++) {
-        kids[k] = fork();
-        if (kids[k] == 0) {
-            close(go[1]);
-            close(res[0]);
-            close(rel[1]);
-            be_machine(dir, names[k]);
-            char x;
-            if (read(go[0], &x, 1) != 1) {
-                _exit(3);
-            }
-            int code;
-            char msg[600];
-            double ms;
-            GsqlClient *c = try_open(db, create, &code, msg, sizeof msg, &ms);
-            long o = c ? (long)gsql_client_owner_pid(c) : (code == GSQL_ELSEWHERE ? 0 : -1);
-            if (write(res[1], &o, sizeof o) != (ssize_t)sizeof o) {
-                _exit(2);
-            }
-            char y;
-            if (read(rel[0], &y, 1) < 0) {
-                _exit(4);
-            }
-            if (c) {
-                gsql_client_close(c);
-            }
-            _exit(0);
-        }
+        const char *args[] = { dir, db, create ? "1" : "0", names[k] };
+        kids[k] = tp_child("contend", args, 4, keep, 3, drop, 3);
     }
     close(go[0]);
     close(res[1]);
@@ -2523,7 +2798,7 @@ static int contend(const char *dir, const char *db, int create, const char *m1, 
     close(res[0]);
     close(rel[1]);   /* both answered: let go */
     for (int k = 0; k < 2; k++) {
-        waitpid(kids[k], NULL, 0);
+        tp_wait(kids[k]);
     }
     return opened;
 }
@@ -2570,28 +2845,21 @@ static int window_main(const char *dir) {
         nanosleep(&ts, NULL);
     }
     EXPECT(!exists(sock), "the stopping owner never removed its socket");
-    EXPECT(kill(slow, 0) == 0, "the owner had already exited when its socket went, so there was no window to test");
+    EXPECT(tp_alive(slow), "the owner had already exited when its socket went, so there was no window to test");
     double t0 = now_us();
     /* when the stopping owner itself is gone, watched from beside the client
        while it waits, for the comparison */
     int wp[2];
-    if (pipe(wp) != 0) {
+    if (tp_pipe(wp) != 0) {
         mismatch("pipe: %s", strerror(errno));
         return finish();
     }
-    pid_t watcher = fork();
-    if (watcher == 0) {
-        close(wp[0]);
-        while (kill(slow, 0) == 0 && now_us() - t0 < 120e6) {
-            struct timespec ts = { 0, 5000000L };
-            nanosleep(&ts, NULL);
-        }
-        double gone = (now_us() - t0) / 1000.0;
-        if (write(wp[1], &gone, sizeof gone) != (ssize_t)sizeof gone) {
-            _exit(1);
-        }
-        _exit(0);
-    }
+    char slowt[32], t0t[64];
+    snprintf(slowt, sizeof slowt, "%ld", (long)slow);
+    snprintf(t0t, sizeof t0t, "%.0f", t0);   /* the monotonic clock is the machine's, not the process's */
+    const char *wargs[] = { slowt, t0t };
+    int wkeep[] = { wp[1] }, wdrop[] = { wp[0] };
+    pid_t watcher = tp_child("watcher", wargs, 2, wkeep, 1, wdrop, 1);
     close(wp[1]);
     GsqlClient *b = open_db(db, 0);
     double ms = (now_us() - t0) / 1000.0;
@@ -2600,7 +2868,7 @@ static int window_main(const char *dir) {
         gone = -1;
     }
     close(wp[0]);
-    waitpid(watcher, NULL, 0);
+    tp_wait(watcher);
     printf("window: a client connecting as the owner stopped was served after %.0f ms; the stopping owner was "
            "gone after %.0f ms\n", ms, gone);
     EXPECT(b != NULL, "a client connecting into the handoff window was not served");
@@ -2639,43 +2907,17 @@ static int churn_main(const char *dir, int n, int rounds) {
     }
     gsql_client_close(a);
     int rep[2];
-    if (pipe(rep) != 0) {
+    if (tp_pipe(rep) != 0) {
         mismatch("pipe: %s", strerror(errno));
         return finish();
     }
     pid_t *kids = calloc((size_t)n, sizeof *kids);
+    char rt[16];
+    snprintf(rt, sizeof rt, "%d", rounds);
+    const char *args[] = { db, rt };
+    int keep[] = { rep[1] }, drop[] = { rep[0] };
     for (int i = 0; i < n; i++) {
-        kids[i] = fork();
-        if (kids[i] == 0) {
-            close(rep[0]);
-            /* {opens, served, slow, slowest ms} */
-            double line[4] = { 0, 0, 0, 0 };
-            for (int r = 0; r < rounds; r++) {
-                double t0 = now_us();
-                GsqlClientOptions o;
-                memset(&o, 0, sizeof o);
-                o.owner_argv = OWNER_ARGV;
-                GsqlClient *c = NULL;
-                GsqlError err;
-                int rc = gsql_client_open(db, &o, &c, &err);
-                double ms = (now_us() - t0) / 1000.0;
-                line[0]++;
-                if (rc == GSQL_OK && !strcmp(call(c, GSQL_M_PING, NULL), "PONG")) {
-                    line[1]++;
-                } else if (rc != GSQL_OK) {
-                    fprintf(stderr, "churn client: %s\n", err.message);
-                }
-                line[2] += ms > CHURN_BOUND_MS;
-                if (ms > line[3]) {
-                    line[3] = ms;
-                }
-                gsql_client_close(c);
-            }
-            if (write(rep[1], line, sizeof line) != (ssize_t)sizeof line) {
-                _exit(3);
-            }
-            _exit(0);
-        }
+        kids[i] = tp_child("churn", args, 2, keep, 1, drop, 1);
     }
     close(rep[1]);
     double opens = 0, served = 0, slow = 0, slowest = 0;
@@ -2694,7 +2936,7 @@ static int churn_main(const char *dir, int n, int rounds) {
     }
     close(rep[0]);
     for (int i = 0; i < n; i++) {
-        waitpid(kids[i], NULL, 0);
+        tp_wait(kids[i]);
     }
     free(kids);
     printf("churn: %.0f opens by %d clients at linger 0, the slowest %.0f ms\n", opens, n, slowest);
@@ -2731,7 +2973,7 @@ static int busygone_main(const char *dir) {
        to see W take, and B would open into its leaving */
     EXPECT(first > 0 && gone_within(first, 10000), "the creating owner did not go after its only client left");
     int rep[2];
-    if (pipe(rep) != 0) {
+    if (tp_pipe(rep) != 0) {
         mismatch("pipe: %s", strerror(errno));
         return finish();
     }
@@ -2744,36 +2986,9 @@ static int busygone_main(const char *dir) {
     char lockpath[700];
     snprintf(lockpath, sizeof lockpath, "%s/db.lock", db);
     setenv("GSQL_TEST_SYNC_DELAY_US", "800000", 1);
-    pid_t b = fork();
-    if (b == 0) {
-        close(rep[0]);
-        unsetenv("GSQL_TEST_SYNC_DELAY_US");
-        for (int t = 0; t < 4000; t++) {
-            int lf = open(lockpath, O_RDONLY);
-            int held = lf >= 0 && flock(lf, LOCK_EX | LOCK_NB) != 0 && errno == EWOULDBLOCK;
-            if (lf >= 0) {
-                close(lf);   /* and with it any lock this probe took */
-            }
-            if (held) {
-                break;
-            }
-            sleep_ms(5);
-        }
-        GsqlClientOptions o;
-        memset(&o, 0, sizeof o);
-        o.owner_argv = RELAY_ARGV;
-        GsqlClient *c = NULL;
-        GsqlError err;
-        double line[2] = { 0, 0 };
-        if (gsql_client_open(db, &o, &c, &err) == GSQL_OK) {
-            line[0] = !strcmp(call(c, GSQL_M_PING, NULL), "PONG");
-        } else {
-            fprintf(stderr, "busygone client: %s\n", err.message);
-        }
-        line[1] = now_us();
-        gsql_client_close(c);
-        _exit(write(rep[1], line, sizeof line) == (ssize_t)sizeof line ? 0 : 3);
-    }
+    const char *bargs[] = { db, lockpath };
+    int bkeep[] = { rep[1] }, bdrop[] = { rep[0] };
+    pid_t b = tp_child("busygone", bargs, 2, bkeep, 1, bdrop, 1);
     close(rep[1]);
     a = open_db(db, 0);   /* starts W, slowly */
     unsetenv("GSQL_TEST_SYNC_DELAY_US");
@@ -2792,7 +3007,7 @@ static int busygone_main(const char *dir) {
         mismatch("client B reported nothing");
     }
     close(rep[0]);
-    waitpid(b, NULL, 0);
+    tp_wait(b);
     double ms = (line[1] - t0) / 1000.0;
     printf("busygone: told busy by an owner whose winner had gone, the client was served %.0f ms later\n", ms);
     EXPECT(line[0] == 1, "the client told busy after the winner went was not served");
@@ -2885,7 +3100,7 @@ static int lease_main(const char *dir) {
 
     /* a crash on alpha: beta waits the lease out, then takes the database
        and every row alpha committed */
-    kill((pid_t)a_owner, SIGKILL);
+    tp_kill((pid_t)a_owner);
     EXPECT(gone_within((pid_t)a_owner, 5000), "alpha's owner survived SIGKILL");
     gsql_client_close(a);
     b = try_open(db, 0, &code, msg, sizeof msg, &ms);
@@ -2899,7 +3114,7 @@ static int lease_main(const char *dir) {
 
     /* the same machine after a crash: no wait, the flock says so */
     long b_owner = (long)gsql_client_owner_pid(b);
-    kill((pid_t)b_owner, SIGKILL);
+    tp_kill((pid_t)b_owner);
     gone_within((pid_t)b_owner, 5000);
     gsql_client_close(b);
     b = try_open(db, 0, &code, msg, sizeof msg, &ms);
@@ -2925,14 +3140,14 @@ static int lease_main(const char *dir) {
     /* THEFT AND THE FENCE: alpha's owner is stopped past the lease; beta takes
        it; alpha, resumed, must write nothing -- its put refused, its owner gone */
     a_owner = (long)gsql_client_owner_pid(a);
-    kill((pid_t)a_owner, SIGSTOP);
+    tp_suspend((pid_t)a_owner, 0);
     be_machine(dir, "beta");
     b = try_open(db, 0, &code, msg, sizeof msg, &ms);
     EXPECT(b != NULL, "beta could not take a lease whose owner was stopped: %s: %s", gsql_error_name(code), msg);
     if (b) {
         EXPECT(!strcmp(put(b, "k2", "two"), "DONE"), "beta's put answered %s", last_word);
     }
-    kill((pid_t)a_owner, SIGCONT);
+    tp_suspend((pid_t)a_owner, 1);
     const char *w = put(a, "k3", "three");
     EXPECT(strcmp(w, "DONE"), "alpha, taken over, still committed a put");
     EXPECT(gone_within((pid_t)a_owner, 5000), "alpha's owner kept running after its lease was taken");
@@ -2957,27 +3172,12 @@ static int lease_main(const char *dir) {
         EXPECT(z != NULL, "zeta could not create the torn-lease database: %s", msg);
         if (z) {
             long zo = (long)gsql_client_owner_pid(z);
-            kill((pid_t)zo, SIGKILL);
+            tp_kill((pid_t)zo);
             gone_within((pid_t)zo, 5000);
             gsql_client_close(z);
         }
-        pid_t scribbler = fork();
-        if (scribbler == 0) {
-            for (unsigned n = 0;; n++) {
-                unsigned char junk[512];
-                for (int k = 0; k < 512; k++) {
-                    junk[k] = (unsigned char)(n * 131 + (unsigned)k * 7);
-                }
-                int fd = open(tl, O_WRONLY | O_CREAT, 0644);
-                if (fd >= 0) {
-                    if (pwrite(fd, junk, sizeof junk, 0) < 0) {
-                        _exit(1);
-                    }
-                    close(fd);
-                }
-                sleep_ms(50);
-            }
-        }
+        const char *sargs[] = { tl };
+        pid_t scribbler = tp_child("scribbler", sargs, 1, NULL, 0, NULL, 0);
         be_machine(dir, "eta");
         GsqlClient *e = try_open(tdb, 0, &code, msg, sizeof msg, &ms);
         EXPECT(e == NULL && code == GSQL_ELSEWHERE, "eta took a lease whose damaged sector kept changing (%s)",
@@ -2985,8 +3185,8 @@ static int lease_main(const char *dir) {
         if (e) {
             gsql_client_close(e);
         }
-        kill(scribbler, SIGKILL);
-        waitpid(scribbler, NULL, 0);
+        tp_kill(scribbler);
+        tp_wait(scribbler);
         e = try_open(tdb, 0, &code, msg, sizeof msg, &ms);
         EXPECT(e != NULL, "eta could not take a lease that stayed damaged: %s: %s", gsql_error_name(code), msg);
         EXPECT(ms >= L_DEAD, "eta took a damaged lease after %.0f ms, under its %d ms watch", ms, L_DEAD);
@@ -3010,7 +3210,7 @@ static int lease_main(const char *dir) {
             continue;
         }
         long go = (long)gsql_client_owner_pid(g);
-        kill((pid_t)go, SIGKILL);
+        tp_kill((pid_t)go);
         gone_within((pid_t)go, 5000);
         gsql_client_close(g);
         long owners[2];
@@ -3091,8 +3291,11 @@ static int cost_main(const char *dir, long iters) {
      * stopped first. */
     pid_t op = gsql_client_owner_pid(a);
     gsql_client_close(a);
+#if TP_HAVE_SIGTERM
     kill(op, SIGTERM);
-    gone_within(op, 10000);
+#endif
+    gone_within(op, 10000);   /* on Windows, its linger */
+
     GsOptions o;
     memset(&o, 0, sizeof o);
     GsStore *st = NULL;
@@ -3146,8 +3349,264 @@ static int cost_main(const char *dir, long iters) {
     return finish();
 }
 
+/* ==== the children's parts =============================================== *
+ *
+ * What each tier's child process does, by role: forked on POSIX, the test run
+ * again on Windows (tp_child). `fds` are the descriptors the tier passed as
+ * `keep`, in order; `a` its text arguments. */
+
+static int lock_held(const char *lockpath) {
+#ifdef _WIN32
+    /* the store's own lock, through its own layer: Windows locks a byte far
+     * past the data, where flock has no meaning */
+    GsqlIo *io = gsql_io_real();
+    GsqlFile *lf = NULL;
+    int held = 0;
+    if (gsql_io_open(io, lockpath, 0, &lf) == 0) {
+        held = gsql_io_lock(lf, 1) == EWOULDBLOCK;
+        gsql_io_close(lf);   /* and with it any lock this probe took */
+    }
+    return held;
+#else
+    int lf = open(lockpath, O_RDONLY);
+    int held = lf >= 0 && flock(lf, LOCK_EX | LOCK_NB) != 0 && errno == EWOULDBLOCK;
+    if (lf >= 0) {
+        close(lf);   /* and with it any lock this probe took */
+    }
+    return held;
+#endif
+}
+
+static int child_main(const char *role, char **a, const int *fds) {
+    if (!strcmp(role, "owner")) {   /* a: db mode; fds: ready */
+        char f[16];
+        snprintf(f, sizeof f, "%d", fds[0]);
+        return owner_main(a[0], f, a[1]);
+    }
+    if (!strcmp(role, "race")) {   /* a: db; fds: go rep hold */
+        char x;
+        if (read(fds[0], &x, 1) != 1) {
+            return 2;
+        }
+        GsqlClientOptions o;
+        memset(&o, 0, sizeof o);
+        o.owner_argv = OWNER_ARGV;
+        o.create = 1;
+        GsqlClient *c = NULL;
+        GsqlError err;
+        long line[3] = { 0, 0, 0 };
+        if (gsql_client_open(a[0], &o, &c, &err) == GSQL_OK) {
+            line[0] = (long)gsql_client_owner_pid(c);
+            line[1] = (long)gsql_client_started(c);
+            line[2] = strcmp(call(c, GSQL_M_PING, NULL), "PONG") == 0;
+        } else {
+            fprintf(stderr, "race client: %s\n", err.message);
+        }
+        if (write(fds[1], line, sizeof line) != (ssize_t)sizeof line) {
+            return 3;
+        }
+        /* hold the connection until the parent has read everyone */
+        if (read(fds[2], &x, 1) < 0) {
+            return 4;
+        }
+        gsql_client_close(c);
+        return 0;
+    }
+    if (!strcmp(role, "starter")) {   /* a: db; fds: report. Waits to be killed */
+        GsqlClient *c = open_db(a[0], 1);
+        long owner = c ? (long)gsql_client_owner_pid(c) : -1;
+        if (write(fds[0], &owner, sizeof owner) != (ssize_t)sizeof owner) {
+            return 2;
+        }
+        tp_pause_forever();
+    }
+    if (!strcmp(role, "opener")) {   /* a: db; fds: go result */
+        char g;
+        if (read(fds[0], &g, 1) != 1) {
+            return 2;
+        }
+        GsqlClient *y = open_db(a[0], 0);
+        char ok = y && !strcmp(call(y, GSQL_M_PING, NULL), "PONG");
+        if (write(fds[1], &ok, 1) != 1) {
+            return 2;
+        }
+        gsql_client_close(y);
+        return 0;
+    }
+    if (!strcmp(role, "stuck")) {   /* a: db; fds: report. Waits to be killed */
+        GsqlClient *x = open_db(a[0], 1);
+        long o = x ? (long)gsql_client_owner_pid(x) : -1;
+        if (x) {
+            GsqlBuf qb = {0};
+            b_query(&qb, "spin", 0, NULL, 0);
+            uint32_t id;
+            GsqlError e2;
+            gsql_client_send(x, GSQL_M_QUERY, &qb, &id, &e2);
+        }
+        if (write(fds[0], &o, sizeof o) != (ssize_t)sizeof o) {
+            return 2;
+        }
+        tp_pause_forever();
+    }
+    if (!strcmp(role, "commit")) {   /* a: db n k per; fds: result */
+        int n = atoi(a[1]), k = atoi(a[2]), per = atoi(a[3]);
+        GsqlClient *c = open_db(a[0], 1);
+        long bad = c ? 0 : per;
+        for (int i = 0; c && i < per; i++) {
+            char key[48];
+            snprintf(key, sizeof key, "c%d-%d-%d", n, k, i);
+            /* odd clients commit explicitly, even ones in autocommit: the
+               two paths each make a commit without a sync */
+            if (k % 2) {
+                if (strcmp(begin(c, "write"), "DONE") || strcmp(put(c, key, "v"), "DONE") ||
+                    strcmp(call(c, GSQL_M_COMMIT, NULL), "DONE")) {
+                    bad++;
+                }
+            } else if (strcmp(put(c, key, "v"), "DONE")) {
+                bad++;
+            }
+        }
+        if (c) {
+            gsql_client_close(c);
+        }
+        return write(fds[0], &bad, sizeof bad) == (ssize_t)sizeof bad ? 0 : 2;
+    }
+    if (!strcmp(role, "contend")) {   /* a: dir db create machine; fds: go result release */
+        be_machine(a[0], a[3]);
+        char x;
+        if (read(fds[0], &x, 1) != 1) {
+            return 3;
+        }
+        int code;
+        char msg[600];
+        double ms;
+        GsqlClient *c = try_open(a[1], atoi(a[2]), &code, msg, sizeof msg, &ms);
+        long o = c ? (long)gsql_client_owner_pid(c) : (code == GSQL_ELSEWHERE ? 0 : -1);
+        if (write(fds[1], &o, sizeof o) != (ssize_t)sizeof o) {
+            return 2;
+        }
+        char y;
+        if (read(fds[2], &y, 1) < 0) {
+            return 4;
+        }
+        if (c) {
+            gsql_client_close(c);
+        }
+        return 0;
+    }
+    if (!strcmp(role, "watcher")) {   /* a: pid t0; fds: result */
+        pid_t slow = (pid_t)atol(a[0]);
+        double t0 = atof(a[1]);
+        while (tp_alive(slow) && now_us() - t0 < 120e6) {
+            sleep_ms(5);
+        }
+        double gone = (now_us() - t0) / 1000.0;
+        return write(fds[0], &gone, sizeof gone) == (ssize_t)sizeof gone ? 0 : 1;
+    }
+    if (!strcmp(role, "churn")) {   /* a: db rounds; fds: result */
+        int rounds = atoi(a[1]);
+        /* {opens, served, slow, slowest ms} */
+        double line[4] = { 0, 0, 0, 0 };
+        for (int r = 0; r < rounds; r++) {
+            double t0 = now_us();
+            GsqlClientOptions o;
+            memset(&o, 0, sizeof o);
+            o.owner_argv = OWNER_ARGV;
+            GsqlClient *c = NULL;
+            GsqlError err;
+            int rc = gsql_client_open(a[0], &o, &c, &err);
+            double ms = (now_us() - t0) / 1000.0;
+            line[0]++;
+            if (rc == GSQL_OK && !strcmp(call(c, GSQL_M_PING, NULL), "PONG")) {
+                line[1]++;
+            } else if (rc != GSQL_OK) {
+                fprintf(stderr, "churn client: %s\n", err.message);
+            }
+            line[2] += ms > CHURN_BOUND_MS;
+            if (ms > line[3]) {
+                line[3] = ms;
+            }
+            gsql_client_close(c);
+        }
+        return write(fds[0], line, sizeof line) == (ssize_t)sizeof line ? 0 : 3;
+    }
+    if (!strcmp(role, "busygone")) {   /* a: db lockpath; fds: result */
+        unsetenv("GSQL_TEST_SYNC_DELAY_US");
+        for (int t = 0; t < 4000 && !lock_held(a[1]); t++) {
+            sleep_ms(5);
+        }
+        GsqlClientOptions o;
+        memset(&o, 0, sizeof o);
+        o.owner_argv = RELAY_ARGV;
+        GsqlClient *c = NULL;
+        GsqlError err;
+        double line[2] = { 0, 0 };
+        if (gsql_client_open(a[0], &o, &c, &err) == GSQL_OK) {
+            line[0] = !strcmp(call(c, GSQL_M_PING, NULL), "PONG");
+        } else {
+            fprintf(stderr, "busygone client: %s\n", err.message);
+        }
+        line[1] = now_us();
+        gsql_client_close(c);
+        return write(fds[0], line, sizeof line) == (ssize_t)sizeof line ? 0 : 3;
+    }
+    if (!strcmp(role, "scribbler")) {   /* a: lease file. Damages it until killed */
+        for (unsigned n = 0;; n++) {
+            unsigned char junk[512];
+            for (int k = 0; k < 512; k++) {
+                junk[k] = (unsigned char)(n * 131 + (unsigned)k * 7);
+            }
+#ifdef _WIN32
+            int fd = open(a[0], O_WRONLY | O_CREAT | O_BINARY, 0644);
+            if (fd >= 0) {
+                if (lseek(fd, 0, SEEK_SET) != 0 || write(fd, junk, sizeof junk) < 0) {
+                    return 1;
+                }
+                close(fd);
+            }
+#else
+            int fd = open(a[0], O_WRONLY | O_CREAT, 0644);
+            if (fd >= 0) {
+                if (pwrite(fd, junk, sizeof junk, 0) < 0) {
+                    return 1;
+                }
+                close(fd);
+            }
+#endif
+            sleep_ms(50);
+        }
+    }
+    fprintf(stderr, "owner_test: no child role %s\n", role);
+    return 2;
+}
+
 int main(int argc, char **argv) {
+#ifdef _WIN32
+    /* this program's own path stands where POSIX names /proc/self/exe */
+    GetModuleFileNameA(NULL, self_exe, sizeof self_exe);
+    OWNER_ARGV[0] = RELAY_ARGV[0] = self_exe;
+    /* a child part: `child ROLE N H1..HN ARGS...`, the handles made
+     * descriptors again */
+    if (argc >= 4 && !strcmp(argv[1], "child")) {
+        int n = atoi(argv[3]);
+        int fds[16];
+        for (int i = 0; i < n && i < 16; i++) {
+            fds[i] = _open_osfhandle((intptr_t)strtoull(argv[4 + i], NULL, 10), _O_BINARY);
+        }
+        return child_main(argv[2], argv + 4 + n, fds);
+    }
+    /* an owner a client started: its ready pipe arrives as a HANDLE
+     * (src/gsql/client.c), as gbasic --gsql-owner takes it */
+    if (argc >= 5 && (!strcmp(argv[1], "owner") || !strcmp(argv[1], "owner-relay"))) {
+        unsigned long long h = strtoull(argv[3], NULL, 10);
+        static char fdtext[16];
+        snprintf(fdtext, sizeof fdtext, "%d", h ? _open_osfhandle((intptr_t)h, _O_WRONLY | _O_BINARY) : -1);
+        argv[3] = fdtext;
+    }
+#endif
+#ifndef _WIN32
     signal(SIGPIPE, SIG_IGN);
+#endif
     if (argc >= 5 && !strcmp(argv[1], "owner")) {
         return owner_main(argv[2], argv[3], argv[4]);
     }

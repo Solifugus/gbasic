@@ -56,7 +56,23 @@ static uint64_t now_ms(void) {
 
 static void pause_ms(long ms) {
 #ifdef _WIN32
-    Sleep((DWORD)ms);
+    /* Sleep lasts a whole timer tick, 15.6 ms by default, whatever is asked:
+     * a 2 ms pause polling for an owner's ready line made the client that
+     * started an owner reach it up to 15 ms late, time enough at linger 0 for
+     * another client to use that owner and see it go, and the starter to lose
+     * the race and start another (docs/windows_port_status.md §36). A
+     * high-resolution timer waits the time asked for. */
+    HANDLE t = CreateWaitableTimerExW(NULL, NULL, 0x2 /* CREATE_WAITABLE_TIMER_HIGH_RESOLUTION */, TIMER_ALL_ACCESS);
+    LARGE_INTEGER due;
+    due.QuadPart = -(LONGLONG)ms * 10000;   /* relative, in 100 ns units */
+    if (t && SetWaitableTimer(t, &due, 0, NULL, NULL, FALSE)) {
+        WaitForSingleObject(t, INFINITE);
+    } else {
+        Sleep((DWORD)ms);
+    }
+    if (t) {
+        CloseHandle(t);
+    }
 #else
     struct timespec t = { ms / 1000, (ms % 1000) * 1000000L };
     while (nanosleep(&t, &t) != 0 && errno == EINTR) {
@@ -422,7 +438,7 @@ static int start_owner_win(GsqlClient *c, GsqlError *err) {
             break;
         }
         if (!avail) {
-            Sleep(2);
+            pause_ms(2);
             continue;
         }
         DWORD got = 0;

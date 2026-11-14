@@ -1551,12 +1551,53 @@ int gb_child_start(char *const argv[], const char *cwd,
         socks_ok &= SetHandleInformation(socks[i], HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT) != 0;
     }
 
+    /* The polite stop's second road (gb_stop_event_watch): an event the child
+     * inherits, named in GBASIC_STOP_EVENT, inheritable only for the launch
+     * like the sockets. Ahead of the caller's env, so a caller may override
+     * it; without one the child simply has Ctrl-Break alone, as before. */
+    HANDLE stop = CreateEventW(NULL, TRUE, FALSE, NULL);
+    const char **senv_names = NULL, **senv_values = NULL;
+    size_t senv_count = env_count;
+    char stop_text[32];
+    if (stop && nsocks < WIN_LAUNCH_EXTRA_MAX &&
+        SetHandleInformation(stop, HANDLE_FLAG_INHERIT, HANDLE_FLAG_INHERIT)) {
+        senv_names = malloc((env_count + 1) * sizeof *senv_names);
+        senv_values = malloc((env_count + 1) * sizeof *senv_values);
+    }
+    if (senv_names && senv_values) {
+        snprintf(stop_text, sizeof stop_text, "%llu", (unsigned long long)(uintptr_t)stop);
+        int overridden = 0;
+        for (size_t i = 0; i < env_count; i++) {
+            overridden |= _stricmp(env_names[i], "GBASIC_STOP_EVENT") == 0;
+        }
+        senv_count = 0;
+        if (!overridden) {
+            senv_names[senv_count] = "GBASIC_STOP_EVENT";
+            senv_values[senv_count++] = stop_text;
+        }
+        for (size_t i = 0; i < env_count; i++) {
+            senv_names[senv_count] = env_names[i];
+            senv_values[senv_count++] = env_values[i];
+        }
+        socks[nsocks] = stop;
+    } else {
+        free(senv_names);
+        free(senv_values);
+        senv_names = senv_values = NULL;
+        if (stop) {
+            CloseHandle(stop);
+            stop = NULL;
+        }
+    }
+
     PROCESS_INFORMATION pi;
     HANDLE job = NULL;
     int rc = 1;
     if (socks_ok) {
-        rc = win_launch_ex(argv, cwd, env_names, env_values, env_count,
-                           in_child, out_w, err_w, socks, nsocks, CREATE_NEW_PROCESS_GROUP,
+        const char *const *use_names = senv_names ? (const char *const *)senv_names : env_names;
+        const char *const *use_values = senv_values ? (const char *const *)senv_values : env_values;
+        rc = win_launch_ex(argv, cwd, use_names, use_values, senv_count,
+                           in_child, out_w, err_w, socks, nsocks + (stop ? 1 : 0), CREATE_NEW_PROCESS_GROUP,
                            options->memory_limit, &pi, &job, why, why_size);
     } else {
         snprintf(why, why_size, "a listening socket could not be made inheritable");
@@ -1564,6 +1605,16 @@ int gb_child_start(char *const argv[], const char *cwd,
     for (size_t i = 0; i < nsocks; i++) {
         SetHandleInformation(socks[i], HANDLE_FLAG_INHERIT, 0);
     }
+    free(senv_names);
+    free(senv_values);
+    if (stop) {
+        SetHandleInformation(stop, HANDLE_FLAG_INHERIT, 0);
+        if (rc != 0) {
+            CloseHandle(stop);
+            stop = NULL;
+        }
+    }
+    child->stop_event = stop;
     CloseHandle(out_w);
     CloseHandle(err_w);
     CloseHandle(in_child);
@@ -1679,6 +1730,11 @@ void gb_child_stop(GbChild *child, int force) {
         return;
     }
     if (!force) {
+        /* both roads: Ctrl-Break where a console is shared, the event where it
+         * is not (a service); a gbasic child takes either the same way */
+        if (child->stop_event) {
+            SetEvent((HANDLE)child->stop_event);
+        }
         GenerateConsoleCtrlEvent(CTRL_BREAK_EVENT, (DWORD)child->pid);
         return;
     }
@@ -1693,6 +1749,10 @@ void gb_child_release(GbChild *child) {
     if (child->process) {
         CloseHandle((HANDLE)child->process);
         child->process = NULL;
+    }
+    if (child->stop_event) {
+        CloseHandle((HANDLE)child->stop_event);
+        child->stop_event = NULL;
     }
     if (child->job) {
         retire_job((HANDLE)child->job);
@@ -1872,6 +1932,38 @@ void gb_stdout_line_buffered(void) {
 
 /* See the header: Windows has no SIGPIPE, and a write to a closed pipe fails. */
 void gb_pipe_guard_install(void) {
+}
+
+/* See the header: Ctrl-Break's effect, reached by an event when no console
+ * carries it. */
+static DWORD WINAPI stop_event_thread(LPVOID event) {
+    if (WaitForSingleObject((HANDLE)event, INFINITE) != WAIT_OBJECT_0) {
+        return 0;
+    }
+    if (gb_signal_handlers[SIGBREAK]) {
+        gb_signal_handlers[SIGBREAK](SIGBREAK);   /* as the C runtime's console handler calls it */
+    } else {
+        ExitProcess(0xC000013AUL);   /* STATUS_CONTROL_C_EXIT: Ctrl-Break unhandled */
+    }
+    return 0;
+}
+
+void gb_stop_event_watch(void) {
+    const char *text = getenv("GBASIC_STOP_EVENT");
+    if (!text || !*text) {
+        return;
+    }
+    HANDLE event = (HANDLE)(uintptr_t)strtoull(text, NULL, 10);
+    gb_unsetenv("GBASIC_STOP_EVENT");
+    DWORD flags = 0;
+    if (!event || !GetHandleInformation(event, &flags)) {
+        return;   /* not a handle this process holds: a variable someone else set */
+    }
+    SetHandleInformation(event, HANDLE_FLAG_INHERIT, 0);   /* nothing this process starts carries it on */
+    HANDLE t = CreateThread(NULL, 0, stop_event_thread, event, 0, NULL);
+    if (t) {
+        CloseHandle(t);
+    }
 }
 
 /* See the header: LF out, on every platform. */

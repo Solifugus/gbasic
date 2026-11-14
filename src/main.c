@@ -1011,6 +1011,8 @@ int main(int argc, char **argv) {
     /* Before any output too: a diagnostic on a broken stderr must not kill
      * the program (include/platform.h). */
     gb_pipe_guard_install();
+    /* a polite stop from a supervisor with no console (include/platform.h) */
+    gb_stop_event_watch();
 
     if (argc >= 4 && strcmp(argv[1], "--actor") == 0) {
         return run_actor_mode(argc, argv);

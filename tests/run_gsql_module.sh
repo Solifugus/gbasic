@@ -63,6 +63,11 @@ fail() { printf '  FAIL %s\n' "$1"; status=1; }
 case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) native_win=1 ;; *) native_win=0 ;; esac
 find_owners() {   # an ERE over owners' command lines -> their pids, one a line
     if [ "$native_win" = 1 ]; then
+        # gbasic.exe is handed $work as Windows spells it (C:/msys64/tmp/...),
+        # and that is what its owner's command line holds, so a pattern
+        # naming $work in MSYS's spelling (/tmp/...) matched nothing and
+        # `lost` found no owner to kill. Either spelling is accepted.
+        set -- "${1//"$work"/($work|$(cygpath -m "$work"))}"
         powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='gbasic.exe'\" | ForEach-Object { [string]\$_.ProcessId + ' ' + (\$_.CommandLine -replace '\"','') }" \
             2>/dev/null | tr -d '\r' | grep -E -- "$1" | cut -d' ' -f1
     else
@@ -459,10 +464,16 @@ mkdir -p "$L"
 life_owner() {   # the owner serving database $1, or nothing
     find_owners "--gsql-owner (--linger=[0-9]+ )?$1 " | head -1
 }
-GSQL_ROLE=starter GSQL_DB="$L/shared" GSQL_GATE="$L/g1" timeout -k 5 60 ./gbasic "$LIFE" >"$L/a.out" 2>&1 &
+# --line-buffered: these loops wait for a line a program prints, and stdout
+# into a file is block-buffered, so without it "ready" and "first" appeared
+# only at exit and each loop ran to its end. Under MSYS2, where a grep and a
+# sleep are each a process start, 200 turns took about 36 s, the gate was
+# touched after the starter's 60 s bound, and killing the starter took its
+# owner with it: "the second program lost its owner" (Windows, 2026-11-14).
+GSQL_ROLE=starter GSQL_DB="$L/shared" GSQL_GATE="$L/g1" timeout -k 5 60 ./gbasic --line-buffered "$LIFE" >"$L/a.out" 2>&1 &
 a=$!
 for _ in $(seq 1 200); do grep -q ready "$L/a.out" 2>/dev/null && break; sleep 0.05; done
-GSQL_ROLE=other GSQL_DB="$L/shared" GSQL_GATE="$L/g2" timeout -k 5 60 ./gbasic "$LIFE" >"$L/b.out" 2>&1 &
+GSQL_ROLE=other GSQL_DB="$L/shared" GSQL_GATE="$L/g2" timeout -k 5 60 ./gbasic --line-buffered "$LIFE" >"$L/b.out" 2>&1 &
 b=$!
 for _ in $(seq 1 200); do grep -q first "$L/b.out" 2>/dev/null && break; sleep 0.05; done
 owner=$(life_owner "$L/shared")

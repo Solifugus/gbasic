@@ -439,6 +439,10 @@ static void gb_sigpipe_handler(int sig) {
     errno = saved;
 }
 
+/* See the header: SIGTERM reaches a process with no terminal. */
+void gb_stop_event_watch(void) {
+}
+
 void gb_pipe_guard_install(void) {
     struct sigaction sa;
     struct sigaction old;

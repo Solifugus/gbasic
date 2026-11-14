@@ -2091,14 +2091,14 @@ Linux (WSL), lean build: `run_net`, `run_web_pool`, `run_process` (with its
 
 ### What is NOT verified
 
-- **A supervisor with no console.** Ctrl-Break needs one shared with the
-  worker. A pool run as a service would drain nothing politely and fall to
-  `force_after`. No tier runs without a console.
+- **A supervisor with no console**: measured and FIXED in §36 (a stop event
+  beside Ctrl-Break).
 - **Socket inheritance behind a non-IFS LSP.** It is claimed to fail loudly;
-  no LSP was installed to show it.
+  no LSP was installed to show it. Left unverified on purpose: installing one
+  changes the machine's network stack.
 - **The websocket and wss tiers against Python's websockets** on Linux
   (WSL has no websockets package). On Windows they pass (§35).
-- **The stripped binary's size** with libssl.
+- **The stripped binary's size**: measured in §36, 12,183,552 bytes.
 
 ## 34. G-SQL's SQL harnesses on Windows, and a manifest swap NTFS refuses (2026-11-13)
 
@@ -2272,3 +2272,251 @@ through `tr -d '\r'`.
 This closes §33's items for the websocket tiers and `run_web_hardening`.
 The Linux side of the websocket tiers was not rerun here: the change is a
 `tr` on the runner's input, and WSL has no websockets package installed.
+
+## 36. The owner suite on Windows, three Windows defects it found, and a pool with no console (2026-11-13)
+
+### The stripped binary
+
+`gbasic.exe` built from the tree at 4866e943, with libssl: **16,084,496
+bytes, and 12,183,552 stripped** (11.6 MiB). It still imports only Windows'
+own DLLs (`objdump -p`): KERNEL32, ADVAPI32, USER32, WS2_32, bcrypt, CRYPT32,
+IPHLPAPI, ODBC32, Secur32 and the UCRT's `api-ms-win-crt-*`.
+
+### run_gsql_owner runs on Windows
+
+`tests/gsql/owner_test.c` forked in seven places, read `/proc`, and sent
+SIGTERM, SIGKILL, SIGSTOP and SIGCONT. It now runs on both platforms by one
+mechanism (its "processes, pipes and sockets" section):
+
+- **A child is a role.** `tp_child(role, args, keep, drop)` forks on POSIX.
+  On Windows the test runs itself again as `owner_test child ROLE N H1..HN
+  ARGS...`, with exactly the pipe handles that role needs inheritable
+  (`PROC_THREAD_ATTRIBUTE_HANDLE_LIST`). Both run the same `child_main` body,
+  so neither platform tests code the other does not run. The roles are race,
+  starter, opener, stuck, commit, contend, watcher, churn, busygone,
+  scribbler, and the owner itself (the relay's real owner, and the lone one).
+- **Signals.** SIGKILL is `TerminateProcess`. SIGSTOP and SIGCONT are
+  `NtSuspendProcess` and `NtResumeProcess`, so the lease tier's theft check
+  runs. `kill(pid, 0)` and `/proc/PID/stat` become `OpenProcess` and a wait.
+- **SIGTERM has no Windows form**, because the owner is detached. Each place
+  says so: handoff checks the planned stop as the owner's linger, which must
+  replay nothing just the same, and cost lets the owner linger out.
+  - **A stuck owner has no planned stop on Windows.** An owner spinning in a
+    statement never reaches its linger, and nothing but `TerminateProcess`
+    ends it. The deadline check is POSIX-only, and the tier prints a NOTE.
+- **Unix-only checks are skipped with a NOTE**, not passed: a mode of `0770`
+  and `0750`, the `XDG_RUNTIME_DIR` checks, a symlink to the database (error
+  1314 without Developer Mode), and a hard link to another database's socket.
+- `run_gsql_owner.sh` links `platform_win32.c` and Windows' libraries. It
+  finds leftover owners through `Win32_Process`, by the work directory in
+  either spelling, and ends them with `taskkill`.
+
+Linux is unchanged in what it measures. It passed every tier under ASan and
+UBSan once ported. In one later run its group tier gave a ratio of 2.5,
+against a floor of 3.0. Five runs each of the committed harness and the
+ported one, interleaved, gave 3.27 to 4.56 and 4.29 to 5.54. The 2.5 is this
+two-core machine, not the port.
+
+### Three Windows defects it found, fixed
+
+**1. The runtime directory under `%LOCALAPPDATA%` could not hold a socket.**
+The owner binds there when a database's own filesystem holds no sockets.
+Measured here:
+
+| where | the socket, bound, then renamed into place |
+|---|---|
+| `%LOCALAPPDATA%\gbasic-run`, `%LOCALAPPDATA%\gbasic-probe` | refused, error 1920 (`ERROR_CANT_ACCESS_FILE`) |
+| `%APPDATA%\gbasic-probe` (Roaming) | refused, 1920 |
+| `%LOCALAPPDATA%\Temp\gbasic-probe` | works |
+| `%USERPROFILE%\gbasic-probe`, a directory under `development` | works |
+
+The file could be bound but never opened afterwards, not even with
+`FILE_FLAG_OPEN_REPARSE_POINT`. So it could not be renamed into place, and it
+could not be removed in place either: `Remove-Item` failed with the same error.
+The pattern, direct children of `AppData\Local` and `AppData\Roaming` but not
+`Temp`, is the file system redirection Windows applies for packaged apps. The
+filter was not named (`fltmc` needs an administrator).
+
+The directory also inherited `%LOCALAPPDATA%`'s ACL, which here carries an
+AppContainer capability SID (`S-1-15-3-...`) with full control, because it
+was made with a NULL security descriptor. Its own trust check then rightly
+refused it as "open to other users".
+
+Fixed in `gsql_socket_fallback` (`src/gsql/owner.c`):
+
+- The runtime directory is now `%TEMP%\gbasic-run` (`GetTempPathA`), still
+  checked by the ACL.
+- It is made with `gsql_io_mkdir`, which gives a protected DACL for this user
+  alone, as mode 0700 does.
+- An MSIX-installed gbasic has its `%LOCALAPPDATA%` redirected into its own
+  package (docs/reference.md), so its owner and an unpackaged client would not
+  have looked in the same place. `%TEMP%` is not redirected.
+- The stuck directory from today's runs was removed by moving it under
+  `%TEMP%` first, where its files could be opened. That is the recovery for
+  anyone else who has one.
+
+**2. A database path too long for a socket address was refused on Windows.**
+Linux binds such a path through `/proc/self/fd/N/` on a handle to its
+directory, and FreeBSD through `bindat`. Windows, like macOS, has neither and
+answered `ENAMETOOLONG`. The owner now treats that like a filesystem with no
+sockets and binds in the runtime directory, whose name is short and where
+every client already looks second (`listen_on`). Linux is unchanged, since
+its handle route still binds.
+
+**3. Windows sleeps last a whole timer tick, 15.6 ms.**
+- **The group tier:** the test's 5 ms "NAS sync" (`nanosleep`) was a 15.6 ms
+  one, and a single client made 56 commits/s instead of about 190. The test
+  now waits with a high-resolution waitable timer and makes 118 to 122.
+- **The client (product code):** its 2 ms pauses while reading an owner's
+  ready line were 15.6 ms (`Sleep(2)`, `src/gsql/client.c`). A client that
+  started an owner reached it late, which at linger 0 is long enough for
+  another client to use and close that owner and see it go. `pause_ms` now
+  uses the same high-resolution timer, and so does the owner's 5 ms
+  lock-wait poll (`src/gsql/owner.c`).
+
+### Results
+
+| where | `run_gsql_owner` |
+|---|---|
+| Windows | 15 of 16 tiers pass, 181 s; **churn fails** (below) |
+| Linux (WSL) | all tiers pass |
+
+On Windows paths makes 17 checks, against 26 on Linux, and lifetime 20
+against 22: the difference is the checks skipped with a NOTE.
+
+### OPEN: churn on Windows
+
+Eight clients each open, ping and close 100 times at linger 0, and every
+open must be served within 2 s. On Windows a few opens in 800 take longer:
+
+- Run alone five times after the fixes: 1 to 7 opens over 2 s each run, the
+  slowest 2.1 to 4.9 s.
+- Twice before the fixes: 4 and 26 opens over 2 s, the slowest 3.8 and 5.9 s.
+
+Every open was served, and none reported an error.
+
+A traced client (`src/gsql/client.c` copied and timed per phase, outside the
+tree) showed what the slow opens are made of. Each is a chain of 4 to 8
+attempts:
+
+1. The client starts an owner.
+2. The owner says ready, or busy.
+3. Another client takes that owner and closes it, and at linger 0 it goes.
+4. The client's connect is refused, and it starts again.
+
+No attempt waited on an owner that had gone; that 10 s wait was gdash's
+G20-15, the defect this tier exists to catch. Each attempt cost 200 to
+400 ms under this load, while an owner started alone is ready in 55 to 75 ms.
+The time is in starting processes concurrently on two cores, not in any wait
+the code makes.
+
+Not tried: shortening an owner's start (process creation, DLL loading,
+Defender scanning each start, the store's open); and a bound expressed in
+owner starts, which the trace did not support. The tier is left failing,
+with this record, not loosened. The default linger is 3 s, where this does
+not arise; gdash ran at linger 0.
+
+### A pool whose supervisor has no console
+
+`process.stop`'s polite form is Ctrl-Break, which reaches only a process
+sharing the sender's console. A supervisor run as a service or a scheduled
+task has none. Measured with a launcher that starts gbasic with
+`DETACHED_PROCESS` (`C:\gbt\nocon.c`, outside the tree), running
+`tests/web_pool`'s four programs against their goldens:
+
+| program | with a console | no console, before | no console, after |
+|---|---|---|---|
+| `pool_basic` | 1 to 2 s, matches | 103 s, matches (each drain waited `force_after`'s 30 s, then forced) | 6 s, matches |
+| `pool_rolling` | 3 s, matches | killed at the 120 s bound | 11 s, matches |
+| `pool_drain` | 2 s, matches | worker `code=-1`: forced, not drained | 3 s, matches (`code=0`) |
+| `inherit_none` | matches | matches | matches |
+
+**The fix** takes §32's named-event idea, with an inherited handle instead
+of a name:
+
+- `gb_child_start` gives each child an event, inheritable only for the
+  launch, as the listening sockets are, and names it in `GBASIC_STOP_EVENT`.
+- `gb_child_stop` signals the event as well as sending Ctrl-Break.
+- A gbasic process calls `gb_stop_event_watch` first thing in `main`. It
+  consumes the variable and watches the event on a thread. When the event is
+  signalled, the thread does what Ctrl-Break does: the program's `SIGBREAK`
+  handler (the webserver's drain) if it has one, otherwise
+  `ExitProcess(STATUS_CONTROL_C_EXIT)`, the console's own default. Whichever
+  arrives first, the outcome is the same.
+
+A child that is not gbasic and has no console hears neither, as before.
+
+Still green on Windows after the change: `run_web_pool` (pool_drain and
+drain_app), `run_process_lifetime`, `run_process`, and `run_windows_suite`.
+The last holds the Windows stop tiers in `tests/windows/process_start.bas`,
+including `ping` refusing the polite stop.
+
+Without a console each worker gets one of its own, and the runs above are
+slower than with one (6 s against 1 s). That was measured, not explained.
+
+### What is NOT verified
+
+- A real Windows service: the launcher gives no console, but it is not the
+  service control manager, a session 0 process, or a service account.
+- Socket inheritance behind a non-IFS LSP (§33), on purpose.
+
+### The full sweep after these changes (2026-11-14)
+
+`tests/run_all.sh` on Windows, the tree above uncommitted: **163 passed, 44
+failed, 26 skipped by name, 2 manual**, 233 suites in 10,561 s. The last
+whole sweep (§35's predecessors) ran 159 suites; most of the 74 since came
+in with merges from master and had never run on Windows.
+
+`run_gsql_sql` passed. `run_gsql_module` failed `lost` and `lifetime`, alone
+as well as in the sweep, and **so did the same suite built from 4866e943 in a
+separate worktree**, so these two changes did not cause it. In `lifetime` the
+owner went when the program that started it exited while a second program
+still used it (the second failed `[LOST]` here, and timed out at 4866e943),
+and the runner did not find the owner by its command line in either. It
+passed whole at §34's measurement.
+
+**Both were the runner, fixed in `tests/run_gsql_module.sh`:**
+
+- **`lifetime`.** The runner waits for "ready" and then "first" in the two
+  programs' stdout, which goes to a file and is block-buffered. Neither line
+  appeared until its program exited, so each 200-turn loop ran to its end.
+  Under MSYS2, where every `grep` and `sleep` starts a process, a loop took
+  36 s (traced with timestamps on stderr: the starter was ready at +1 s, the
+  gate touched at +73 s). The starter's `timeout 60` killed it while it
+  waited, and killing it took its owner down with it, so the second program
+  saw `[LOST]`. Run without `timeout`, the same two programs passed. The two
+  runs now pass `--line-buffered`. The owner did not go early on a normal
+  exit.
+- **`lost`.** gbasic.exe is given the work directory as Windows spells it,
+  and the owner's command line holds `C:/msys64/tmp/...`, while
+  `find_owners` looked for `--gsql-owner /tmp/...`. It now accepts either
+  spelling (`cygpath -m`). The unfound fixture and owner had been left
+  running, since MSYS's `kill -9` does not reach a native process: four
+  pairs after these runs, ended by hand.
+
+Why §34 passed was not established. A faster machine at the time would have
+put the two loops under 60 s, but that was not measured. After the fix:
+`run_gsql_module` passes on Windows (161 s; `privatetmp` and valgrind skip)
+and on Linux (WSL).
+
+The other failures, read from their first FAIL lines only, not each
+investigated:
+
+- **Paths.** A runner hands `/tmp/...` to gbasic.exe or Python, which read
+  it as `C:\tmp` (or the reverse): `xlsx`, `book_gaps`, `smtp`, `string_nul`,
+  `xml_sign`, `zip`, `sqlite`, `exact_decimal`, `relocatable`, `csv`.
+- **Symlinks** need Developer Mode (error 1314): `intake`, `scratch`,
+  `alias`, `path_split`, `metadata` (also FIFOs).
+- **Unix facilities**: `/proc` (`core`), `os.statvfs` (`disk_space`), IANA
+  zones through `TZ` (`dates`, `utc_clock`), a broken pipe's status
+  (`stderr`), Python's non-blocking stdin (`stdin_lines`), stack size
+  (`try_decode`), SIGTERM giving 143 (`gbasic_site`).
+- **No Qt in this build**, where the suite runs a fixture instead of
+  skipping: `qt_ask`, `qt_context`, `qt_cookbook`, `qt_examples`, `qt_icon`,
+  `qt_panes`, `qt_wheel`.
+- **Timing under the sweep's load**: `gsql_owner`'s `churn` (above) and
+  `busygone` (2,347 ms, passing alone), `file_stream`'s control, `net`'s TLS
+  drip, `mcp` and `tools` (a second client).
+- Not yet classified: `repl`, `bag_smoke`, `doc_examples` (2 stale
+  exemptions), `library_scope` (`retrieval` refused: no PostgreSQL),
+  `limitations`, `nap_fs`, `read_at`, `source_comments`.

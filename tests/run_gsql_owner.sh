@@ -53,7 +53,19 @@ if ! command -v "$CC" >/dev/null 2>&1; then
 fi
 FLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc/gsql"
 ENGINE="src/gsql/lsm.c src/gsql/lease.c src/gsql/store_common.c src/gsql/store_util.c src/gsql/io.c src/gsql/io_sim.c"
-LAYER="src/gsql/owner.c src/gsql/client.c src/gsql/wire.c src/gsql/v3.c src/gsql/table.c src/gsql/xsort.c src/gsql/key.c src/platform_posix.c"
+# WINDOWS (MSYS2): platform_win32.c and Windows' libraries, and the tiers'
+# children are the test run again rather than forked (tests/gsql/owner_test.c,
+# "processes, pipes and sockets"). An owner is a native process MSYS's pgrep
+# cannot see, so the leftovers tier asks Windows, as run_gsql_sql does.
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) native_win=1 ;; *) native_win=0 ;; esac
+if [ "$native_win" = 1 ]; then
+    PLATFORM_SRC=src/platform_win32.c
+    WINLIBS=$(make -s print-ldlibs)
+else
+    PLATFORM_SRC=src/platform_posix.c
+    WINLIBS=""
+fi
+LAYER="src/gsql/owner.c src/gsql/client.c src/gsql/wire.c src/gsql/v3.c src/gsql/table.c src/gsql/xsort.c src/gsql/key.c $PLATFORM_SRC"
 SAN=""
 printf 'int main(void){return 0;}\n' > "$work/probe.c"
 # A SANITIZER MUST RUN, NOT ONLY BUILD: on riscv64 GCC 13's AddressSanitizer
@@ -73,8 +85,8 @@ bounded() { timeout -k 5 "$1" "${@:2}"; }
 
 printf 'TIER build: the owner, the client and their test, -Wpedantic -Werror\n'
 # shellcheck disable=SC2086
-if "$CC" $FLAGS -g -O1 $SAN -o "$work/owner_test" tests/gsql/owner_test.c $LAYER $ENGINE 2> "$work/build.err" &&
-   "$CC" $FLAGS -O2 -o "$work/owner_cost" tests/gsql/owner_test.c $LAYER $ENGINE 2>> "$work/build.err"; then
+if "$CC" $FLAGS -g -O1 $SAN -o "$work/owner_test" tests/gsql/owner_test.c $LAYER $ENGINE $WINLIBS 2> "$work/build.err" &&
+   "$CC" $FLAGS -O2 -o "$work/owner_cost" tests/gsql/owner_test.c $LAYER $ENGINE $WINLIBS 2>> "$work/build.err"; then
     pass "owner_test${SAN:+ (under ASan and UBSan)} and owner_cost (-O2)"
 else
     head -8 "$work/build.err"
@@ -158,11 +170,26 @@ esac
 printf 'TIER leftovers: no owner outlives the suite\n'
 # an owner stops by itself once its linger (3 s by default) has passed with
 # nobody connected, so this waits for that rather than a moment
+find_left() {   # owner_test processes whose command line names this run's work directory
+    if [ "$native_win" = 1 ]; then
+        # an owner's command line holds the path as the client gave it, in
+        # either spelling
+        local wwork
+        wwork=$(cygpath -m "$work")
+        powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='owner_test.exe'\" | ForEach-Object { [string]\$_.ProcessId + ' ' + (\$_.CommandLine -replace '\"','') }" \
+            2>/dev/null | tr -d '\r' | grep -F -e "$work/" -e "$wwork/" | cut -d' ' -f1 | tr '\n' ' '
+    else
+        pgrep -f "$work/" | tr '\n' ' '
+    fi
+}
 left=""
-for _ in $(seq 1 100); do
-    left=$(pgrep -f "$work/" | tr '\n' ' ')
-    [ -z "$left" ] && break
-    sleep 0.1
+# each Windows look starts PowerShell, about a second, so it looks less often
+# over the same ten seconds
+if [ "$native_win" = 1 ]; then looks=10 pause=1; else looks=100 pause=0.1; fi
+for _ in $(seq 1 "$looks"); do
+    left=$(find_left)
+    [ -z "${left// /}" ] && left="" && break
+    sleep "$pause"
 done
 if [ -z "$left" ]; then
     pass "no owner process is left"
@@ -171,7 +198,11 @@ else
     # a stuck owner never stops by itself, and one left behind spun for 35
     # hours under every timing tier that ran after it (2026-11-02)
     for pid in $left; do
-        kill -9 "$pid" 2>/dev/null
+        if [ "$native_win" = 1 ]; then
+            taskkill.exe //F //PID "$pid" >/dev/null 2>&1
+        else
+            kill -9 "$pid" 2>/dev/null
+        fi
     done
 fi
 
