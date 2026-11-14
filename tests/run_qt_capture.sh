@@ -132,7 +132,19 @@ w1, t1 = ink(load("heading.png"))
 w2, t2 = ink(h2)
 say(w1 > 0 and 1.8 <= w2 / w1 <= 2.2 and 1.6 <= t2 / max(t1, 1) <= 2.4,
     f"and its text is drawn twice as large ({w1}x{t1} at 1, {w2}x{t2} at 2)")
-stretched = load("heading.png").convert("RGB").resize(h2.size, Image.NEAREST)
+# THE STRETCH BY HAND, nearest neighbour, rather than Image.resize(..., NEAREST):
+# Ubuntu's python3-pil 12.1.1-2ubuntu1.5 (updated 2026-11-13) fails EVERY
+# nearest-neighbour resize, any mode, with "SystemError: ... returned NULL
+# without setting an exception", which took this tier down with nothing of
+# ours involved. Each target pixel is the source pixel at x*w1//w2, y*h1//h2.
+def stretch(im, size):
+    src = im.convert("RGB")
+    (w1, h1), (w2, h2_) = src.size, size
+    px = src.load()
+    out = Image.new("RGB", size)
+    out.putdata([px[x * w1 // w2, y * h1 // h2_] for y in range(h2_) for x in range(w2)])
+    return out
+stretched = stretch(load("heading.png"), h2.size)
 say(stretched.tobytes() != h2.convert("RGB").tobytes(),
     "it was drawn at scale 2, not the scale-1 picture stretched")
 EOF
