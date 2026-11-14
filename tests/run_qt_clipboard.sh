@@ -62,8 +62,7 @@ fail() { printf '  FAIL %s\n' "$1"; status=1; }
 # NO DISPLAY AT ALL, the recipe run_qt_loop.sh established: Qt's detection
 # reaches further than DISPLAY, so every door has to be shut.
 nodisplay() {
-    env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u XDG_RUNTIME_DIR \
-        -u XDG_SESSION_TYPE "$@"
+    gb_no_display "$@"   # tests/build_has.sh
 }
 
 if ! build_has qt; then

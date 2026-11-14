@@ -429,8 +429,7 @@ program main(args)
 end program
 BAS
 set +e
-env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u XDG_RUNTIME_DIR \
-    -u XDG_SESSION_TYPE timeout -k 5 40 ./gbasic "$work/ask.bas" \
+gb_no_display timeout -k 5 40 ./gbasic "$work/ask.bas" \
     > "$work/ask.out" 2>&1
 ask_rc=$?
 if [ "$ask_rc" = "0" ] && grep -q "^ASKED false" "$work/ask.out"; then

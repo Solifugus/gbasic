@@ -327,8 +327,7 @@ refused:
 end program
 BAS
 set +e
-env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u XDG_RUNTIME_DIR \
-    -u XDG_SESSION_TYPE timeout -k 5 60 ./gbasic "$work/nd.bas" \
+gb_no_display timeout -k 5 60 ./gbasic "$work/nd.bas" \
     > "$work/nd.out" 2>&1
 nd_rc=$?
 if [ "$nd_rc" = "0" ] && grep -q "no display is available" "$work/nd.out"; then

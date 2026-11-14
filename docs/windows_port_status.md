@@ -2520,3 +2520,108 @@ investigated:
 - Not yet classified: `repl`, `bag_smoke`, `doc_examples` (2 stale
   exemptions), `library_scope` (`retrieval` refused: no PostgreSQL),
   `limitations`, `nap_fs`, `read_at`, `source_comments`.
+
+## 37. Qt on Windows (2026-11-14)
+
+MSYS2's `mingw-w64-ucrt-x86_64-qt6-base` 6.11.2 and `qt6-svg`, with
+`python-pillow` for the pixel tiers. KSyntaxHighlighting is not installed.
+
+### The build
+
+- **Opt-in, by the environment: `WINDOWS_QT=1 make`.** Without it the Windows
+  build has no Qt, as before, and gbasic.exe needs nothing beside it. An
+  environment switch rather than only `make QT_AVAILABLE=1`, because every Qt
+  suite runs `make` itself: the first sweep's plain `make` rebuilt gbasic.exe
+  without Qt, and every suite skipped while reporting success.
+- **Qt is the one dynamic library** (LGPL-3). `-static` becomes `-Wl,-Bstatic`
+  for everything else and `-Wl,-Bdynamic` for Qt. libstdc++, libgcc and
+  winpthread go dynamic too, since Qt's own DLLs need them and one C++ runtime
+  is safer than two. Such a gbasic.exe imports Qt6Core, Qt6Gui, Qt6Widgets,
+  Qt6Svg, libstdc++-6, libgcc_s_seh-1 and libwinpthread-1 beside Windows' own
+  DLLs: 21,163,300 bytes unstripped. It needs Qt's DLLs and plugins beside it
+  to run outside MSYS2 (`windeployqt`), which is NOT done or measured.
+- The Makefile looked for `moc`, which is `moc.exe` here.
+- `<windows.h>` defines `near` as an empty macro, and `qt.c` names variables
+  `near`; it is undefined there.
+
+### The display question without fork
+
+`gb_qt_can_display` asks Qt in a forked child, because Qt cannot report a
+missing display without aborting. On Windows the child is the same
+executable run again with `GBASIC_QT_PROBE=1` in its own environment block,
+inheriting only a handle to NUL. The backend's static initializer sees the
+variable, constructs a QGuiApplication and exits, before `main`.
+
+- **First version: an argument (`--qt-probe`) read by gbasic's `main`.** A test
+  probe linking the backend (tests/qt/*_probe.cpp) is not gbasic, so it ran
+  itself as a probe, which ran itself, until each suite's 60 s bound.
+- **Qt6Gui.dll says "no Qt platform plugin could be initialized" with
+  MessageBoxW**, past any message handler. The box appeared on the desktop
+  from a hidden process, once per test, and the child and its parent waited
+  on it for ever. Found by the user, not by a suite. The child now holds a
+  WH_CBT hook on its thread and exits with "no" when a dialog-class window
+  (`#32770`) is about to be created; a fatal message that is only printed is
+  caught by a message handler, and Windows' crash dialogs are off. After it:
+  no usable platform answers false in 0.7 s; offscreen and the desktop answer
+  true.
+
+### A use-after-free in `gb_qt_blocks_set`, on every platform
+
+When a block's content changed, the old block was deleted but its pointer
+stayed in `m_blocks`. The cursor moves that follow make the document lay
+itself out, and `extraFor` read every block in `m_blocks`, the freed one
+included. `tests/qt/blocks_probe.cpp` segfaulted in 21 runs of 30 on Windows
+(backtrace: `extraFor` <- `blockBoundingRect` <- `gb_qt_blocks_set`); glibc's
+heap had hidden it on Linux. A replaced block now leaves `m_blocks` before it
+is freed, and the leftovers are freed only after `m_blocks` holds the new
+set. After it: 0 crashes in 30 runs, 20 checks, and `run_qt_notebook` passed
+three times running. Not run under valgrind or on Linux with Qt (WSL has no
+Qt).
+
+### The harness
+
+- **No display.** Linux suites unset DISPLAY and its relatives, but Windows
+  always has a desktop, so the window opened anyway. `gb_no_display`
+  (tests/build_has.sh) is now the one way to run without one. On Windows it
+  names a platform plugin that does not exist, which is what makes Qt fail to
+  start. It does not reproduce a real session without a desktop (a service in
+  session 0).
+- **pgrep and pkill do not exist in MSYS2**, and the suites tolerate a missing
+  one by design. So `run_qt_dialog`'s fixture, holding a modal dialog,
+  outlived the suite and locked gbasic.exe against the next build, and the
+  check that it had gone passed without looking. tests/portable.sh supplies
+  both on Windows (`-f PATTERN` only), through Win32_Process and taskkill.
+- **`run_qt_dialog`'s control lost a race.** The fixture raised its dialog
+  0.4 s after publishing its port, and the suite's polling for the port under
+  MSYS2 took longer, so "the server answers with no dialog up" asked while one
+  was up. The fixture now raises it once it has answered the first `/ping`.
+
+### Results
+
+Every Qt suite, Windows, offscreen: **all 28 `run_qt_*` suites pass bar
+`run_qt_loop`**, plus `run_window`, `run_gui_parse`, `run_handle_methods`,
+`run_capabilities` and `run_library_tiers`. The cookbook ran 75 recipe checks,
+and every example in examples/qt ran in check mode and degraded with a
+sentence with no display. `run_qt_notebook` failed once on the crash above,
+before the fix.
+
+Skipped, each saying so:
+
+- `run_qt_loop`: its probe (tests/qt/qt_loop.cpp) is POSIX (fork and poll), and
+  the script looks for moc only in Linux paths. The loop question it asks is
+  NOT measured on Windows. The modal and dialog suites measure the arrangement
+  the backend ships: gBASIC's sources served while Qt holds the thread.
+- Everything needing KSyntaxHighlighting (colouring, the cookbook's
+  `09_code_editor`).
+- valgrind (none on Windows).
+
+### What is NOT verified
+
+- A Qt gbasic.exe run outside MSYS2, with Qt's DLLs deployed beside it.
+- gBASIC Studio on Windows.
+- Linux with these changes and Qt. WSL here has no Qt; the Linux paths of
+  `gb_no_display` and the fixture are unchanged in what they do, and the
+  backend's Windows code is under `_WIN32`. The `gb_qt_blocks_set` fix is on
+  every platform and was not run on Linux.
+- On Linux without Qt, `run_qt_examples` fails on `theme.bas` (exit 1), at
+  HEAD as well; not investigated.

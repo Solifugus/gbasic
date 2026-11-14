@@ -85,3 +85,23 @@ build_has() {
     fi
     return 0
 }
+
+# gb_no_display CMD... -- run CMD where Qt cannot reach a display.
+#
+# On X11 and Wayland that is every door shut: Qt's own detection reaches past
+# DISPLAY (it found Wayland through XDG_RUNTIME_DIR with WAYLAND_DISPLAY unset;
+# run_qt_loop.sh). WINDOWS HAS NO SUCH VARIABLE: a desktop session always has a
+# display, so unsetting these opened the window anyway and every no-display
+# tier failed (measured, 2026-11-14). There the platform is NAMED as one that
+# does not exist, so Qt fails to start exactly as it does with no display --
+# the abort gb_qt_can_display exists to turn into a sentence. What that does
+# NOT reproduce is a real session without a desktop (a service in session 0).
+gb_no_display() {
+    case "$(uname -s)" in
+        MINGW*|MSYS*|CYGWIN*)
+            env QT_QPA_PLATFORM=gbasic-no-display "$@" ;;
+        *)
+            env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u XDG_RUNTIME_DIR \
+                -u XDG_SESSION_TYPE "$@" ;;
+    esac
+}

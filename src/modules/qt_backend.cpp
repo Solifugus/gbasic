@@ -46,6 +46,7 @@
 
 #include <QApplication>
 #include <algorithm>
+#include <string>
 #include <vector>
 #include <QCheckBox>
 #include <QEvent>
@@ -138,8 +139,12 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifdef _WIN32
+#include <windows.h>
+#else
 #include <sys/wait.h>
 #include <unistd.h>
+#endif
 
 /* ------------------------------------------------------------------ */
 /* The display question. Separate from everything else, and callable
@@ -154,6 +159,75 @@ extern "C" int gb_qt_can_display(void) {
     if (answer >= 0) {
         return answer;
     }
+#ifdef _WIN32
+    /* WINDOWS HAS NO fork, so the child is this executable run again with
+     * GBASIC_QT_PROBE=1 in its environment, which makes it do the one thing
+     * the forked child does (qt_probe_child_if_asked, below) before its main
+     * runs. Its stderr is NUL for the same reason as below, and NUL is the
+     * only handle it inherits: a running program's sockets and pipes must not
+     * leak into it. */
+    wchar_t exe[MAX_PATH];
+    DWORD n = GetModuleFileNameW(nullptr, exe, MAX_PATH);
+    if (n == 0 || n >= MAX_PATH) {
+        answer = 0;
+        return 0;
+    }
+    /* this process's environment, plus the flag */
+    std::wstring env;
+    if (wchar_t *block = GetEnvironmentStringsW()) {
+        for (const wchar_t *p = block; *p; p += wcslen(p) + 1) {
+            if (_wcsnicmp(p, L"GBASIC_QT_PROBE=", 16) != 0) {
+                env.append(p);
+                env.push_back(L'\0');
+            }
+        }
+        FreeEnvironmentStringsW(block);
+    }
+    env.append(L"GBASIC_QT_PROBE=1");
+    env.push_back(L'\0');
+    env.push_back(L'\0');
+    SECURITY_ATTRIBUTES sa = { sizeof sa, nullptr, TRUE };
+    HANDLE nul = CreateFileW(L"NUL", GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE, &sa,
+                             OPEN_EXISTING, 0, nullptr);
+    if (nul == INVALID_HANDLE_VALUE) {
+        answer = 0;
+        return 0;
+    }
+    SIZE_T attr_size = 0;
+    InitializeProcThreadAttributeList(nullptr, 1, 0, &attr_size);
+    std::vector<unsigned char> attr_buf(attr_size);
+    LPPROC_THREAD_ATTRIBUTE_LIST attrs = (LPPROC_THREAD_ATTRIBUTE_LIST)attr_buf.data();
+    BOOL ok = InitializeProcThreadAttributeList(attrs, 1, 0, &attr_size) &&
+              UpdateProcThreadAttribute(attrs, 0, PROC_THREAD_ATTRIBUTE_HANDLE_LIST, &nul,
+                                        sizeof nul, nullptr, nullptr);
+    std::wstring cmd = L"\"" + std::wstring(exe) + L"\"";
+    STARTUPINFOEXW si;
+    ZeroMemory(&si, sizeof si);
+    si.StartupInfo.cb = sizeof si;
+    si.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
+    si.StartupInfo.hStdInput = nul;
+    si.StartupInfo.hStdOutput = nul;
+    si.StartupInfo.hStdError = nul;
+    si.lpAttributeList = attrs;
+    PROCESS_INFORMATION pi;
+    ok = ok && CreateProcessW(exe, &cmd[0], nullptr, nullptr, TRUE,
+                              CREATE_NO_WINDOW | CREATE_UNICODE_ENVIRONMENT |
+                                  EXTENDED_STARTUPINFO_PRESENT,
+                              &env[0], nullptr, &si.StartupInfo, &pi);
+    DeleteProcThreadAttributeList(attrs);
+    CloseHandle(nul);
+    if (!ok) {
+        answer = 0;
+        return 0;
+    }
+    DWORD code = 1;
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    GetExitCodeProcess(pi.hProcess, &code);
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    answer = code == 0 ? 1 : 0;
+    return answer;
+#else
     /* THE CHILD IS THE ONE THAT MAY DIE. It constructs a real
      * QGuiApplication -- the thing that would abort -- and exits 0 only if
      * that succeeded. The parent reads a status rather than sharing the fate,
@@ -183,7 +257,65 @@ extern "C" int gb_qt_can_display(void) {
     }
     answer = (WIFEXITED(status) && WEXITSTATUS(status) == 0) ? 1 : 0;
     return answer;
+#endif
 }
+
+#ifdef _WIN32
+/* The child half of the Windows display question. It runs while this object's
+ * statics are constructed, before main, in WHATEVER executable links the
+ * backend -- gbasic.exe, or a test probe under tests/qt, which has no
+ * `--qt-probe` of its own. An argument for gbasic's main did not work for
+ * those: the probe re-ran itself as a probe, which re-ran itself, until the
+ * suite's timeout (measured, 2026-11-14). A platform that cannot start
+ * aborts here, in this process, and the parent reads its exit status. */
+static void qt_probe_child_messages(QtMsgType type, const QMessageLogContext &, const QString &) {
+    if (type == QtFatalMsg) {
+        ExitProcess(3);
+    }
+}
+
+/* Every window this thread is about to create passes through here. A dialog
+ * box (class #32770, which is what MessageBoxW makes) means Qt is about to
+ * tell a person it could not start; the answer is "no", and the box is never
+ * shown. A platform that starts creates no dialog while it does. */
+static LRESULT CALLBACK qt_probe_child_windows(int code, WPARAM w, LPARAM l) {
+    if (code == HCBT_CREATEWND) {
+        const CBT_CREATEWNDW *c = (const CBT_CREATEWNDW *)l;
+        LPCWSTR cls = c && c->lpcs ? c->lpcs->lpszClass : nullptr;
+        if (cls && IS_INTRESOURCE(cls) && LOWORD((ULONG_PTR)cls) == 0x8002) {
+            ExitProcess(3);
+        }
+    }
+    return CallNextHookEx(nullptr, code, w, l);
+}
+
+static int qt_probe_child_if_asked(void) {
+    char flag[4];
+    DWORD n = GetEnvironmentVariableA("GBASIC_QT_PROBE", flag, sizeof flag);
+    if (n != 1 || flag[0] != '1') {
+        return 0;
+    }
+    /* QT SAYS "NO PLATFORM PLUGIN" WITH A MESSAGE BOX on Windows: Qt6Gui.dll
+     * calls MessageBoxW itself, past any message handler. The box appeared on
+     * the user's desktop, from a process nobody could see, and the child
+     * waited on it for ever and so did its parent (measured, 2026-11-14, with
+     * QT_QPA_PLATFORM naming no plugin: a message handler alone did not stop
+     * it). So the window hook below ends the child before any dialog is
+     * created; the message handler covers a fatal message that is only
+     * printed; and Windows' own crash dialogs for an abort are switched off. */
+    SetWindowsHookExW(WH_CBT, qt_probe_child_windows, nullptr, GetCurrentThreadId());
+    qInstallMessageHandler(qt_probe_child_messages);
+    SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+    int argc = 1;
+    static char arg0[] = "gbasic";
+    char *argv[] = { arg0, nullptr };
+    {
+        QGuiApplication probe(argc, argv);
+    }
+    ExitProcess(0);
+}
+[[maybe_unused]] static int qt_probe_child_ran = qt_probe_child_if_asked();
+#endif
 
 /* ------------------------------------------------------------------ */
 
@@ -5027,6 +5159,12 @@ extern "C" int gb_qt_blocks_set(void *window, const char *name,
         QString id = QString::fromUtf8(it->id);
         GbQtBlock *k = old.value(id, nullptr);
         if (k && k->key != key) {
+            /* OUT OF m_blocks BEFORE IT IS FREED: the cursor moves below make
+             * the document lay itself out again, which asks extraFor for every
+             * block in m_blocks, so a replaced block left there was read after
+             * its delete. Windows' heap made that a crash in 21 runs of 30
+             * (tests/qt/blocks_probe.cpp, 2026-11-14); glibc's had hidden it. */
+            e->m_blocks.removeOne(k);
             k->frame->hide();
             k->frame->deleteLater();
             delete k;
@@ -5065,12 +5203,14 @@ extern "C" int gb_qt_blocks_set(void *window, const char *name,
         e->measureBlock(k);
         next.append(k);
     }
+    /* the new set first, so no layout between here and the end can reach a
+     * block about to be freed */
+    e->m_blocks = next;
     for (GbQtBlock *k : old) {   /* ids no longer sent */
         k->frame->hide();
         k->frame->deleteLater();
         delete k;
     }
-    e->m_blocks = next;
     e->relayoutBlocks();
     return 1;
 }

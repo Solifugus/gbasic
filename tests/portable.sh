@@ -140,6 +140,46 @@ case "$(uname -s 2>/dev/null)" in
         ;;
 esac
 
+# --- pgrep -f / pkill -f, on Windows --------------------------------------------
+# MSYS2 HAS NEITHER, and the suites that use them tolerate a missing one by
+# design (`2>/dev/null || true`), so a fixture they meant to kill was left
+# running and the check that it had gone passed WITHOUT LOOKING. Measured on
+# run_qt_dialog, 2026-11-14: a gBASIC process holding a modal dialog outlived
+# the suite and locked gbasic.exe against the next build. Native processes are
+# Windows', not MSYS's, so they are asked of Windows (Win32_Process) and ended
+# with taskkill. The command line is matched as a POSIX one would read: quotes
+# removed, `\` as `/`, and `.exe` dropped, so `pgrep -f "gbasic tests/x.bas"`
+# finds `C:\...\gbasic.exe tests/x.bas`. Only `-f PATTERN` (and pkill's signal,
+# which is always a kill here) is supported; anything else is refused aloud.
+case "$(uname -s 2>/dev/null)" in
+    MSYS_NT*|MINGW*|CYGWIN*)
+        if _gb_portable_need pgrep; then
+            _gb_win_pgrep() {   # ERE -> Windows pids whose command line matches
+                powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process | ForEach-Object { [string]\$_.ProcessId + ' ' + \$_.CommandLine }" \
+                    2>/dev/null | tr -d '\r' | sed -e 's/"//g' -e 's|\\|/|g' -e 's/\.exe\b//Ig' \
+                    | grep -E -- "^[0-9]+ .*$1" | grep -vE -- "powershell|pgrep|pkill|grep " | cut -d' ' -f1
+            }
+            pgrep() {
+                [ "${1:-}" = -f ] && [ $# = 2 ] || { echo "portable.sh: pgrep: only -f PATTERN is supported" >&2; return 2; }
+                local pids
+                pids=$(_gb_win_pgrep "$2")
+                [ -n "$pids" ] || return 1
+                printf '%s\n' "$pids"
+            }
+            pkill() {
+                case "${1:-}" in -[A-Z0-9]*) shift ;; esac
+                [ "${1:-}" = -f ] && [ $# = 2 ] || { echo "portable.sh: pkill: only [-SIGNAL] -f PATTERN is supported" >&2; return 2; }
+                local pids p
+                pids=$(_gb_win_pgrep "$2")
+                [ -n "$pids" ] || return 1
+                for p in $pids; do taskkill //F //PID "$p" >/dev/null 2>&1; done
+                return 0
+            }
+            _gb_portable_note "pgrep=windows pkill=windows"
+        fi
+        ;;
+esac
+
 # --- /proc ---------------------------------------------------------------------
 # NOT SHIMMED, DELIBERATELY. Six suites read /proc to measure something about a
 # live process -- a peak RSS from VmHWM, an open-descriptor audit, a pid's

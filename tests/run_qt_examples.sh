@@ -37,6 +37,7 @@
 . "$(dirname "$0")/portable.sh"
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source tests/build_has.sh   # gb_no_display
 make >/dev/null
 
 # WHERE `editor.bas` FINDS ITS SYNTAX DEFINITION, and this line is not
@@ -128,8 +129,7 @@ printf 'TIER degrade: each one with no display at all\n'
 for f in $examples; do
     b=$(basename "$f")
     set +e
-    env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_RUNTIME_DIR -u QT_QPA_PLATFORM \
-        GBASIC_PATH=stdlib timeout -k 5 60 \
+    gb_no_display GBASIC_PATH=stdlib timeout -k 5 60 \
         ./gbasic --line-buffered "$f" check > "$work/d_$b.out" 2>&1
     rc=$?
     set -e

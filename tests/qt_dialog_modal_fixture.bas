@@ -8,6 +8,7 @@
 ' dialog -- that is the point being measured.
 server probe( port: 0 )
     get "/ping"( req )
+        g.pinged = true
         return { body: "pong" }
     end get
 end server
@@ -25,7 +26,7 @@ window app( title: "Modal extent", width: 320, height: 140 )
 end window
 
 program main(args)
-    g = { answered: false }
+    g = { answered: false, pinged: false, asked: false }
     if not qt.can_display() then
         print "NO DISPLAY"
         return
@@ -37,11 +38,20 @@ program main(args)
     ' CLICKED FROM A TIMER so the dialog goes up while `qt.run()` holds the
     ' thread -- the real arrangement, not a program calling confirm from main.
     ' The suite waits for "DIALOG UP" before it asks anything.
-    once = timer.after(0.4)
+    '
+    ' AND ONLY ONCE /ping HAS BEEN ANSWERED, which is the suite's control (the
+    ' server answers while no dialog is up). A fixed 0.4 s was a race the
+    ' control lost under MSYS2, whose polling for PORT is slow: the dialog was
+    ' already up when the control asked (Windows, 2026-11-14).
+    poll = timer.every(0.1)
     watch(timer.ticks)
         while count(timer.ticks) > 0
             ev = take_first(timer.ticks)
-            qt.invoke(app, "ask", "click")
+            if g.pinged and not g.asked then
+                g.asked = true
+                timer.cancel(poll)
+                qt.invoke(app, "ask", "click")
+            end if
         end while
     end watch
 

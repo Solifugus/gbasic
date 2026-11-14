@@ -114,7 +114,7 @@ ZLIB_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs 
 # application, since a desktop has a toolkit, and a genuine divergence from the
 # direction the Linux releases took.
 QT_LIBEXEC := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --variable=libexecdir Qt6Core 2>/dev/null)
-QT_MOC := $(firstword $(wildcard $(QT_LIBEXEC)/moc) $(shell command -v moc 2>/dev/null))
+QT_MOC := $(firstword $(wildcard $(QT_LIBEXEC)/moc $(QT_LIBEXEC)/moc.exe) $(shell command -v moc 2>/dev/null))
 QT_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists Qt6Widgets && printf 1 || printf 0)
 ifeq ($(QT_MOC),)
 QT_AVAILABLE := 0
@@ -207,7 +207,15 @@ ZLIB_LIBS := -lz
 # SOCKETS ONLY -- so direction A needs QWinEventNotifier for any source that is
 # not one (docs/qt_gui_design.md §5.1 names it rather than leaving it to be
 # discovered during the port).
+#
+# WINDOWS_QT=1 IN THE ENVIRONMENT keeps what detection found (MSYS2's
+# mingw-w64-ucrt-x86_64-qt6-base), linked as the Windows link block below
+# describes. An ENVIRONMENT switch rather than only `make QT_AVAILABLE=1`
+# because every Qt suite runs `make` itself, and a plain one silently rebuilt
+# gbasic.exe without Qt, so every suite then skipped (measured, 2026-11-14).
+ifneq ($(WINDOWS_QT),1)
 QT_AVAILABLE := 0
+endif
 endif
 
 LDLIBS += -lm
@@ -365,7 +373,9 @@ endif
 ifeq ($(QT_AVAILABLE),1)
 CFLAGS += -DHAVE_QT=1
 QT_OBJS := src/modules/qt_backend.o
+ifneq ($(OS),Windows_NT)
 LDLIBS += $(QT_LIBS) -lstdc++
+endif
 else
 CFLAGS += -DHAVE_QT=0
 QT_OBJS :=
@@ -391,7 +401,18 @@ CFLAGS += -DPCRE2_STATIC
 # advapi32 for the owner-only security descriptor temp_file/temp_dir create
 # with: named rather than left to MinGW's default library list, since only the
 # optional curl and crypto lines named it before.
+ifeq ($(QT_AVAILABLE),1)
+# QT IS THE ONE DYNAMIC LIBRARY (LGPL-3, see the Qt block above), so -static,
+# which would refuse its import libraries, becomes -Bstatic for everything
+# before it and -Bdynamic for Qt itself. libstdc++ and libgcc go dynamic too:
+# Qt's own DLLs already need libstdc++-6.dll and libgcc_s_seh-1.dll, and one
+# C++ runtime in the process is safer than a second, static one beside it.
+# Such a gbasic.exe needs Qt's DLLs and plugins beside it (windeployqt); the
+# default Windows build stays without Qt and needs nothing.
+LDLIBS := -Wl,-Bstatic $(LDLIBS) -lws2_32 -lbcrypt -ladvapi32 -Wl,-Bdynamic $(QT_LIBS) -lstdc++ -shared-libgcc
+else
 LDLIBS += -lws2_32 -lbcrypt -ladvapi32 -static
+endif
 # AN 8 MB MAIN-THREAD STACK, the Linux default. Windows reserves 1 MB, and the
 # tree-walking evaluator and the JSON parser recurse: the parser's 10,000-level
 # nesting cap was sized for 8 MB, so on 1 MB a deep document CRASHED the

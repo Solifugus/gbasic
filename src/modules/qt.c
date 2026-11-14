@@ -46,6 +46,11 @@
 #if HAVE_QT
 #include "qt_backend.h"
 #endif
+/* <windows.h>, which src/eval.c reaches on Windows, defines `near` (and `far`)
+ * as empty macros from 16-bit days; this file names variables `near`. */
+#ifdef near
+#undef near
+#endif
 
 static void qt_raise(const char *message) {
     runtime_error_raise(message, QT_ERROR_CODE, "qt");
