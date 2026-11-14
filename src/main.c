@@ -995,6 +995,9 @@ static int extract_flag(int *argc, char **argv, const char *flag) {
 }
 
 int main(int argc, char **argv) {
+    extern char **environ;
+    char stack_mark = 0;
+    gb_stack_base_note(&stack_mark, argv, environ);
     /* the same two pieces `--version` prints, below; a runner checks the two agree */
     gb_runtime_identity_set("0.10.0", GBASIC_REVISION);
     int ast_only = 0;

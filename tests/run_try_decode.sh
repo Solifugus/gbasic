@@ -215,6 +215,55 @@ else
     fi
 fi
 
+# --- Tier 3b-iii: THE STACK ALREADY IN USE COUNTS TOO ----------------------------
+#
+# The cap above is LEVELS, derived from x86's ~247 bytes per level, and it
+# failed on s390x, whose frames take 518: at 2 MB the cap (4 096) sat past the
+# crash point (~4 044), and a 4 100-deep document segfaulted (2026-11-14). The
+# fix measures the stack IN USE (decode_stack_exhausted, src/eval.c). On x86
+# the tier above cannot see that fix, because there the cap stops in time.
+# This can: the same document decoded 100 gBASIC calls deep, under the cap,
+# crashed the old build at 2 MB and is refused by this one, since the stack the
+# recursion holds counts against the same limit.
+#
+# ITS PREMISE IS ITS OWN, and checked: 100 calls must survive 2 MB with a
+# trivial document, or the crash would be the recursion's, not the decoder's.
+# Where it does not (s390x's larger frames), the tier SKIPS, saying why.
+cat >"$work/held.bas" <<'GB'
+function down(n, doc)
+    if n = 0 then
+        r = try_decode(doc)
+        return "ok=" + r.ok
+    end if
+    return down(n - 1, doc)
+end function
+d = number(env("DOC_DEPTH"))
+print down(100, repeat("[", d) + "1" + repeat("]", d))
+GB
+if ! ( ulimit -s 2048 ) 2>/dev/null; then
+    printf 'SKIP decode_held_stack (this shell cannot set ulimit -s)\n'
+else
+    held_at() {   # $1 = document depth -> the fixture's answer at 2 MB, or CRASH
+        local out rc
+        out=$( ( ulimit -s 2048; DOC_DEPTH=$1 timeout 120 ./gbasic --line-buffered "$work/held.bas" \
+                 2>/dev/null </dev/null ) ); rc=$?
+        if [ "$rc" -ne 0 ]; then printf 'CRASH(exit %s)' "$rc"; else printf '%s' "$out"; fi
+    }
+    premise="$(held_at 1)"
+    if [ "$premise" != "ok=true" ]; then
+        printf 'SKIP decode_held_stack (100 gBASIC calls alone do not survive a 2 MB stack here:\n'
+        printf '     %s -- the recursion, not the decoder; NOTHING was checked)\n' "$premise"
+    else
+        held="$(held_at 3500)"
+        if [ "$held" = "ok=false" ]; then
+            printf 'PASS decode_held_stack (3500 deep under 100 calls at 2 MB is refused, not a crash)\n'
+        else
+            printf 'FAIL decode_held_stack (3500 deep under 100 calls at 2 MB: <%s>, want ok=false)\n' "$held"
+            status=1
+        fi
+    fi
+fi
+
 # --- Tier 3c: invalid UTF-8 and NUL bytes are data, not a crash ----------------
 # The parser is byte-oriented; malformed UTF-8 inside a string must come back as
 # bytes rather than being rejected, re-encoded, or truncated at a NUL.

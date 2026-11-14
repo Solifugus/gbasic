@@ -9380,6 +9380,30 @@ static const char *gb_source_tree_stdlib(char *resolved, size_t resolved_size) {
 static char runtime_version_text[32] = "";
 static char runtime_revision_text[64] = "";
 
+/* The highest stack address this process uses, or NULL when nobody said
+ * (embedding). Stacks grow DOWN on every platform gBASIC builds for, so the
+ * bytes in use at a point are this minus the address of a local there. */
+static const char *gb_stack_base = NULL;
+
+void gb_stack_base_note(const void *local, char **argv, char **envp) {
+    const char *base = local;
+    /* argv and the environment sit above main's frame, and count against
+     * RLIMIT_STACK, so the base is the end of the highest of them -- but only
+     * one within reach of the stack (a pointer elsewhere is not on it) */
+    long kb = gb_stack_limit_kb();
+    size_t reach = kb > 0 ? (size_t)kb * 1024 : (size_t)8 << 20;
+    char **lists[2] = { argv, envp };
+    for (int l = 0; l < 2; l++) {
+        for (char **p = lists[l]; p && *p; p++) {
+            const char *end = *p + strlen(*p) + 1;
+            if (end > base && (size_t)(end - (const char *)local) < reach) {
+                base = end;
+            }
+        }
+    }
+    gb_stack_base = base;
+}
+
 void gb_runtime_identity_set(const char *version, const char *revision) {
     snprintf(runtime_version_text, sizeof runtime_version_text, "%s", version ? version : "");
     snprintf(runtime_revision_text, sizeof runtime_revision_text, "%s", revision ? revision : "");
@@ -17133,7 +17157,7 @@ static Value builtin_deserialize_value(Value value) {
         runtime_error_raise("deserialize: argument must be a string", 1003, "actor");
         return value_null();
     }
-    SerReader r = { value.as.string, string_length(value.as.string), 0, 1, 0 };
+    SerReader r = { value.as.string, string_length(value.as.string), 0, 1, 0, 0 };
     int ver = 0;
     if (r.len < 4 ||
         serread_u8(&r) != SER_MAGIC0 || serread_u8(&r) != SER_MAGIC1 ||
@@ -17161,7 +17185,7 @@ static Value builtin_deserialize_value(Value value) {
  * on failure). Raises nothing — the caller chooses the message. Shared by the
  * actor receive() path with the deserialize() builtin's format. */
 static Value deserialize_from_buffer(const char *data, size_t len, int *ok) {
-    SerReader r = { data, len, 0, 1, 0 };
+    SerReader r = { data, len, 0, 1, 0, 0 };
     int ver = 0;
     if (r.len < 4 ||
         serread_u8(&r) != SER_MAGIC0 || serread_u8(&r) != SER_MAGIC1 ||
@@ -18874,6 +18898,35 @@ static Value builtin_quote_value(Value value) {
  * number that is not one would be worse than the constant it replaced. */
 #define DECODE_MAX_DEPTH 10000
 
+/* MEASURED, NOT ASSUMED: is the stack too nearly used to nest once more? The
+ * level count above was derived from x86's ~247 bytes per level, and s390x
+ * uses 518 (its frames carry a 160-byte register save area): at 2 MB the cap
+ * of 4 096 sat past the crash point (~4 044), so a 4 100-deep document
+ * SEGFAULTED there -- the remote crash the cap exists to prevent, back on a
+ * new architecture (2026-11-14). Asking how much stack is IN USE holds on any
+ * architecture and compiler. The reserve covers everything below this frame
+ * that one more level, and the error path, will need. The cap stays as an
+ * outer bound, so nothing moves on x86. Unknown base or limit: stand aside. */
+#define DECODE_STACK_RESERVE (128 * 1024)
+
+static int decode_stack_exhausted(void) {
+    static long limit_bytes = -1;
+    if (limit_bytes < 0) {
+        long kb = gb_stack_limit_kb();
+        limit_bytes = kb > 0 ? kb * 1024 : 0;
+    }
+    if (!gb_stack_base || limit_bytes == 0) {
+        return 0;
+    }
+    char here = 0;
+    const char *at = &here;
+    if (at > gb_stack_base) {
+        return 0;          /* not below the base: not the stack we measured */
+    }
+    size_t used = (size_t)(gb_stack_base - at);
+    return used + DECODE_STACK_RESERVE > (size_t)limit_bytes;
+}
+
 static int decode_depth_limit(void) {
     static int cached = 0;
     if (cached) {
@@ -19390,7 +19443,7 @@ static Value decode_parse_value(DecodeParser *parser) {
     }
     if (ch == '[' || ch == '{') {
         /* Only the container branches recurse, so the depth is charged here. */
-        if (parser->depth >= decode_depth_limit()) {
+        if (parser->depth >= decode_depth_limit() || decode_stack_exhausted()) {
             decode_error(parser, "maximum nesting depth exceeded");
             return value_null();
         }

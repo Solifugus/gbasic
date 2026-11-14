@@ -16,6 +16,19 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Decoding measures the stack instead of assuming a frame size (2026-11-14)
+
+- `decode`/`try_decode` refused a document past a depth cap derived from the
+  stack limit at x86's ~247 bytes per level. s390x takes 518, so at a 2 MB
+  stack the cap (4 096) sat past the crash point (~4 044) and a deep document
+  SEGFAULTED there -- the remote crash the cap exists to prevent (a request
+  body is decoded eagerly). The decoder now also measures the stack IN USE
+  (from where `main` began) and refuses within 128 KB of the limit, which
+  holds on any architecture and also counts stack the program already holds:
+  on x86 a 3 500-deep document decoded 100 calls deep crashed at 2 MB and is
+  now refused. Nothing moves at the default 8 MB stack. Embedded in another
+  program, where the stack's start is unknown, the cap alone applies, as before.
+
 ### `deserialize` reads old payloads from a machine of either byte order (2026-11-14)
 
 - `serialize` versions 1 and 2 wrote integers, doubles and date, duration and

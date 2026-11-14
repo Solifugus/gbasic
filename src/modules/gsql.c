@@ -196,7 +196,7 @@ static GsqlHv *gsql_apply(const char *source, const Value *const *args, size_t n
 
 static GsqlHv *gsql_h_load(void *ctx, const unsigned char *v, size_t n, GsqlError *err) {
     (void)ctx;
-    SerReader r = { (const char *)v, n, 0, 1, SER_VERSION };
+    SerReader r = { (const char *)v, n, 0, 1, SER_VERSION, 0 };
     Value out = deserialize_value(&r, 0);
     if (gsql_host_caught(err)) {
         value_free(out);
@@ -932,7 +932,7 @@ static int gsql_request_ex(GsqlConnectionValue *c, unsigned type, Value body, co
         gsql_module_raise(verb, gsql_error_name(err.code), err.message, 0, sql);
         return 0;
     }
-    SerReader r = { (const char *)f.body, f.length, 0, 1, SER_VERSION };
+    SerReader r = { (const char *)f.body, f.length, 0, 1, SER_VERSION, 0 };
     Value v = deserialize_value(&r, 0);
     if (error_action_pending()) {
         value_free(v);
@@ -1611,7 +1611,7 @@ static int gsql_raw(GsqlConnectionValue *c, unsigned type, Value body, const cha
     }
     *reply_type = f.type;
     if (f.type == GSQL_M_ERROR) {
-        SerReader r = { (const char *)f.body, f.length, 0, 1, SER_VERSION };
+        SerReader r = { (const char *)f.body, f.length, 0, 1, SER_VERSION, 0 };
         Value v = deserialize_value(&r, 0);
         Value *cv = v.kind == VALUE_RECORD ? gsql_field(&v, "code") : NULL;
         snprintf(code, code_n, "%s", cv && cv->kind == VALUE_STRING ? cv->as.string : "?");
@@ -2833,7 +2833,7 @@ static int gsql_restore_send(GsqlConnectionValue *c, const char *sql, size_t len
         gsql_module_raise("restore", gsql_error_name(err.code), where, 0, NULL);
         return 0;
     }
-    SerReader r = { (const char *)f.body, f.length, 0, 1, SER_VERSION };
+    SerReader r = { (const char *)f.body, f.length, 0, 1, SER_VERSION, 0 };
     Value v = deserialize_value(&r, 0);
     if (!r.ok || v.kind != VALUE_RECORD) {
         value_free(v);

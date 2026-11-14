@@ -104,6 +104,12 @@ const char *gb_exe_relative_stdlib(void);
 /* Which gBASIC this is, for `runtime()` (book gap G36): set once by main(),
  * from the same version and revision `--version` prints. */
 void gb_runtime_identity_set(const char *version, const char *revision);
+/* Where this process's stack starts, so a deep recursion can ask how much of
+ * it is used rather than assume a size per frame: set once by main() from a
+ * local of its own and the argument and environment strings above it (which
+ * count against the stack limit too). Unset -- gBASIC embedded in another
+ * program -- the measurement stands aside and the depth caps alone apply. */
+void gb_stack_base_note(const void *local, char **argv, char **envp);
 
 /* `gbasic --gsql-owner DB FD create|open`: the G-SQL owner process a client
  * starts (docs/gsql_owner_design.md §6), serving the SQL layer with this
