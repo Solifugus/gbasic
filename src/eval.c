@@ -16663,7 +16663,19 @@ typedef struct {
     size_t pos;
     int ok;
     int version;   /* the payload's version, so readers can migrate v1 shapes */
+    int swap;      /* v1/v2 only: the writer's byte order was not this machine's */
 } SerReader;
+
+/* Reverse n bytes in place: a v1/v2 field written on a machine of the other
+ * byte order. Never used for v3, whose fields are little-endian everywhere. */
+static void ser_swap(void *p, size_t n) {
+    unsigned char *b = p;
+    for (size_t i = 0; i < n / 2; i++) {
+        unsigned char t = b[i];
+        b[i] = b[n - 1 - i];
+        b[n - 1 - i] = t;
+    }
+}
 
 static int serread_bytes(SerReader *r, void *out, size_t n) {
     if (!r->ok || r->pos + n > r->len) {
@@ -16685,6 +16697,9 @@ static unsigned char serread_u8(SerReader *r) {
 static uint64_t serread_u64(SerReader *r) {
     uint64_t v = 0;
     serread_bytes(r, &v, sizeof v);
+    if (r->swap) {
+        ser_swap(&v, sizeof v);
+    }
     return v;
 }
 
@@ -16779,6 +16794,9 @@ static Value deserialize_value(SerReader *r, int depth) {
         }
         double d = 0;
         serread_bytes(r, &d, sizeof d);
+        if (r->swap) {
+            ser_swap(&d, sizeof d);
+        }
         return value_number(d);
     }
     case SER_STRING:
@@ -16892,6 +16910,15 @@ static Value deserialize_value(SerReader *r, int depth) {
             return v;
         }
         serread_bytes(r, &v.as.datetime, sizeof v.as.datetime);
+        if (r->swap) {
+            DateTime *dt = &v.as.datetime;
+            int *f[] = { &dt->year, &dt->month, &dt->day, &dt->hour,
+                         &dt->minute, &dt->second, &dt->time_only };
+            for (size_t i = 0; i < sizeof f / sizeof f[0]; i++) {
+                ser_swap(f[i], sizeof *f[i]);
+            }
+            ser_swap(&dt->precision, sizeof dt->precision);
+        }
         return v;
     }
     case SER_DURATION: {
@@ -16912,6 +16939,14 @@ static Value deserialize_value(SerReader *r, int depth) {
             return v;
         }
         serread_bytes(r, &v.as.duration, sizeof v.as.duration);
+        if (r->swap) {
+            Duration *d = &v.as.duration;
+            int *f[] = { &d->years, &d->months, &d->weeks, &d->days,
+                         &d->hours, &d->minutes, &d->seconds };
+            for (size_t i = 0; i < sizeof f / sizeof f[0]; i++) {
+                ser_swap(f[i], sizeof *f[i]);
+            }
+        }
         return v;
     }
     case SER_MONEY: {
@@ -16937,6 +16972,10 @@ static Value deserialize_value(SerReader *r, int depth) {
             serread_bytes(r, &v.as.money.units, sizeof v.as.money.units);
             serread_bytes(r, &v.as.money.currency, sizeof v.as.money.currency);
             serread_bytes(r, &v.as.money.exponent, sizeof v.as.money.exponent);
+            if (r->swap) {
+                ser_swap(&v.as.money.units, sizeof v.as.money.units);
+                ser_swap(&v.as.money.currency, sizeof v.as.money.currency);
+            }
         } else {
             /* VERSION 1 WAS A BARE int64 OF CENTS. It is migrated rather than
              * rejected: `serialize` is public, so v1 payloads are sitting in
@@ -16944,6 +16983,9 @@ static Value deserialize_value(SerReader *r, int depth) {
              * destroy exactly the archived data money exists to protect. */
             long long cents = 0;
             serread_bytes(r, &cents, sizeof cents);
+            if (r->swap) {
+                ser_swap(&cents, sizeof cents);
+            }
             v = value_money_cents(cents);
         }
         return v;
@@ -17052,6 +17094,39 @@ static Value deserialize_value(SerReader *r, int depth) {
     }
 }
 
+/* Parse a whole payload whose header has been read. A clean one consumes
+ * exactly its bytes. Versions 1 and 2 wrote their integers, doubles and
+ * structs in the WRITING machine's byte order and say nothing of it, so a
+ * payload from a machine of the other order (an x86 file read on s390x)
+ * failed as corrupt. Read in this machine's order first -- everything that
+ * read before still reads the same way -- and only if that does not parse
+ * cleanly, once more byte-swapped. A wrong order makes the first length or
+ * count absurd, so a payload that parses EXACTLY both ways is not expected;
+ * if one did, this machine's order is the one taken (Matthew's ruling
+ * 2026-11-14: old files should read anywhere). Sets r->ok. */
+static Value deserialize_payload(SerReader *r) {
+    size_t start = r->pos;
+    Value result = deserialize_value(r, 0);
+    if (r->ok && r->pos == r->len) {
+        return result;
+    }
+    value_free(result);
+    if (r->version >= 3) {
+        r->ok = 0;
+        return value_null();
+    }
+    r->pos = start;
+    r->ok = 1;
+    r->swap = 1;
+    result = deserialize_value(r, 0);
+    if (r->ok && r->pos == r->len) {
+        return result;
+    }
+    value_free(result);
+    r->ok = 0;
+    return value_null();
+}
+
 static Value builtin_deserialize_value(Value value) {
     if (value.kind != VALUE_STRING) {
         value_free(value);
@@ -17069,9 +17144,9 @@ static Value builtin_deserialize_value(Value value) {
         return value_null();
     }
     r.version = ver;
-    Value result = deserialize_value(&r, 0);
     /* A clean frame consumes exactly its bytes; trailing data is corruption. */
-    if (!r.ok || r.pos != r.len) {
+    Value result = deserialize_payload(&r);
+    if (!r.ok) {
         value_free(result);
         value_free(value);
         runtime_error_raise("deserialize: corrupt or truncated serialized data",
@@ -17096,8 +17171,8 @@ static Value deserialize_from_buffer(const char *data, size_t len, int *ok) {
         return value_null();
     }
     r.version = ver;
-    Value result = deserialize_value(&r, 0);
-    if (!r.ok || r.pos != r.len) {
+    Value result = deserialize_payload(&r);
+    if (!r.ok) {
         value_free(result);
         *ok = 0;
         return value_null();

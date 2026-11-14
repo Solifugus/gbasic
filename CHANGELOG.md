@@ -16,6 +16,19 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### `deserialize` reads old payloads from a machine of either byte order (2026-11-14)
+
+- `serialize` versions 1 and 2 wrote integers, doubles and date, duration and
+  money structs in the WRITING machine's byte order and recorded nothing of
+  it, so a payload written on x86 was refused as corrupt on s390x (the money
+  suite's v1 fixture, on the s390x VM). `deserialize` reads a v1 or v2 payload
+  in this machine's order and, only if that does not parse exactly, once more
+  byte-swapped; everything that read before reads the same way, and a payload
+  that parses in neither order is still refused. Version 3 is unchanged (it
+  was always little-endian everywhere). `tests/serialize/other_order.py`
+  writes a payload's other-order twin; the v1 and v2 twins are committed and
+  read as their originals on both machines.
+
 ### `mail.parse` decodes encoded words written with no space between (2026-11-13)
 
 - `=?utf-8?q?_?==?utf-8?q?M=C3=BCller?=`, encoded words with nothing

@@ -7946,7 +7946,9 @@ count({})                      ' 0
   order. The layout is specified in `docs/gsql_storage_design.md` §3.3, because
   G-SQL's rows and client protocol use the same encoding
 - `deserialize(bytes)` - reconstruct a value from `serialize` output. It reads
-  versions 1, 2 and 3, since older payloads are already in files. A truncated,
+  versions 1, 2 and 3, since older payloads are already in files, and a
+  version 1 or 2 payload from a machine of either byte order: it is read in
+  this machine's order and, only if that does not parse, byte-swapped. A truncated,
   overlong or otherwise malformed payload raises *corrupt or truncated
   serialized data*; it never answers a partial value
 

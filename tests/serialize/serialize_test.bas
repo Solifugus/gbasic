@@ -205,6 +205,38 @@ program main(args)
     check("v2: a dir", old.q, {dir}"/tmp")
 
     print ""
+    print "-- AND FROM A MACHINE OF THE OTHER BYTE ORDER"
+    ' v1 and v2 wrote in the writer's byte order and said nothing of it, so an
+    ' x86 file read as corrupt on s390x (2026-11-13). deserialize now reads in
+    ' this machine's order and, only if that does not parse, byte-swapped. The
+    ' twins are the same payloads as the other order writes them, made by
+    ' tests/serialize/other_order.py: here one exercises the swapped read and
+    ' the original the plain one, whichever this machine's order is.
+    other = deserialize(hex_decode(trim(read({file}"tests/serialize/v2_payload_other_order.hex"))))
+    check("v2, other order: the same record", other, old)
+    check("v2, other order: a fraction", other.f, 2.5)
+    check("v2, other order: a negative", other.neg, -7)
+    check("v2, other order: a datetime", other.t, t)
+    check("v2, other order: a duration", other.span, 2 days 3 hours)
+    check("v2, other order: JPY", other.j, j)
+    v1 = deserialize(hex_decode(trim(read({file}"tests/money/v1_payload.hex"))))
+    v1_other = deserialize(hex_decode(trim(read({file}"tests/serialize/v1_payload_other_order.hex"))))
+    check("v1, other order: the same array", v1_other, v1)
+    check("v1, other order: its money", string(v1_other[0]), "1234.56")
+    check("v1, other order: its number", v1_other[2], 42)
+    ' and a payload that parses in NEITHER order is still refused
+    bad = hex_decode("674253020600000000000000ff")
+    refused = false
+    on error goto next
+    x = deserialize(bad)
+    if error then
+        refused = contains(error.message, "corrupt or truncated")
+        error.clear()
+    end if
+    on error stop
+    check("v2 parsing in neither order is refused", refused, true)
+
+    print ""
     print "-- CORRUPTION IS REFUSED, NEVER ANSWERED"
     ' EVERY PREFIX of a payload holding every kind must be refused: a reader
     ' that accepts a short payload answers a plausible value with a field
