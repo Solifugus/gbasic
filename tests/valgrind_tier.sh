@@ -36,6 +36,16 @@ VG_EXIT=99
 VG_FLAGS="--error-exitcode=$VG_EXIT --leak-check=full --errors-for-leak-kinds=definite --track-fds=yes"
 VG_ACCESS_FLAGS="-q --error-exitcode=$VG_EXIT --leak-check=no --errors-for-leak-kinds=none"
 
+# QT'S OWN s390x REPORTS, suppressed ON s390x ONLY: tests/qt.supp names five
+# Qt functions in which valgrind reports a conditional jump on uninitialised
+# data there with no gBASIC in the stack (tests/qt_valgrind_probe.cpp). Only
+# where it was measured, because the entries would ALSO hide uninitialised
+# text that we passed into Qt -- shaping it branches in the same functions --
+# and on x86, where Qt reports nothing, every Qt tier keeps that check.
+if [ "$(uname -m 2>/dev/null)" = s390x ]; then
+    VG_FLAGS="$VG_FLAGS --suppressions=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qt.supp"
+    VG_ACCESS_FLAGS="$VG_ACCESS_FLAGS --suppressions=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qt.supp"
+fi
 vg_available() { command -v valgrind >/dev/null 2>&1; }
 
 # shellcheck disable=SC2086
