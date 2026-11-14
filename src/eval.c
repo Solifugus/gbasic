@@ -1046,6 +1046,13 @@ typedef struct {
     int line;
     int column;
 } CallFrameInfo;
+/* call_stack is a RING indexed by depth modulo CALL_STACK_MAX. It was a plain
+ * array written only below CALL_STACK_MAX while the depth counted on, so a
+ * raise more than 256 calls deep read call_stack[depth - 1 - i] PAST ITS END
+ * -- an out-of-bounds read, shown as frames named `?` at 0:0 -- unreachable in
+ * practice only while deep recursion crashed first (found 2026-11-14, when the
+ * recursion guard made it reachable). The innermost TRACE_MAX frames, the ones
+ * a trace shows, are always the most recently written. */
 enum { CALL_STACK_MAX = 256, TRACE_MAX = 64 };
 static CallFrameInfo call_stack[CALL_STACK_MAX];
 static size_t call_stack_depth = 0;
@@ -4039,7 +4046,7 @@ static Value error_capture_trace(void) {
         abort();
     }
     for (size_t i = 0; i < count; i++) {
-        CallFrameInfo *frame = &call_stack[call_stack_depth - 1 - i];
+        CallFrameInfo *frame = &call_stack[(call_stack_depth - 1 - i) % CALL_STACK_MAX];
         RecordField *fields = calloc(5, sizeof(RecordField));
         if (!fields) {
             abort();
@@ -9404,6 +9411,28 @@ void gb_stack_base_note(const void *local, char **argv, char **envp) {
     gb_stack_base = base;
 }
 
+/* Is the stack within `reserve` bytes of its limit? MEASURED, not assumed: the
+ * stack in use is the base main() noted minus the address of a local here,
+ * which holds on any architecture and compiler (s390x frames are 2.2x x86's,
+ * and assuming x86's crashed it). An unknown base -- embedding -- or an
+ * unlimited stack answers no, and the caller's own bound alone applies. */
+static int gb_stack_exhausted(size_t reserve) {
+    static long limit_bytes = -1;
+    if (limit_bytes < 0) {
+        long kb = gb_stack_limit_kb();
+        limit_bytes = kb > 0 ? kb * 1024 : 0;
+    }
+    if (!gb_stack_base || limit_bytes == 0) {
+        return 0;
+    }
+    char here = 0;
+    const char *at = &here;
+    if (at > gb_stack_base) {
+        return 0;          /* not below the base: not the stack we measured */
+    }
+    return (size_t)(gb_stack_base - at) + reserve > (size_t)limit_bytes;
+}
+
 void gb_runtime_identity_set(const char *version, const char *revision) {
     snprintf(runtime_version_text, sizeof runtime_version_text, "%s", version ? version : "");
     snprintf(runtime_revision_text, sizeof runtime_revision_text, "%s", revision ? revision : "");
@@ -13855,7 +13884,28 @@ static Value eval_dir_call(AstExpr *expr) {
  * `args` (count must equal the parameter count). Takes ownership of the `args`
  * array and the values in it, freeing the array. Shared by ordinary calls
  * (eval_user_function) and the spawned-actor entry path (eval_run_actor). */
+/* A call made with this little stack left is refused, not made. Measured
+ * 2026-11-14: one gBASIC call took about 13 KB of C stack on x86, so ordinary
+ * recursion about 600 calls deep SEGFAULTED at the default 8 MB (about 150 at
+ * 2 MB, and fewer on s390x) -- no message, nothing an `on error` could catch.
+ * Refusing within this reserve leaves room to raise, report and unwind. */
+#define CALL_STACK_RESERVE (256 * 1024)
+
 static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *receiver) {
+    if (gb_stack_exhausted(CALL_STACK_RESERVE)) {
+        for (size_t i = 0; i < argc; i++) {
+            value_free(args[i]);
+        }
+        char message[320];
+        snprintf(message, sizeof message,
+                 "recursion too deep: calling `%s` would exhaust the stack "
+                 "(%ld KB, `ulimit -s`), so it is refused here rather than "
+                 "crashing -- raise the limit, or recurse less deeply",
+                 stmt->as.function.name ? stmt->as.function.name : "a function",
+                 gb_stack_limit_kb());
+        runtime_error_raise(message, 1005, "recursion");
+        return value_null();
+    }
     Env local_env = {0};
     Env *library_frame = library_frame_find(stmt->as.function.library);
     local_env.parent = library_frame ? library_frame : &global_env;
@@ -13974,8 +14024,9 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     frame.parent = current_error_frame;
     current_error_frame = &frame;
 
-    if (call_stack_depth < CALL_STACK_MAX) {
-        call_stack[call_stack_depth].name = stmt->as.function.name;
+    {
+        CallFrameInfo *slot = &call_stack[call_stack_depth % CALL_STACK_MAX];
+        slot->name = stmt->as.function.name;
         /* PATH FALLS BACK TO THE ROOT SOURCE. `source_path` is stamped at
          * registration ONLY for an IMPORTED function, so a root-program frame
          * carried NULL and `error.trace` reported `path: ""` for it -- measured:
@@ -13984,12 +14035,12 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
          * simply never asked for. A trace whose frames cannot say which file
          * they are in defeats the one job a trace has, which is locating a raise
          * several frames from where you are reading. */
-        call_stack[call_stack_depth].path = stmt->as.function.source_path
-                                         ? stmt->as.function.source_path
-                                         : root_source_path;
-        call_stack[call_stack_depth].library = stmt->as.function.library;
-        call_stack[call_stack_depth].line = current_line;
-        call_stack[call_stack_depth].column = current_column;
+        slot->path = stmt->as.function.source_path
+                   ? stmt->as.function.source_path
+                   : root_source_path;
+        slot->library = stmt->as.function.library;
+        slot->line = current_line;
+        slot->column = current_column;
     }
     call_stack_depth++;
 
@@ -18910,21 +18961,7 @@ static Value builtin_quote_value(Value value) {
 #define DECODE_STACK_RESERVE (128 * 1024)
 
 static int decode_stack_exhausted(void) {
-    static long limit_bytes = -1;
-    if (limit_bytes < 0) {
-        long kb = gb_stack_limit_kb();
-        limit_bytes = kb > 0 ? kb * 1024 : 0;
-    }
-    if (!gb_stack_base || limit_bytes == 0) {
-        return 0;
-    }
-    char here = 0;
-    const char *at = &here;
-    if (at > gb_stack_base) {
-        return 0;          /* not below the base: not the stack we measured */
-    }
-    size_t used = (size_t)(gb_stack_base - at);
-    return used + DECODE_STACK_RESERVE > (size_t)limit_bytes;
+    return gb_stack_exhausted(DECODE_STACK_RESERVE);
 }
 
 static int decode_depth_limit(void) {

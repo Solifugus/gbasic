@@ -16,6 +16,22 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### Recursion too deep for the stack raises instead of crashing (2026-11-14)
+
+- A gBASIC call takes about 13 KB of C stack on x86 and nothing guarded it:
+  recursion about 600 calls deep crashed the process with a segmentation fault
+  at the default 8 MB stack (about 150 at 2 MB), with no message and nothing
+  `on error` could catch. A call that would leave less than 256 KB of stack is
+  now refused with error 1005, source `recursion`, naming the function and the
+  stack size, and the program can catch it and go on. The depth reachable is
+  measured, about 480 calls at 8 MB on x86 and about 100 at 2 MB, and stated in
+  the reference.
+- The same change found an out-of-bounds read: the frame array behind
+  `error.trace` was written only for the first 256 frames while the depth kept
+  counting, so a raise deeper than that read past the array and printed frames
+  named `?` at 0:0. It is a ring now, and the innermost 64 frames are always
+  real.
+
 ### Decoding measures the stack instead of assuming a frame size (2026-11-14)
 
 - `decode`/`try_decode` refused a document past a depth cap derived from the

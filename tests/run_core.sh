@@ -258,6 +258,38 @@ idem_out="$(GBASIC_PATH=stdlib ./gbasic tests/file_modifier_idempotent.bas 2>&1)
 printf '%s' "$idem_out" | grep -qx 'mismatches: 0'
 check "{file}/{dir} idempotent, and still refuse a wrong type" $?
 
+# --- recursion too deep for the stack raises, never crashes -----------------
+# A gBASIC call takes about 13 KB of C stack on x86, and nothing guarded it:
+# ordinary recursion about 600 calls deep SEGFAULTED at the default 8 MB, 150
+# at 2 MB (2026-11-14) -- no message, nothing `on error` could catch. Calls now
+# measure the stack in use and refuse within a reserve of its limit. A golden
+# cannot say "did not crash"; the exit status and the caught error can.
+#   - 100 000 deep is caught as 1005 / "recursion" and the program goes on,
+#     with a trace of 64 real frames (a raise past 256 calls used to read the
+#     frame array out of bounds and print frames named `?`)
+#   - an uncaught one is a located runtime error and exit 1, not 139
+#   - the control: 100 deep still just returns
+rec_out="$(CALLS=100000 ./gbasic tests/recursion_guard_test.bas 2>&1)"; rec_st=$?
+[[ "$rec_st" -eq 0 ]] && printf '%s' "$rec_out" | grep -qx 'caught code=1005 source=recursion' \
+  && printf '%s' "$rec_out" | grep -qx 'trace frames=64 first=down last=down' \
+  && printf '%s' "$rec_out" | grep -qx 'and the program goes on'
+check "recursion 100000 deep is caught as 1005/recursion, 64 real frames, and the program goes on" $?
+rec_dir="$(mktemp -d)"; printf 'function down(n)\n    return down(n + 1)\nend function\nprint down(0)\n' > "$rec_dir/u.bas"
+rec_out="$(./gbasic "$rec_dir/u.bas" 2>&1)"; rec_st=$?
+[[ "$rec_st" -eq 1 ]] && printf '%s' "$rec_out" | head -1 | grep -q 'u.bas:2:5: recursion too deep: calling `down` would exhaust the stack'
+check "uncaught, it is a located runtime error and exit 1 (got $rec_st)" $?
+rm -rf "$rec_dir"
+rec_out="$(CALLS=100 ./gbasic tests/recursion_guard_test.bas 2>&1)"
+printf '%s' "$rec_out" | grep -qx 'returned 100'
+check "the control: recursion 100 deep still returns" $?
+if ( ulimit -s 2048 ) 2>/dev/null; then
+    rec_out="$( ( ulimit -s 2048; CALLS=100000 ./gbasic tests/recursion_guard_test.bas 2>&1 ) )"; rec_st=$?
+    [[ "$rec_st" -eq 0 ]] && printf '%s' "$rec_out" | grep -qx 'caught code=1005 source=recursion'
+    check "and at a 2 MB stack the same (exit $rec_st)" $?
+else
+    printf 'ok   SKIP recursion at 2 MB (this shell cannot set ulimit -s -- NOT measured)\n'
+fi
+
 printf 'core suite: %d passed / %d failed\n' "$pass" "$fail"
 # THE COUNTER FEEDS THE ONE EXIT AT THE BOTTOM, and it is written this way
 # because the obvious form was a `[[ "$fail" -eq 0 ]]` on this line -- which WAS

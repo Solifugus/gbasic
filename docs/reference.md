@@ -2642,6 +2642,26 @@ trace.
 `with lock` unlocks on error, and `without watchers` restores watcher behavior
 after its block.
 
+**Recursion is bounded by the stack, and going past it is an error, not a
+crash** *(after 0.10.0)*. Each gBASIC function call uses C stack (about 13 KB
+on x86, more on s390x), so the depth a program can recurse depends on
+`ulimit -s`: measured on x86, about 480 calls at the default 8 MB and about
+100 at 2 MB. A
+call that would leave less than 256 KB of stack is refused, and the call
+raises:
+
+- `error.code = 1005`
+- `error.source = "recursion"`
+- message: ``recursion too deep: calling `name` would exhaust the stack (8192 KB, `ulimit -s`), so it is refused here rather than crashing -- raise the limit, or recurse less deeply``
+
+It is an ordinary raise, so `on error` catches it and the program goes on,
+with `error.trace` holding the innermost 64 frames. Before this the process
+died with a segmentation fault and no message. Raising `ulimit -s` raises the
+depth; for data deeper than that, write the walk as a loop over an explicit
+array. `decode` and `try_decode` measure the same stack: a document too deeply
+nested for it is refused as *maximum nesting depth exceeded* rather than
+crashing, however much stack the program already holds when it decodes.
+
 ## Warnings
 
 A warning is advice, not a failure: the statement **completed**. The channel
