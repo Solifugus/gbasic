@@ -1505,6 +1505,42 @@ typedef struct Comp {
  * of everything before it. A newer minor may add to the body's end. */
 #define MANIFEST_SEAL (4 + SEAL)
 
+/* The old manifest, while a replace the filesystem refused is made in two
+ * steps. Recovery restores it when it finds it and no manifest. */
+#define MANIFEST_PREV ".prev"
+
+/* Install `tmp` as the manifest when renaming it over the current one was
+ * refused: move the current one aside to db.prev and make that durable, then
+ * rename `tmp` into the empty name. The caller flushes the directory and only
+ * then deletes db.prev (`*prev` names it). Every crash leaves a manifest or
+ * db.prev, never neither: until the aside is durable `db` stands, and from
+ * then until the install is, db.prev does and recovery restores it -- an open
+ * finding no manifest would otherwise create an empty store over the data.
+ * A stale db.prev (its deletion lost) is removed first, since a held one
+ * could refuse being replaced in turn. */
+static int manifest_aside(GsStore *db, const char *tmp, char **prev) {
+    char *p = gs_path_with(db->path, MANIFEST_PREV);
+    if (!p) return GS_IO;
+    int e = gsql_io_remove(db->io, p);
+    int rc = e && e != ENOENT ? ioerr(e) : GS_OK;
+    if (rc == GS_OK) rc = ioerr(gsql_io_rename(db->io, db->path, p));
+    if (rc == GS_OK) {
+        rc = ioerr(gsql_io_sync_dir(db->io, db->dir));
+        db->st.flushes++;
+        if (rc == GS_OK) {
+            rc = ioerr(gsql_io_rename(db->io, tmp, db->path));
+            /* no manifest now, but the old one is still whole: put it back,
+             * or leave it for the next open's recovery */
+            if (rc && gsql_io_rename(db->io, p, db->path)) db->failed = 1;
+        } else {
+            db->failed = 1;
+        }
+    }
+    if (rc) { free(p); return rc; }
+    *prev = p;
+    return GS_OK;
+}
+
 static int manifest_write(GsStore *db) {
     GsBuf b = {0};
     unsigned char hdr[GS_HEADER_FIXED + MANIFEST_SEAL];
@@ -1578,12 +1614,27 @@ static int manifest_write(GsStore *db) {
         db->st.flushes++;
         if (rc) db->failed = 1;
     }
-    if (rc == GS_OK) rc = ioerr(gsql_io_rename(db->io, tmp, db->path));
+    /* A replace the filesystem refuses (EACCES) is made in two steps, the old
+     * manifest moved aside first (manifest_aside). NTFS refuses to rename over
+     * a manifest the System process holds a reference to -- for over a
+     * minute, measured, and for every manifest after it once it starts; no
+     * retry outlasts that, while moving the held file aside and deleting it
+     * are both allowed (docs/windows_port_status.md §34). */
+    char *prev = NULL;
+    if (rc == GS_OK) {
+        int e = gsql_io_rename(db->io, tmp, db->path);
+        if (e == EACCES) rc = manifest_aside(db, tmp, &prev);
+        else rc = ioerr(e);
+    }
     if (rc == GS_OK) {
         rc = ioerr(gsql_io_sync_dir(db->io, db->dir));
         db->st.flushes++;
         if (rc) db->failed = 1;
     }
+    /* only once the new manifest's name is durable: before that, the old one
+     * set aside is what recovery falls back on (lsm_open_base) */
+    if (rc == GS_OK && prev) gsql_io_remove(db->io, prev);
+    free(prev);
     if (rc && rc != GS_IO) gsql_io_remove(db->io, tmp);
     free(tmp);
     gsbuf_free(&b);
@@ -1970,6 +2021,22 @@ static int lsm_open_base(const char *path, const GsOptions *opt, GsStore **out) 
     db->io = gs_lease_io(db->lease);
     GsqlFile *mf = NULL;
     int rc = gsql_io_open(db->io, path, 0, &mf);
+    if (rc == ENOENT) {
+        /* No manifest but the old one set aside: a crash between the two
+         * steps of a refused replace (manifest_aside). It is whole -- it was
+         * the manifest, durably -- and the new one never was. Put back and
+         * made durable before anything else, since creating a store here
+         * would discard the data it names. */
+        char *prev = gs_path_with(db->path, MANIFEST_PREV);
+        int e = prev ? gsql_io_rename(db->io, prev, db->path) : ENOMEM;
+        free(prev);
+        if (e == 0) {
+            e = gsql_io_sync_dir(db->io, db->dir);
+            rc = e ? e : gsql_io_open(db->io, path, 0, &mf);
+        } else if (e != ENOENT) {
+            rc = e;
+        }
+    }
     if (rc == ENOENT && opt && opt->create) {
         /* no manifest: creation never finished, or never began. A log without
          * a manifest naming it holds nothing committed, since no commit is

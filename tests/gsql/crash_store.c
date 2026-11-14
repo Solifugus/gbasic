@@ -181,6 +181,10 @@ int main(int argc, char **argv) {
     unsigned long long lo = strtoull(argv[3], NULL, 10), hi = lo;
     const char *dash = strchr(argv[3], '-');
     if (dash) hi = strtoull(dash + 1, NULL, 10);
+    /* GS_CRASH_REFUSE_REPLACE=1: every rename onto an existing name is refused
+     * (EACCES), as NTFS refuses one over a held file, so every manifest write
+     * takes the two-step replace and its crash points are crashed */
+    if (getenv("GS_CRASH_REFUSE_REPLACE") && atoi(getenv("GS_CRASH_REFUSE_REPLACE"))) gsql_io_sim_refuse_replace(1);
     GsqlCrashEngine ce = {E->name, a_open, a_commit, a_sync, a_read_all, a_close};
     GsqlCrashResult sum = {0};
     const char *reports = getenv("GSQL_CRASH_REPORTS");

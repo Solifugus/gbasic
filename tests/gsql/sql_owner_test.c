@@ -10,12 +10,12 @@
 #include "serialize_tags.h"
 #include "../../src/gsql/v3.h"
 
-#include <signal.h>
+#include "test_proc.h"
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 #include <unistd.h>
 
 static int checks, mismatches;
@@ -320,22 +320,18 @@ int main(int argc, char **argv) {
     }
     gsql_client_close(c);
 
-    /* the owner is this process's child: end it the planned way, and the
-     * next owner opens the same database */
+    /* end the owner the planned way (test_proc.h: SIGTERM to this process's
+     * child on POSIX, its linger on Windows), and the next owner opens the
+     * same database */
     if (owner > 0) {
-        kill(owner, SIGTERM);
-        int st;
-        waitpid(owner, &st, 0);
-        check(WIFEXITED(st) && WEXITSTATUS(st) == 0, "the owner did not stop cleanly on SIGTERM");
+        check(owner_end(owner), "the owner did not stop cleanly " OWNER_END_HOW);
     }
     if (gsql_client_open(db, &o, &c, &err) == 0) {
         EXPECT(c, "SELECT id, v, n FROM t ORDER BY v DESC", "ROWS 3, 'c', 0 | 2, 'b', 0 | 1, 'a', 5");
         pid_t again = gsql_client_started(c);
         gsql_client_close(c);
         if (again > 0) {
-            kill(again, SIGTERM);
-            int st;
-            waitpid(again, &st, 0);
+            owner_end(again);
         }
     } else {
         check(0, "a new owner could not open the database: %s", err.message);

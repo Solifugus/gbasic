@@ -1540,7 +1540,7 @@ int gb_child_start(char *const argv[], const char *cwd,
     /* Listening sockets go in the inherit list, inheritable only while the
      * launch runs: the rest of the time a listener is not inheritable, so no
      * other launch (one not using an explicit list) can carry it off. */
-    HANDLE socks[WIN_LAUNCH_EXTRA_MAX];
+    HANDLE socks[WIN_LAUNCH_EXTRA_MAX] = { 0 };
     size_t nsocks = options->share_count;
     if (nsocks > WIN_LAUNCH_EXTRA_MAX) {
         nsocks = WIN_LAUNCH_EXTRA_MAX;

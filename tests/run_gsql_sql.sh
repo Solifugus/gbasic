@@ -89,6 +89,25 @@ elif "$CC" -fsanitize=undefined -o "$work/probe" "$work/probe.c" 2>/dev/null &&
 fi
 bounded() { timeout -k 5 "$1" "${@:2}"; }
 
+# WINDOWS (MSYS2): the owner harnesses link platform_win32.c and Windows'
+# libraries, and an owner is a native process MSYS's pgrep cannot see (it is
+# not even installed), so the leftovers tier asks Windows, as run_gsql_module
+# does. The harnesses themselves say what differs (tests/gsql/test_proc.h).
+case "$(uname -s)" in MINGW*|MSYS*|CYGWIN*) native_win=1 ;; *) native_win=0 ;; esac
+if [ "$native_win" = 1 ]; then
+    PLATFORM_SRC=src/platform_win32.c
+else
+    PLATFORM_SRC=src/platform_posix.c
+fi
+find_owners() {   # an ERE over owners' command lines -> their pids, one a line
+    if [ "$native_win" = 1 ]; then
+        powershell.exe -NoProfile -Command "Get-CimInstance Win32_Process -Filter \"Name='gbasic.exe'\" | ForEach-Object { [string]\$_.ProcessId + ' ' + (\$_.CommandLine -replace '\"','') }" \
+            2>/dev/null | tr -d '\r' | grep -E -- "$1" | cut -d' ' -f1
+    else
+        pgrep -f -- "$1"
+    fi
+}
+
 # one test program's verdict line: the last line, "ok N checks, 0 mismatches"
 verdict() {
     local name=$1 file=$2 rc=$3
@@ -125,7 +144,8 @@ if "$CC" $FLAGS -g -O1 $SAN -o "$work/parse_test" tests/gsql/sql_parse_test.c sr
         2>"$work/build.err" &&
    "$CC" $FLAGS -g -o "$work/sql_test" tests/gsql/sql_test.c libgbasic.a $LIBS 2>>"$work/build.err" &&
    "$CC" $FLAGS -g -O1 $SAN -D_POSIX_C_SOURCE=200809L -o "$work/owner_test" tests/gsql/sql_owner_test.c \
-        src/gsql/client.c src/gsql/owner.c src/platform_posix.c $LAYER $ENGINE 2>>"$work/build.err" &&
+        src/gsql/client.c src/gsql/owner.c $PLATFORM_SRC $LAYER $ENGINE \
+        $([ "$native_win" = 1 ] && printf '%s' "$LIBS") 2>>"$work/build.err" &&
    "$CC" $FLAGS -g -O2 -D_POSIX_C_SOURCE=200809L -o "$work/stall_test" tests/gsql/sql_stall_test.c \
         libgbasic.a $LIBS 2>>"$work/build.err"; then
     pass "parse_test${SAN:+ (under ASan and UBSan)}, sql_test (linked to libgbasic.a) and owner_test"
@@ -135,7 +155,9 @@ else
     printf 'run_gsql_sql: FAILED (nothing below was run)\n'
     exit 1
 fi
-if ! grep -q 'gb_gsql_owner_main' <(nm -C ./gbasic 2>/dev/null); then
+gbasic_bin=./gbasic
+[ -e ./gbasic.exe ] && gbasic_bin=./gbasic.exe
+if ! grep -q 'gb_gsql_owner_main' <(nm -C "$gbasic_bin" 2>/dev/null); then
     fail "./gbasic has no gb_gsql_owner_main: G-SQL is not linked into the binary"
 fi
 
@@ -456,7 +478,7 @@ grep -E '^(GROUP BY|sort):' "$work/stall.out" | sed 's/^/       /'
 
 printf 'TIER leftovers: no owner outlives the suite\n'
 sleep 0.3
-left=$(pgrep -f -- "--gsql-owner $work/" | tr '\n' ' ')
+left=$(find_owners "--gsql-owner $work/" | tr '\n' ' ')
 if [ -z "$left" ]; then
     pass "no owner process is left"
 else

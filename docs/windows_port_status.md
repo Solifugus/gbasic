@@ -2100,3 +2100,151 @@ Linux (WSL), lean build: `run_net`, `run_web_pool`, `run_process` (with its
   platforms: the package is not installed.
 - **`run_web_hardening` on Windows**: it still needs `nc`.
 - **The stripped binary's size** with libssl.
+
+## 34. G-SQL's SQL harnesses on Windows, and a manifest swap NTFS refuses (2026-11-13)
+
+### The owner and stall harnesses run on Windows
+
+`run_gsql_sql`'s `owner` and `stall` tiers had never run on Windows. They
+link `src/platform_posix.c`, `fork`, and `waitpid` the owner.
+
+- `tests/gsql/test_proc.h` (new) is what the two harnesses need from a
+  process. `owner_end(pid)` ends an owner the planned way: SIGTERM on POSIX;
+  on Windows, the owner's linger, after which its exit code is read through a
+  process handle. An owner still running at the 20 s bound is killed, so a
+  failure leaves nothing behind.
+- `sql_stall_test.c`'s long reader runs on a thread on Windows (POSIX keeps
+  the `fork`).
+- `run_gsql_sql.sh` links `platform_win32.c` and Windows' libraries for
+  `owner_test`, and looks for `gb_gsql_owner_main` in `gbasic.exe`. It finds
+  leftover owners through `Win32_Process`, since MSYS's `pgrep` cannot see a
+  native process (as `run_gsql_module` already did).
+
+**A vacuous check on POSIX, fixed in passing.** An owner is NOT its client's
+child on POSIX either: the client forks an intermediate that calls `setsid`
+and forks the owner (`src/gsql/client.c`). `sql_owner_test.c`'s
+`waitpid(owner)` therefore failed with ECHILD, and the
+`WIFEXITED(st) && WEXITSTATUS(st) == 0` it then tested read an uninitialised
+`st`. "The owner stopped cleanly on SIGTERM" passed by accident and measured
+nothing. `owner_end` now sends SIGTERM and waits for the process to be gone.
+The first Linux run of the corrected check failed until it stopped treating
+the owner as a child.
+
+### Results
+
+| where | suite | result |
+|---|---|---|
+| Windows | `run_gsql_sql` | all checks passed, 553 s; `owner` 35 checks, `stall` 8 checks |
+| Windows | `run_gsql_module` | all checks passed, 151 s |
+| Linux (WSL) | `run_gsql_sql` | all checks passed |
+| Windows | `run_gsql_store` | rc 0, 1,134 s; the crash gate's nine modes, 0 violations |
+| Linux (WSL), same machine | `run_gsql_store` | rc 0, 1,114 s |
+
+The crash gate's time is the machine (two logical processors), not Windows.
+The same tier takes the same time under Linux on it.
+
+### FIXED: NTFS refuses the manifest swap, and the store failed
+
+The engine writes a new manifest to `db.tmp` and renames it over `db`
+(`manifest_write`, `src/gsql/lsm.c`). On Windows that rename is
+`SetFileInformationByHandle(FileRenameInfoEx, REPLACE_IF_EXISTS |
+POSIX_SEMANTICS)`, with `MoveFileEx` as the fallback (`src/gsql/io.c`).
+
+`store_test lsm 9 real DIR` failed intermittently: about 1 run in 10 with
+eight other store_tests running beside it, sometimes alone. Once it began, the
+first failure was followed by `commit answered IO` for every later commit,
+because the store fails and stops after an I/O error, as it should. The
+harness then walked a cursor that had never opened and crashed. It now checks
+`cursor_open` and reports the failure (`store_test.c`, the bulk tree).
+
+Traced through a copy of `io.c` (the source was not left changed), this is
+what was measured:
+
+- Every failure is the swap `db.tmp -> db`, refused with ERROR_ACCESS_DENIED
+  by both routes. The NTSTATUS (`RtlGetLastNtStatus`) is 0xC0000022,
+  STATUS_ACCESS_DENIED, from the rename itself; opening the source succeeded.
+- No user process has either file open: the Restart Manager finds none.
+  `NtQueryInformationFile(FileProcessIdsUsingFileInformation)` on `db` names
+  one process: **PID 4, System**. That is a kernel reference, such as a file
+  object kept for a section, or a filter driver's open. Nothing in user mode
+  can close it.
+- `db` still opens for DELETE with every share flag, its attributes are
+  plain (0x20), and a POSIX delete of it SUCCEEDS. NTFS lets the held file be
+  removed, but not replaced.
+- **It is not transient.** A bounded retry (1 to 100 ms backoff, about 2 s
+  in all, as Go's `robustio` and npm's `graceful-fs` do) waited out the full
+  bound on every refusal, and 26 of 40 loaded rounds still failed. Polled
+  afterwards, the System reference was still there **60 s later**, and the
+  rename was still refused. The retry was reverted. It cures nothing and
+  would add a 2 s stall to each refusal.
+- In a run that has started failing, **each new manifest is held in turn**.
+  Renaming the held `db` aside (`db -> db.aside`, no replace) succeeded,
+  `db.tmp -> db` then succeeded, and `db.aside` could be removed. The next
+  swap found the new `db` held by System again. Rounds that pass show no
+  refusal at all: it is a state a run enters, not a race on each swap.
+- Who takes the reference is NOT identified. `MsMpEng` (Defender) and the
+  search indexer are running and WSL is not. Naming the filter would need
+  administrator tools (`fltmc`, Process Explorer's kernel handles), which were
+  not used, and no exclusion or setting was changed.
+
+**Consequence.** On a stock Windows 11 machine, a G-SQL database can reach a
+state where every commit that writes a manifest (flush, compaction) fails
+and the store stops. That is a fail-stop, not corruption: nothing committed
+is lost, and the crash gate's invariants are untouched. But the database
+cannot be written until it is reopened, and possibly not even then.
+
+**The fix (2026-11-13, at Matthew's go-ahead): a two-step replace.** When
+renaming `db.tmp` over `db` answers `EACCES`, `manifest_aside`
+(`src/gsql/lsm.c`) does this:
+
+1. Removes any stale `db.prev`.
+2. Renames `db` to `db.prev`, and flushes the directory.
+3. Renames `db.tmp` to `db`.
+4. `manifest_write` then flushes the directory, and only after that removes
+   `db.prev`.
+
+Done blindly, this loses the store: a crash between steps 2 and 3 leaves no
+`db`, and an open that finds no manifest calls `create_db`. So
+`lsm_open_base` has a recovery rule: **no `db` but a `db.prev` means put
+`db.prev` back** and make that durable before anything else. `name_kind`
+did not need to change. `gs_db_owned` already accepts `db.prev`, since every
+`db.` name is the store's, and the open's sweep removes it once `db` exists.
+On a filesystem that never refuses, nothing changes. The design is recorded
+in `docs/gsql_storage_design.md` §3.4.
+
+The simulated layer can now refuse too. `gsql_io_sim_refuse_replace(1)`
+makes every rename onto an existing name answer `EACCES`, and `crash_store`
+turns it on with `GS_CRASH_REFUSE_REPLACE=1`. `run_gsql_store.sh` has two
+new crash specs that use it, `refuse power` and `refuse process`, so every
+manifest write in those runs takes the two-step path and is crashed at every
+step.
+
+| run | result |
+|---|---|
+| control: restore disabled, every replace refused (WSL) | power: 145 violations in 18,269 crashes; process: 45 in 15,248. Each one is "recovered the state after 0 commits", the empty store. |
+| the fix, every replace refused (WSL, probe) | power 56,159 crashes, process 28,390, 0 violations |
+| Linux (WSL), `run_gsql_store` | all checks passed. `refuse power` 56,159 crashes and `refuse process` 56,002, 0 violations; the other nine specs unchanged |
+| Windows, `run_gsql_store` | all checks passed, with the same counts |
+| Windows, real NTFS, `store_test lsm 9 real` with 8 loaded store_tests beside it, 40 rounds (`lsm.c` copied to print when the two-step path runs) | **0 of 40 rounds failed**. 30 rounds were refused at least once, 61 refusals in all, and every one was installed by the two-step replace. |
+
+That last row is the measurement that matters: the refusal is far more
+common under load than the earlier failure rate suggested (it was then
+about 1 round in 10 failing), and the store now carries on through it.
+
+This touches the engine the RISC-V and s390 ports share. On their
+filesystems the new path is taken only if a replace is refused, but their
+gates gain the two `refuse` crash specs (about 112,000 more crashes, so more
+time under `GATE_TIME_SCALE`).
+
+### What is NOT verified
+
+- A real power loss in the middle of the two-step replace on NTFS. Only the
+  simulator's crash images and the real loop's normal runs were measured.
+- Which kernel component holds the manifest, and whether a Defender
+  exclusion for the database directory would make it go away (not tried: a
+  security setting).
+- Whether a database outside `C:\gbt` (on another volume, or on a Dev Drive,
+  where Defender runs in performance mode) is affected.
+- `run_gsql_owner` (`owner_test.c`) on Windows. It still forks in twelve
+  places and passes its `ready_fd` as a number where Windows passes a handle.
+  It is not ported.

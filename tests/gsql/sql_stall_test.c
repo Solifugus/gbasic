@@ -4,7 +4,9 @@
  *
  * Through the real owner. Client A loads ROWS rows, then runs a GROUP BY and a
  * sort no index gives, each fetched to the end. Client B, a forked process with
- * its own connection, does point reads the whole time and records each one's
+ * its own connection (a thread on Windows, which has no fork: what is measured
+ * is the owner's slicing, and B's connection is its own either way), does
+ * point reads the whole time and records each one's
  * latency to a file. Asserted, as RATIOS so a uniformly slower machine changes
  * nothing:
  *
@@ -20,12 +22,15 @@
 #include "gsql_client.h"
 #include "v3.h"
 
-#include <signal.h>
+#include "test_proc.h"
+#ifndef _WIN32
+#include <sys/wait.h>   /* client B is this process's own forked child */
+#endif
+
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -130,6 +135,45 @@ static GsqlClient *connect_to(const char *gbasic, const char *db, int create) {
     return c;
 }
 
+/* Client B: point reads until told to stop (Windows; a forked B is killed),
+ * each one's (end, latency) appended to `path`. */
+typedef struct {
+    const char *gbasic;
+    const char *db;
+    const char *path;
+    long rows;
+    double t0;
+    volatile int stop;
+} Reader;
+
+static void reader_run(Reader *r) {
+    FILE *out = fopen(r->path, "wb");
+    if (!out) {
+        return;
+    }
+    GsqlClient *b = connect_to(r->gbasic, r->db, 0);
+    unsigned long long x = 1;
+    char sql[96];
+    while (!r->stop) {
+        x = x * 6364136223846793005ull + 1442695040888963407ull;
+        snprintf(sql, sizeof sql, "SELECT v FROM t WHERE id = %ld", (long)((x >> 33) % (unsigned long long)r->rows));
+        double s = now();
+        request(b, sql);
+        double rec[2] = { now() - r->t0, now() - s };
+        fwrite(rec, sizeof rec, 1, out);
+        fflush(out);
+    }
+    fclose(out);
+    gsql_client_close(b);
+}
+
+#ifdef _WIN32
+static DWORD WINAPI reader_thread(LPVOID arg) {
+    reader_run((Reader *)arg);
+    return 0;
+}
+#endif
+
 static char *text_field(const GsqlFrame *f, const char *name) {
     V3Field fl[8];
     long nf = v3_record_fields(f->body, f->length, fl, 8);
@@ -167,25 +211,19 @@ int main(int argc, char **argv) {
     char recpath[1100];
     snprintf(recpath, sizeof recpath, "%s/b.rec", argv[2]);
     double t0 = now();
+    Reader reader = { argv[1], db, recpath, rows, t0, 0 };
+#ifdef _WIN32
+    HANDLE bt = CreateThread(NULL, 0, reader_thread, &reader, 0, NULL);
+    if (!bt) {
+        die("start client B", NULL);
+    }
+#else
     pid_t pid = fork();
     if (pid == 0) {
-        FILE *out = fopen(recpath, "wb");
-        if (!out) {
-            _exit(2);
-        }
-        GsqlClient *b = connect_to(argv[1], db, 0);
-        unsigned long long x = 1;
-        char sql[96];
-        for (;;) {
-            x = x * 6364136223846793005ull + 1442695040888963407ull;
-            snprintf(sql, sizeof sql, "SELECT v FROM t WHERE id = %ld", (long)((x >> 33) % (unsigned long long)rows));
-            double s = now();
-            request(b, sql);
-            double rec[2] = { now() - t0, now() - s };
-            fwrite(rec, sizeof rec, 1, out);
-            fflush(out);
-        }
+        reader_run(&reader);   /* never returns: stop is never set in the child */
+        _exit(0);
     }
+#endif
 
     static const char *const longq[2] = {
         "SELECT g, count(*), max(v) FROM t GROUP BY g",
@@ -201,8 +239,14 @@ int main(int argc, char **argv) {
         to[k] = now() - t0;
         nanosleep(&quiet, NULL);
     }
+#ifdef _WIN32
+    reader.stop = 1;
+    WaitForSingleObject(bt, INFINITE);
+    CloseHandle(bt);
+#else
     kill(pid, SIGKILL);
     waitpid(pid, NULL, 0);
+#endif
 
     size_t cap = 1 << 22, n = 0;
     double *rec = malloc(cap * 2 * sizeof(double));
@@ -281,8 +325,7 @@ int main(int argc, char **argv) {
     pid_t owner = gsql_client_started(a);
     gsql_client_close(a);
     if (owner > 0) {
-        kill(owner, SIGTERM);
-        waitpid(owner, NULL, 0);
+        owner_end(owner);
     }
     printf("ok %d checks, %d mismatches\n", checks, mismatches);
     return mismatches ? 1 : 0;

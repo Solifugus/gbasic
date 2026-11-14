@@ -322,6 +322,15 @@ Behaviour that ext4's default `data=ordered` mode, or a particular SSD, happens 
 - **A cross-directory rename is refused (`EXDEV`) by the simulated layer** rather than modelled loosely. Its durability needs both directories synced, and no candidate needs it.
 - **Parity with the real layer is a tier of its own.** One seeded sequence of 3,000 operations over four files runs through both layers: opens of every kind, writes and reads at random offsets, truncation, sync, rename, remove, `sync_dir` and locking. Every answer, every byte read and every file's final contents must agree. A census requires each run to meet at least 50 errors and to read back at least 100 KB, so it cannot agree about nothing.
 - **Windows** (2026-11-10, `docs/windows_port_status.md` §32): `FlushFileBuffers`; rename and delete with POSIX semantics (`FileRenameInfoEx`, `FileDispositionInfoEx`), so a target another handle has open is replaced as on POSIX; and a `LockFileEx` on one byte far past the data, since Windows byte-range locks are mandatory. `run_gsql_io.sh`'s parity tier holds it to the simulator there.
+- **A replace the filesystem refuses** (2026-11-13, `docs/windows_port_status.md` §34). NTFS refuses, with access denied, to rename `db.tmp` over a manifest that the System process (PID 4) holds a reference to. No handle of ours is open on it. The hold was measured lasting over 60 seconds, and once it starts, every manifest after it is held too, so retrying does not help; moving the held file aside and deleting it are both allowed. So when that rename answers `EACCES`, the store installs the manifest in two steps (`manifest_aside` in `src/gsql/lsm.c`):
+  1. Remove any stale `db.prev`.
+  2. Rename `db` to `db.prev`, then `sync_dir`.
+  3. Rename `db.tmp` to `db`, then `sync_dir`.
+  4. Remove `db.prev`, and only then.
+
+  This has a window with no manifest, and an open that finds no manifest creates an empty store. So recovery has a rule of its own: **no `db` but a `db.prev` means put `db.prev` back** (renamed and made durable) before anything else. It is always whole, because it was the durable manifest, and the new one never was. Any other `db.prev` is garbage, which the open's sweep removes.
+
+  The simulated layer refuses every rename onto an existing name with `EACCES` while `gsql_io_sim_refuse_replace` is on, so the crash gate's `refuse` specs crash every step of this path. A control with the restore disabled gave 145 violations in 18,269 power-loss crashes and 45 in 15,248 process crashes, each a store reopened empty ("recovered the state after 0 commits"). With the restore, 0 in 56,159 and 28,390.
 
 ## 4. The version store (temporal history, §10D)
 

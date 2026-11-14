@@ -444,6 +444,11 @@ static int sim_close(GsqlFile *base) {
     return rc;
 }
 
+/* Every simulated layer's, crash images included, so a harness sets it once
+ * (gsql_io_sim_refuse_replace). */
+static int refuse_replace;
+void gsql_io_sim_refuse_replace(int on) { refuse_replace = on; }
+
 static int sim_rename(GsqlIo *io, const char *from, const char *to) {
     Sim *s = (Sim *)io;
     int rc = tick(s, K_RENAME);
@@ -455,6 +460,8 @@ static int sim_rename(GsqlIo *io, const char *from, const char *to) {
     if (at < 0) return ENOENT;
     if (s->view_names.items[at].inode == DIR_INODE) return EISDIR; /* not modelled: no caller renames one */
     if (strcmp(from, to) == 0) return 0;
+    /* NTFS refusing to replace a file something else holds (§3.4) */
+    if (refuse_replace && names_find(&s->view_names, to) >= 0) return EACCES;
     size_t inode = s->view_names.items[at].inode;
     Pend *p = pend_push(s, P_RENAME);
     if (!p) return ENOMEM;

@@ -183,28 +183,40 @@ specs=("process $P 40 200 8 2000 1 60 512" "power $L 40 200 8 2000 1 60 512"
        "torn $L 40 200 8 2000 1 60 512" "failed-sync $F 40 200 8 2000 1 60 512"
        "full-disk $D 40 200 8 2000 1 60 512" "torn 1-8 60 3000 24 2000 0 120 4096"
        "process $H 300 6 3 40 1 60 512" "power $H 300 6 3 40 1 60 512"
-       "bigmem power $L 40 200 8 2000 1 60 512")
+       "bigmem power $L 40 200 8 2000 1 60 512"
+       "refuse power $L 40 200 8 2000 1 60 512" "refuse process $P 40 200 8 2000 1 60 512")
+# `refuse`: every rename onto an existing name is refused (EACCES), as NTFS
+# refuses one over a manifest the System process holds (windows_port_status.md
+# §34), so every manifest write takes the two-step replace -- the old manifest
+# moved aside, the new one renamed in, the old one deleted -- and a crash
+# between the steps must leave a store recovery restores, never an empty one.
 # `bigmem`: a 1 MiB memtable. The 2,000-byte default flushes the memtable,
 # and so fsyncs the log, on nearly every commit, which MASKS a sync that does
 # nothing: a no-op `flush` passed every spec above, and passes this one too
 # under the old sampler (46,187 crashes, 0 violations); with the sampler's
 # just-after-a-sync points it is caught (131 violations).
 for i in "${!specs[@]}"; do
-    spec=${specs[$i]} tune=""
-    case "$spec" in bigmem\ *) spec=${spec#bigmem }; tune=1048576 ;; esac
+    spec=${specs[$i]} tune="" refuse=0
+    case "$spec" in
+        bigmem\ *) spec=${spec#bigmem }; tune=1048576 ;;
+        refuse\ *) spec=${spec#refuse }; refuse=1 ;;
+    esac
     # shellcheck disable=SC2086
     # only when wanted: an EMPTY GS_TUNE_A reads as 0, which is the engine's
     # own 32 MiB default, not the adapter's 2,000 bytes
     if [ -n "$tune" ]; then
-        GS_TUNE_A=$tune GSQL_CRASH_REPORTS=5 bounded 3600 "$work/crash_store" lsm $spec > "$work/crash.$i" 2>&1 &
+        GS_CRASH_REFUSE_REPLACE=$refuse GS_TUNE_A=$tune GSQL_CRASH_REPORTS=5 bounded 3600 "$work/crash_store" lsm $spec > "$work/crash.$i" 2>&1 &
     else
-        GSQL_CRASH_REPORTS=5 bounded 3600 "$work/crash_store" lsm $spec > "$work/crash.$i" 2>&1 &
+        GS_CRASH_REFUSE_REPLACE=$refuse GSQL_CRASH_REPORTS=5 bounded 3600 "$work/crash_store" lsm $spec > "$work/crash.$i" 2>&1 &
     fi
 done
 wait
 for i in "${!specs[@]}"; do
     big=""; spec=${specs[$i]}
-    case "$spec" in bigmem\ *) spec=${spec#bigmem }; big=", 1 MiB memtable" ;; esac
+    case "$spec" in
+        bigmem\ *) spec=${spec#bigmem }; big=", 1 MiB memtable" ;;
+        refuse\ *) spec=${spec#refuse }; big=", every replace refused" ;;
+    esac
     # shellcheck disable=SC2086
     set -- $spec
     last=$(tail -1 "$work/crash.$i")

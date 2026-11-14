@@ -2179,13 +2179,19 @@ int main(int argc, char **argv) {
     CHECK(rc == GS_OK, "committing the bulk txn answered %s", gs_status_name(rc));
     GsTxn *r;
     E->begin_read(db, &r);
-    GsCursor *c;
-    E->cursor_open(r, gss("bulk"), &c);
-    int pos;
-    size_t n = 0;
-    for (rc = E->first(c, &pos); rc == GS_OK && pos; rc = E->next(c, &pos)) n++;
-    CHECK(n == 6000, "the bulk tree holds %zu of 6000", n);
-    E->cursor_close(c);
+    /* the open is checked: when the bulk commit above failed there is no tree,
+       and walking a cursor that was never opened crashed the harness, which
+       hid the failure that mattered behind a segfault (2026-11-13, Windows) */
+    GsCursor *c = NULL;
+    rc = E->cursor_open(r, gss("bulk"), &c);
+    CHECK(rc == GS_OK, "opening the bulk tree answered %s", gs_status_name(rc));
+    if (rc == GS_OK) {
+        int pos;
+        size_t n = 0;
+        for (rc = E->first(c, &pos); rc == GS_OK && pos; rc = E->next(c, &pos)) n++;
+        CHECK(n == 6000, "the bulk tree holds %zu of 6000", n);
+        E->cursor_close(c);
+    }
     E->abort(r);
     CHECK(E->check(db, print_report, NULL) == GS_OK, "check after the bulk txn");
     GsStats st;

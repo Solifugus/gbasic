@@ -149,6 +149,11 @@ void gsql_io_sim_fail(GsqlIo *io, GsqlIoFault fault, unsigned nth);
  * harness tells "the engine never reached its Nth sync" from "it did, and
  * swallowed the error". */
 int gsql_io_sim_fault_armed(const GsqlIo *io, GsqlIoFault fault);
+/* While on, every simulated layer -- this process's, crash images included --
+ * refuses a rename onto an existing name with EACCES and changes nothing, as
+ * NTFS does to a file the System process holds (§3.4). It is how the crash
+ * harness reaches the store's two-step manifest replace on every write. */
+void gsql_io_sim_refuse_replace(int on);
 /* The seed that decides, after a failed sync, which of that file's pending
  * writes reached the disk and which were lost (rule 5). */
 void gsql_io_sim_seed(GsqlIo *io, uint64_t seed);
