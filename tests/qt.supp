@@ -100,3 +100,129 @@
    fun:_ZN18QRasterPaintEngine4fillERK11QVectorPathRK6QBrush
    ...
 }
+
+# MENU BARS, TAB BARS AND GRID LAYOUTS (run_qt_backend's menu, tabs and cells
+# fixtures, 2026-11-14), reproduced by the probe's main window. --track-origins
+# put each value in a heap block QMenuBar's or QGridLayout's own constructor
+# allocated. Most are in unnamed functions, so each entry names the sizing
+# method above them.
+{
+   qt-s390x-qtabbar-minimumsizehint-cond
+   Memcheck:Cond
+   fun:_ZNK7QTabBar15minimumSizeHintEv
+   ...
+}
+
+{
+   qt-s390x-qgridlayout-setgeometry-cond
+   Memcheck:Cond
+   obj:*/libQt6Widgets.so*
+   fun:_ZN11QGridLayout11setGeometryERK5QRect
+   ...
+}
+
+{
+   qt-s390x-qgridlayout-hasheightforwidth-cond
+   Memcheck:Cond
+   obj:*/libQt6Widgets.so*
+   fun:_ZThn16_NK11QGridLayout17hasHeightForWidthEv
+   ...
+}
+
+{
+   qt-s390x-qgridlayout-minimumsize-cond
+   Memcheck:Cond
+   obj:*/libQt6Widgets.so*
+   obj:*/libQt6Widgets.so*
+   fun:_ZNK11QGridLayout11minimumSizeEv
+   ...
+}
+
+{
+   qt-s390x-qgridlayout-sizehint-cond
+   Memcheck:Cond
+   obj:*/libQt6Widgets.so*
+   obj:*/libQt6Widgets.so*
+   fun:_ZNK11QGridLayout8sizeHintEv
+   ...
+}
+
+{
+   qt-s390x-qmenubar-minimumsizehint-cond
+   Memcheck:Cond
+   obj:*/libQt6Widgets.so*
+   fun:_ZNK8QMenuBar15minimumSizeHintEv
+   ...
+}
+
+{
+   qt-s390x-qmenubar-sizehint-cond
+   Memcheck:Cond
+   obj:*/libQt6Widgets.so*
+   fun:_ZNK8QMenuBar8sizeHintEv
+   ...
+}
+
+{
+   qt-s390x-qmenubar-heightforwidth-cond
+   Memcheck:Cond
+   obj:*/libQt6Widgets.so*
+   obj:*/libQt6Widgets.so*
+   fun:_ZNK8QMenuBar14heightForWidthEi
+   ...
+}
+
+{
+   qt-s390x-qmenubar-event-cond
+   Memcheck:Cond
+   obj:*/libQt6Widgets.so*
+   obj:*/libQt6Widgets.so*
+   fun:_ZN8QMenuBar5eventEP6QEvent
+   ...
+}
+
+# THE BROADEST ENTRY, said as such: the menu bar's private sizing again (the
+# same unnamed function; its value from QMenuBar's constructor), reached
+# through the generic event path of a widget's first show, so nothing names
+# the menu bar here. Anchored on that whole path to keep it as narrow as the
+# report allows.
+{
+   qt-s390x-pending-resize-event-cond
+   Memcheck:Cond
+   obj:*/libQt6Widgets.so*
+   obj:*/libQt6Widgets.so*
+   fun:_ZN7QWidget5eventEP6QEvent
+   fun:_ZN19QApplicationPrivate13notify_helperEP7QObjectP6QEvent
+   fun:_ZN16QCoreApplication15notifyInternal2EP7QObjectP6QEvent
+   fun:_ZN14QWidgetPrivate30sendPendingMoveAndResizeEventsEbb
+   ...
+}
+
+# the same sizing with a second unnamed frame between (gBASIC's menu fixture
+# reaches QMenuBar::sizeHint two frames down; the probe's window, one)
+{
+   qt-s390x-qmenubar-sizehint-deeper-cond
+   Memcheck:Cond
+   obj:*/libQt6Widgets.so*
+   obj:*/libQt6Widgets.so*
+   fun:_ZNK8QMenuBar8sizeHintEv
+   ...
+}
+
+{
+   qt-s390x-qmenubar-minimumsizehint-deeper-cond
+   Memcheck:Cond
+   obj:*/libQt6Widgets.so*
+   obj:*/libQt6Widgets.so*
+   fun:_ZNK8QMenuBar15minimumSizeHintEv
+   ...
+}
+
+# a grid inside a box layout asks the grid which ways it expands
+{
+   qt-s390x-qgridlayout-expandingdirections-cond
+   Memcheck:Cond
+   obj:*/libQt6Widgets.so*
+   fun:_ZNK11QGridLayout19expandingDirectionsEv
+   ...
+}

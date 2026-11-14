@@ -117,11 +117,12 @@ reader sees.
   at most 10, keeping every request inside the clients' 30 s timeout (40 s at
   100x timed out), and the incremental-read tier's chunks are spaced by it.
 - On the s390x VM valgrind reported "conditional jump on uninitialised value"
-  inside Qt's own text shaping, layout sizing, line editing, image scaling and
-  raster filling under every Qt suite. `tests/qt_valgrind_probe.cpp`, a window
-  built as gBASIC builds one with no gBASIC in it, reproduces all nine places,
-  and `--track-origins` put every value in a Qt allocation; nothing was an
-  invalid read or write. `tests/qt.supp` suppresses those nine, narrowly, and
+  inside Qt's own text shaping, layout sizing (forms, grids, menu bars, tab
+  bars), line editing, image scaling and raster filling under every Qt suite.
+  `tests/qt_valgrind_probe.cpp`, windows built as gBASIC builds them with no
+  gBASIC in them, reproduces every one, and `--track-origins` put every value
+  in a Qt allocation; nothing was an invalid read or write. `tests/qt.supp`
+  suppresses them (22 entries, each named by the Qt function involved), and
   only on s390x (`tests/valgrind_tier.sh`), since there it would also hide
   uninitialised text passed into Qt; x86 keeps the full check. The VM's
   "fixture wrote to stderr" was Qt's warning about a `C` locale: ssh forwards

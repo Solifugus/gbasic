@@ -17,13 +17,21 @@
 // button's menu arrow painted (an unnamed function under
 // QRasterPaintEngine::fillPolygon). --track-origins put every one of the
 // uninitialised values in a Qt allocation: a local of internalSetText, a local
-// of trueMatrix, a heap block under Qt's own painting. Whether it is Qt's s390x build or
+// of trueMatrix, a heap block under Qt's own painting. And run_qt_backend's
+// menu, tabs and cells fixtures added the sizing of a menu bar, a tab bar and
+// a grid layout, their values allocated by QMenuBar's and QGridLayout's own
+// constructors; a main window with a menu, a tab widget and a grid are here. Whether it is Qt's s390x build or
 // valgrind's s390x support was not separated.
 //
 //   g++ -o probe tests/qt_valgrind_probe.cpp $(pkg-config --cflags --libs Qt6Widgets)
 //   QT_QPA_PLATFORM=offscreen valgrind --suppressions=tests/qt.supp ./probe
 #include <QApplication>
 #include <QFormLayout>
+#include <QGridLayout>
+#include <QLabel>
+#include <QMainWindow>
+#include <QMenuBar>
+#include <QTabWidget>
 #include <QHBoxLayout>
 #include <QImage>
 #include <QMenu>
@@ -78,6 +86,27 @@ int main(int argc, char **argv) {
     tool.setText("Run");
     tool.show();
     (void)tool.grab();
+    // a main window with a menu bar, a tab widget and a grid of cells
+    QMainWindow main;
+    main.menuBar()->addMenu("File")->addAction("Open");
+    auto *tabs = new QTabWidget;
+    auto *page = new QWidget;
+    auto *grid = new QGridLayout(page);
+    grid->addWidget(new QLabel("a"), 0, 0);
+    grid->addWidget(new QLabel("b"), 0, 1);
+    grid->addWidget(new QLabel("c"), 1, 0);
+    tabs->addTab(page, "First");
+    // and a grid inside a box layout, as gBASIC's `cells` builds it
+    auto *second = new QWidget;
+    auto *box = new QVBoxLayout(second);
+    auto *cells = new QWidget;
+    auto *cgrid = new QGridLayout(cells);
+    cgrid->addWidget(new QLineEdit("x"), 0, 0);
+    cgrid->addWidget(new QLineEdit("y"), 0, 1);
+    box->addWidget(cells);
+    tabs->addTab(second, "Second");
+    main.setCentralWidget(tabs);
+    main.show();
     QTimer::singleShot(200, &app, &QApplication::quit);
     return app.exec();
 }
