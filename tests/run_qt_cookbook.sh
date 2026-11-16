@@ -22,6 +22,8 @@
 # precisely the trap §0.14 records, where a copy hand-installed in a developer's
 # home made the whole thing appear to work.
 . "$(dirname "$0")/portable.sh"
+. "$(dirname "$0")/ui_backend.sh"
+ui_each_backend "$0" "$@"
 export QT_QPA_PLATFORM=offscreen
 export GBASIC_SYNTAX_PATH=editors/kate
 
@@ -41,6 +43,13 @@ cookbook_recipe_skip() {
     esac
     return 1
 }
+
+# A RECIPE USING A GROUP THE BACKEND UNDER TEST LACKS is refused by name
+# (docs/ui_design.md §6) and skipped here by that sentence, as
+# tests/ui_backend.sh's ui_group_refused does for the examples: a backend
+# with the group cannot produce it.
+COOKBOOK_SKIP_PATTERN='needs `[a-z_]+`, which the [a-z_]+ backend does not have -- ask ui\.can\('
+COOKBOOK_SKIP_REASON='the GUI backend under test lacks a capability group the recipe uses'
 
 COOKBOOK=qt
 RECIPE_GLOB='examples/qt_cookbook/*.bas'

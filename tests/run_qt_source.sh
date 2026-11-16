@@ -61,6 +61,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -90,7 +92,7 @@ fi
 # nothing to ask what is highlighting a part, so the tiers that ask are
 # skipped by name; the premise is the build's own link line, so a
 # highlighter that broke on a build that has one still fails (2026-11-11).
-printf 'TIER layout: the definition this repo ships, in the shape the engine wants\n'
+printf 'TIER [N] layout: the definition this repo ships, in the shape the engine wants\n'
 if [ -f editors/kate/syntax/gbasic.xml ]; then
     if cmp -s editors/kate/gbasic.xml editors/kate/syntax/gbasic.xml; then
         pass "editors/kate/syntax/gbasic.xml is make's copy of the one definition"
@@ -103,7 +105,8 @@ fi
 export GBASIC_SYNTAX_PATH=editors/kate
 
 # ------------------------------------------------------------------ SEMANTICS
-printf 'TIER semantics: the vocabulary, the oracle, binding, the builder\n'
+printf 'TIER [C] semantics: the vocabulary, the oracle, binding, the builder\n'
+if ui_tier_needs highlighting; then   # needs highlighting
 if ! premise_highlighter_built; then
     printf '  SKIP (this build has no KSyntaxHighlighting -- the vocabulary, the oracle and binding was NOT measured)\n'
 else
@@ -138,11 +141,13 @@ else
     fi
 fi
 fi   # premise_highlighter_built
+fi   # tier semantics
 
 # ------------------------------------------------------------- COLOUR
 # THE CLAIM gBASIC CANNOT MAKE. Both halves in one process, so the comparison
 # does not rest on two environments being otherwise identical.
-printf 'TIER colour: the text really is formatted differently (C++, not gBASIC)\n'
+printf 'TIER [Q] colour: the text really is formatted differently (C++, not gBASIC)\n'
+if ui_tier_qt; then   # Qt's own
 if ! command -v g++ >/dev/null 2>&1; then
     printf '  SKIP (no C++ compiler -- whether the text is COLOURED was NOT measured)\n'
 elif [ ! -d /usr/include/KF6/KSyntaxHighlighting ]; then
@@ -191,12 +196,14 @@ else
         fi
     fi
 fi
+fi   # tier colour
 
 # ------------------------------------------------- WHERE THE DEFINITION CAME FROM
 # THE TIER THAT WOULD HAVE CAUGHT THE TRAP. With the user's own data directory
 # moved aside, the definition must come from the file THIS REPO ships -- which
 # is the only thing a machine other than this one has.
-printf 'TIER definition source: it comes from the repo, not from this developer\n'
+printf 'TIER [C] definition source: it comes from the repo, not from this developer\n'
+if ui_tier_needs highlighting; then   # needs highlighting
 cat > "$work/whence.bas" <<'BAS'
 window w( title: "x", width: 400, height: 300 )
     column
@@ -244,6 +251,7 @@ else
     fi
 fi
 fi   # premise_highlighter_built
+fi   # tier definition source
 
 # --------------------------------------------------------------- RELOCATED
 # A DOWNLOAD IS NOT AN INSTALL, and the obvious implementation gets that wrong
@@ -262,7 +270,8 @@ fi   # premise_highlighter_built
 # GBASIC_SYNTAX_PATH, since this suite exports one and a download has none; and
 # an empty XDG_DATA_HOME, since a developer's own hand-installed copy is
 # exactly what made the original trap invisible.
-printf 'TIER relocated: a moved tree finds its own definition, with no environment\n'
+printf 'TIER [C] relocated: a moved tree finds its own definition, with no environment\n'
+if ui_tier_needs highlighting; then   # needs highlighting
 if ! premise_highlighter_built; then
     printf '  SKIP (this build has no KSyntaxHighlighting -- relocation was NOT measured)\n'
 else
@@ -298,6 +307,7 @@ else
     fi
 fi
 fi   # premise_highlighter_built
+fi   # tier relocated
 
 # ------------------------------------------------------------------ WARNING
 # A MISSING DEFINITION IS A WARNING AND NOT A RAISE, which is the decision
@@ -306,7 +316,7 @@ fi   # premise_highlighter_built
 # worse answer than saying so -- the position `odbc.connect` takes on a driver
 # that needs ClientCharset, and for the identical reason, that the failure is
 # SILENT and so there is nothing on screen to attach a hint to.
-printf 'TIER warning: an absent definition is said out loud, and the editor still works\n'
+printf 'TIER [C] warning: an absent definition is said out loud, and the editor still works\n'
 set +e
 XDG_DATA_HOME="$work/empty-home" GBASIC_SYNTAX_PATH="$work/no-such-dir" \
     QT_QPA_PLATFORM=offscreen timeout -k 5 60 ./gbasic --line-buffered \
@@ -360,7 +370,8 @@ else
 fi
 
 # ------------------------------------------------------------------- DEGRADE
-printf 'TIER degrade: no display at all\n'
+printf 'TIER [C] degrade: no display at all\n'
+if ui_tier_needs highlighting; then   # needs highlighting
 set +e
 nodisplay timeout -k 5 60 ./gbasic --line-buffered "$work/whence.bas" \
     > "$work/deg.out" 2> "$work/deg.err"
@@ -372,6 +383,7 @@ else
     tail -3 "$work/deg.err"
     fail "no display gave exit $deg_rc (§0.3: it must be a sentence, never an abort)"
 fi
+fi   # tier [C] degrade
 
 # ------------------------------------------------------------------ VALGRIND
 # ACCESS-ONLY, the policy run_qt_backend established and for the reason it
@@ -409,7 +421,8 @@ fi
 # matches -- and the tier asserts that, by requiring the fixture to produce the
 # same checks either way, so a build where the setting changed the program
 # would fail rather than pass quietly.
-printf 'TIER valgrind: no invalid access while an editor is highlighted\n'
+printf 'TIER [C] valgrind: no invalid access while an editor is highlighted\n'
+if ui_tier_needs highlighting; then   # needs highlighting
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access in the editor was NOT measured)\n'
 elif ! premise_highlighter_built; then
@@ -455,6 +468,7 @@ else
         pass "no invalid access across construction, highlighting and teardown"
     fi
 fi
+fi   # tier valgrind
 
 if [ "$status" = "0" ]; then
     printf 'run_qt_source: all checks passed\n'

@@ -23,6 +23,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -37,7 +39,7 @@ if ! build_has qt; then
     exit 0
 fi
 
-printf 'TIER semantics: lists, the difference, typing, clearing and refusals\n'
+printf 'TIER [C] semantics: lists, the difference, typing, clearing and refusals\n'
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 60 \
     ./gbasic --line-buffered tests/qt_keys_test.bas \
@@ -82,7 +84,7 @@ else
     fi
 fi
 
-printf 'TIER valgrind: no invalid access across the presses and the lists\n'
+printf 'TIER [C] valgrind: no invalid access across the presses and the lists\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 else

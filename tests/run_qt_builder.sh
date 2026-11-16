@@ -81,6 +81,9 @@
 . "$(dirname "$0")/portable.sh"
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -127,14 +130,14 @@ report() {
     pass "$label: $oks checks, 0 mismatches"
 }
 
-printf 'TIER refusals: the declaration own rules, over a built record\n'
+printf 'TIER [N] refusals: the declaration own rules, over a built record\n'
 set +e
 out=$(GBASIC_PATH=stdlib ./gbasic tests/qt_check_test.bas 2>&1)
 rc=$?
 set -e
 report "qt_check_test" "$out" "$rc"
 
-printf 'TIER agreement: every declared window in the tree, through the RECORD adapter\n'
+printf 'TIER [N] agreement: every declared window in the tree, through the RECORD adapter\n'
 # Lifted mechanically rather than listed, so a new fixture is covered without
 # anybody remembering to extend this -- the glob-discovery argument run_all.sh
 # makes, applied to declarations.
@@ -177,7 +180,7 @@ else
     report "agreement over $nfiles files" "$out" "$rc"
 fi
 
-printf 'TIER one_copy: the rules live in exactly one place\n'
+printf 'TIER [N] one_copy: the rules live in exactly one place\n'
 # The direction that drifts SILENTLY is a second table that currently agrees,
 # which no behavioural check can see.
 rules_files=$(grep -rln 'win_container_words' --include='*.c' --include='*.h' src include | sort | tr '\n' ' ')
@@ -305,7 +308,7 @@ for f in src/frontend.c src/modules/ui.c; do
     fi
 done
 
-printf 'TIER open: the check runs whether or not anybody called it\n'
+printf 'TIER [C] open: the check runs whether or not anybody called it\n'
 cat > "$work/at_open.bas" <<'EOF'
 program main()
     on error goto handle
@@ -332,7 +335,8 @@ else
     fail "ui.open did not refuse a part with no name"
 fi
 
-printf 'TIER built: a window no declaration could write, and PARITY with one\n'
+printf 'TIER [C] built: a window no declaration could write, and PARITY with one\n'
+if ui_tier_needs windows; then   # needs windows
 if ./gbasic -e 'print 1' >/dev/null 2>&1 || true; then :; fi
 set +e
 probe=$(QT_QPA_PLATFORM=offscreen ./gbasic tests/qt_nodisplay_test.bas 2>&1)
@@ -346,8 +350,9 @@ else
     set -e
     report "qt_builder_test" "$out" "$rc"
 fi
+fi   # tier built
 
-printf 'TIER degrading: ui.check ANSWERS where everything else refuses\n'
+printf 'TIER [C] degrading: ui.check ANSWERS where everything else refuses\n'
 # It needs no Qt BY DESIGN, so a build without Qt must still validate a built
 # window -- the `web.routes` property, which is what let the declaration ship
 # before any Qt existed. Asserted against THIS build's behaviour when Qt is
@@ -383,7 +388,8 @@ else
     fail "ui.check did not answer without a display"
 fi
 
-printf 'TIER valgrind\n'
+printf 'TIER [C] valgrind\n'
+if ui_tier_needs windows; then   # needs windows
 if vg_available; then
     # NO `timeout` IN FRONT OF IT: `vg_run_access_only` is a shell FUNCTION and
     # timeout execs a program, which reports 127 -- run_odbc.sh's trap, and
@@ -421,6 +427,7 @@ if vg_available; then
 else
     printf '  SKIP valgrind (unavailable)\n'
 fi
+fi   # tier valgrind
 
 if [ "$status" -eq 0 ]; then
     printf 'run_qt_builder: all checks passed\n'

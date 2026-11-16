@@ -44,6 +44,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -57,7 +59,7 @@ fail() { printf '  FAIL %s\n' "$1"; status=1; }
 # NOTHING NEW IS SPELLED, so this is the standing zero-conflict claim rather
 # than a cost: the verb takes a third argument and the record carries a name a
 # builder could always set.
-printf 'TIER grammar: bison still reports zero conflicts\n'
+printf 'TIER [N] grammar: bison still reports zero conflicts\n'
 if ! command -v bison >/dev/null 2>&1; then
     printf '  SKIP (no bison -- the grammar cost was NOT measured)\n'
 else
@@ -76,7 +78,7 @@ fi
 # RUNS WHETHER OR NOT QT IS IN THE BUILD, being a claim about the load-time
 # pass: a `tab` may now carry a name, and the containers that cannot be
 # reconciled are refused BY NAME rather than silently doing nothing.
-printf 'TIER declaration: a named tab is admitted, and the record rules hold\n'
+printf 'TIER [N] declaration: a named tab is admitted, and the record rules hold\n'
 decl() {                        # label, window body, expected fragment ("" = accept)
     cat > "$work/d.bas" <<BAS
 window app( title: "D", width: 300, height: 200 )
@@ -133,7 +135,7 @@ decl "and a named tab with no caption is still refused" '    tabs book
 # happens to refuse -- and valgrind reports 21 invalid reads, which is the
 # tier's own stated reason for existing. So the two halves are proven by
 # different tiers rather than both resting on this one.
-printf 'TIER drop: the dropped child is deleted, not merely unhooked\n'
+printf 'TIER [N] drop: the dropped child is deleted, not merely unhooked\n'
 dropfn="$(sed -n '/^extern "C" int gb_qt_child_drop/,/^}/p' src/modules/qt_backend.cpp)"
 if printf '%s' "$dropfn" | grep -q 'delete w;' \
    && printf '%s' "$dropfn" | grep -q 'setParent(nullptr)'; then
@@ -151,7 +153,8 @@ else
 fi
 
 # -------------------------------------------------------------- SEMANTICS
-printf 'TIER semantics: kept, built, dropped, recaptioned and reordered\n'
+printf 'TIER [C] semantics: kept, built, dropped, recaptioned and reordered\n'
+if ui_tier_needs windows; then   # needs windows
 if ! build_has qt; then
     printf '  SKIP (no Qt in this build -- the reconcile was NOT measured)\n'
 else
@@ -188,9 +191,11 @@ else
         fi
     fi
 fi
+fi   # tier semantics
 
 # -------------------------------------------------------------- VALGRIND
-printf 'TIER valgrind: no invalid access across a reconcile that deletes\n'
+printf 'TIER [C] valgrind: no invalid access across a reconcile that deletes\n'
+if ui_tier_needs windows; then   # needs windows
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 elif ! build_has qt; then
@@ -230,6 +235,7 @@ else
         pass "no invalid access across a grow, a reorder and a delete"
     fi
 fi
+fi   # tier valgrind
 
 if [ "$status" = "0" ]; then
     printf 'run_qt_children: all checks passed\n'

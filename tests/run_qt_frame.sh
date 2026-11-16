@@ -76,6 +76,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 # THE BUILD IS CHECKED, the lesson §0.29's perturbation round paid for: a failed
 # `make` here would leave the suite running the PREVIOUSLY BUILT binary and
@@ -93,7 +95,7 @@ pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; status=1; }
 
 # ------------------------------------------------------------------ GRAMMAR
-printf 'TIER grammar: the one new production costs nothing\n'
+printf 'TIER [N] grammar: the one new production costs nothing\n'
 if ! command -v bison >/dev/null 2>&1; then
     printf '  SKIP (no bison -- the grammar cost was NOT measured)\n'
 else
@@ -110,7 +112,7 @@ fi
 
 # -------------------------------------------------------------- DECLARATION
 # RUNS WHETHER OR NOT QT IS IN THE BUILD: claims about the load-time pass.
-printf 'TIER declaration: where the furniture may go, and what it must carry\n'
+printf 'TIER [N] declaration: where the furniture may go, and what it must carry\n'
 decl() {                        # label, window body, expected fragment ("" = accept)
     cat > "$work/d.bas" <<BAS
 window app( title: "D", width: 400, height: 300 )
@@ -227,7 +229,8 @@ decl "two status bars are refused" '    status
     end status' "a window has one"
 
 # ------------------------------------------------------------------ SEMANTICS
-printf 'TIER semantics: the areas, the tabbing, the bars and the saved layout\n'
+printf 'TIER [C] semantics: the areas, the tabbing, the bars and the saved layout\n'
+if ui_tier_needs docking; then   # needs docking
 if ! build_has qt; then
     printf '  SKIP (no Qt in this build -- the furniture was NOT measured)\n'
 else
@@ -266,6 +269,7 @@ else
         fi
     fi
 fi
+fi   # tier semantics
 
 # ------------------------------------------------------------- ROOT IS ASKED
 # THE CONTROL ON THE WHOLE INCREMENT, and it is a SOURCE claim because it
@@ -273,7 +277,7 @@ fi
 # identically for everything the declaration below the root can express, so
 # "an ordinary window still works" passes either way. What must be true is that
 # the frame is built ONLY when the declaration asks.
-printf 'TIER root: a main window is built only when the declaration asks\n'
+printf 'TIER [C] root: a main window is built only when the declaration asks\n'
 asks=$(grep -c 'needs_frame = 1' src/modules/ui.c || true)
 words=$(grep -c 'strcmp(iw, "docks") == 0' src/modules/ui.c || true)
 if [ "${asks:-0}" -lt 1 ] || [ "${words:-0}" -lt 1 ]; then
@@ -319,7 +323,8 @@ BAS
 fi
 
 # -------------------------------------------------------------- VALGRIND
-printf 'TIER valgrind: no invalid access across docks, a float and a restore\n'
+printf 'TIER [C] valgrind: no invalid access across docks, a float and a restore\n'
+if ui_tier_needs docking; then   # needs docking
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 elif ! build_has qt; then
@@ -369,6 +374,7 @@ else
         pass "and nothing was left running afterwards"
     fi
 fi
+fi   # tier valgrind
 
 if [ "$status" = "0" ]; then
     printf 'run_qt_frame: all checks passed\n'

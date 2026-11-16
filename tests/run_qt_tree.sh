@@ -43,6 +43,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -53,7 +55,7 @@ pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; status=1; }
 
 # ------------------------------------------------------------------ GRAMMAR
-printf 'TIER grammar: bison still reports zero conflicts\n'
+printf 'TIER [N] grammar: bison still reports zero conflicts\n'
 if ! command -v bison >/dev/null 2>&1; then
     printf '  SKIP (no bison -- the grammar cost was NOT measured)\n'
 else
@@ -70,7 +72,7 @@ fi
 
 # -------------------------------------------------------------- DECLARATION
 # RUNS WHETHER OR NOT QT IS IN THE BUILD: claims about the load-time pass.
-printf 'TIER declaration: a tree shows, is named, and holds fields\n'
+printf 'TIER [N] declaration: a tree shows, is named, and holds fields\n'
 decl() {                        # label, window body, expected fragment ("" = accept)
     cat > "$work/d.bas" <<BAS
 window app( title: "D", width: 300, height: 200 )
@@ -133,7 +135,7 @@ decl "a tree with no depth field is admitted (a flat one)" '    tree files to sh
     end tree' ""
 
 # -------------------------------------------------------------- SEMANTICS
-printf 'TIER semantics: the rows, the depth, the selection and the refresh\n'
+printf 'TIER [C] semantics: the rows, the depth, the selection and the refresh\n'
 if ! build_has qt; then
     printf '  SKIP (no Qt in this build -- the tree was NOT measured)\n'
 else
@@ -170,7 +172,7 @@ else
 fi
 
 # -------------------------------------------------------------- VALGRIND
-printf 'TIER valgrind: no invalid access across a populate and a refresh\n'
+printf 'TIER [C] valgrind: no invalid access across a populate and a refresh\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 elif ! build_has qt; then

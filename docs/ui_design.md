@@ -1,6 +1,6 @@
 # `ui.` — one GUI module, more than one backend
 
-**Status: ruled on 2026-11-16; push A (§8 steps 1–3: the rename, the vocabulary, the theme record) built and pushed the same day (`eb783aa8`), and Studio migrated onto it (gbasic-studio `21246fa`). Step 4, the split, is built and pushed (`ffa9d221`), and step 5, `ui.can`, is built (§8 records how each departs from the plan). Step 6 is not built.** Written 2026-11-16 against gBASIC
+**Status: ruled on 2026-11-16; push A (§8 steps 1–3: the rename, the vocabulary, the theme record) built and pushed the same day (`eb783aa8`), and Studio migrated onto it (gbasic-studio `21246fa`). Step 4, the split, is built and pushed (`ffa9d221`), step 5, `ui.can`, is built and pushed (`306e2936`), and step 6, the suites, is built (§8 records how each departs from the plan). The renames of Q5 that remain (suite files, the cookbook, `examples/qt`) are step 6's second commit.** Written 2026-11-16 against gBASIC
 `4eafb557` (0.11.0) and gBASIC Studio `4aa0420`. It answers whisker's
 proposal (`~/development/whisker/docs/gbasic-ui-proposal.md` §7) and ends
 with Matthew's rulings (§9, 2026-11-16). Every count below is
@@ -485,7 +485,33 @@ migrates the same day):
    `tests/run_ui_vocabulary.sh` `groups` holds all of it, each refusal
    beside the same program with nothing withheld.
 6. **The suites.** Contract tiers read `GBASIC_UI` and run under every
-   built backend. Q tiers move to Qt-backend suites. Whisker's backend
+   built backend. Q tiers move to Qt-backend suites.
+
+   **As built (2026-11-16).** `tests/ui_backend.sh` lists the build's
+   backends (from the `GBASIC_UI` refusal's "it has:"), and every
+   `run_qt_*` suite but `run_qt_loop` calls `ui_each_backend` first: one
+   pass per backend, then one more on the first **with every capability
+   group withheld**. Every TIER line carries its class, `[N]` 49, `[C]`
+   94, `[Q]` 13, held by run_ui_vocabulary `classes`. Departures:
+   - **A tier is gated by the groups it needs, not by the backend's
+     name** (`ui_tier_needs highlighting`). Only `[Q]` tiers -- the C++
+     probes and Qt's pixels -- ask `ui_tier_qt`. A tier that reads
+     `qt_backend.cpp` runs no backend at all, so it is `[N]`.
+   - **The withheld pass is what keeps that true.** Run first by hand, it
+     failed 15 suites, every failure a group refusal; each tier is now
+     gated on the groups its fixture uses. It costs about twice the GUI
+     suites' CPU in the gate.
+   - **Q tiers stay in their topic's suite**, gated, rather than moving to
+     separate files: a tier's fixture and its Qt half share setup.
+   - **Gated on `windows` because a fixture keeps windows open**, not
+     because the tier is about windows: run_qt_backend binding, table,
+     refresh, text and valgrind; builder built; children; lifecycle
+     semantics and loop; split semantics. These are the first fixtures to
+     rewrite when a backend without `windows` arrives, or their contract
+     is unmeasured there.
+   - The examples and cookbook runners skip one program refused for a
+     missing group, by that sentence: a backend with the group cannot
+     produce it. Whisker's backend
    (`ui_whisker.c`, its own `HAVE_WHISKER`, whisker as a header) is
    whisker's step, measured by step 6's contract tiers.
 

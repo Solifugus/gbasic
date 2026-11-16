@@ -38,6 +38,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -48,6 +50,10 @@ fail() { printf 'FAIL %s\n' "$1"; status=1; }
 
 if ! build_has qt; then
     printf 'SKIP run_qt_notebook (no Qt in this build: nothing was measured)\n'
+    exit 0
+fi
+# STUDIO'S NOTEBOOK FROM END TO END: blocks and folds, figures and themes.
+if ! ui_tier_needs notebook figures highlighting; then
     exit 0
 fi
 
@@ -91,7 +97,7 @@ run_fixture() {   # name floor args...
     return 1
 }
 
-printf -- '-- figures and themes\n'
+printf 'TIER [C] figures and themes\n'
 figs_ran=0
 if premise_highlighter_built; then
     run_fixture figures_test 25 "$work/figs" && figs_ran=1
@@ -100,7 +106,7 @@ else
     run_fixture figures_test 18 "$work/figs" plain && figs_ran=1
 fi
 
-printf -- '-- blocks, folds and the block event\n'
+printf 'TIER [C] blocks, folds and the block event\n'
 mkdir -p "$work/blocks"
 blocks_ran=0
 run_fixture blocks_test 55 "$work/blocks" && blocks_ran=1
@@ -108,8 +114,10 @@ run_fixture blocks_test 55 "$work/blocks" && blocks_ran=1
 # THE HARD REQUIREMENT, which gBASIC cannot see: the undo stack, the modified
 # flag, the revision, the caret, copying across a block, a click below a gap,
 # the Down key, the scrollbar's end, and an unchanged block keeping its widget.
-printf -- '-- probe: blocks are not text (C++, the real backend)\n'
-if ! command -v g++ >/dev/null 2>&1; then
+printf 'TIER [Q] probe: blocks are not text (C++, the real backend)\n'
+if ! ui_tier_qt; then
+    :
+elif ! command -v g++ >/dev/null 2>&1; then
     printf 'SKIP probe (no C++ compiler: the hard requirement was not measured)\n'
 elif ! g++ -std=c++17 -fPIC -Iinclude -Isrc/modules -o "$work/bprobe" \
         tests/qt/blocks_probe.cpp src/modules/qt_backend.o \
@@ -126,8 +134,10 @@ else
     fail "probe (floor 20 checks, none bad)"
 fi
 
-printf -- '-- pixels\n'
-if [ "$figs_ran" != 1 ]; then
+printf 'TIER [Q] pixels\n'
+if ! ui_tier_qt; then
+    :
+elif [ "$figs_ran" != 1 ]; then
     printf 'SKIP pixels (the fixture did not finish, so there are no pictures)\n'
 elif ! python3 -c 'import PIL' 2>/dev/null; then
     printf 'SKIP pixels (no python3 PIL: the pixels were not measured)\n'
@@ -197,6 +207,7 @@ else
     fail "pixels"
 fi
 
+printf 'TIER [C] valgrind\n'
 # Access errors only, as the other Qt suites run it: Qt's own allocations at
 # exit are not this code's leaks. Compared with $VG_EXIT, never with zero.
 if vg_available; then

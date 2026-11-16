@@ -48,6 +48,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -74,7 +76,7 @@ fi
 # THE DECLARATION AND `ui.set` MUST AGREE ABOUT WHAT AN ICON SOURCE IS, so the
 # conversion lives in `set_property` and nowhere else. Two copies would drift
 # in the way that matters: a path accepted by one door and refused by the other.
-printf 'TIER one door: the conversion lives in set_property alone\n'
+printf 'TIER [N] one door: the conversion lives in set_property alone\n'
 convs=$(grep -c 'static int icon_from_text' src/modules/qt_backend.cpp || true)
 callers=$(grep -o 'icon_from_text(' src/modules/qt_backend.cpp | wc -l)
 if [ "${convs:-0}" = "1" ] && [ "${callers:-0}" = "2" ]; then
@@ -93,7 +95,8 @@ else
 fi
 
 # ------------------------------------------------------------------ SEMANTICS
-printf 'TIER semantics: the three sources, the oracle and the refusals\n'
+printf 'TIER [C] semantics: the three sources, the oracle and the refusals\n'
+if ui_tier_needs icons; then   # needs icons
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic \
     --line-buffered tests/qt_icon_test.bas "$png" "$notimage" \
@@ -149,6 +152,7 @@ else
         fail "the ordinary property route was not asserted beside the icon branch"
     fi
 fi
+fi   # tier semantics
 
 # ------------------------------------------------------------------- WARNING
 # THE THIRD OUTCOME, and it needs its own tier because the fixture asserts
@@ -156,7 +160,8 @@ fi
 # about the machine, so it WARNS (2116) rather than refusing -- and on a
 # machine that DOES have an icon theme this tier legitimately finds the icon
 # instead, which it says rather than failing.
-printf 'TIER warning: a theme name this machine lacks warns rather than refusing\n'
+printf 'TIER [C] warning: a theme name this machine lacks warns rather than refusing\n'
+if ui_tier_needs icons; then   # needs icons
 cat > "$work/theme.bas" <<'BAS'
 window app( title: "T", width: 200, height: 120 )
     column
@@ -206,12 +211,14 @@ else
     head -2 "$work/t.err"
     fail "a theme name neither resolved nor warned -- an icon that silently does nothing is invisible"
 fi
+fi   # tier warning
 
 # ------------------------------------------------------------------ VALGRIND
 # ACCESS-ONLY, for the reason run_qt_backend.sh records. What is NEW here is a
 # QIcon built from text on every option and every `ui.set`, and an enum lookup
 # through QStyle's static metaobject.
-printf 'TIER valgrind: no invalid access across the icon conversions\n'
+printf 'TIER [C] valgrind: no invalid access across the icon conversions\n'
+if ui_tier_needs icons; then   # needs icons
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 else
@@ -227,6 +234,7 @@ else
         pass "no invalid access across the conversions and the enum lookup"
     fi
 fi
+fi   # tier valgrind
 
 if [ "$status" = "0" ]; then
     printf 'run_qt_icon: all checks passed\n'

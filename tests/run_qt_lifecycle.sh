@@ -58,6 +58,8 @@ set -uo pipefail
 # here", which is true; the mode changes are gone.
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -75,7 +77,7 @@ fail() { printf '  FAIL %s\n' "$1"; status=1; }
 # with the window's own name, so `on app.closed` is a handler rather than a
 # refusal, and a part sharing that name is refused rather than silently winning
 # the by-name table.
-printf 'TIER declaration: the window is a target like any part, and a part may not shadow it\n'
+printf 'TIER [N] declaration: the window is a target like any part, and a part may not shadow it\n'
 cat > "$work/shadow.bas" <<'BAS'
 window app( title: "x" )
     column
@@ -169,7 +171,8 @@ if ! build_has qt; then
 fi
 
 # ------------------------------------------------------------------ SEMANTICS
-printf 'TIER semantics: open, address, close, reopen -- and the handler in between\n'
+printf 'TIER [C] semantics: open, address, close, reopen -- and the handler in between\n'
+if ui_tier_needs windows; then   # needs windows
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic \
     --line-buffered tests/qt_lifecycle_test.bas > "$work/sem.out" 2> "$work/sem.err"
@@ -224,6 +227,7 @@ else
         fail "the before/after pair did not run, so the handler's ordering is unasserted"
     fi
 fi
+fi   # tier semantics
 
 # ----------------------------------------------------------------------- LOOP
 # `quitOnLastWindowClosed` IS QT'S DEFAULT AND WE NEVER SET IT, which is
@@ -234,7 +238,8 @@ fi
 # BOUNDED, because a loop that never ends is a HANG and a hang is not a failure
 # (run_string_nul.sh's recorded trap). `-k` because this interpreter installs a
 # SIGTERM handler for pool drain, so a bound that might not fire is not a bound.
-printf 'TIER loop: closing the last window ends ui.run(), and closing one of two does not\n'
+printf 'TIER [C] loop: closing the last window ends ui.run(), and closing one of two does not\n'
+if ui_tier_needs windows; then   # needs windows
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 60 ./gbasic \
     --line-buffered tests/qt_lifecycle_loop_fixture.bas \
@@ -273,6 +278,7 @@ else
         cat "$work/loop.out"; fail "a closed window still reported itself open"
     fi
 fi
+fi   # tier loop
 
 # ------------------------------------------------- STOP IS NOT A CLOSE
 # A CORRECTION THIS INCREMENT EXPOSED RATHER THAN INTRODUCED. `gb_qt_stop`
@@ -285,7 +291,7 @@ fi
 # its window after `ui.run()` returned was told it was not open -- MEASURED
 # rather than grepped, eight programs reading a window textually after
 # `ui.run()` and exactly ONE actually breaking.
-printf 'TIER stop: asking for the thread back does not dismiss the windows\n'
+printf 'TIER [C] stop: asking for the thread back does not dismiss the windows\n'
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 60 ./gbasic \
     --line-buffered tests/qt_lifecycle_stop_fixture.bas \
@@ -322,7 +328,7 @@ fi
 # ------------------------------------------------------------------ REFUSALS
 # EACH BESIDE ITS NEAREST LEGAL NEIGHBOUR -- the semantics tier above is the
 # control, since every one of these verbs is used there successfully.
-printf 'TIER refusals: a close is not a no-op, and `closed` is the window\x27s alone\n'
+printf 'TIER [C] refusals: a close is not a no-op, and `closed` is the window\x27s alone\n'
 refuse() {                      # name, program body, expected fragment
     cat > "$work/r.bas" <<BAS
 window app( title: "R", width: 200, height: 100 )
@@ -417,7 +423,7 @@ fi
 # ORDER TO CHOOSE must not raise, or the choice cannot be made. It is needed
 # here because a window can close WITHOUT THE PROGRAM ASKING, so every other
 # verb starts raising for a reason that is nobody's mistake.
-printf 'TIER degrading: ui.is_open ANSWERS where the others refuse\n'
+printf 'TIER [C] degrading: ui.is_open ANSWERS where the others refuse\n'
 cat > "$work/ask.bas" <<'BAS'
 window app( title: "Ask", width: 200, height: 100 )
     column
@@ -455,7 +461,7 @@ fi
 # so the gate at 1.25 separates them with room on both sides. Half the cycles
 # close by the verb and half by the event, because the two retire at different
 # moments and a fixture exercising one would leave the other unmeasured.
-printf 'TIER growth: opening and closing 2000 times does not grow\n'
+printf 'TIER [C] growth: opening and closing 2000 times does not grow\n'
 if ! premise_rss_meter; then
     # NAME THE CLAIM THAT WENT UNMEASURED: a program cannot watch its own peak
     # resident size, so without a meter outside it nothing checks that
@@ -499,7 +505,8 @@ fi
 # DELETE: a window's widget is destroyed while gBASIC still holds the record it
 # was built from, and its nodes are dropped from a list the teardown also
 # walks. A wrong answer is not the failure mode available here.
-printf 'TIER valgrind: no invalid access across close, reopen and teardown\n'
+printf 'TIER [C] valgrind: no invalid access across close, reopen and teardown\n'
+if ui_tier_needs windows; then   # needs windows
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access across a close was NOT measured)\n'
 else
@@ -515,6 +522,7 @@ else
         pass "no invalid access across seven closes (five by the verb, two by an invoked close), seven opens and teardown"
     fi
 fi
+fi   # tier valgrind
 
 if [ "$status" = "0" ]; then
     printf 'run_qt_lifecycle: all checks passed\n'

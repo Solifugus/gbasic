@@ -13,6 +13,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -28,7 +30,8 @@ if ! build_has qt; then
     exit "$status"
 fi
 
-printf 'TIER semantics: captions, whitespace, selection, edits, marks, clicks\n'
+printf 'TIER [C] semantics: captions, whitespace, selection, edits, marks, clicks\n'
+if ui_tier_needs highlighting; then   # needs highlighting
 QT_QPA_PLATFORM=offscreen timeout -k 5 60 \
     ./gbasic --line-buffered tests/qt_find_test.bas \
     > "$work/sem.out" 2> "$work/sem.err"
@@ -58,8 +61,10 @@ else
         pass "and nothing on stderr"
     fi
 fi
+fi   # tier semantics
 
-printf 'TIER valgrind: no invalid access across the editing verbs\n'
+printf 'TIER [C] valgrind: no invalid access across the editing verbs\n'
+if ui_tier_needs highlighting; then   # needs highlighting
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 else
@@ -98,6 +103,7 @@ else
         pass "and nothing was left running afterwards"
     fi
 fi
+fi   # tier valgrind
 
 if [ "$status" = "0" ]; then
     printf 'run_qt_find: all checks passed\n'

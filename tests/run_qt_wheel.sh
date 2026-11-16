@@ -43,6 +43,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -57,7 +59,7 @@ fail() { printf '  FAIL %s\n' "$1"; status=1; }
 # increment adds no grammar -- asserted as a standing tier, which is not
 # decoration in a project that rejected `IDENT expression` as a statement form
 # over FOUR measured conflicts.
-printf 'TIER grammar: bison still reports zero conflicts\n'
+printf 'TIER [N] grammar: bison still reports zero conflicts\n'
 if ! command -v bison >/dev/null 2>&1; then
     printf '  SKIP (no bison -- the grammar cost was NOT measured)\n'
 else
@@ -79,7 +81,7 @@ fi
 # arithmetic a program can already do -- and `zoomIn`/`zoomOut` cannot be
 # reached by `ui.invoke` anyway, so the verb would have to carry its own
 # argument marshalling.
-printf 'TIER no zoom verb: the font route is the only one\n'
+printf 'TIER [N] no zoom verb: the font route is the only one\n'
 zoomverbs=$(grep -c 'strcmp(verb, "zoom' src/modules/ui.c || true)
 if [ "${zoomverbs:-0}" = "0" ]; then
     pass "no ui.zoom -- the zoom is gBASIC arithmetic over the font property"
@@ -96,7 +98,7 @@ fi
 
 # -------------------------------------------------------------- DECLARATION
 # RUNS WHETHER OR NOT QT IS IN THE BUILD: a claim about the DECLARATION.
-printf 'TIER declaration: `wheel` is a handler like any other\n'
+printf 'TIER [N] declaration: `wheel` is a handler like any other\n'
 decl() {                        # name, window body, expected fragment ("" = accept)
     cat > "$work/d.bas" <<BAS
 window app( title: "D", width: 300, height: 200 )
@@ -144,7 +146,7 @@ decl 'a wheel handler naming no part is refused' \
     'nobody'
 
 # ------------------------------------------------------------------ SEMANTICS
-printf 'TIER semantics: direction, modifiers, the zoom and the claim\n'
+printf 'TIER [C] semantics: direction, modifiers, the zoom and the claim\n'
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic \
     --line-buffered tests/qt_wheel_test.bas > "$work/sem.out" 2> "$work/sem.err"
@@ -231,7 +233,7 @@ fi
 # ACCESS-ONLY, for the reason run_qt_backend.sh records. What is NEW here is an
 # event filter that READS an event and a per-dispatch record of which event is
 # in flight, which `ui.wheel` reads back from gBASIC.
-printf 'TIER valgrind: no invalid access across the filter and the reads\n'
+printf 'TIER [C] valgrind: no invalid access across the filter and the reads\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 else

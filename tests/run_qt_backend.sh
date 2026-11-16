@@ -67,6 +67,8 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -89,7 +91,7 @@ if ! build_has qt; then
 fi
 
 # ---------------------------------------------------------------- NO DISPLAY
-printf 'TIER no display: a sentence, and the program survives to print it\n'
+printf 'TIER [C] no display: a sentence, and the program survives to print it\n'
 set +e
 nodisplay timeout -k 5 60 ./gbasic --line-buffered tests/qt_nodisplay_test.bas \
     > "$work/nd.out" 2> "$work/nd.err"
@@ -126,7 +128,7 @@ if grep -q MISMATCH "$work/nd.out"; then
     fail "$(grep MISMATCH "$work/nd.out" | head -1)"
 fi
 
-printf 'TIER no display, uncaught: an ordinary runtime error, never a signal\n'
+printf 'TIER [C] no display, uncaught: an ordinary runtime error, never a signal\n'
 set +e
 nodisplay timeout -k 5 60 ./gbasic --line-buffered tests/qt_nodisplay_fatal_test.bas \
     > "$work/ndf.out" 2> "$work/ndf.err"
@@ -155,7 +157,7 @@ if grep -q MISMATCH "$work/ndf.out"; then
 fi
 
 # ----------------------------------------------------------------- OFFSCREEN
-printf 'TIER offscreen: real widgets, real properties, a real signal\n'
+printf 'TIER [C] offscreen: real widgets, real properties, a real signal\n'
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
     tests/qt_window_test.bas > "$work/w.out" 2> "$work/w.err"
@@ -212,7 +214,7 @@ for want in "refused a part that does not exist" \
 done
 
 # ---------------------------------------------------------------- REFUSALS
-printf 'TIER refusals: by name, and only for what is really wrong\n'
+printf 'TIER [C] refusals: by name, and only for what is really wrong\n'
 # A WORD NO PART CARRIES. Until 0.12.0 a leaf's options were handed to Qt by
 # name, so this could only be refused at `ui.open`; with one vocabulary
 # (docs/ui_design.md §3) an option is a gBASIC word, so a misspelling is
@@ -292,7 +294,7 @@ fi
 
 # ------------------------------------------------------------------ PROPERTIES
 
-printf 'TIER properties: read back in the KIND Qt declares, not as text\n'
+printf 'TIER [C] properties: read back in the KIND Qt declares, not as text\n'
 # THE KIND IS THE LOAD-BEARING PART and it is not a preference. Every non-empty
 # string is TRUE in this language, so a boolean answered as the text "false"
 # reads BACKWARDS in the one place a property is most likely to be used --
@@ -391,7 +393,8 @@ fi
 
 # --------------------------------------------------------------------- BINDING
 
-printf 'TIER binding: `form to show` and `form to edit` differ, and the record follows\n'
+printf 'TIER [C] binding: `form to show` and `form to edit` differ, and the record follows\n'
+if ui_tier_needs windows; then   # needs windows
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
     tests/qt_binding_test.bas > "$work/b.out" 2> "$work/b.err"
@@ -461,10 +464,12 @@ if grep -q 'BADVALUE: money text is not a number' "$work/b.out"; then
 else
     fail "the bad-value refusal: $(grep BADVALUE "$work/b.out" || echo 'never fired')"
 fi
+fi   # tier binding
 
 # ----------------------------------------------------------------------- TABLE
 
-printf 'TIER table: many rows, columns from the declaration, and a chosen row\n'
+printf 'TIER [C] table: many rows, columns from the declaration, and a chosen row\n'
+if ui_tier_needs windows; then   # needs windows
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
     tests/qt_table_test.bas > "$work/t.out" 2> "$work/t.err"
@@ -540,10 +545,11 @@ if grep -q 'EMPTYNUMBER: number modifier expects a valid number string' "$work/t
 else
     fail "the emptied-number refusal: $(grep EMPTYNUMBER "$work/t.out" || echo 'never fired')"
 fi
+fi   # tier table
 
 # ----------------------------------------------------------------------- CELLS
 
-printf 'TIER cells: tabular placement, asserted by asking the LAYOUT where things are\n'
+printf 'TIER [C] cells: tabular placement, asserted by asking the LAYOUT where things are\n'
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
     tests/qt_cells_test.bas > "$work/c.out" 2> "$work/c.err"
@@ -579,7 +585,7 @@ fi
 
 # ------------------------------------------------------------------------ TABS
 
-printf 'TIER tabs: a book of pages, and ui.set -- the write half of the route\n'
+printf 'TIER [C] tabs: a book of pages, and ui.set -- the write half of the route\n'
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
     tests/qt_tabs_test.bas > "$work/tb.out" 2> "$work/tb.err"
@@ -635,7 +641,7 @@ fi
 
 # ---------------------------------------------------------------------- CHOICE
 
-printf 'TIER choice: one of a list, through either of its two doors\n'
+printf 'TIER [C] choice: one of a list, through either of its two doors\n'
 # DECIDED BY A REAL PROGRAM rather than Qt's catalogue: BAG's area editor gives
 # every area six exits and each NAMES ANOTHER AREA, which a `field` can only
 # answer by typing an id and a `table` is a grid rather than a dropdown. The
@@ -671,7 +677,8 @@ fi
 
 # --------------------------------------------------------------------- REFRESH
 
-printf 'TIER refresh: a table shows the list as it is NOW\n'
+printf 'TIER [C] refresh: a table shows the list as it is NOW\n'
+if ui_tier_needs windows; then   # needs windows
 # MEASURED WHILE BUILDING A WHOLE APPLICATION on this surface, and it was a GAP
 # rather than a limit: a `table to show` captured its subject at open and NEVER
 # FOLLOWED IT, so appending to the list left `rowCount` where it was and a
@@ -700,10 +707,12 @@ if [ "${rfchecks:-0}" -ge 29 ]; then
 else
     fail "the refresh fixture ran only $rfchecks checks, want at least 29"
 fi
+fi   # tier refresh
 
 # ------------------------------------------------------------------- TEXT/MEMO
 
-printf 'TIER text: a sentence on a window, and many lines of one\n'
+printf 'TIER [C] text: a sentence on a window, and many lines of one\n'
+if ui_tier_needs windows; then   # needs windows
 # WHY THIS TIER EXISTS AT ALL is the finding: the leaf vocabulary reached
 # QLineEdit, QPushButton and QCheckBox AND NO MORE, so until 2026-10-18 a
 # heading, an instruction or a room description had NOWHERE TO GO -- and
@@ -733,10 +742,11 @@ if [ "${txchecks:-0}" -ge 17 ]; then
 else
     fail "the text fixture ran only $txchecks checks, want at least 17"
 fi
+fi   # tier text
 
 # ------------------------------------------------------------------------ MENU
 
-printf 'TIER menu: a bar, submenus, separators, and properties on a QAction\n'
+printf 'TIER [C] menu: a bar, submenus, separators, and properties on a QAction\n'
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
     tests/qt_menu_test.bas > "$work/m.out" 2> "$work/m.err"
@@ -790,7 +800,8 @@ fi
 
 # ----------------------------------------------------------------------- THEME
 
-printf 'TIER theme: a theme record for every backend, and it needs no display\n'
+printf 'TIER [C] theme: a theme record for every backend, and it needs no display\n'
+if ui_tier_needs stylesheet; then   # needs stylesheet
 # THE THEME IS A RECORD OF PLAIN VALUES (docs/ui_design.md §7) -- Studio's
 # palette record, adopted -- which each backend draws its own way. Qt draws it
 # as a stylesheet AND a palette: a stylesheet alone does not move Qt's palette,
@@ -918,9 +929,10 @@ else
     printf '    %s\n' "$(tr '\n' '|' < "$work/thn.out")"
     fail "theming required a display (exit $nd_rc)"
 fi
+fi   # tier theme
 
 # --------------------------------------------------------------------- LOOP
-printf 'TIER loop: Qt owns the thread and gBASIC is still serviced\n'
+printf 'TIER [C] loop: Qt owns the thread and gBASIC is still serviced\n'
 if ! command -v curl >/dev/null 2>&1; then
     printf '  SKIP (no curl -- direction A was NOT measured through the interpreter)\n'
 else
@@ -969,7 +981,8 @@ else
 fi
 
 # -------------------------------------------------------------------- BUILD
-printf 'TIER valgrind: no invalid access while a real window is bound and folded\n'
+printf 'TIER [C] valgrind: no invalid access while a real window is bound and folded\n'
+if ui_tier_needs windows; then   # needs windows
 # ACCESS ONLY. The leak half is unavailable -- Qt does not free its platform
 # plugin, its font configuration or its QApplication statics -- so what is
 # claimed here is exactly what can be claimed: nothing in this increment reads
@@ -1042,8 +1055,9 @@ else
         pass "no invalid access or uninitialised read across open, fold and teardown -- form, table, menu, tabs and cells"
     fi
 fi
+fi   # tier valgrind
 
-printf 'TIER degrading: `ui.can_display` ANSWERS where everything else refuses\n'
+printf 'TIER [C] degrading: `ui.can_display` ANSWERS where everything else refuses\n'
 # THE SHAPE `has_builtin` ALREADY HAS, and the reason is the same: a program
 # asking whether it may open a window is degrading gracefully, and "this build
 # has no Qt" is one of the answers to that question rather than an error.

@@ -54,6 +54,8 @@ set -uo pipefail
 # here", which is true; the mode changes are gone.
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -71,7 +73,7 @@ fail() { printf '  FAIL %s\n' "$1"; status=1; }
 # connect and the bind are all in it, and two copies of that is the failure
 # shape this tree tripwires against (`would`/`execute` in `automation`, one
 # checker and two adapters in §0.9).
-printf 'TIER one open path: a modal window is the same window by construction\n'
+printf 'TIER [N] one open path: a modal window is the same window by construction\n'
 # OCCURRENCES, NOT LINES, which is a correction the control forced: `grep -c`
 # counts matching LINES, so two calls on one line read as one -- and the
 # planted control put them on one line, which is exactly how somebody would
@@ -100,7 +102,7 @@ if ! build_has qt; then
 fi
 
 # ------------------------------------------------------------------ SEMANTICS
-printf 'TIER semantics: four endings, the handler between them, and PARITY\n'
+printf 'TIER [C] semantics: four endings, the handler between them, and PARITY\n'
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic \
     --line-buffered tests/qt_modal_test.bas > "$work/sem.out" 2> "$work/sem.err"
@@ -158,7 +160,7 @@ fi
 # and wait" is opened from `main`, and there the sources KEEP RUNNING. Without
 # it, §0.15 reads as "a nested Qt loop starves gBASIC", which is false: what
 # starves it is re-entering the INTERPRETER, not the loop.
-printf 'TIER extent: a modal window opened from main does not starve the server\n'
+printf 'TIER [C] extent: a modal window opened from main does not starve the server\n'
 if ! command -v curl >/dev/null 2>&1; then
     printf '  SKIP (no curl -- how far a modal window reaches was NOT measured)\n'
 else
@@ -241,7 +243,7 @@ fi
 # ------------------------------------------------------------------ REFUSALS
 # EACH BESIDE ITS NEAREST LEGAL NEIGHBOUR -- the semantics tier is the control,
 # since every one of these verbs is used there successfully.
-printf 'TIER refusals: accepting is for a window that was shown modally\n'
+printf 'TIER [C] refusals: accepting is for a window that was shown modally\n'
 refuse() {                      # name, program body, expected fragment
     cat > "$work/r.bas" <<BAS
 window app( title: "R", width: 200, height: 100 )
@@ -309,7 +311,7 @@ refuse 'and something that is not a window at all' \
 # THE SAME SENTENCE `ui.open` GIVES, because it is the same open path -- which
 # is this tier's real subject: a second path would have had to remember to
 # refuse, and §0.3's whole point is that forgetting means an uncatchable abort.
-printf 'TIER no display: the shared path means the refusal is shared too\n'
+printf 'TIER [C] no display: the shared path means the refusal is shared too\n'
 cat > "$work/nd.bas" <<'BAS'
 window app( title: "ND", width: 200, height: 100 )
     column
@@ -347,7 +349,7 @@ fi
 # WHAT IS NEW HERE IS A NESTED MODAL LOOP OVER A QDialog ROOT, entered five
 # times in one run, with a window deleted after each -- so the interesting
 # question is whether anything reads the window after `exec()` handed back.
-printf 'TIER valgrind: no invalid access across five modal loops and teardown\n'
+printf 'TIER [C] valgrind: no invalid access across five modal loops and teardown\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access in a modal loop was NOT measured)\n'
 else

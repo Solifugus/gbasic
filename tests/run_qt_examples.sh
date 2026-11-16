@@ -37,6 +37,8 @@
 . "$(dirname "$0")/portable.sh"
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 make >/dev/null
 
 # WHERE `editor.bas` FINDS ITS SYNTAX DEFINITION, and this line is not
@@ -68,7 +70,7 @@ else
     fail "found only ${count:-0} Qt examples -- the glob is broken, not the tree"
 fi
 
-printf 'TIER args: every example accepts `check`\n'
+printf 'TIER [N] args: every example accepts `check`\n'
 # STRUCTURAL, because the consequence of getting this wrong is a HANG: an
 # example with no check mode reaches `ui.run()` and waits for a person who is
 # not there, and the RUN tier below would sit on its timeout rather than
@@ -86,7 +88,7 @@ else
     fail "these would HANG under the RUN tier: $missing"
 fi
 
-printf 'TIER run: each one offscreen, in check mode\n'
+printf 'TIER [C] run: each one offscreen, in check mode\n'
 for f in $examples; do
     b=$(basename "$f")
     set +e
@@ -102,7 +104,9 @@ for f in $examples; do
     # ("Could not load the Qt platform plugin") still reddens this.
     grep -v -e 'This plugin does not support' -e 'built without KSyntaxHighlighting, so it will work as a plain editor' "$work/$b.err" > "$work/$b.err2" || true
     lines=$(grep -c . "$work/$b.out" || true)
-    if [ "$rc" = "124" ] || [ "$rc" = "137" ]; then
+    if g=$(ui_group_refused "$work/$b.err2"); then
+        printf '  SKIP %s (the backend has not `%s` -- NOT measured)\n' "$b" "$g"
+    elif [ "$rc" = "124" ] || [ "$rc" = "137" ]; then
         fail "$b HUNG -- it reached ui.run() with nobody to close it"
     elif [ "$rc" != "0" ]; then
         printf '    %s\n' "$(tail -3 "$work/$b.err2")"
@@ -119,7 +123,7 @@ for f in $examples; do
     fi
 done
 
-printf 'TIER degrade: each one with no display at all\n'
+printf 'TIER [C] degrade: each one with no display at all\n'
 # §0.3 MADE BY EVERY EXAMPLE. With no display Qt calls qFatal and ABORTS --
 # SIGABRT, exit 134, core dumped, uncatchable -- and a crash takes
 # block-buffered stdout with it, so a program printing its progress prints
@@ -134,7 +138,9 @@ for f in $examples; do
     rc=$?
     set -e
     dlines=$(grep -vc 'propagateSizeHints' "$work/d_$b.out" || true)
-    if [ "$rc" -ge 128 ]; then
+    if g=$(ui_group_refused "$work/d_$b.out"); then
+        printf '  SKIP %s (the backend has not `%s` -- NOT measured)\n' "$b" "$g"
+    elif [ "$rc" -ge 128 ]; then
         fail "$b died by signal $((rc - 128)) with no display -- the §0.3 abort"
     elif [ "$rc" != "0" ]; then
         printf '    %s\n' "$(tail -2 "$work/d_$b.out")"
@@ -146,7 +152,7 @@ for f in $examples; do
     fi
 done
 
-printf 'TIER cover: the README names every example, and only real ones\n'
+printf 'TIER [N] cover: the README names every example, and only real ones\n'
 # MOVED HERE FROM run_qt_builder.sh, which is about the builder. It caught two
 # on the run that added it: `orders.bas` and `notes.bas` had been in the
 # directory for a day with nothing naming them, because the parse walk globs

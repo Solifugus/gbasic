@@ -47,6 +47,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -62,7 +64,7 @@ fail() { printf '  FAIL %s\n' "$1"; status=1; }
 # chosen rather than hoped for. Asserted as a standing tier, which is not
 # decoration in a project that rejected `IDENT expression` as a statement form
 # over FOUR measured conflicts.
-printf 'TIER grammar: bison still reports zero conflicts\n'
+printf 'TIER [N] grammar: bison still reports zero conflicts\n'
 if ! command -v bison >/dev/null 2>&1; then
     printf '  SKIP (no bison -- the grammar cost was NOT measured)\n'
 else
@@ -83,7 +85,7 @@ fi
 # agreeing with a bar menu's about what `shortcut:` or a submenu means -- which
 # is the rule `would`/`execute` already follow in `automation`. The three
 # constructors differ only in how the QMenu itself is made.
-printf 'TIER one walk: a popup and a bar menu share one entry walk\n'
+printf 'TIER [N] one walk: a popup and a bar menu share one entry walk\n'
 walks=$(grep -c 'static int qt_fill_menu' src/modules/ui.c || true)
 callers=$(grep -c 'return qt_fill_menu(root, node, menu);' src/modules/ui.c || true)
 additem=$(grep -c 'ui->menu_item(root, node' src/modules/ui.c || true)
@@ -104,7 +106,7 @@ else
     fail "CONTROL: the scan counts lines rather than occurrences, so it cannot see a second call site"
 fi
 
-printf 'TIER policy: only a part with a `context` handler loses Qt'"'"'s own menu\n'
+printf 'TIER [N] policy: only a part with a `context` handler loses Qt'"'"'s own menu\n'
 # QT'S STATE, SO ASKED OF QT'S SOURCE. Declaring a `context` handler must set a
 # custom context menu policy (or Qt never emits the request); a part with no
 # handler must keep Qt's own cut/copy/paste menu. Until 0.12.0 the fixture read
@@ -137,7 +139,7 @@ fi
 # RUNS WHETHER OR NOT QT IS IN THE BUILD, because these are claims about the
 # DECLARATION -- the property that let the whole window vocabulary ship before
 # any backend existed.
-printf 'TIER declaration: a popup is NAMED where a menu is CAPTIONED\n'
+printf 'TIER [N] declaration: a popup is NAMED where a menu is CAPTIONED\n'
 decl() {                        # name, window body, expected fragment ("" = accept)
     cat > "$work/d.bas" <<BAS
 window app( title: "D", width: 300, height: 200 )
@@ -259,7 +261,7 @@ decl 'a handler naming no item is refused' \
     'nobody'
 
 # ------------------------------------------------------------------ SEMANTICS
-printf 'TIER semantics: the browser shape, the oracle, the policy and the row\n'
+printf 'TIER [C] semantics: the browser shape, the oracle, the policy and the row\n'
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic \
     --line-buffered tests/qt_context_test.bas > "$work/sem.out" 2> "$work/sem.err"
@@ -368,7 +370,7 @@ fi
 # would be a suppression file describing Qt. What is NEW here is a QMenu owned
 # by the window rather than by the bar, a popped menu outliving the call that
 # raised it, and synthetic QMouseEvents delivered into a viewport.
-printf 'TIER valgrind: no invalid access across the popup and the clicks\n'
+printf 'TIER [C] valgrind: no invalid access across the popup and the clicks\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 else

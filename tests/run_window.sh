@@ -75,7 +75,7 @@ out_of() {
     set -e
 }
 
-printf 'TIER parse: the design document own example\n'
+printf 'TIER [N] parse: the design document own example\n'
 src example <<'EOF'
 window customer( title: "Customer", width: 480 )
     column( margin: 8, spacing: 8 )
@@ -203,7 +203,7 @@ else
 ' "$got"; fail "the declaration is not hoisted"
 fi
 
-printf 'TIER tokens: `window` is not reserved\n'
+printf 'TIER [N] tokens: `window` is not reserved\n'
 src ordinary <<'EOF'
 window = 5
 print window
@@ -220,7 +220,7 @@ else
     fail "the word stopped being ordinary: got '$got', wanted '5 1 6 10 '"
 fi
 
-printf 'TIER typed: `type: {USD}` inside a declaration, refused outside one\n'
+printf 'TIER [N] typed: `type: {USD}` inside a declaration, refused outside one\n'
 src bare <<'EOF'
 m = {USD}
 print m
@@ -246,7 +246,7 @@ else
     fail "the ordinary modifier forms changed: got '$got'"
 fi
 
-printf 'TIER refusals: each with its position, each beside a legal neighbour\n'
+printf 'TIER [N] refusals: each with its position, each beside a legal neighbour\n'
 # NOT EVERY WRONG WINDOW REACHES VALIDATION, and two of this tier's first drafts
 # did not: `field a` followed by a body is no production at all, and nor is a
 # container word with options and no body -- the GRAMMAR refuses both before the
@@ -1032,7 +1032,7 @@ else
     fail "a valid window was rejected by a load-time check"
 fi
 
-printf 'TIER json: the refusals reach --json-diagnostics\n'
+printf 'TIER [N] json: the refusals reach --json-diagnostics\n'
 src forjson <<'EOF'
 window w( title: "x" )
     colunm( margin: 8 )
@@ -1061,7 +1061,7 @@ else
     pass "and nothing non-JSON is on the stream"
 fi
 
-printf 'TIER grammar: bison still reports zero conflicts\n'
+printf 'TIER [N] grammar: bison still reports zero conflicts\n'
 # THE STANDING ASSERTION §5.2 PROMISED WOULD ARRIVE WITH THE GRAMMAR. Not
 # decoration: this project rejected `IDENT expression` as a statement form over
 # FOUR measured conflicts, and ten shapes were priced before this one was built.
@@ -1073,7 +1073,7 @@ else
     fail "the grammar now has conflicts"
 fi
 
-printf 'TIER valgrind\n'
+printf 'TIER [N] valgrind\n'
 if vg_available; then
     set +e
     vg_run ./gbasic --ast "$work/valid.bas" >/dev/null 2>"$work/vg.err"

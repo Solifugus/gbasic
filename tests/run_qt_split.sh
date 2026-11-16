@@ -47,6 +47,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -63,7 +65,7 @@ fail() { printf '  FAIL %s\n' "$1"; status=1; }
 # parentheses, and `field who()` was a parse error. MEASURED AT ZERO
 # CONFLICTS before being kept, which is not decoration in a project that
 # rejected `IDENT expression` as a statement form over FOUR.
-printf 'TIER grammar: bison still reports zero conflicts\n'
+printf 'TIER [N] grammar: bison still reports zero conflicts\n'
 if ! command -v bison >/dev/null 2>&1; then
     printf '  SKIP (no bison -- the grammar cost was NOT measured)\n'
 else
@@ -86,7 +88,7 @@ fi
 # A FOURTH DOOR WOULD REFUSE PANES IN SILENCE, so the two counts are held equal:
 # every `!p->layout` guard must also admit a splitter. Reads the source, because
 # no behavioural check can see a door nobody has walked through yet.
-printf 'TIER guards: every layout guard admits a splitter parent\n'
+printf 'TIER [N] guards: every layout guard admits a splitter parent\n'
 # CHECKED BY CONDITION, NOT BY LINE, which a failure forced: counting the two
 # greps made the pane-label refusal below -- which legitimately tests
 # `!p->layout` in order to FIRE on a splitter -- read as a fourth door that had
@@ -219,7 +221,7 @@ fi
 # RUNS WHETHER OR NOT QT IS IN THE BUILD, because these are claims about the
 # DECLARATION -- the property that let the whole window vocabulary ship before
 # any backend existed.
-printf 'TIER declaration: a split is `across` or `down`, and needs two panes\n'
+printf 'TIER [N] declaration: a split is `across` or `down`, and needs two panes\n'
 decl() {                        # name, window body, expected fragment
     cat > "$work/d.bas" <<BAS
 window app( title: "D", width: 300, height: 200 )
@@ -346,7 +348,8 @@ if ! build_has qt; then
 fi
 
 # ------------------------------------------------------------------ SEMANTICS
-printf 'TIER semantics: Studio shell shape, the oracle, and the resizable trap\n'
+printf 'TIER [C] semantics: Studio shell shape, the oracle, and the resizable trap\n'
+if ui_tier_needs windows; then   # needs windows
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic \
     --line-buffered tests/qt_split_test.bas > "$work/sem.out" 2> "$work/sem.err"
@@ -384,6 +387,7 @@ else
         fail "the resizable trap was not measured -- Qt defaults it FALSE and content then never reflows"
     fi
 fi
+fi   # tier semantics
 
 # --------------------------------------------------------------- PANE LABEL
 # THE SILENT-DISCARD GUARD, and it is HERE rather than in the declaration tier
@@ -394,7 +398,7 @@ fi
 # reproduced: the table heading extraction read the top-level label and fell
 # back to the column's name. Deciding it needs a leaf's OPTIONS, which only the
 # Qt side has.
-printf 'TIER pane label: a caption the parent would have placed is refused\n'
+printf 'TIER [C] pane label: a caption the parent would have placed is refused\n'
 cat > "$work/pl.bas" <<'BAS'
 window app( title: "PL", width: 300, height: 160 )
     split across
@@ -439,7 +443,7 @@ fi
 # would be a suppression file describing Qt. What is new here is a widget tree
 # whose parents have NO LAYOUT, so a child is enrolled by reparenting rather
 # than by a layout call -- and `ui.pane` walks that tree afterwards.
-printf 'TIER valgrind: no invalid access across three windows and the walk\n'
+printf 'TIER [C] valgrind: no invalid access across three windows and the walk\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 else

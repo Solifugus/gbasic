@@ -43,6 +43,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -53,7 +55,7 @@ pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; status=1; }
 
 # ------------------------------------------------------------------ GRAMMAR
-printf 'TIER grammar: bison still reports zero conflicts\n'
+printf 'TIER [N] grammar: bison still reports zero conflicts\n'
 if ! command -v bison >/dev/null 2>&1; then
     printf '  SKIP (no bison -- the grammar cost was NOT measured)\n'
 else
@@ -70,7 +72,7 @@ fi
 
 # -------------------------------------------------------------- DECLARATION
 # RUNS WHETHER OR NOT QT IS IN THE BUILD: claims about the DECLARATION.
-printf 'TIER declaration: `ask` is a table direction and not a form one\n'
+printf 'TIER [N] declaration: `ask` is a table direction and not a form one\n'
 decl() {                        # name, window body, expected fragment ("" = accept)
     cat > "$work/d.bas" <<BAS
 window app( title: "D", width: 300, height: 200 )
@@ -132,7 +134,7 @@ decl 'CONTROL: a held table is untouched' \
     ''
 
 # ------------------------------------------------------------------ SEMANTICS
-printf 'TIER semantics: the cost, the coordinates, the columns and the control\n'
+printf 'TIER [C] semantics: the cost, the coordinates, the columns and the control\n'
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic \
     --line-buffered tests/qt_ask_test.bas > "$work/sem.out" 2> "$work/sem.err"
@@ -210,7 +212,7 @@ fi
 # arguments whose ownership passes to the callee and a malloc'd string coming
 # back the other way -- and it runs inside a Qt PAINT, which is the one place
 # nothing can unwind.
-printf 'TIER valgrind: no invalid access across the per-cell callback\n'
+printf 'TIER [C] valgrind: no invalid access across the per-cell callback\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 else

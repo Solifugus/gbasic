@@ -48,6 +48,8 @@ set -uo pipefail
 # here", which is true; the mode changes are gone.
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -67,7 +69,7 @@ nodisplay() {
 # the one claim no tier can make offscreen (see 2 above), and a suite that
 # skipped it along with everything else would leave the forcing unguarded on
 # exactly the machines that ship the chooser.
-printf 'TIER native: the desktop chooser is refused in source, since no tier can see it\n'
+printf 'TIER [N] native: the desktop chooser is refused in source, since no tier can see it\n'
 if grep -q 'setOption(QFileDialog::DontUseNativeDialog, true)' \
         src/modules/qt_backend.cpp; then
     pass "DontUseNativeDialog is set unconditionally"
@@ -90,7 +92,8 @@ if ! build_has qt; then
 fi
 
 # ------------------------------------------------------------------ SEMANTICS
-printf 'TIER semantics: three verbs, their options, and cancelling\n'
+printf 'TIER [C] semantics: three verbs, their options, and cancelling\n'
+if ui_tier_needs file_dialogs; then   # needs file_dialogs
 printf 'hello\n' > "$work/have.txt"
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic \
@@ -119,12 +122,14 @@ else
         fail "the oracle tier did not run, so title:/folder:/filter: were accepted unobserved"
     fi
 fi
+fi   # tier semantics
 
 # ------------------------------------------------------------------ REFUSALS
 # EACH BESIDE ITS NEAREST LEGAL NEIGHBOUR, or a refusal suite is satisfied by a
 # chooser that refuses everything. The control is the semantics tier above,
 # which passes four real options through.
-printf 'TIER refusals: the option set is closed, and each refusal names its own thing\n'
+printf 'TIER [C] refusals: the option set is closed, and each refusal names its own thing\n'
+if ui_tier_needs file_dialogs; then   # needs file_dialogs
 refuse() {                      # name, program body, expected fragment
     cat > "$work/r.bas" <<BAS
 window app( title: "R", width: 200, height: 100 )
@@ -203,12 +208,14 @@ inner:
     end watch
     y = ui.confirm(app, "?")' \
     'answered with true or false rather than with a path'
+fi   # tier refusals
 
 # ----------------------------------------------------------------- NO DISPLAY
 # THE CORRECTION §0.15 RECORDS, APPLIED RATHER THAN REDISCOVERED: "window `app`
 # is not open" is TRUE with no display and names the wrong cause -- the window
 # is shut BECAUSE there is nowhere to put it.
-printf 'TIER no display: the refusal names the display, not the shut window\n'
+printf 'TIER [C] no display: the refusal names the display, not the shut window\n'
+if ui_tier_needs file_dialogs; then   # needs file_dialogs
 cat > "$work/nd.bas" <<'BAS'
 window app( title: "ND", width: 200, height: 100 )
     column( margin: 6 )
@@ -242,13 +249,15 @@ if grep -q "is not open" "$work/nd2.out"; then
 else
     cat "$work/nd2.out"; fail "CONTROL: an unopened window did not report itself"
 fi
+fi   # tier no display
 
 # ------------------------------------------------------------------ VALGRIND
 # ACCESS-ONLY, for the reason run_qt_backend.sh records: Qt does not free its
 # platform plugin, font configuration or QApplication statics, so a LEAK claim
 # would be a suppression file describing Qt. The JIT is off because PCRE2's
 # regex JIT over-reads its subject by design (§0.14).
-printf 'TIER valgrind: no invalid access across construction, exec and teardown\n'
+printf 'TIER [C] valgrind: no invalid access across construction, exec and teardown\n'
+if ui_tier_needs file_dialogs; then   # needs file_dialogs
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access in a chooser was NOT measured)\n'
 else
@@ -264,6 +273,7 @@ else
         pass "no invalid access across three choosers and a cancel"
     fi
 fi
+fi   # tier valgrind
 
 if [ "$status" = "0" ]; then
     printf 'run_qt_chooser: all checks passed\n'

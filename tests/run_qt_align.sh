@@ -16,6 +16,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -28,7 +30,7 @@ fail() { printf '  FAIL %s\n' "$1"; status=1; }
 # THE DECLARATION TIER NEEDS NO Qt: the column rule is the load-time pass, so
 # it runs on every build, including one without Qt, where the window is
 # declared and never opened.
-printf 'TIER declaration: a misspelled column option fails at load\n'
+printf 'TIER [N] declaration: a misspelled column option fails at load\n'
 cat > "$work/bad.bas" <<'BAS'
 window w( title: "t" )
     table grid to show rows
@@ -75,7 +77,7 @@ if ! build_has qt; then
     exit "$status"
 fi
 
-printf 'TIER semantics: asking, held and tree tables, refresh and refusals\n'
+printf 'TIER [C] semantics: asking, held and tree tables, refresh and refusals\n'
 QT_QPA_PLATFORM=offscreen timeout -k 5 60 \
     ./gbasic --line-buffered tests/qt_align_test.bas \
     > "$work/sem.out" 2> "$work/sem.err"
@@ -106,7 +108,7 @@ else
     fi
 fi
 
-printf 'TIER valgrind: no invalid access across the three table kinds\n'
+printf 'TIER [C] valgrind: no invalid access across the three table kinds\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 else

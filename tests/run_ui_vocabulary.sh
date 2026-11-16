@@ -28,7 +28,7 @@ qt_answers() {   # $1 = backend file
     } | sort -u
 }
 
-printf 'TIER tables: every word has a Qt mapping, and the map holds only words\n'
+printf 'TIER [N] tables: every word has a Qt mapping, and the map holds only words\n'
 check_tables() {   # $1 = window_check.c, $2 = qt_backend.cpp; prints problems
     words_of "$1" ui_property_words > "$work/p"
     words_of "$1" ui_method_words > "$work/m"
@@ -64,7 +64,7 @@ fi
 # The real lists again: the control above rewrote the scratch copies.
 check_tables src/window_check.c src/modules/qt_backend.cpp > /dev/null
 
-printf 'TIER former names: every "write X instead" names a real word\n'
+printf 'TIER [N] former names: every "write X instead" names a real word\n'
 bad=""
 while read -r qtname word; do
     if ! grep -qx "$word" "$work/all"; then
@@ -78,7 +78,7 @@ else
     fail "former names pointing at no word:$bad"
 fi
 
-printf 'TIER reference: docs/reference.md documents every word\n'
+printf 'TIER [N] reference: docs/reference.md documents every word\n'
 words_section=$(sed -n '/^### Words$/,/^## /p' docs/reference.md)
 missing=""
 for w in $(cat "$work/all"); do
@@ -90,7 +90,7 @@ else
     fail "the reference's *Words* does not name:${missing:- (no Words section)}"
 fi
 
-printf 'TIER refusals: at load time, with no Qt and no display\n'
+printf 'TIER [N] refusals: at load time, with no Qt and no display\n'
 refused() {   # $1 = name, $2 = window body lines, $3 = expected text
     printf 'window w( title: "W" )\n    column\n%s\n    end column\n%s\nend window\nprogram main()\n    print "RAN"\nend program\n' \
         "$2" "${4:-}" > "$work/$1.bas"
@@ -123,7 +123,7 @@ else
     fail "CONTROL: a window in words did not run: $(./gbasic "$work/ok.bas" 2>&1 | head -2 | tr '\n' '|')"
 fi
 
-printf 'TIER seam: the front reaches a backend only through its table\n'
+printf 'TIER [N] seam: the front reaches a backend only through its table\n'
 # docs/ui_design.md §8 step 4. include/ui_backend.h lists the members; each
 # backend's table (src/modules/ui_<name>.c) must set every one, since a member
 # left out is a NULL the front calls. The compiler checks each entry's TYPE;
@@ -192,7 +192,7 @@ else
     fail "GBASIC_UI=nonesuch was not refused: $(printf '%s' "$err" | tr '\n' '|')"
 fi
 
-printf 'TIER groups: ui.can, ui.backend, and each group refused by name\n'
+printf 'TIER [C] groups: ui.can, ui.backend, and each group refused by name\n'
 # docs/ui_design.md §6, step 5. A group a backend lacks is refused BY NAME --
 # its verbs, and a window's parts, options and events -- before anything is
 # built. Today's one backend has every group, so GBASIC_UI_WITHHOLD takes one
@@ -298,6 +298,49 @@ else
         fail "GBASIC_UI_WITHHOLD=figurs answered [$out]"
     fi
     unset QT_QPA_PLATFORM
+fi
+
+printf 'TIER [N] classes: every GUI tier says whether a backend owes it\n'
+# docs/ui_design.md §8 step 6 and tests/ui_backend.sh. A GUI suite's TIER line
+# carries [N] (no backend), [C] (every backend with its groups) or [Q] (Qt's
+# own); a suite with a [C] tier runs once per backend and once with every
+# group withheld (ui_each_backend); one with a [Q] tier asks ui_tier_qt. This
+# suite is the exception it names: its `groups` tier sets the variable
+# itself, so it runs against the build's first backend alone.
+classes_problems() {   # $@ = suite files; prints what is wrong
+    local f
+    for f in "$@"; do
+        grep -n "^printf 'TIER " "$f" | grep -vE "^[0-9]+:printf 'TIER \[[NCQ]\] " \
+            | sed "s|^|unclassed: $f:|"
+        if grep -q "^printf 'TIER \[Q\]" "$f" && ! grep -q 'ui_tier_qt' "$f"; then
+            printf 'Q without ui_tier_qt: %s\n' "$f"
+        fi
+        case "$f" in
+            *run_ui_vocabulary.sh) ;;
+            *) if grep -q "^printf 'TIER \[C\]" "$f" && ! grep -q '^ui_each_backend "$0" "$@"' "$f"; then
+                   printf 'C without ui_each_backend: %s\n' "$f"
+               fi ;;
+        esac
+    done
+}
+gui_suites=$(ls tests/run_qt_*.sh tests/run_window.sh tests/run_ui_vocabulary.sh)
+problems=$(classes_problems $gui_suites)
+counts=$(cat $gui_suites | grep -oE "^printf 'TIER \[[NCQ]\]" | grep -oE '[NCQ]' | sort | uniq -c | tr -s ' ' | tr '\n' ' ')
+if [ -z "$problems" ]; then
+    pass "every tier of $(printf '%s\n' $gui_suites | wc -l) GUI suites is classed:$counts"
+else
+    printf '%s\n' "$problems" | head -8 | sed 's/^/     /'
+    fail "GUI tiers without their class or its machinery"
+fi
+# THE CONTROL: a planted tier line with no class, and a [C] suite that has
+# lost its per-backend call, must both be reported.
+sed "s/^printf 'TIER \[C\] semantics/printf 'TIER semantics/; s/^ui_each_backend \"\$0\" \"\$@\"/: /" \
+    tests/run_qt_tree.sh > "$work/run_qt_planted.sh"
+planted=$(classes_problems "$work/run_qt_planted.sh")
+if printf '%s' "$planted" | grep -q '^unclassed: ' && printf '%s' "$planted" | grep -q '^C without ui_each_backend'; then
+    pass "CONTROL: an unclassed tier and a lost per-backend call are reported"
+else
+    fail "CONTROL: the planted suite was not reported: [$planted]"
 fi
 
 [ "$status" = 0 ] && printf 'PASS tests/run_ui_vocabulary.sh\n'

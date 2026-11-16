@@ -49,6 +49,8 @@ set -uo pipefail
 # here", which is true; the mode changes are gone.
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -75,7 +77,7 @@ if ! build_has qt; then
 fi
 
 # ------------------------------------------------------------------ SEMANTICS
-printf 'TIER semantics: both answers, the refusal, and the timer that answers\n'
+printf 'TIER [C] semantics: both answers, the refusal, and the timer that answers\n'
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 90 ./gbasic --line-buffered \
     tests/qt_dialog_test.bas > "$work/sem.out" 2> "$work/sem.err"
@@ -102,7 +104,7 @@ fi
 # THE TIER THIS SUITE IS FOR, and it needs BOTH halves: a server that never
 # answered would satisfy the "stalled" half on its own, and a dialog that never
 # opened would satisfy the control.
-printf 'TIER modal extent: how far a handler-raised dialog reaches\n'
+printf 'TIER [C] modal extent: how far a handler-raised dialog reaches\n'
 if ! command -v curl >/dev/null 2>&1; then
     printf '  SKIP (no curl -- how far a dialog reaches was NOT measured)\n'
 else
@@ -181,7 +183,7 @@ else
 fi
 
 # ------------------------------------------------------------------- REFUSALS
-printf 'TIER refusals: each naming the cause it can act on\n'
+printf 'TIER [C] refusals: each naming the cause it can act on\n'
 cat > "$work/nd.bas" <<'BAS'
 window app( title: "D", width: 200, height: 100 )
     column
@@ -246,7 +248,7 @@ fi
 # remedy. A language decision, not this backend's to take.
 #
 # THE FIXTURE HANGS BY DESIGN, so it is bounded and judged from outside.
-printf 'TIER stall: it needs no handler, which is what names its real cause\n'
+printf 'TIER [C] stall: it needs no handler, which is what names its real cause\n'
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 12 ./gbasic \
     --line-buffered tests/qt_dialog_pump_fixture.bas > "$work/pump.out" 2>&1
@@ -275,7 +277,7 @@ fi
 # platform plugin or QApplication statics, so a LEAK claim would be a
 # suppression file describing Qt. What is new here is a heap QMessageBox held
 # behind a QPointer and a refcounted pump, so the ACCESS claim is worth making.
-printf 'TIER valgrind: no invalid access across a nested modal loop\n'
+printf 'TIER [C] valgrind: no invalid access across a nested modal loop\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access in a dialog was NOT measured)\n'
 else

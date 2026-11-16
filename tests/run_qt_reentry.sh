@@ -65,6 +65,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 if ! make >/dev/null; then
     printf 'run_qt_reentry: FAILED (the build failed -- nothing was measured)\n'
@@ -82,7 +84,7 @@ fail() { printf '  FAIL %s\n' "$1"; status=1; }
 # why it is said: before the fix this shape segfaulted about three runs in
 # five, so the tier runs it SEVERAL TIMES rather than once -- a single clean
 # run of an intermittent crash proves very little.
-printf 'TIER survives: a handler that refreshes what called it, ten times over\n'
+printf 'TIER [C] survives: a handler that refreshes what called it, ten times over\n'
 if ! build_has qt; then
     printf '  SKIP (no Qt in this build -- re-entry was NOT measured)\n'
 else
@@ -131,7 +133,7 @@ fi
 # THE LOOP IS BROKEN AND SAID SO. Both halves: the warning must FIRE on the
 # blunt handler, and the program must CARRY ON -- a bound that stopped the
 # program would be a crash with better manners.
-printf 'TIER bounded: the loop is broken, named, and survivable\n'
+printf 'TIER [C] bounded: the loop is broken, named, and survivable\n'
 if ! build_has qt; then
     printf '  SKIP (no Qt in this build)\n'
 elif grep -q NODISPLAY "$work/r1.out" 2>/dev/null; then
@@ -162,7 +164,7 @@ fi
 # kept honest: if an ordinary program ever nests deeper than a handful, the cap
 # wants re-measuring rather than the check loosening -- which is the lesson
 # run_rules.sh's own bound records ("re-measure, do not just move the bound").
-printf 'TIER depth: an ordinary window nests only a step or two\n'
+printf 'TIER [C] depth: an ordinary window nests only a step or two\n'
 if ! build_has qt; then
     printf '  SKIP (no Qt in this build)\n'
 else
@@ -196,7 +198,7 @@ fi
 # relayed signal, a wheel, a gutter click and a close -- and the depth that
 # makes the deferral and the cap possible is tracked at ONE of them. A fifth
 # caller added beside `g_invoke` instead would be invisible to both.
-printf 'TIER one door: every call back into gBASIC goes through one place\n'
+printf 'TIER [N] one door: every call back into gBASIC goes through one place\n'
 # COUNTED OUTSIDE `invoke_handler`'S OWN BODY, which the first version of this
 # scan got wrong: that function necessarily calls `g_invoke` once, and counting
 # it reported the one door as a breach of itself -- the same shape
@@ -226,7 +228,7 @@ else
 fi
 
 # -------------------------------------------------------------- VALGRIND
-printf 'TIER valgrind: no invalid access across a re-entrant refresh\n'
+printf 'TIER [C] valgrind: no invalid access across a re-entrant refresh\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 elif ! build_has qt; then

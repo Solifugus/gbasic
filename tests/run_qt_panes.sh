@@ -45,6 +45,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -58,7 +60,7 @@ fail() { printf '  FAIL %s\n' "$1"; status=1; }
 # No grammar at all: `sizes` joins a record and the writer is a verb. Asserted
 # as a standing tier, which is not decoration in a project that rejected
 # `IDENT expression` as a statement form over FOUR measured conflicts.
-printf 'TIER grammar: bison still reports zero conflicts\n'
+printf 'TIER [N] grammar: bison still reports zero conflicts\n'
 if ! command -v bison >/dev/null 2>&1; then
     printf '  SKIP (no bison -- the grammar cost was NOT measured)\n'
 else
@@ -78,7 +80,7 @@ fi
 # would read one split's sizes and write another's. One walk, used by both --
 # the rule `would`/`execute` follow in `automation`, and the reason the INNER
 # tier below can be trusted to mean what it says.
-printf 'TIER one walk: the reader and the writer find the same splitter\n'
+printf 'TIER [N] one walk: the reader and the writer find the same splitter\n'
 walks=$(grep -c 'static QSplitter \*splitter_of' src/modules/qt_backend.cpp || true)
 users=$(grep -c 'splitter_of(window, name, err, err_size)' src/modules/qt_backend.cpp || true)
 if [ "${walks:-0}" = "1" ] && [ "${users:-0}" = "2" ]; then
@@ -99,7 +101,7 @@ else
 fi
 
 # ------------------------------------------------------------------ SEMANTICS
-printf 'TIER semantics: the sizes, the ratio, the inner split and the refusals\n'
+printf 'TIER [C] semantics: the sizes, the ratio, the inner split and the refusals\n'
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic \
     --line-buffered tests/qt_panes_test.bas > "$work/sem.out" 2> "$work/sem.err"
@@ -173,7 +175,7 @@ fi
 # ACCESS-ONLY, for the reason run_qt_backend.sh records. What is NEW here is an
 # int array crossing the seam in both directions, and a two-call protocol whose
 # first call reports a count the second trusts.
-printf 'TIER valgrind: no invalid access across the size arrays\n'
+printf 'TIER [C] valgrind: no invalid access across the size arrays\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 else

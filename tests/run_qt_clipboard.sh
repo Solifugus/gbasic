@@ -50,6 +50,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -72,7 +74,7 @@ if ! build_has qt; then
 fi
 
 # -------------------------------------------------------------- SEMANTICS
-printf 'TIER semantics: the round trip, the dead frame, the NUL and the refusals\n'
+printf 'TIER [C] semantics: the round trip, the dead frame, the NUL and the refusals\n'
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 60 \
     ./gbasic --line-buffered tests/qt_clipboard_test.bas \
@@ -126,7 +128,7 @@ set -e 2>/dev/null || true
 # THE CLIPBOARD BELONGS TO A QApplication, so there is none on a text-only
 # machine -- and constructing one anyway aborts the process uncatchably, which
 # is what this asserts does NOT happen.
-printf 'TIER no display: a sentence naming the display, and the program survives\n'
+printf 'TIER [C] no display: a sentence naming the display, and the program survives\n'
 set +e
 nodisplay timeout -k 5 60 ./gbasic --line-buffered \
     tests/qt_clipboard_nodisplay_test.bas \
@@ -186,7 +188,8 @@ fi
 # `value_string_n` becoming `value_string` is caught by the fixture's round
 # trip and by nothing here, since the probe does not go through the verb. All
 # three were perturbed and each reddened exactly its own.
-printf 'TIER doors: which half carries the bytes, measured one at a time (C++)\n'
+printf 'TIER [Q] doors: which half carries the bytes, measured one at a time (C++)\n'
+if ui_tier_qt; then   # Qt's own
 if ! command -v g++ >/dev/null 2>&1; then
     printf '  SKIP (no C++ compiler -- the two doors were NOT measured separately)\n'
 elif ! g++ -std=c++17 -fPIC -Iinclude -Isrc/modules -o "$work/cprobe" \
@@ -241,9 +244,10 @@ else
         fi
     fi
 fi
+fi   # tier doors
 
 # --------------------------------------------------------------- VALGRIND
-printf 'TIER valgrind: no invalid access across a copy and a read\n'
+printf 'TIER [C] valgrind: no invalid access across a copy and a read\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 else

@@ -73,6 +73,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 # THE BUILD IS CHECKED, which this suite's own perturbation round forced: a
 # failed `make` here used to leave the suite running the PREVIOUSLY BUILT
@@ -92,7 +94,7 @@ pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; status=1; }
 
 # ------------------------------------------------------------------ GRAMMAR
-printf 'TIER grammar: still zero conflicts (this increment adds none)\n'
+printf 'TIER [N] grammar: still zero conflicts (this increment adds none)\n'
 if ! command -v bison >/dev/null 2>&1; then
     printf '  SKIP (no bison -- the grammar cost was NOT measured)\n'
 else
@@ -114,7 +116,7 @@ fi
 # against, and this very vocabulary was written out three times before
 # `win_nearest` was derived from the tables, with the newest word missing from
 # the third.
-printf 'TIER one vocabulary: the categories are named in one place and asked for\n'
+printf 'TIER [N] one vocabulary: the categories are named in one place and asked for\n'
 # THE SCAN TAKES A PATH, which the GATE'S OWN LANE CHECK FORCED rather than
 # taste: the first version planted its control copy in `src/modules/ui.c`
 # itself and restored it, and `src/` IS A BUILD INPUT -- so the scan reported
@@ -154,7 +156,8 @@ else
 fi
 
 # ------------------------------------------------------------------ SEMANTICS
-printf 'TIER semantics: the margin, the marks, the click and the refusals\n'
+printf 'TIER [C] semantics: the margin, the marks, the click and the refusals\n'
+if ui_tier_needs highlighting; then   # needs highlighting
 if ! build_has qt; then
     printf '  SKIP (no Qt in this build -- the margin was NOT measured)\n'
 else
@@ -190,11 +193,13 @@ else
         fi
     fi
 fi
+fi   # tier semantics
 
 # ---------------------------------------------------------------- PAINT
 # THE CLAIM gBASIC CANNOT MAKE. Links the real backend object, so what is
 # measured is the painter the product runs.
-printf 'TIER paint: the margin really draws, and only what is visible (C++)\n'
+printf 'TIER [Q] paint: the margin really draws, and only what is visible (C++)\n'
+if ui_tier_qt; then   # Qt's own
 if ! build_has qt; then
     printf '  SKIP (no Qt in this build -- the painting was NOT measured)\n'
 elif ! command -v g++ >/dev/null 2>&1; then
@@ -286,9 +291,11 @@ else
         fi
     fi
 fi
+fi   # tier paint
 
 # -------------------------------------------------------------- VALGRIND
-printf 'TIER valgrind: no invalid access across a paint, a mark and a click\n'
+printf 'TIER [C] valgrind: no invalid access across a paint, a mark and a click\n'
+if ui_tier_needs highlighting; then   # needs highlighting
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 elif ! build_has qt; then
@@ -338,6 +345,7 @@ else
         pass "and nothing was left running afterwards"
     fi
 fi
+fi   # tier valgrind
 
 if [ "$status" = "0" ]; then
     printf 'run_qt_gutter: all checks passed\n'

@@ -52,6 +52,10 @@
 . "$(dirname "$0")/portable.sh"
 set -euo pipefail
 cd "$(dirname "$0")/.."
+source tests/ui_backend.sh
+# A C++ PROBE OF QT ITSELF, which runs on a build with no backend as it always
+# has; under another backend it is Qt's alone and skips.
+[ -z "$(ui_backends)" ] || ui_tier_qt || exit 0
 
 status=0
 pass() { printf '  ok   %s\n' "$1"; }
@@ -78,7 +82,7 @@ fi
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
-printf 'TIER build: a C++/moc translation unit, reachable from C\n'
+printf 'TIER [Q] build: a C++/moc translation unit, reachable from C\n'
 if "$MOC" tests/qt/qt_loop.cpp -o "$work/qt_loop.moc" 2>"$work/moc.err" \
    && g++ -std=c++17 -I"$work" -Itests/qt -c tests/qt/qt_loop.cpp -o "$work/qt_loop.o" -fPIC \
         $(pkg-config --cflags Qt6Widgets) 2>"$work/cxx.err" \
@@ -106,7 +110,7 @@ run_probe() {   # run_probe MODE [modal] -> the probe's one line
 }
 field() { printf '%s\n' "$1" | tr ' ' '\n' | sed -n "s/^$2=//p"; }
 
-printf 'TIER direction B: gBASIC owns the loop, Qt is pumped inside it\n'
+printf 'TIER [Q] direction B: gBASIC owns the loop, Qt is pumped inside it\n'
 b_out="$(run_probe B)"
 b_clicked=$(field "$b_out" clicked)
 b_ticks=$(field "$b_out" qt_ticks)
@@ -118,7 +122,7 @@ else
     printf '    %s\n' "$b_out"; fail "direction B did not even work in ordinary operation"
 fi
 
-printf 'TIER direction B with a dialog open: the case that rules it out\n'
+printf 'TIER [Q] direction B with a dialog open: the case that rules it out\n'
 bm_out="$(run_probe B modal)"
 bm_gap=$(field "$bm_out" worst_gbasic_gap_ms)
 bm_blocked=$(field "$bm_out" modal_blocked_ms)
@@ -134,7 +138,7 @@ else
     fail "gBASIC's loop was NOT starved (gap ${bm_gap}ms) -- the nested loop has become cooperative, so §5's decision rests on a measurement that no longer holds"
 fi
 
-printf 'TIER direction A: Qt owns the loop, a gBASIC source is a QSocketNotifier\n'
+printf 'TIER [Q] direction A: Qt owns the loop, a gBASIC source is a QSocketNotifier\n'
 a_out="$(run_probe A)"
 a_served=$(field "$a_out" gbasic_source_served)
 a_ticks=$(field "$a_out" qt_ticks)
@@ -154,7 +158,7 @@ else
     fail "the notifier fired ${a_served} times for 4 writes -- the handler is not draining"
 fi
 
-printf 'TIER direction A with a dialog open: the comparison that decides it\n'
+printf 'TIER [Q] direction A with a dialog open: the comparison that decides it\n'
 am_out="$(run_probe A modal)"
 am_served=$(field "$am_out" gbasic_source_served)
 am_blocked=$(field "$am_out" modal_blocked_ms)
@@ -171,7 +175,7 @@ else
     fail "A served ${a_served} without a dialog and ${am_served} with one -- the claim is that these are equal"
 fi
 
-printf 'TIER no display: a refusal, never an abort\n'
+printf 'TIER [Q] no display: a refusal, never an abort\n'
 # THE REQUIREMENT FOR THE FIRST BACKEND COMMIT, measured here so it is enforced
 # rather than remembered. Matthew asked for it after asking whether gBASIC would
 # still run on a text-only machine -- it does, completely; only a window needs a
@@ -223,7 +227,7 @@ else
     fail "the probe process itself exited $probe_rc with no display (134 = the abort it exists to prevent)"
 fi
 
-printf 'TIER display: the answer is not an artefact of the offscreen platform\n'
+printf 'TIER [Q] display: the answer is not an artefact of the offscreen platform\n'
 if [ -n "${DISPLAY:-}${WAYLAND_DISPLAY:-}" ]; then
     set +e
     d_out="$(timeout -k 5 60 "$work/probe" A modal 2>/dev/null | tail -1)"

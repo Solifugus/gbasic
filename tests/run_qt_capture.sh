@@ -17,6 +17,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -32,7 +34,8 @@ if ! build_has qt; then
     exit 0
 fi
 
-printf 'TIER semantics: sizes from the PNG header, scale, parts, sameness, refusals, the caret\n'
+printf 'TIER [C] semantics: sizes from the PNG header, scale, parts, sameness, refusals, the caret\n'
+if ui_tier_needs figures stylesheet highlighting; then   # needs figures stylesheet highlighting
 mkdir -p "$work/shots"
 OUT="$work/shots" QT_QPA_PLATFORM=offscreen timeout -k 5 60 \
     ./gbasic --line-buffered tests/qt_capture_test.bas \
@@ -65,8 +68,10 @@ else
         pass "and nothing on stderr"
     fi
 fi
+fi   # tier semantics
 
-printf 'TIER pixels: what the pictures show, decoded by PIL\n'
+printf 'TIER [Q] pixels: what the pictures show, decoded by PIL\n'
+if ui_tier_qt && ui_tier_needs figures stylesheet highlighting; then   # Qt's own, and needs figures stylesheet highlighting
 if [ "$ran" != "1" ]; then
     printf '  SKIP (the fixture did not run, so there are no pictures)\n'
 elif ! python3 -c 'import PIL' 2>/dev/null; then
@@ -155,8 +160,10 @@ EOF
         pass "$(grep -c '^ok' "$work/pix.out") pixel checks agree"
     fi
 fi
+fi   # tier pixels
 
-printf 'TIER valgrind: no invalid access across the captures and refusals\n'
+printf 'TIER [C] valgrind: no invalid access across the captures and refusals\n'
+if ui_tier_needs figures stylesheet highlighting; then   # needs figures stylesheet highlighting
 if [ "$ran" != "1" ]; then
     printf '  SKIP (the fixture did not run)\n'
 elif ! command -v valgrind >/dev/null 2>&1; then
@@ -181,6 +188,7 @@ else
         pass "no invalid access, and the fixture still passes under valgrind"
     fi
 fi
+fi   # tier valgrind
 
 if [ "$status" = "0" ]; then
     printf 'run_qt_capture: all checks passed\n'

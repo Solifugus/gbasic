@@ -64,6 +64,8 @@
 set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
+source tests/ui_backend.sh
+ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
@@ -79,7 +81,7 @@ if ! build_has qt; then
 fi
 
 # -------------------------------------------------------------- SEMANTICS
-printf 'TIER semantics: the tab, the mapping, the tree row and the refusals\n'
+printf 'TIER [C] semantics: the tab, the mapping, the tree row and the refusals\n'
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 60 \
     ./gbasic --line-buffered tests/qt_which_test.bas \
@@ -126,7 +128,7 @@ else
 fi
 
 # ------------------------------------------------------------ SLOT CHOICE
-printf 'TIER slot choice: by the signal TYPE, not by its argument count\n'
+printf 'TIER [N] slot choice: by the signal TYPE, not by its argument count\n'
 if ! command -v python3 >/dev/null 2>&1; then
     printf '  SKIP (no python3 -- the slot choice was NOT checked)\n'
 else
@@ -153,7 +155,7 @@ else
 fi
 
 # --------------------------------------------------------------- VALGRIND
-printf 'TIER valgrind: no invalid access, including the bool-carrying signal\n'
+printf 'TIER [C] valgrind: no invalid access, including the bool-carrying signal\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'
 else
