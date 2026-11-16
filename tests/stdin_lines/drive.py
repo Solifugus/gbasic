@@ -14,6 +14,14 @@ import sys
 import time
 
 checks = bad = 0
+# A SLOWER MACHINE'S PATIENCE (tests/portable.sh's GATE_TIME_SCALE): the
+# latency bound and the exit wait below are multiplied by it. s390x under QEMU
+# echoed its worst line in 1.43 s against the 1 s bound (2026-11-15); that each
+# echo arrives while the input is still open is a separate check, unscaled.
+try:
+    SCALE = max(1.0, float(os.environ.get("GATE_TIME_SCALE", "1")))
+except ValueError:
+    SCALE = 1.0
 
 
 def check(label, ok, detail=""):
@@ -64,8 +72,9 @@ def slow(gb):
     p.stdin.close()
     tail = p.stdout.readline().decode().strip()
     check("closed when the input closes", tail == "closed; at most 1 line per delivery", tail)
-    check("the program ends", p.wait(timeout=10) == 0)
-    check("each line came back in under a second", max(lags) < 1.0, "%.2f s worst" % max(lags))
+    check("the program ends", p.wait(timeout=10 * SCALE) == 0)
+    check("each line came back in under a second (x %g)" % SCALE, max(lags) < 1.0 * SCALE,
+          "%.2f s worst" % max(lags))
 
 
 def qt(gb):

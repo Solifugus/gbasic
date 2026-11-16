@@ -472,6 +472,9 @@ struct GsqlConnectionValue {
      * connection that STARTS an owner sets it (gsql_owner_lifetime_design.md) */
     long linger_ms;
     char linger_arg[40];
+    /* `wait:` on gsql.connect, how long to wait for an owner to answer (or a
+     * started one to say it is ready), in ms; 0, the client's 10 s */
+    uint32_t wait_ms;
     /* A `database` block's connection (docs/gsql_module_design.md §7) is made
      * when the block is declared and CONNECTS ON FIRST USE, so a program that
      * declares a database and never touches it starts no owner. `create` is
@@ -45297,6 +45300,14 @@ static void database_register(AstStmt *stmt) {
         if (strcmp(f->name, "linger") == 0 && f->value && f->value->kind == AST_EXPR_NUMBER) {
             double sec = f->value->as.num.is_exact ? (double)f->value->as.num.exact : f->value->as.num.value;
             c->linger_ms = sec >= 0 && sec <= 86400 ? (long)(sec * 1000 + 0.5) : -1;
+        }
+        /* `wait:`, its range checked at load time (frontend.c), as connect's */
+        if (strcmp(f->name, "wait") == 0 && f->value && f->value->kind == AST_EXPR_NUMBER) {
+            double sec = f->value->as.num.is_exact ? (double)f->value->as.num.exact : f->value->as.num.value;
+            c->wait_ms = sec > 0 && sec <= 3600 ? (uint32_t)(sec * 1000 + 0.5) : 0;
+            if (sec > 0 && c->wait_ms == 0) {
+                c->wait_ms = 1;
+            }
         }
     }
     c->decl = stmt;

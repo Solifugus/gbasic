@@ -25,7 +25,9 @@ end function
 
 program main(args)
     ' run from a scratch directory: the runner removes it
-    database db( file: "methods.gsql", create: true, linger: 0 )
+    ' wait: 600 -- these run under valgrind on s390x (QEMU), where an owner took
+    ' longer than the default 10 s to answer; it is only how long a slow one may take
+    database db( file: "methods.gsql", create: true, linger: 0, wait: 600 )
     sql setup on db
         create table t (id integer primary key, name text);
         insert into t values (1, 'a'), (2, 'b')

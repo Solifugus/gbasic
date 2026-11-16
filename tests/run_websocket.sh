@@ -93,9 +93,13 @@ else
     printf 'SKIP server, client and wss tiers: no python3 with the websockets package, so nothing was checked against another implementation\n'
 fi
 
+# QUIET HIDES ONLY A PASS. The valgrind tier sent peer's output to /dev/null,
+# and with it a failure's FAIL line and reason: on s390x it exited 1 having
+# printed nothing but PASS lines (2026-11-15).
+peer_quiet=0
 peer() {      # peer CHECK PORT [ARG]
     if out=$(timeout 90 python3 -I tests/websocket/ws_peer.py "$@" 2>&1); then
-        printf '%s\n' "$out" | grep -v '^INFO'
+        [ "$peer_quiet" = 1 ] || printf '%s\n' "$out" | grep -v '^INFO'
     else
         printf '%s\n' "$out" | grep -E '^FAIL|Error' | head -3
         fail "ws_peer $1"
@@ -108,7 +112,7 @@ serve_ws() {  # serve_ws FIXTURE [PREFIX...] -> $wport, $wsp
     timeout 300 "$@" ./gbasic --line-buffered "$file" "$work/wready" >"$work/ws.out" 2>&1 </dev/null &
     wsp=$!
     pids="$pids $wsp"
-    for _ in $(seq 300); do [ -s "$work/wready" ] && break; sleep 0.1; done
+    for _ in $(seq $((300 * $(gb_time_scale)))); do [ -s "$work/wready" ] && break; sleep 0.1; done
     wport=$(cat "$work/wready" 2>/dev/null)
 }
 
@@ -155,7 +159,7 @@ if [ "$have_ws" = 1 ]; then
     fi
     ppid=$!
     pids="$pids $ppid"
-    for _ in $(seq 100); do [ -s "$work/ports.json" ] && break; sleep 0.05; done
+    for _ in $(seq $((100 * $(gb_time_scale)))); do [ -s "$work/ports.json" ] && break; sleep 0.05; done
     read -r p_ws p_raw p_wss < <(python3 -I -c "import json,sys;p=json.load(open(sys.argv[1]));print(p['ws'],p['raw'],p.get('wss',''))" "$work/ports.json")
     if [ "$tls" = 1 ]; then
         fixture "the client, waited and watched, against Python's servers, and wss" 35 \
@@ -193,9 +197,11 @@ if vg_available; then
     fi
     if [ "$have_ws" = 1 ]; then
         serve_ws tests/websocket/ws_server.bas env "VG_EXTRA=--log-file=$work/vgs.log" bash tests/net/vg_wrap.sh
+        peer_quiet=1
         for c in echo fragments violations close_client; do
-            peer "$c" "$wport" >/dev/null
+            peer "$c" "$wport"
         done
+        peer_quiet=0
         peer quit "$wport"
         if wait "$wsp" && ! grep -q 'Invalid \(read\|write\)\|definitely lost: [1-9]' "$work/vgs.log"; then
             printf 'PASS valgrind the server through an echo, fragments, the violations and a close\n'

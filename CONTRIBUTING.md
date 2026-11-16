@@ -24,7 +24,8 @@ and a name the map lists that no file declares.
 ## Getting set up
 
 ```sh
-./tools/check-deps.sh        # says what is missing and how to install it
+./tools/check-deps.sh        # says what is missing and how to install it (Debian/Ubuntu, Fedora, Arch)
+./install.sh --no-install    # or installs it, asking first, and builds ./gbasic
 make                         # builds ./gbasic
 make dev                     # builds everything, including gbasic-lsp
 ```

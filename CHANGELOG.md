@@ -16,6 +16,74 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### `wait:` on gsql.connect and in a database block (2026-11-15)
+
+- How long a connect waits for the database's owner to answer, or for one it
+  started to say it is ready, was a fixed 10 seconds, and nothing could change
+  it: an owner slow to open (a large recovery, slow storage, a loaded machine)
+  was refused `NO_OWNER` while it was still coming up. `gsql.connect(path,
+  { wait: seconds })` sets it, more than 0 and up to 3600, a number or a
+  duration, as `gsql.close`'s `wait` is; a `database` block's head takes the
+  same `wait:` as a literal. Found by s390x under QEMU, where an owner with its
+  client under valgrind took longer than the 10 s. When the default runs out
+  the refusal now names the option.
+- A block head's `linger:` out of 0 to 86400 was SILENTLY the owner's default,
+  where gsql.connect refuses it; a block head's `linger:` and `wait:` are now
+  held to connect's ranges when the program loads, located at the block.
+- When a connect gave up on an owner it had started, the process it forks to
+  start one kept the program's streams for as long as it waited (10 s), so a
+  `$(...)` capture or a pipe reading the program stayed open after the program
+  had exited. That process gives them up now, as the owner always did.
+
+### `./install.sh`: from a clone to an installed gbasic (2026-11-15)
+
+- Debian/Ubuntu, Fedora and Arch: installs the packages gBASIC builds against
+  (shown and asked first; Qt, being large, asked about separately), builds,
+  installs under `~/.local` (`--system` for `/usr/local`), and runs a program
+  that loads a standard library from outside the tree. `--minimal`, `--qt`,
+  `--no-qt`, `--prefix`, `--no-install`, `--yes` and `--dry-run`. A package a
+  release does not carry is left out and named rather than failing the whole
+  install. `tools/deps.list` is the one list of dependencies and each
+  distribution's package for them, shared with `tools/check-deps.sh`, which
+  now names Fedora's and Arch's packages too. `tests/run_install_script.sh`
+  holds the list to the Makefile both ways and checks every family's command;
+  with `INSTALL_CONTAINER_TEST=1` it installs in fresh Ubuntu 22.04 and 24.04,
+  Debian 12, Fedora 41 and Arch containers, where it found two wrong names
+  (Fedora's zlib, Ubuntu 22.04's Qt SVG) the first version had passed.
+
+### The s390x gate's second run (2026-11-15)
+
+- `tests/portable.sh`'s scaled `timeout` is a shell function, so in
+  `timeout ... & pid=$!` the pid was a subshell, and killing it left the real
+  timeout and its command running for the whole scaled bound: run_net left
+  five servers per run on s390x for over three hours. In a subshell the
+  wrapper now runs the command behind it and passes TERM, INT and HUP to the
+  whole tree below it; its shell fallback's watchdog sleep, which outlived a
+  finished command in a pipeline and held the caller's pipe, is killed with it.
+  run_portable holds both, and fails against the old wrapper.
+- Bounds that were absolute and are now multiplied by `GATE_TIME_SCALE`: the
+  TLS client's deadlines (run_net), the modal-dialog fixture's click, now
+  gated on a file the suite writes after its control request (run_qt_dialog),
+  the G-SQL lease timings with every bound stated in them (run_gsql_owner),
+  stdin_lines' one-second echo bound, and ws_peer's socket, HTTP and
+  websockets-library timeouts (run_websocket). run_inbox's readiness probe was
+  a whole request under `curl -m 1`, each making its fixture spawn a worker and
+  block, so on s390x all 300 timed out on a server that was up; it is a bare
+  connect now.
+- Failures that said nothing now say why: run_websocket's valgrind tier sent
+  its peers' output to /dev/null, FAIL lines included, and exited 1 having
+  printed only passes; run_net's TLS client tier and the G-SQL valgrind tiers
+  (run_gsql_module, run_handle_methods) print the exit and the program's own
+  stderr.
+- run_text_encoding's oracle wrote plain `utf-16` with Python's codec, which
+  writes the machine's order (big-endian on s390x); it writes it as gBASIC
+  documents it, FF FE then little-endian, and the 4120 cases are now the same
+  bytes on every machine.
+- tests/qt.supp gains five s390x entries (a label's style sheet, a combo box's
+  popup and model signals, a key typed into a line edit), each reproduced by
+  tests/qt_valgrind_probe.cpp with no gBASIC and each value's origin in Qt's
+  own construction; the probe reports nothing on x86.
+
 ### Recursion too deep for the stack raises instead of crashing (2026-11-14)
 
 - A gBASIC call takes about 13 KB of C stack on x86 and nothing guarded it:

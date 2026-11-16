@@ -2435,11 +2435,20 @@ static int group_main(const char *dir) {
 
 /* ==== the lease (gsql_lease_design.md) ==================================== */
 
-/* Scaled timings: renew, trust, dead, settle. */
-#define L_RENEW 100
-#define L_DEAD 1200
-#define L_SETTLE 200
-#define L_TIMINGS "100,400,1200,200"
+/* Scaled timings: renew, trust, dead, settle -- and scaled again by
+ * GATE_TIME_SCALE, every one together, so the bounds below keep their
+ * proportions. Unscaled, a renewal every 100 ms was a rhythm s390x under QEMU
+ * could not keep (each step took about 900 ms), and three bounds stated as
+ * fractions of the dead time failed on a lease that was behaving correctly. */
+#define L_SCALE ((int)time_scale())
+#define L_RENEW (100 * L_SCALE)
+#define L_DEAD (1200 * L_SCALE)
+#define L_SETTLE (200 * L_SCALE)
+static const char *lease_timings(void) {
+    static char t[64];
+    snprintf(t, sizeof t, "%d,%d,%d,%d", L_RENEW, 400 * L_SCALE, L_DEAD, L_SETTLE);
+    return t;
+}
 
 /* Become machine `name`: its own runtime directory (so its own sockets, as
  * on a real second machine), identity and local lock, inherited by every
@@ -2453,7 +2462,7 @@ static void be_machine(const char *dir, const char *name) {
     /* the machines share the database directory, as on NFS, and a socket
        there would reach across them as it cannot on NFS: each its own name */
     gsql_socket_test_machine(name);
-    setenv("GSQL_TEST_LEASE", L_TIMINGS, 1);
+    setenv("GSQL_TEST_LEASE", lease_timings(), 1);
 }
 
 /* An open whose refusal is the point: the code, the message and the time. */
@@ -2462,7 +2471,7 @@ static GsqlClient *try_open(const char *db, int create, int *code, char *msg, si
     memset(&o, 0, sizeof o);
     o.owner_argv = OWNER_ARGV;
     o.create = create;
-    o.wait_ms = 20000;
+    o.wait_ms = 20000 * L_SCALE;   /* past the scaled L_DEAD * 4 */
     GsqlClient *c = NULL;
     GsqlError err;
     memset(&err, 0, sizeof err);

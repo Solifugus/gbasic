@@ -13,6 +13,10 @@ encoded by Python, then some of them corrupted at random.
 One deliberate difference from Python is not sampled: "utf-16" with no
 byte-order mark. Python reads it in the machine's order, gBASIC big-endian
 (RFC 2781); the fixture checks that case against "utf-16-be" itself.
+
+Python also WRITES plain "utf-16" in the machine's order (FE FF and
+big-endian on s390x), so "utf-16" is written here as gBASIC documents it,
+FF FE then "utf-16-le", and the cases are the same on every machine.
 """
 import random
 import sys
@@ -27,17 +31,21 @@ pycodec = {"utf-8": "utf-8", "latin-1": "latin-1", "windows-1252": "cp1252", "ut
 names = list(pycodec)
 
 
+def encode(text, codec):
+    if codec == "utf-16":
+        return b"\xff\xfe" + text.encode("utf-16-le")
+    return text.encode(pycodec[codec])
+
+
 def py(data, f, t):
     try:
         text = data.decode(pycodec[f])
     except UnicodeDecodeError as e:
         return "ERR:%d" % e.start
     try:
-        out = text.encode(pycodec[t])
+        out = encode(text, t)
     except UnicodeEncodeError as e:
         return "ERR:%d" % e.start
-    if t == "utf-16" and not out.startswith(b"\xff\xfe"):
-        raise SystemExit("this machine's Python writes utf-16 big-endian; the oracle assumes FF FE")
     return out.hex() or "-"
 
 
@@ -47,7 +55,7 @@ for _ in range(4000):
     t = rng.choice(names)
     text = "".join(rng.choice(pool) for _ in range(rng.randint(0, 8)))
     try:
-        data = text.encode(pycodec[f])
+        data = encode(text, f)
     except UnicodeEncodeError:
         data = text.encode("utf-8")      # not representable: feed its UTF-8 bytes, usually refused
     if f == "utf-16" and not data.startswith((b"\xff\xfe", b"\xfe\xff")):

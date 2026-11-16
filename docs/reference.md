@@ -2841,7 +2841,7 @@ db.close()
 
 The module provides:
 
-- `gsql.connect(path[, { create: true, linger: seconds }])` — without `create`, a database that is not there is refused. `linger` is how long an owner this connection **starts** waits after its last connection closes before it stops, from 0 to 86400; 0 stops it at the last close. It is the starter's choice: when an owner is already running, a `linger` given here is ignored. A `database` block takes `linger:` too
+- `gsql.connect(path[, { create: true, linger: seconds, wait: seconds }])` — without `create`, a database that is not there is refused. `linger` is how long an owner this connection **starts** waits after its last connection closes before it stops, from 0 to 86400; 0 stops it at the last close. It is the starter's choice: when an owner is already running, a `linger` given here is ignored. `wait` is how long to wait for the database's owner to answer, or for one this connect started to say it is ready, before refusing with `NO_OWNER`: more than 0 and up to 3600 seconds (a number or a duration), 10 seconds when not given. Give it more where an owner can be slow to open: a large recovery after a crash, slow storage, a heavily loaded machine. Every other option name is refused. A `database` block takes `linger:` and `wait:` too, as literal numbers held to the same ranges when the program loads
 - `connection.query(sql[, parameters])` (`gsql.query`) — an array of records, fields in select-list order
 - `connection.exec(sql[, parameters])` (`gsql.exec`) — runs anything and answers `{ command, rows_affected }`, as `sqlite`, `pg` and `odbc` answer, plus **`rows`, every row, when the statement returns rows**; `rows_affected` is `nothing` for a statement with no count. `gsql.query` is the shortcut for the rows alone, and `for each` streams a large result
 - `connection.columns(sql[, parameters])` (`gsql.columns`) *(after 0.10.0)* — a
@@ -3090,8 +3090,8 @@ next
   `connection.query(block)`, connection first as with a string, or
   `connection.on(block)`, the block bound to that connection, which is
   what `for each` takes. Any block can be run elsewhere the same way; one on a
-  database with a file still runs there by default. A role takes no `create:`
-  or `linger:`, which are the options of the `gsql.connect` that makes its
+  database with a file still runs there by default. A role takes no `create:`,
+  `linger:` or `wait:`, which are the options of the `gsql.connect` that makes its
   connection (`docs/gsql_block_connection_design.md`).
 
 **Write SQL in blocks; use a string only for SQL assembled at run time.** A

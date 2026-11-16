@@ -2,7 +2,9 @@
 library depot
     load gsql
 
-    database shop( file: "depot.gsql", create: true )
+    ' wait: 600 -- these run under valgrind on s390x (QEMU), where an owner took
+    ' longer than the default 10 s to answer; it is only how long a slow one may take
+    database shop( file: "depot.gsql", create: true, wait: 600 )
 
     sql make on shop
         create table bin (code string primary key)

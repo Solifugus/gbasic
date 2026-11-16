@@ -121,6 +121,9 @@ GB
             fail "valgrind objected"
         else
             tail -3 "$work/vg.out"
+            # its own stderr, without valgrind's ==pid== lines: on s390x it
+            # exited 1 with nothing on stdout, and so said nothing at all
+            grep -v '^==[0-9]*==' "$work/vg.err" | tail -5 | sed 's/^/       stderr: /'
             fail "valgrind: the fixture did not pass under valgrind (exit $vgst)"
         fi
     else

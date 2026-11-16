@@ -23,7 +23,9 @@ function check(label, got, want)
     return nothing
 end function
 
-database shop( file: "program.gsql", create: true )
+' wait: 600 -- these run under valgrind on s390x (QEMU), where an owner took
+' longer than the default 10 s to answer; it is only how long a slow one may take
+database shop( file: "program.gsql", create: true, wait: 600 )
 
 ' a program's own block on the LIBRARY's database (gap G6): it was a parse
 ' error, "expecting LPAREN"
@@ -99,7 +101,7 @@ shop.close()
 ' its tables have names of their own -- measured, by pointing every block's
 ' database lookup at the global frame and watching this fixture stay green.
 function tables_in(path)
-    db = gsql.connect(path)
+    db = gsql.connect(path, { wait: 600 })
     out = []
     for each t in ["item", "bin", "note"]
         on error goto next

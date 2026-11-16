@@ -1,0 +1,36 @@
+# What gBASIC builds against, and each distribution's package for it. Read by
+# tools/deps.sh, so by tools/check-deps.sh and ./install.sh: this is the one
+# list, and check-deps.sh holds it to the Makefile's own pkg-config probes.
+#
+# kind|probe|debian|fedora|arch|group|what it enables
+#
+#   kind   tool: a command on PATH;  pc: a pkg-config module;
+#          dir: a header directory under /usr/include or /usr/local/include
+#          (KDE Frameworks ship no .pc, so the Makefile looks for the headers)
+#   pkgs   several packages separated by spaces; `a/b` is a or, where a has no
+#          candidate, b (Ubuntu 22.04 has libldap2-dev and libqt6svg6-dev, later
+#          releases libldap-dev and qt6-svg-dev; Fedora 40 on has zlib only as
+#          zlib-ng-compat-devel, which zlib-devel names but cannot install by)
+#   group  required: the build fails without it;  optional: compiled out
+#          cleanly when absent;  qt: optional, and asked about, being large
+#
+# Every name here was installed for real by tests/run_install_script.sh's
+# container tier on each distribution, and gBASIC built against it there.
+tool|cc|build-essential|gcc|base-devel|required|the C11 compiler
+tool|make|build-essential|make|base-devel|required|the build
+tool|bison|bison|bison|bison|required|regenerates src/parser.y
+tool|pkg-config|pkg-config|pkgconf-pkg-config|pkgconf|required|finds every library below; without it every optional module is compiled out
+pc|libpcre2-8|libpcre2-dev|pcre2-devel|pcre2|required|regex (PCRE2), which is core
+pc|sqlite3|libsqlite3-dev|sqlite-devel|sqlite|optional|sqlite.* module, dbframe, the EDGAR suite, xlsx.to_sql tests
+pc|libxml-2.0|libxml2-dev|libxml2-devel|libxml2|optional|xml module; with zlib, xlsx (reader, writer, formula engine)
+pc|zlib|zlib1g-dev|zlib-ng-compat-devel/zlib-devel|zlib|optional|compress/uncompress, zip; with libxml2, xlsx
+pc|libcrypto|libssl-dev|openssl-devel|openssl|optional|crypto builtins (hashing, HMAC, AES-GCM, Ed25519) + crypto.bas
+pc|libssl|libssl-dev|openssl-devel|openssl|optional|TLS in net and the web server (with libcrypto)
+pc|libcurl|libcurl4-openssl-dev|libcurl-devel|curl|optional|webclient, http and smtp modules
+pc|libpq|libpq-dev|libpq-devel|postgresql-libs|optional|pg.* PostgreSQL module
+pc|libxcrypt|libcrypt-dev|libxcrypt-devel|libxcrypt|optional|password_hash / password_verify through libxcrypt (a vendored yescrypt stands in without it)
+pc|odbc|unixodbc-dev|unixODBC-devel|unixodbc|optional|odbc.* module (any ODBC-reachable database)
+pc|ldap|libldap-dev/libldap2-dev|openldap-devel|libldap|optional|ldap.* module (bind and search)
+pc|Qt6Widgets|qt6-base-dev qt6-base-dev-tools|qt6-qtbase-devel|qt6-base|qt|the qt module and window declarations (needs moc too)
+pc|Qt6Svg|qt6-svg-dev/libqt6svg6-dev|qt6-qtsvg-devel|qt6-svg|qt|qt.render_svg (with Qt6Widgets)
+dir|KF6/KSyntaxHighlighting|libkf6syntaxhighlighting-dev|kf6-syntax-highlighting-devel|syntax-highlighting|qt|the source widget's highlighting (with Qt)

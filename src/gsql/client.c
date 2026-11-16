@@ -141,23 +141,26 @@ static int start_owner(GsqlClient *c, GsqlError *err) {
             dprintf(p[1], "error the owner could not be detached: %s\n", strerror(errno));
             _exit(0);
         }
+        /* holding the program's streams would hold a $(...) capture open for
+         * the owner's whole life; everything it says goes on the ready line
+         * or over the protocol. THIS PROCESS TOO, before the owner is forked
+         * from it: it waits for a slow owner after the client has given up
+         * (a `wait:` shorter than the owner's start), and held a pipe on the
+         * program's stdout open the 10 s it waited (2026-11-15) */
+        int dn = open("/dev/null", O_RDWR);
+        if (dn >= 0) {
+            dup2(dn, 0);
+            dup2(dn, 1);
+            dup2(dn, 2);
+            if (dn > 2) {
+                close(dn);
+            }
+        }
         snprintf(fdtext, sizeof fdtext, "%d", q[1]);
         pid_t owner = fork();
         if (owner == 0) {
             close(q[0]);
             close(p[1]);
-            /* holding the program's streams would hold a $(...) capture open
-             * for the owner's whole life; everything it says goes on the
-             * ready line or over the protocol */
-            int dn = open("/dev/null", O_RDWR);
-            if (dn >= 0) {
-                dup2(dn, 0);
-                dup2(dn, 1);
-                dup2(dn, 2);
-                if (dn > 2) {
-                    close(dn);
-                }
-            }
             execv(argv[0], argv);
             _exit(127);
         }

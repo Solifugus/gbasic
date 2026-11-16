@@ -13,7 +13,7 @@ application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.10.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**235 test suites** gate every change, goldens are byte-exact, and the claims in
+**236 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -54,6 +54,24 @@ does. The reference's *Platforms* section carries the measurements.
 **[Cookbooks](#cookbooks)** for worked, runnable recipes — spreadsheets,
 finance, accounting, lending, deposits, credit, charts, dates, ODBC and GUI ·
 [Documentation index](docs/README.md) for everything else.
+
+---
+
+## Building from a clone
+
+On Debian/Ubuntu, Fedora or Arch:
+
+```sh
+./install.sh
+```
+
+It installs the packages gBASIC builds against (asking first, and asking
+separately about Qt, which is large), builds it, installs it under `~/.local`,
+and runs a program to show the installed `gbasic` works. `--system` installs to
+`/usr/local` instead, `--minimal` installs only what the build cannot do
+without, and `--help` lists the rest. To see what is present without installing
+anything, run `tools/check-deps.sh`. Other distributions, and doing it by hand,
+are under [Quick start](#quick-start).
 
 ---
 
@@ -463,6 +481,11 @@ Two larger example programs live in the repository:
 
 ## Quick start
 
+`./install.sh` does all of this on Debian/Ubuntu, Fedora and Arch (see
+[Building from a clone](#building-from-a-clone)); this is the same by hand.
+[tools/deps.list](tools/deps.list) names each dependency's package on those
+three, which is where to start on another distribution.
+
 On Linux, with a C11 compiler, `make`, `bison` and PCRE2 (`libpcre2-dev`, the
 regex engine). Everything else is optional:
 
@@ -559,7 +582,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 235 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 236 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite

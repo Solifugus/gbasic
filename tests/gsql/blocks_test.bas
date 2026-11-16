@@ -6,9 +6,11 @@ load gsql
 
 checks = { n: 0, bad: 0 }
 
-database shop( file: "shop.gsql", create: true )
-database spare( file: "spare.gsql", create: true )
-database unused( file: "unused.gsql", create: true )
+' wait: 600 -- these run under valgrind on s390x (QEMU), where an owner took
+' longer than the default 10 s to answer; it is only how long a slow one may take
+database shop( file: "shop.gsql", create: true, wait: 600 )
+database spare( file: "spare.gsql", create: true, wait: 600 )
+database unused( file: "unused.gsql", create: true, wait: 600 )
 ' a role: chosen at run time, its blocks given a connection when used
 ' (docs/gsql_block_connection_design.md)
 database tenant()
@@ -438,8 +440,8 @@ e = exec_with(by_q, { other: 1 })
 check("a name in neither is refused, naming both", contains(message_of(e), "nor a field of that name"), true)
 
 ' --- a block on a database chosen at run time -----------------------------------
-ta = gsql.connect("tenant_a.gsql", { create: true })
-tb = gsql.connect("tenant_b.gsql", { create: true })
+ta = gsql.connect("tenant_a.gsql", { create: true, wait: 600 })
+tb = gsql.connect("tenant_b.gsql", { create: true, wait: 600 })
 fill(ta, "a", 3)
 fill(tb, "b", 2)
 check("the same blocks on two tenants: a's rows", names_of(gsql.on(ta, t_items)), "a1,a2,a3")

@@ -15,7 +15,8 @@
 # line edit's text set through setProperty, an image scaled smoothly, and the
 # raster engine filling a tool button's arrow (a function with no symbol, so
 # its entries name the raster entry point beneath it instead). The probe
-# reproduces every one with no gBASIC, and --track-origins placed each
+# reproduces every one with no gBASIC (as it does the five the gate of
+# 2026-11-15 added, at the end of this file), and --track-origins placed each
 # uninitialised value in a Qt allocation, never in gBASIC's. No invalid read or
 # write was reported, by the probe or by gBASIC. On x86 neither reports
 # anything. Whether it is Qt's s390x build or valgrind's s390x support (vector
@@ -224,5 +225,56 @@
    Memcheck:Cond
    obj:*/libQt6Widgets.so*
    fun:_ZNK11QGridLayout19expandingDirectionsEv
+   ...
+}
+
+# THE GATE OF 2026-11-15 (run_qt_capture, run_qt_find, run_qt_keys,
+# run_qt_chooser): four more, each reproduced by the probe with no gBASIC and
+# each value's origin, by --track-origins, in QLabel's, QComboBox's or
+# QFileDialog's own construction, or a local of QLineEdit::deselect.
+
+# a label's style sheet set through setProperty
+{
+   qt-s390x-qwidget-setstylesheet-cond
+   Memcheck:Cond
+   fun:_ZN7QWidget13setStyleSheetERK7QString
+   ...
+}
+
+# a combo box's popup hidden
+{
+   qt-s390x-qcombobox-hidepopup-cond
+   Memcheck:Cond
+   fun:_ZN9QComboBox9hidePopupEv
+   ...
+}
+
+# a key typed into a line edit
+{
+   qt-s390x-qwidgetlinecontrol-internalinsert-cond
+   Memcheck:Cond
+   fun:_ZN18QWidgetLineControl14internalInsertERK7QString
+   ...
+}
+
+# a combo box's own view told of rows inserted into its model (an item added,
+# or a file dialog's history set); the receiving function has no symbol, so
+# the entry names the path: a Widgets slot, Core's signal delivery, the signal
+{
+   qt-s390x-combobox-view-rowsinserted-cond
+   Memcheck:Cond
+   obj:*/libQt6Widgets.so*
+   obj:*/libQt6Core.so*
+   fun:_ZN18QAbstractItemModel12rowsInsertedERK11QModelIndexiiNS_14QPrivateSignalE
+   ...
+}
+
+# and of data changed in that model, by the same path
+{
+   qt-s390x-combobox-view-datachanged-cond
+   Memcheck:Cond
+   obj:*/libQt6Widgets.so*
+   obj:*/libQt6Core.so*
+   fun:_ZN18QAbstractItemModel11dataChangedERK11QModelIndexS2_RK5QListIiE
    ...
 }

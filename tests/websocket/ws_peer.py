@@ -21,6 +21,22 @@ import threading
 import urllib.request
 
 import websockets
+
+# A SLOWER MACHINE'S PATIENCE (tests/portable.sh's GATE_TIME_SCALE): every bound
+# on a reply that must come is multiplied by it, the websockets library's own
+# open, close and keepalive timeouts with them. Unscaled, a server under
+# valgrind on s390x (QEMU, ~100x) failed a check here that the runner then
+# hid, its output sent to /dev/null (2026-11-15).
+try:
+    SCALE = max(1.0, float(os.environ.get("GATE_TIME_SCALE", "1")))
+except ValueError:
+    SCALE = 1.0
+
+
+def ws_connect(uri, **kw):
+    for k, v in (("open_timeout", 10), ("close_timeout", 10), ("ping_interval", 20), ("ping_timeout", 20)):
+        kw.setdefault(k, v * SCALE)
+    return websockets.connect(uri, **kw)
 from websockets.asyncio.server import serve as ws_serve
 from websockets.exceptions import ConnectionClosed
 
@@ -83,7 +99,7 @@ def read_frame(s):
 
 
 def raw_handshake(port, path="/echo", extra=b"", version="13"):
-    s = socket.create_connection(("127.0.0.1", port), timeout=10)
+    s = socket.create_connection(("127.0.0.1", port), timeout=10 * SCALE)
     key = base64.b64encode(os.urandom(16)).decode()
     req = ("GET %s HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
            "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: %s\r\n\r\n" % (path, key, version)).encode()
@@ -111,7 +127,7 @@ def close_code_of(s):
 # ---- checks against the gBASIC server ------------------------------------------
 
 async def c_echo(port):
-    async with websockets.connect("ws://127.0.0.1:%d/echo" % port, subprotocols=["other", "echo.v1"],
+    async with ws_connect("ws://127.0.0.1:%d/echo" % port, subprotocols=["other", "echo.v1"],
                                   max_size=None) as ws:
         if ws.subprotocol != "echo.v1":
             fail("echo: the protocol chosen was %r, want echo.v1" % ws.subprotocol)
@@ -130,7 +146,7 @@ async def c_echo(port):
 
 
 async def c_fragments(port):
-    async with websockets.connect("ws://127.0.0.1:%d/echo" % port) as ws:
+    async with ws_connect("ws://127.0.0.1:%d/echo" % port) as ws:
         await ws.send(["frag", "ment", "ed"])
         got = await ws.recv()
         if got != "fragmented":
@@ -143,9 +159,9 @@ async def c_fragments(port):
 
 
 async def c_ping(port):
-    async with websockets.connect("ws://127.0.0.1:%d/echo" % port) as ws:
+    async with ws_connect("ws://127.0.0.1:%d/echo" % port) as ws:
         waiter = await ws.ping(b"are you there")
-        await asyncio.wait_for(waiter, 5)
+        await asyncio.wait_for(waiter, 5 * SCALE)
         await ws.send("after ping")
         if await ws.recv() != "after ping":
             fail("ping: the connection did not keep working")
@@ -153,7 +169,7 @@ async def c_ping(port):
 
 
 async def c_close_client(port):
-    ws = await websockets.connect("ws://127.0.0.1:%d/echo" % port)
+    ws = await ws_connect("ws://127.0.0.1:%d/echo" % port)
     await ws.close(1000, "done here")
     if ws.close_code != 1000:
         fail("close: the server answered the closing handshake with %r" % ws.close_code)
@@ -161,10 +177,10 @@ async def c_close_client(port):
 
 
 async def c_close_server(port):
-    ws = await websockets.connect("ws://127.0.0.1:%d/echo" % port)
+    ws = await ws_connect("ws://127.0.0.1:%d/echo" % port)
     await ws.send("close")
     try:
-        await asyncio.wait_for(ws.recv(), 5)
+        await asyncio.wait_for(ws.recv(), 5 * SCALE)
         fail("close: a message came where a close was expected")
     except ConnectionClosed:
         pass
@@ -174,7 +190,7 @@ async def c_close_server(port):
 
 
 async def c_stats(port, want):
-    async with websockets.connect("ws://127.0.0.1:%d/echo" % port) as ws:
+    async with ws_connect("ws://127.0.0.1:%d/echo" % port) as ws:
         await ws.send("stats")
         got = await ws.recv()
     fields = dict(part.split("=", 1) for part in got.split())
@@ -187,7 +203,7 @@ async def c_stats(port, want):
 
 async def c_many(port, n):
     async def one(i):
-        async with websockets.connect("ws://127.0.0.1:%d/echo" % port) as ws:
+        async with ws_connect("ws://127.0.0.1:%d/echo" % port) as ws:
             await ws.send("n%d" % i)
             if await ws.recv() != "n%d" % i:
                 fail("many: connection %d got another's answer" % i)
@@ -196,7 +212,7 @@ async def c_many(port, n):
 
 
 def c_plain(port):
-    body = urllib.request.urlopen("http://127.0.0.1:%d/plain" % port, timeout=5).read()
+    body = urllib.request.urlopen("http://127.0.0.1:%d/plain" % port, timeout=5 * SCALE).read()
     if body != b"plain http still works":
         fail("plain: %r" % body)
     ok("an ordinary route beside the upgrade route still answers")
@@ -204,7 +220,7 @@ def c_plain(port):
 
 def c_refusals(port):
     try:
-        urllib.request.urlopen("http://127.0.0.1:%d/echo" % port, timeout=5)
+        urllib.request.urlopen("http://127.0.0.1:%d/echo" % port, timeout=5 * SCALE)
         fail("refusals: a plain GET of the WebSocket route was answered 200")
     except urllib.error.HTTPError as e:
         if e.code != 400:
@@ -272,7 +288,7 @@ def c_tls(port, certdir):
     ctx = ssl.create_default_context(cafile=os.path.join(certdir, "ca.pem"))
 
     async def go():
-        async with websockets.connect("wss://localhost:%d/echo" % port, ssl=ctx) as ws:
+        async with ws_connect("wss://localhost:%d/echo" % port, ssl=ctx) as ws:
             await ws.send("over tls")
             if await ws.recv() != "over tls":
                 fail("tls: no echo")
@@ -302,7 +318,7 @@ def c_unwatched(port):
 
 
 def c_quit(port):
-    urllib.request.urlopen("http://127.0.0.1:%d/quit" % port, timeout=5).read()
+    urllib.request.urlopen("http://127.0.0.1:%d/quit" % port, timeout=5 * SCALE).read()
     print("INFO quit sent")
 
 
@@ -321,7 +337,7 @@ async def handler(ws):
     elif path == "/ping":
         waiter = await ws.ping(b"from server")
         try:
-            await asyncio.wait_for(waiter, 5)
+            await asyncio.wait_for(waiter, 5 * SCALE)
             await ws.send("pong ok")
         except asyncio.TimeoutError:
             await ws.send("no pong")

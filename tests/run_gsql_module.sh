@@ -717,6 +717,17 @@ else
     fail "load: --json-diagnostics did not carry GB_DIAG_GSQL_BLOCK at 6:26"
 fi
 
+# A block head's `wait:` and `linger:` held to the ranges gsql.connect holds
+# them to; an out-of-range linger was silently the default until 2026-11-15
+load_case wait_zero 2:1 "\`wait:\` is how long to wait for the database's owner to answer" 'load gsql
+database db( file: "x.gsql", wait: 0 )'
+load_case wait_big 2:1 "more than 0 and up to 3600 seconds" 'load gsql
+database db( file: "x.gsql", wait: 5000 )'
+load_case linger_big 2:1 "\`linger:\` is the seconds an owner it starts waits" 'load gsql
+database db( file: "x.gsql", linger: 100000 )'
+load_case role_wait 2:1 "\`wait:\` belongs to the connection that is made for it" 'load gsql
+database db( wait: 5 )'
+
 # Warning 2121: a block nothing names never runs, and the program said nothing
 # (found by Matthew trying blocks out). Asserted beside its control: the same
 # program running its block is silent, and so is a table of the block's name
@@ -861,6 +872,66 @@ if [ -s "$work/close.err" ]; then
     fail "close: the fixture wrote to stderr"
 fi
 
+# `wait:` (2026-11-15). Against a database whose lock another process holds,
+# so no owner can ever answer: each connect must give up after ITS wait, timed
+# from outside, around the $(...) that captures it -- which also measures the
+# process the client forked to start an owner, which held that capture open
+# for the 10 s it waited until it gave the program's streams up too.
+printf 'TIER wait: gsql.connect and a block wait for an owner as long as they are told, and no longer\n'
+mkdir -p "$work/wait"
+wdb="$work/wait/db"
+o=$(timeout -k 5 120 ./gbasic tests/gsql/wait_test.bas "$wdb" options 2>&1)
+if printf '%s\n' "$o" | grep -q MISMATCH || [ "$(printf '%s\n' "$o" | grep -c '^ok ')" != 6 ]; then
+    printf '%s\n' "$o" | grep -v '^ok ' | head -5
+    fail "wait: the options' refusals and legal neighbours"
+else
+    pass "wait: 0, -1, 3601 and text refused naming the range, a misspelling naming the three; 5, 0.25, 30 seconds and 3600 connect"
+fi
+if ! command -v python3 >/dev/null 2>&1; then
+    printf '  SKIP the timed half (no python3 to hold the lock) -- how long a connect waits was NOT measured\n'
+else
+    # the lock, held once the owner the options made has lingered out
+    rm -f "$work/wait/held"
+    python3 -c 'import fcntl, sys, time
+f = open(sys.argv[1], "r+"); fcntl.flock(f, fcntl.LOCK_EX); open(sys.argv[2], "w").close(); time.sleep(3600)' \
+        "$wdb/db.lock" "$work/wait/held" &
+    holder=$!
+    for _ in $(seq 1 $((900 * $(gb_time_scale)))); do
+        [ -e "$work/wait/held" ] && break
+        kill -0 "$holder" 2>/dev/null || break   # it could not open the lock
+        sleep 0.1
+    done
+    if [ ! -e "$work/wait/held" ]; then
+        fail "wait: the database's lock never came free to hold, so nothing was timed"
+    else
+        timed() {   # timed ARGS... -> $took (seconds) and $said
+            local t0; t0=$(date +%s%N)
+            said=$(timeout -k 5 300 ./gbasic "$@" 2>&1)
+            took=$(awk -v a="$t0" -v b="$(date +%s%N)" 'BEGIN { printf "%.2f", (b - a) / 1e9 }')
+        }
+        timed tests/gsql/wait_test.bas "$wdb" connect 1;  t1=$took s1=$said
+        timed tests/gsql/wait_test.bas "$wdb" default;    td=$took sd=$said
+        printf 'load gsql\ndatabase blk( file: "%s", wait: 1 )\nprogram main(args)\n    on error goto bad\n    r = gsql.query(blk, "select 1")\n    print "CONNECTED"\n    return\nbad:\n    print "REFUSED " + error.details.code + ": " + error.message\n    error.clear()\nend program\n' "$wdb" > "$work/wait/block.bas"
+        timed "$work/wait/block.bas";                    tb=$took sb=$said
+        printf '       wait 1: %s s, the default: %s s, a block with wait: 1: %s s\n' "$t1" "$td" "$tb"
+        case "$s1$sd$sb" in *CONNECTED*) fail "wait: a connect was served past a held lock: $s1 / $sd / $sb" ;; esac
+        if awk -v a="$t1" -v d="$td" 'BEGIN { exit !(a >= 1 && d >= 10 && a + 5 < d) }'; then
+            pass "wait: 1 gave up after its second, the default after its 10, and the capture ended when the program did"
+        else
+            fail "wait: wait 1 took $t1 s and the default $td s; wanted at least 1 and 10, the first 5 s sooner"
+        fi
+        awk -v b="$tb" -v d="$td" 'BEGIN { exit !(b >= 1 && b + 5 < d) }' &&
+            pass "  a block's wait: 1 is the same wait" || fail "wait: the block with wait: 1 took $tb s"
+        case "$s1" in *"NO_OWNER"*) ;; *) fail "wait: wait 1 was not NO_OWNER: $s1" ;; esac
+        case "$s1" in *"gives a slow owner longer"*) fail "wait: a connect given a wait was told to use one: $s1" ;; esac
+        case "$sd" in *"\`wait:\` on gsql.connect gives a slow owner longer"*)
+            pass "  the default's refusal names the option that gives longer" ;;
+            *) fail "wait: the default's refusal does not name \`wait:\`: $sd" ;; esac
+    fi
+    kill "$holder" 2>/dev/null
+    wait "$holder" 2>/dev/null
+fi
+
 printf 'TIER space: gsql.space against stat, and a closed database keeps no logs\n'
 mkdir -p "$work/space"
 GSQL_DIR="$work/space" timeout -k 5 120 ./gbasic tests/gsql/space_test.bas >"$work/space.out" 2>"$work/space.err"
@@ -952,6 +1023,10 @@ else
     wait "$holder" 2>/dev/null
 fi
 
+# WHAT THE PROGRAM ITSELF SAID, when it stopped before printing a result: its
+# stdout is then empty and the cause is a runtime error on stderr, among
+# valgrind's own ==pid== lines (two fixtures exited 1 on s390x saying nothing).
+vg_program_stderr() { grep -v '^==[0-9]*==' "$1" | tail -5 | sed 's/^/       stderr: /'; }
 printf 'TIER valgrind: the main phase, no invalid access, no definite leak\n'
 if vg_available; then
     mkdir -p "$work/vg"
@@ -966,6 +1041,7 @@ if vg_available; then
         fail "valgrind objected"
     else
         tail -3 "$work/vg.out"
+        vg_program_stderr "$work/vg.err"
         fail "valgrind: the fixture did not pass under valgrind (exit $vgst; its mismatches are above)"
     fi
     mkdir -p "$work/vglib"
@@ -978,6 +1054,7 @@ if vg_available; then
         fail "valgrind objected to blocks inside libraries"
     else
         tail -3 "$work/vglib.out"
+        vg_program_stderr "$work/vglib.err"
         fail "valgrind: the library blocks fixture did not pass under valgrind (exit $vgst)"
     fi
     mkdir -p "$work/vgb"
@@ -990,6 +1067,7 @@ if vg_available; then
         fail "valgrind objected to the blocks"
     else
         tail -3 "$work/vgb.out"
+        vg_program_stderr "$work/vgb.err"
         fail "valgrind: the blocks fixture did not pass under valgrind (exit $vgst)"
     fi
     mkdir -p "$work/vgins"
@@ -1002,6 +1080,7 @@ if vg_available; then
         fail "valgrind objected to gsql.insert"
     else
         tail -3 "$work/vgins.out"
+        vg_program_stderr "$work/vgins.err"
         fail "valgrind: the insert fixture did not pass under valgrind (exit $vgst)"
     fi
 else

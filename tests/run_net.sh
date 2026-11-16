@@ -129,7 +129,7 @@ else
             >"$work/srv.out" 2>&1 </dev/null &
         spid=$!
         pids="$pids $spid"
-        for _ in $(seq 100); do [ -s "$work/ready" ] && break; sleep 0.05; done
+        for _ in $(seq $((100 * $(gb_time_scale)))); do [ -s "$work/ready" ] && break; sleep 0.05; done
         port=$(cat "$work/ready" 2>/dev/null)
     }
     stop() { kill "$spid" 2>/dev/null; wait "$spid" 2>/dev/null; }
@@ -184,7 +184,7 @@ except Exception:
 PY
     epid=$!
     pids="$pids $epid"
-    for _ in $(seq 100); do [ -s "$work/echo.txt" ] && break; sleep 0.05; done
+    for _ in $(seq $((100 * $(gb_time_scale)))); do [ -s "$work/echo.txt" ] && break; sleep 0.05; done
     read -r eport dport <"$work/echo.txt"
     FIXTURE_ARGS="$eport $dport" fixture tests/net/watched_client.bas 8 "a watched client: by name, refused, idle"
     kill "$epid" 2>/dev/null
@@ -195,7 +195,7 @@ PY
         "$work/ready" "$work/go" >"$work/qm.out" 2>&1 </dev/null &
     qpid=$!
     pids="$pids $qpid"
-    for _ in $(seq 100); do
+    for _ in $(seq $((100 * $(gb_time_scale)))); do
         grep -qE 'DIALOG UP|NO DISPLAY|not available' "$work/qm.out" 2>/dev/null && break
         sleep 0.05
     done
@@ -254,15 +254,19 @@ tls_peer_serve() {    # -> $tpid, ports in $work/ports.json
     python3 -I tests/net/tls_peer.py serve "$certs" "$work/ports.json" >"$work/tp.out" 2>&1 &
     tpid=$!
     pids="$pids $tpid"
-    for _ in $(seq 100); do [ -s "$work/ports.json" ] && break; sleep 0.05; done
+    for _ in $(seq $((100 * $(gb_time_scale)))); do [ -s "$work/ports.json" ] && break; sleep 0.05; done
 }
+# EVERY READINESS WAIT BELOW IS SCALED (GATE_TIME_SCALE; 1 here): each ends
+# the moment its file appears, and under valgrind on s390x (QEMU) the TLS
+# server took longer than the 30 s this one gave it, in two gates running
+# (2026-11-13, 2026-11-15), so the tier failed on a server still starting.
 tls_serve() {         # -> $tsp and $tport1..3
     rm -f "$work/ready"
     timeout 300 $1 ./gbasic --line-buffered tests/net/tls_server.bas "$certs" "$work/ready" \
         >"$work/tsrv.out" 2>"$work/tsrv.err" </dev/null &
     tsp=$!
     pids="$pids $tsp"
-    for _ in $(seq 300); do [ -s "$work/ready" ] && break; sleep 0.1; done
+    for _ in $(seq $((300 * $(gb_time_scale)))); do [ -s "$work/ready" ] && break; sleep 0.1; done
     read -r tport1 tport2 tport3 <"$work/ready"
 }
 tls_client() {        # tls_client CHECK PORT
@@ -316,7 +320,7 @@ if [ "$tls" = 1 ]; then
         >"$work/tws.out" 2>&1 </dev/null &
     twp=$!
     pids="$pids $twp"
-    for _ in $(seq 100); do [ -s "$work/ready" ] && break; sleep 0.05; done
+    for _ in $(seq $((100 * $(gb_time_scale)))); do [ -s "$work/ready" ] && break; sleep 0.05; done
     twport=$(cat "$work/ready")
     tls_client plaintext "$twport" >/dev/null
     tls_client one "$twport"
@@ -339,14 +343,14 @@ else
     timeout 120 python3 -I tests/net/udp_peer.py echo "$work/uecho" >/dev/null 2>&1 &
     uepid=$!
     pids="$pids $uepid"
-    for _ in $(seq 100); do [ -s "$work/uecho" ] && break; sleep 0.05; done
+    for _ in $(seq $((100 * $(gb_time_scale)))); do [ -s "$work/uecho" ] && break; sleep 0.05; done
     FIXTURE_ARGS="$(cat "$work/uecho")" fixture tests/net/datagram_test.bas 49 "datagrams, waited, against Python's echo server"
     kill "$uepid" 2>/dev/null
     rm -f "$work/uready"
     timeout 60 ./gbasic --line-buffered tests/net/datagram_server.bas "$work/uready" >"$work/us.out" 2>&1 </dev/null &
     uspid=$!
     pids="$pids $uspid"
-    for _ in $(seq 100); do [ -s "$work/uready" ] && break; sleep 0.05; done
+    for _ in $(seq $((100 * $(gb_time_scale)))); do [ -s "$work/uready" ] && break; sleep 0.05; done
     read -r uport usmall <"$work/uready"
     udp_peer() {
         if out=$(timeout 60 python3 -I tests/net/udp_peer.py "$@" 2>&1); then
@@ -384,7 +388,7 @@ else
         "$(cat $ka/tcp_keepalive_intvl)" "$(cat $ka/tcp_keepalive_probes)" >"$work/ka.out" 2>"$work/ka.err" </dev/null &
     kpid=$!
     pids="$pids $kpid"
-    for _ in $(seq 200); do [ -s "$work/ka.ready" ] && break; sleep 0.05; done
+    for _ in $(seq $((200 * $(gb_time_scale)))); do [ -s "$work/ka.ready" ] && break; sleep 0.05; done
     kport=$(cat "$work/ka.ready" 2>/dev/null)
     timer() {   # the seconds left on a socket's keepalive timer, from ss
         # ss writes the time as 119min, 1min59sec, 6.954sec or 950ms
@@ -430,7 +434,7 @@ else
         rm -f "$work/bk.ready"
         timeout 120 ./gbasic tests/net/bulk_sink.bas "$work/bk.ready" 4096 "$1" >"$work/bk.out" 2>&1 </dev/null &
         local bpid=$!
-        for _ in $(seq 200); do [ -s "$work/bk.ready" ] && break; sleep 0.05; done
+        for _ in $(seq $((200 * $(gb_time_scale)))); do [ -s "$work/bk.ready" ] && break; sleep 0.05; done
         timeout 120 python3 -I tests/net/bulk_source.py "$(cat "$work/bk.ready")" 4096
         wait "$bpid"
         awk '$1 == 134217728 { print $2 }' "$work/bk.out"
@@ -503,7 +507,7 @@ if vg_available; then
             >/dev/null 2>&1 </dev/null &
         vpid=$!
         pids="$pids $vpid"
-        for _ in $(seq 300); do [ -s "$work/ready" ] && break; sleep 0.1; done
+        for _ in $(seq $((300 * $(gb_time_scale)))); do [ -s "$work/ready" ] && break; sleep 0.1; done
         vport=$(cat "$work/ready" 2>/dev/null)
         (cd "$work" && timeout 60 python3 -I "$OLDPWD/tests/net/peer.py" split "$vport" >/dev/null 2>&1)
         (cd "$work" && timeout 30 python3 -I "$OLDPWD/tests/net/peer.py" quit "$vport" >/dev/null 2>&1)
@@ -517,12 +521,17 @@ if vg_available; then
         fi
     fi
     if [ "$tls" = 1 ]; then
-        if VG_EXTRA="--log-file=$work/vgt.log" timeout 300 bash tests/net/vg_wrap.sh ./gbasic tests/net/tls_client.bas "$certs" "$work/ports.json" \
-               >"$work/vgt.out" 2>&1 </dev/null && grep -q '^mismatches: 0$' "$work/vgt.out"; then
+        NET_WAIT_SCALE=$(gb_time_scale) VG_EXTRA="--log-file=$work/vgt.log" timeout 300 bash tests/net/vg_wrap.sh ./gbasic tests/net/tls_client.bas "$certs" "$work/ports.json" \
+            >"$work/vgt.out" 2>&1 </dev/null
+        vgt_rc=$?
+        if [ "$vgt_rc" = 0 ] && grep -q '^mismatches: 0$' "$work/vgt.out"; then
             printf 'PASS valgrind the TLS client, waited and watched\n'
         else
-            fail "valgrind TLS client"
+            # THE EXIT AND THE OUTPUT'S END, or a failure with no valgrind
+            # error and no mismatch line says nothing about its cause.
+            fail "valgrind TLS client (exit $vgt_rc)"
             grep -E 'MISMATCH|mismatches' "$work/vgt.out" | head -5
+            tail -5 "$work/vgt.out"
             grep -B2 -A12 'Invalid\|definitely' "$work/vgt.log" | head -30
         fi
         tls_serve "env VG_EXTRA=--log-file=$work/vgts.log bash tests/net/vg_wrap.sh"

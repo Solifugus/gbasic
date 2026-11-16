@@ -36,12 +36,19 @@ program main(args)
 
     ' CLICKED FROM A TIMER so the dialog goes up while `qt.run()` holds the
     ' thread -- the real arrangement, not a program calling confirm from main.
-    ' The suite waits for "DIALOG UP" before it asks anything.
-    once = timer.after(0.4)
+    ' It clicks only once the suite has written args[0], the go file, after
+    ' its control request: a fixed delay raced that request on a slow machine
+    ' (s390x under QEMU), and the control then met a server already stalled.
+    ' The suite waits for "DIALOG UP" before it asks anything more.
+    go = args[0]
+    poll = timer.every(0.1)
     watch(timer.ticks)
         while count(timer.ticks) > 0
             ev = take_first(timer.ticks)
-            qt.invoke(app, "ask", "click")
+            if exists(go) then
+                timer.cancel(poll)
+                qt.invoke(app, "ask", "click")
+            end if
         end while
     end watch
 

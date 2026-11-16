@@ -780,6 +780,7 @@ static const char *gsq_decl_word(const AstStmt *stmt) {
 static void gsq_check_database(SrvCheck *chk, const AstStmt *stmt) {
     static const SrvOption options[] = {
         {"file", AST_EXPR_STRING}, {"create", AST_EXPR_BOOL}, {"linger", AST_EXPR_NUMBER},
+        {"wait", AST_EXPR_NUMBER},
     };
     char where[192];
     snprintf(where, sizeof(where), "database '%s'", stmt->as.database.name);
@@ -789,6 +790,25 @@ static void gsq_check_database(SrvCheck *chk, const AstStmt *stmt) {
                       sizeof(options) / sizeof(options[0]), where,
                       "a database chosen at run time is gsql.connect(path, { create: true })",
                       stmt->line, stmt->column);
+    /* THE RANGES gsql.connect holds the same options to. A `linger:` out of
+       range was silently the owner's default until 2026-11-15, where
+       gsql.connect refused it; `wait:` arrived with this check. */
+    for (size_t i = 0; i < stmt->as.database.options.count; i++) {
+        const AstRecordField *f = &stmt->as.database.options.items[i];
+        if (!f->value || f->value->kind != AST_EXPR_NUMBER) {
+            continue;
+        }
+        double sec = f->value->as.num.is_exact ? (double)f->value->as.num.exact : f->value->as.num.value;
+        if (strcmp(f->name, "linger") == 0 && !(sec >= 0 && sec <= 86400)) {
+            gsq_error(chk, stmt->line, stmt->column,
+                      "%s: `linger:` is the seconds an owner it starts waits after its last connection closes, "
+                      "from 0 to 86400", where);
+        } else if (strcmp(f->name, "wait") == 0 && !(sec > 0 && sec <= 3600)) {
+            gsq_error(chk, stmt->line, stmt->column,
+                      "%s: `wait:` is how long to wait for the database's owner to answer, more than 0 and up "
+                      "to 3600 seconds", where);
+        }
+    }
     chk->code = code;
     if (!srv_option_string(&stmt->as.database.options, "file")) {
         int given = 0;
@@ -797,10 +817,10 @@ static void gsq_check_database(SrvCheck *chk, const AstStmt *stmt) {
         }
         /* no `file:` at all is a database chosen at run time, a role whose
            blocks are given a connection (gsql_block_connection_design.md);
-           creating and lingering are that connection's options */
+           creating, lingering and waiting are that connection's options */
         for (size_t i = 0; !given && i < stmt->as.database.options.count; i++) {
             const char *o = stmt->as.database.options.items[i].name;
-            if (strcmp(o, "create") == 0 || strcmp(o, "linger") == 0) {
+            if (strcmp(o, "create") == 0 || strcmp(o, "linger") == 0 || strcmp(o, "wait") == 0) {
                 gsq_error(chk, stmt->line, stmt->column,
                           "%s: has no `file:`, so it is a database chosen at run time, and `%s:` belongs to the "
                           "connection that is made for it -- gsql.connect(path, { %s: ... })",

@@ -14,15 +14,19 @@
 #
 # REPORTS BY DEFAULT, INSTALLS ONLY IF ASKED. A build script that silently runs
 # sudo is worse than the problem it solves, so `--install` is explicit and the
-# command is printed either way.
+# command is printed either way. ./install.sh is the whole road (packages,
+# build, install); this is the report.
 #
 #   tools/check-deps.sh              report only
-#   tools/check-deps.sh --install    report, then apt-get install what is missing
+#   tools/check-deps.sh --install    report, then install what is missing
 #
-# THE PKG-CONFIG NAMES BELOW MUST MATCH THE MAKEFILE. They are what the build
+# THE LIST IS tools/deps.list, shared with ./install.sh, naming each package on
+# Debian/Ubuntu, Fedora and Arch (2026-11-15; it was Debian's names only).
+#
+# THE PKG-CONFIG NAMES IN IT MUST MATCH THE MAKEFILE. They are what the build
 # actually probes -- `libxml-2.0`, not `libxml2`; `gtk+-3.0`, not `gtk3` -- and
 # guessing wrong here would report a dependency missing that the build finds, or
-# worse the reverse. The self-check at the bottom compares this list against the
+# worse the reverse. The self-check at the bottom compares the list against the
 # Makefile's own `pkg-config --exists` calls and complains if they drift.
 set -u
 drift=0
@@ -32,98 +36,51 @@ cd "$(dirname "$0")/.."
 install=0
 [ "${1:-}" = "--install" ] && install=1
 
-# pkg-config-name | debian package | what it enables
-OPTIONAL="
-sqlite3|libsqlite3-dev|sqlite.* module, dbframe, the EDGAR suite, xlsx.to_sql tests
-libxml-2.0|libxml2-dev|REQUIRED BY xlsx (with zlib): reader, writer, formula engine
-zlib|zlib1g-dev|REQUIRED BY xlsx (with libxml2): the ZIP container
-libcrypto|libssl-dev|crypto builtins (hashing, HMAC, AES-GCM, Ed25519) + crypto.bas
-libcurl|libcurl4-openssl-dev|webclient module
-libssl|libssl-dev|TLS in net and the web server (with libcrypto)
-libpq|libpq-dev|pg.* PostgreSQL module (its tests are opt-in regardless)
-libxcrypt|libcrypt-dev|password_hash / password_verify
-odbc|unixodbc-dev|odbc.* module (any ODBC-reachable database)
-ldap|libldap-dev|ldap.* module (bind and search)
-Qt6Widgets|qt6-base-dev qt6-base-dev-tools|the qt module and window declarations (needs moc too)
-Qt6Svg|qt6-svg-dev|qt.render_svg (with Qt6Widgets)
-"
+. tools/deps.sh
+distro=$(deps_distro)
 
-REQUIRED="cc|build-essential|the C11 compiler
-make|build-essential|the build
-bison|bison|regenerates src/parser.y"
-
-# libraries the build cannot do without, probed as the Makefile probes them
-REQUIRED_LIBS="libpcre2-8|libpcre2-dev|regex (PCRE2), which is core"
+# report GROUP...: one line per row; a missing row's packages join $missing,
+# and $absent counts the missing rows whether or not packages are known
+missing=""
+absent=0
+report() {
+    local row kind probe what
+    while IFS= read -r row; do
+        [ -z "$row" ] && continue
+        kind=$(printf '%s' "$row" | cut -d'|' -f1)
+        probe=$(printf '%s' "$row" | cut -d'|' -f2)
+        what=$(printf '%s' "$row" | cut -d'|' -f7)
+        if deps_present "$kind" "$probe"; then
+            printf '  %-22s present   %s\n' "${probe##*/}" "$what"
+        else
+            printf '  %-22s MISSING   %s\n' "${probe##*/}" "$what"
+            absent=$((absent + 1))
+            [ "$distro" != unknown ] && missing="$missing $(deps_packages "$distro" "$row")"
+        fi
+    done < <(deps_rows "$@")
+}
 
 printf '=== required to build at all ===\n'
-missing_req=""
-while IFS='|' read -r tool pkg what; do
-    [ -z "$tool" ] && continue
-    if command -v "$tool" >/dev/null 2>&1; then
-        printf '  %-22s present   %s\n' "$tool" "$what"
-    else
-        printf '  %-22s MISSING   %s\n' "$tool" "$what"
-        missing_req="$missing_req $pkg"
-    fi
-done <<EOF
-$REQUIRED
-EOF
-while IFS='|' read -r mod pkg what; do
-    [ -z "$mod" ] && continue
-    if pkg-config --exists "$mod" 2>/dev/null; then
-        printf '  %-22s present   %s\n' "$mod" "$what"
-    else
-        printf '  %-22s MISSING   %s\n' "$mod" "$what"
-        missing_req="$missing_req $pkg"
-    fi
-done <<EOF
-$REQUIRED_LIBS
-EOF
-
+report required
 printf '\n=== optional: each is compiled out cleanly when absent ===\n'
-missing_opt=""
-have_pkgconfig=1
-command -v pkg-config >/dev/null 2>&1 || have_pkgconfig=0
-if [ "$have_pkgconfig" = "0" ]; then
+command -v pkg-config >/dev/null 2>&1 ||
     printf '  pkg-config is MISSING, so the build will disable EVERY optional module.\n'
-    missing_req="$missing_req pkg-config"
-fi
-
-while IFS='|' read -r mod pkg what; do
-    [ -z "$mod" ] && continue
-    if [ "$have_pkgconfig" = "1" ] && pkg-config --exists "$mod" 2>/dev/null; then
-        printf '  %-22s present   %s\n' "$mod" "$what"
-    else
-        printf '  %-22s MISSING   %s\n' "$mod" "$what"
-        missing_opt="$missing_opt $pkg"
-    fi
-done <<EOF
-$OPTIONAL
-EOF
-
-# KDE Frameworks ship no .pc, so the Makefile looks for the header directory,
-# and so does this (it rides Qt's switch: no Qt, no highlighter)
-if [ -d /usr/include/KF6/KSyntaxHighlighting ] || [ -d /usr/local/include/KF6/KSyntaxHighlighting ]; then
-    printf '  %-22s present   %s\n' "KF6SyntaxHighlighting" "the source widget's highlighting (with Qt)"
-else
-    printf '  %-22s MISSING   %s\n' "KF6SyntaxHighlighting" "the source widget's highlighting (with Qt)"
-    missing_opt="$missing_opt libkf6syntaxhighlighting-dev"
-fi
+report optional qt
 
 # THE SELF-CHECK the header promises: every library the Makefile probes (outside
-# its comments) is in a list above. It had been promised and never written, and
+# its comments) is in the list. It had been promised and never written, and
 # the lists had lost PCRE2, which the build requires, and six optional modules.
-listed="$(printf '%s\n%s\n' "$OPTIONAL" "$REQUIRED_LIBS" | cut -d'|' -f1)"
+listed="$(deps_rows required optional qt | awk -F'|' '$1 == "pc" { print $2 }')"
 for mod in $(grep -v '^[[:space:]]*#' Makefile | grep -oE 'pkg-config --(exists|libs) [A-Za-z0-9_.+-]+' | awk '{print $3}' | sort -u); do
     if ! printf '%s\n' "$listed" | grep -qx "$mod"; then
-        printf '\n  DRIFT: the Makefile probes %s, which this script does not list\n' "$mod"
+        printf '\n  DRIFT: the Makefile probes %s, which tools/deps.list does not list\n' "$mod"
         drift=1
     fi
 done
 
 # xlsx needs BOTH, and half of the pair is the confusing case: everything builds,
 # and xlsx is silently absent with no indication which of the two was missing.
-if [ "$have_pkgconfig" = "1" ]; then
+if command -v pkg-config >/dev/null 2>&1; then
     x=0; z=0
     pkg-config --exists libxml-2.0 2>/dev/null && x=1
     pkg-config --exists zlib 2>/dev/null && z=1
@@ -134,18 +91,26 @@ if [ "$have_pkgconfig" = "1" ]; then
 fi
 
 printf '\n'
-missing="$(echo "$missing_req $missing_opt" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')"
-if [ -z "$(echo "$missing" | tr -d ' ')" ]; then
+if [ "$absent" = 0 ]; then
     printf 'Everything is present. `make` will build with all modules enabled.\n'
     exit $drift
 fi
+if [ "$distro" = unknown ]; then
+    printf 'This is not Debian/Ubuntu, Fedora or Arch, so no package names are known here;\n'
+    printf 'tools/deps.list names each dependency and its package on those three.\n'
+    exit 1
+fi
 
-printf 'To install what is missing (Debian/Ubuntu):\n\n    sudo apt-get install %s\n\n' "$missing"
+missing="$(echo "$missing" | tr ' ' '\n' | grep -v '^$' | sort -u | tr '\n' ' ')"
+printf 'To install what is missing (%s):\n\n    sudo %s %s\n\n' "$distro" "$(deps_install_cmd "$distro")" "$missing"
+printf 'Or ./install.sh, which installs them, then builds and installs gBASIC.\n'
 
 if [ "$install" = "1" ]; then
     printf '\nRunning it now...\n'
+    [ "$distro" = debian ] && sudo apt-get update
     # shellcheck disable=SC2086
-    sudo apt-get install -y $missing
+    sudo $(deps_install_cmd "$distro") $missing
     printf '\nRe-checking:\n'
     exec "$0"
 fi
+exit $drift

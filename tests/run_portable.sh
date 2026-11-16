@@ -21,7 +21,7 @@ unset GATE_TIME_SCALE
 # ...and the wrapper a scaled gate exported to this shell (export -f), which
 # unsetting the variable leaves in place: every child bash would inherit it,
 # and the first tier would see a function where the real binary should be.
-unset -f timeout _gb_timeout_inner _gb_scale_duration gb_time_scale 2>/dev/null
+unset -f timeout _gb_timeout_inner _gb_term_tree _gb_scale_duration gb_time_scale 2>/dev/null
 
 pass=0; fail=0
 ok()   { printf '  ok   %s\n' "$1"; pass=$((pass+1)); }
@@ -95,6 +95,40 @@ ms=$(( ($(date +%s%N) - t0) / 1000000 ))
 is "-k still kills what ignores TERM" "$got" "status=137"
 if [ "$ms" -ge 1800 ] && [ "$ms" -lt 10000 ]; then ok "and its grace is scaled too (${ms}ms for 0.02s + 0.02s, x 50)"
 else bad "the scaled -k fired after ${ms}ms, wanting about 2000"; fi
+# KILLED IN THE BACKGROUND, the shape `timeout 120 ./gbasic ... & pid=$!` then
+# `kill $pid` has in run_net and others: $! is then a SUBSHELL running this
+# function, not `timeout`, and killing it once left the real timeout and its
+# child orphaned (run_net left five servers per run on s390x, 2026-11-14).
+# EVERY DURATION HERE IS UNIQUE to this run (a tag), because the gate runs
+# suites in parallel and another one's `sleep 3000` once read as this one's
+# leftover; and a leftover is waited for, up to 20 s, rather than looked for
+# once after a fixed pause an emulated CPU may not finish the kill in.
+tag=$((4000 + RANDOM % 5000))
+export TAG="$tag"
+# gone_within PATTERN: "gone" once nothing matches, "left" after 20 s.
+gone_within='gone_within() { local i=0; while pgrep -f "$1" >/dev/null; do i=$((i+1)); [ $i -ge 200 ] && { echo left; return; }; sleep 0.1; done; echo gone; }; '
+# (Off the capture pipe: an orphan holding it would hang this tier, not fail it.)
+got="$(sc 50 "$gone_within"'timeout 60 sleep $TAG.5 >/dev/null 2>&1 & p=$!; sleep 0.5; kill $p; wait $p 2>/dev/null
+              gone_within "^sleep $TAG.5$"')"
+pkill -f "^sleep $tag.5\$" 2>/dev/null
+is "a backgrounded timeout killed by its \$! leaves nothing behind" "$got" "gone"
+# AND UNDER THE SHELL FALLBACK, whose watchdog's sleep is one level deeper:
+# it once outlived both the command and the kill, holding the caller's pipe.
+# The bounds are the tag, so each watchdog sleeps a number no other suite does
+# (tag x 50, and tag+1 x 50 for the command that finishes by itself -- in a
+# pipeline, the shape that left it: in the main shell it went, 2026-11-15).
+got="$(GB_PORTABLE_FORCE=timeout:timeout_shell sc 50 "$gone_within"'timeout $TAG sleep $TAG.5 >/dev/null 2>&1 & p=$!; sleep 0.5
+              kill $p; wait $p 2>/dev/null
+              gone_within "^sleep ($TAG.5|$((TAG * 50)))$"
+              echo x | timeout $((TAG + 1)) cat >/dev/null; gone_within "^sleep $(((TAG + 1) * 50))$"')"
+pkill -f "^sleep ($tag.5|$((tag * 50))|$(((tag + 1) * 50)))\$" 2>/dev/null
+is "  and under the shell fallback, neither the command nor its watchdog" "$(echo $got)" "gone gone"
+is "  and in a subshell, standard input still reaches the command" \
+   "$(sc 50 'out=$(echo piped | timeout 5 cat); echo "$out"')" "piped"
+is "  an exit status still comes back" "$(sc 50 '(timeout 1 sh -c "exit 7"; echo "status=$?")')" "status=7"
+is "  and so does 124 for a hang" "$(sc 50 '(timeout 0.02 sleep 30; echo "status=$?")')" "status=124"
+is "  and 137 for one that ignored TERM" \
+   "$(sc 50 '(timeout -k 0.02 0.02 sh -c "trap \"\" TERM; exec sleep 30"; echo "status=$?")')" "status=137"
 is "children of the suite's shell see it too" "$(sc 50 'bash -c "type -t timeout"')" "function"
 # SOURCED TWICE, as run_all.sh and then each suite do: the inherited wrapper must
 # not be wrapped again, which recursed for ever. Bounded by the real timeout.

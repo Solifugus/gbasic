@@ -43,7 +43,9 @@ function field_of(e, name)
 end function
 
     dir = env("GSQL_DIR")
-    db = gsql.connect(dir + "/insert", { create: true, linger: 0 })
+    ' wait: 600 -- these run under valgrind on s390x (QEMU), where an owner took
+    ' longer than the default 10 s to answer; it is only how long a slow one may take
+    db = gsql.connect(dir + "/insert", { create: true, linger: 0, wait: 600 })
     db.exec("create table t (id number primary key, name text default 'none', amt money(USD) not null, n number check (n > 0))")
 
     ' --- rows go in, with defaults for what a row leaves out ----------------

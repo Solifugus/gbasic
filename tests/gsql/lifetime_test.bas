@@ -70,7 +70,7 @@ function refusals(dbp)
     refused(dbp, { create: true, linger: -1 }, "from 0 to 86400")
     refused(dbp, { create: true, linger: "3" }, "from 0 to 86400")
     refused(dbp, { create: true, linger: 100000 }, "from 0 to 86400")
-    refused(dbp, { create: true, lingr: 3 }, "its options are `create` and `linger`")
+    refused(dbp, { create: true, lingr: 3 }, "its options are `create`, `linger` and `wait`")
     ' the legal neighbours: a whole and a fractional linger both connect
     db = gsql.connect(dbp, { create: true, linger: 2 })
     gsql.close(db)

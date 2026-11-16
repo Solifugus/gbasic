@@ -47,7 +47,7 @@ end function
 function try_exchange(opts, unused)
     c = net.connect(opts)
     c.write("ping" + chr(10))
-    return c.read_line(10 seconds)
+    return c.read_line(G.wait)
 end function
 
 ' The same, with the refusal given time to arrive before the write: the write
@@ -59,7 +59,7 @@ function try_exchange_late(opts, unused)
     c.write("ping" + chr(10))
     sleep(0.2)
     c.write("ping" + chr(10))
-    return c.read_line(10 seconds)
+    return c.read_line(G.wait)
 end function
 
 function try_listen(opts, unused)
@@ -67,15 +67,20 @@ function try_listen(opts, unused)
 end function
 
 function try_start_tls(c, opts)
-    return c.start_tls(opts, 10 seconds)
+    return c.start_tls(opts, G.wait)
 end function
 
 function tls_to(port, tls)
-    return { host: "localhost", port: port, timeout: 10 seconds, tls: tls }
+    return { host: "localhost", port: port, timeout: G.wait, tls: tls }
 end function
 
 program main(args)
     G = { checks: 0, mismatches: 0, finished: 0, seen: [], up: [], refused: [] }
+    ' EVERY DEADLINE A PEER SHOULD MEET, times NET_WAIT_SCALE (the gate's
+    ' time scale): under valgrind on an emulated s390x a handshake can take
+    ' longer than 10 s. The 1-second timeouts below expect a silent peer to
+    ' time out, so they stay as written.
+    G.wait = 10 seconds * number(default(env("NET_WAIT_SCALE"), "1"))
     d = args[0]
     G.dir = d
     pf {file}= args[1]
@@ -99,8 +104,8 @@ program main(args)
     check("  not_before is before not_after", c.tls.peer_certificate.not_before < c.tls.peer_certificate.not_after, true)
     c.write("hello" + chr(10) + "wor")
     c.write("ld" + chr(0) + "!" + chr(10))
-    check("a line round trip over TLS", c.read_line(10 seconds), "hello")
-    check("  and one written in two pieces, NUL included", c.read_line(10 seconds), "world" + chr(0) + "!")
+    check("a line round trip over TLS", c.read_line(G.wait), "hello")
+    check("  and one written in two pieces, NUL included", c.read_line(G.wait), "world" + chr(0) + "!")
     c.close()
     check("closed", c.open, false)
     check("  and its facts outlive the close", c.tls.peer_certificate.subject, "CN=localhost")
@@ -110,11 +115,11 @@ program main(args)
     big = repeat("0123456789abcdef", 327680)
     c = net.connect(tls_to(P.echo, { ca: ca }))
     c.write(big)
-    back = c.read_exactly(byte_count(big), 30 seconds)
+    back = c.read_exactly(byte_count(big), G.wait * 3)
     check("5 MiB echoed exactly over TLS", back = big, true)
     c.close()
 
-    c = net.connect({ host: "127.0.0.1", port: P.echo, timeout: 10 seconds, tls: { ca: ca } })
+    c = net.connect({ host: "127.0.0.1", port: P.echo, timeout: G.wait, tls: { ca: ca } })
     check("an address is checked against the certificate's IP name", c.tls.peer_certificate.subject, "CN=localhost")
     check("  and sends no SNI (a name is for names)", c.tls.server_name, unknown)
     c.close()
@@ -133,7 +138,7 @@ program main(args)
     c = net.connect(tls_to(P.stranger, { verify: false }))
     check("verify: false, spelled out, connects anyway", c.tls.peer_certificate.subject, "CN=stranger")
     c.write("x" + chr(10))
-    check("  and works", c.read_line(10 seconds), "x")
+    check("  and works", c.read_line(G.wait), "x")
     c.close()
     if has(P, "expired") then
         f = failure(try_connect, tls_to(P.expired, { ca: ca }), nothing)
@@ -154,27 +159,27 @@ program main(args)
     check("  the same when the refusal is already waiting at the write", f.code, "tls_failed")
     check("    named the same", contains(f.message, "certificate required"), true)
     c = net.connect(tls_to(P.mtls, { ca: ca, cert: d + "/client.pem", key: d + "/client.key" }))
-    check("a client certificate the server's CA signed", c.read_line(10 seconds), "client:gBASIC Client")
+    check("a client certificate the server's CA signed", c.read_line(G.wait), "client:gBASIC Client")
     c.close()
     f = failure(try_exchange, tls_to(P.mtls, { ca: ca, cert: d + "/stranger_client.pem", key: d + "/stranger_client.key" }), nothing)
     check("a client certificate from another issuer", f.code, "tls_failed")
 
     ' --- start_tls: an upgrade on an open connection -------------------------
-    c = net.connect({ host: "localhost", port: P.starttls, timeout: 10 seconds })
+    c = net.connect({ host: "localhost", port: P.starttls, timeout: G.wait })
     check("plain until upgraded", c.tls, nothing)
     c.write("STARTTLS" + chr(10))
-    check("the server agrees", c.read_line(10 seconds), "OK")
-    check("start_tls", c.start_tls({ ca: ca }, 10 seconds), true)
+    check("the server agrees", c.read_line(G.wait), "OK")
+    check("start_tls", c.start_tls({ ca: ca }, G.wait), true)
     check("  the name defaults to the host connected to", c.tls.server_name, "localhost")
     c.write("after" + chr(10))
-    check("  the same connection, now TLS", c.read_line(10 seconds), "after")
+    check("  the same connection, now TLS", c.read_line(G.wait), "after")
     c.close()
 
     ' The STARTTLS injection: bytes sent ahead of the handshake must not be
     ' read as though they came over TLS.
-    c = net.connect({ host: "localhost", port: P.starttls, timeout: 10 seconds })
+    c = net.connect({ host: "localhost", port: P.starttls, timeout: G.wait })
     c.write("INJECT" + chr(10))
-    check("the reply", c.read_line(10 seconds), "OK")
+    check("the reply", c.read_line(G.wait), "OK")
     check("  arrived with bytes behind it", c.buffered() > 0, true)
     f = failure(try_start_tls, c, { ca: ca })
     check("start_tls refuses bytes that arrived in plaintext", f.code, "unexpected_data")
@@ -182,12 +187,12 @@ program main(args)
     c.close()
 
     ' PostgreSQL's SSLRequest: 8 bytes, one byte back, then the handshake.
-    c = net.connect({ host: "localhost", port: P.pg, timeout: 10 seconds })
+    c = net.connect({ host: "localhost", port: P.pg, timeout: G.wait })
     c.write(pack(">I I", [8, 80877103]))
-    check("an SSLRequest is answered S", c.read_exactly(1, 10 seconds), "S")
-    c.start_tls({ ca: ca }, 10 seconds)
+    check("an SSLRequest is answered S", c.read_exactly(1, G.wait), "S")
+    c.start_tls({ ca: ca }, G.wait)
     c.write("query" + chr(10))
-    check("  then the protocol continues over TLS", c.read_line(10 seconds), "query")
+    check("  then the protocol continues over TLS", c.read_line(G.wait), "query")
     c.close()
 
     ' --- refusals -------------------------------------------------------------
@@ -229,7 +234,7 @@ program main(args)
     G.w = net.connect(tls_to(P.echo, { ca: ca }))
     check("a watched TLS connect returns at once, before its handshake", is_nothing(G.w.tls), true)
     G.bad = net.connect(tls_to(P.stranger, { ca: ca }))
-    G.up_c = net.connect({ host: "localhost", port: P.starttls, timeout: 10 seconds })
+    G.up_c = net.connect({ host: "localhost", port: P.starttls, timeout: G.wait })
     G.mute = net.connect({ host: "localhost", port: P.silent, timeout: 1 seconds, tls: { ca: ca } })
     G.muted = []
 end program

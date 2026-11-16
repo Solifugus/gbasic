@@ -20,12 +20,25 @@
 // of trueMatrix, a heap block under Qt's own painting. And run_qt_backend's
 // menu, tabs and cells fixtures added the sizing of a menu bar, a tab bar and
 // a grid layout, their values allocated by QMenuBar's and QGridLayout's own
-// constructors; a main window with a menu, a tab widget and a grid are here. Whether it is Qt's s390x build or
-// valgrind's s390x support was not separated.
+// constructors; a main window with a menu, a tab widget and a grid are here.
+// The gate of 2026-11-15 added four more, each made here as gBASIC makes it:
+// a label's style sheet set through setProperty (QWidget::setStyleSheet), a
+// combo box filled and its popup shown and hidden (QComboBox::hidePopup, and
+// the rows inserted), a key typed into a line edit (internalInsert, its value
+// a local of QLineEdit::deselect) and Qt's own file dialog, non-native as
+// qt.choose_file forces it (QFileDialogPrivate::restoreFromSettings); every
+// origin was in QLabel's, QComboBox's or QFileDialog's own construction.
+// Whether it is Qt's s390x build or valgrind's s390x support was not separated.
 //
 //   g++ -o probe tests/qt_valgrind_probe.cpp $(pkg-config --cflags --libs Qt6Widgets)
-//   QT_QPA_PLATFORM=offscreen valgrind --suppressions=tests/qt.supp ./probe
+//   QT_QPA_PLATFORM=offscreen QT_ENABLE_REGEXP_JIT=0 valgrind --suppressions=tests/qt.supp ./probe
+//
+// The JIT is off as in every Qt valgrind tier: the file dialog's filters are
+// regular expressions, and PCRE2's JIT reads past its subject by design.
 #include <QApplication>
+#include <QComboBox>
+#include <QFileDialog>
+#include <QKeyEvent>
 #include <QFormLayout>
 #include <QGridLayout>
 #include <QLabel>
@@ -107,6 +120,26 @@ int main(int argc, char **argv) {
     tabs->addTab(second, "Second");
     main.setCentralWidget(tabs);
     main.show();
+    // a label whose style sheet is set the way qt.set sets a property
+    QLabel styled("Total");
+    styled.setProperty("styleSheet", QVariant(QString("color: #336; font-weight: bold")));
+    styled.show();
+    // a combo box filled as a `choice` is, and its popup shown and hidden
+    QComboBox choice;
+    choice.addItem("Net 30");
+    choice.addItem("Net 60");
+    choice.show();
+    choice.showPopup();
+    choice.hidePopup();
+    // a key typed into a line edit, the event qt.key sends
+    QLineEdit typed;
+    typed.show();
+    QKeyEvent press(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier, "a");
+    QApplication::sendEvent(&typed, &press);
+    // Qt's own file dialog, which qt.choose_file forces over the native one
+    QFileDialog chooser(nullptr, "Open", "/tmp");
+    chooser.setOption(QFileDialog::DontUseNativeDialog);
+    chooser.show();
     QTimer::singleShot(200, &app, &QApplication::quit);
     return app.exec();
 }

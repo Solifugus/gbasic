@@ -80,6 +80,9 @@ if _gb_portable_need timeout; then
                 fi
             ) & wd_pid=$!
             wait "$cmd_pid" 2>/dev/null || status=$?
+            # ITS SLEEP FIRST: killing only the watchdog subshell left the sleep
+            # running out the bound, holding whatever output pipe it inherited.
+            pkill -TERM -P "$wd_pid" 2>/dev/null
             kill -TERM "$wd_pid" 2>/dev/null
             wait "$wd_pid" 2>/dev/null || :
             if [ -e "$fired" ]; then rm -f "$fired"; return 124; fi
@@ -180,6 +183,18 @@ elif [ "$(gb_time_scale)" != 1 ]; then
     else
         _gb_timeout_inner() { command timeout "$@"; }
     fi
+    # TERM a process and everything below it. STOPPED FIRST, top down, so none
+    # can start a child between being listed and being killed: on s390x a kill
+    # that came while the shell fallback was still starting left its watchdog
+    # (forked after its parent was listed) running out the bound (2026-11-15).
+    # Then TERM deepest first, each continued so the signal lands.
+    _gb_term_tree() {
+        local c
+        kill -STOP "$1" 2>/dev/null
+        for c in $(pgrep -P "$1" 2>/dev/null); do _gb_term_tree "$c"; done
+        kill -TERM "$1" 2>/dev/null
+        kill -CONT "$1" 2>/dev/null
+    }
     timeout() {
         local args=()
         while [ $# -gt 0 ]; do
@@ -192,9 +207,32 @@ elif [ "$(gb_time_scale)" != 1 ]; then
             esac
         done
         args+=("$(_gb_scale_duration "$1")"); shift
-        _gb_timeout_inner "${args[@]}" "$@"
+        if [ "${BASHPID:-$$}" = "$$" ]; then
+            _gb_timeout_inner "${args[@]}" "$@"
+            return
+        fi
+        # IN A SUBSHELL, which is what `timeout ... &` makes: its $! is this
+        # subshell, not `timeout`, and a kill of it once left the real timeout
+        # and its command running for the whole scaled bound (run_net left five
+        # servers per run on s390x, 2026-11-14). So the command runs behind it
+        # and a TERM, INT or HUP is passed on -- to everything below it, since
+        # a backgrounded function is one subshell more and the shell fallback
+        # puts its watchdog's sleep one deeper still. `<&0` keeps standard
+        # input, which bash replaces with /dev/null for a background command.
+        local child rc saved
+        saved=$(trap -p TERM INT HUP)
+        _gb_timeout_inner "${args[@]}" "$@" <&0 &
+        child=$!
+        trap '_gb_term_tree "$child"' TERM INT HUP
+        while :; do
+            wait "$child"; rc=$?
+            kill -0 "$child" 2>/dev/null || break
+        done
+        trap - TERM INT HUP
+        eval "$saved"
+        return "$rc"
     }
-    export -f timeout _gb_timeout_inner _gb_scale_duration gb_time_scale
+    export -f timeout _gb_timeout_inner _gb_term_tree _gb_scale_duration gb_time_scale
     _gb_portable_note "timeout*$(gb_time_scale)"
 fi
 

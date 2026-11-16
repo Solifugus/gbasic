@@ -107,13 +107,13 @@ if ! command -v curl >/dev/null 2>&1; then
     printf '  SKIP (no curl -- how far a dialog reaches was NOT measured)\n'
 else
     QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 40 ./gbasic \
-        --line-buffered tests/qt_dialog_modal_fixture.bas \
+        --line-buffered tests/qt_dialog_modal_fixture.bas "$work/go" \
         > "$work/modal.out" 2>&1 &
     fixture=$!
     # WAIT FOR THE PORT IT CHOSE, never a guessed one: no golden in this tree
     # carries a number this machine had to be able to bind.
     port=""
-    for _ in $(seq 1 60); do
+    for _ in $(seq 1 $((60 * $(gb_time_scale)))); do
         port=$(sed -n 's/^PORT //p' "$work/modal.out" | head -1)
         [ -n "$port" ] && break
         sleep 0.2
@@ -130,9 +130,11 @@ else
         else
             fail "the server did not answer even with no dialog up"
         fi
+        # ONLY NOW may the dialog go up: the fixture clicks when this exists.
+        : > "$work/go"
         # WAIT FOR THE DIALOG, a positive signal rather than a guessed sleep.
         up=0
-        for _ in $(seq 1 60); do
+        for _ in $(seq 1 $((60 * $(gb_time_scale)))); do
             grep -q "DIALOG UP" "$work/modal.out" && { up=1; break; }
             sleep 0.2
         done

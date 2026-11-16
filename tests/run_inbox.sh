@@ -111,15 +111,21 @@ PORT
     # be reported as that and not as "it did not warn". Under a loaded machine
     # this tier once blamed the warning for a listener that had not finished
     # binding, which is the wrong cause named confidently.
+    #
+    # READY MEANS THE PORT ACCEPTS, asked with a bare connect. It was a whole
+    # request under `curl -m 1`, and every request makes this fixture spawn a
+    # worker and block in receive(): on s390x under QEMU that took longer than
+    # the second, so all 300 probes timed out on a server that was up -- it
+    # printed the warning they caused -- and the tier blamed the machine.
     up=0
-    for _ in $(seq 1 300); do
-        if curl -s -m 1 -o /dev/null "http://127.0.0.1:$wport/" 2>/dev/null; then
+    for _ in $(seq 1 $((300 * $(gb_time_scale)))); do
+        if (exec 3<>"/dev/tcp/127.0.0.1/$wport") 2>/dev/null; then
             up=1
             break
         fi
         sleep 0.05
     done
-    body="$(curl -s -m 20 "http://127.0.0.1:$wport/" || true)"
+    body="$(curl -s -m $((20 * $(gb_time_scale))) "http://127.0.0.1:$wport/" || true)"
     sleep 0.2
     kill "$wsrv" 2>/dev/null || true
     wait "$wsrv" 2>/dev/null || true

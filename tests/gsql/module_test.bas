@@ -40,7 +40,9 @@ end function
 
 function main_checks(dir)
     on error goto next
-    db = gsql.connect(dir + "/main", { create: true })
+    ' wait: 600 -- these run under valgrind on s390x (QEMU), where an owner took
+    ' longer than the default 10 s to answer; it is only how long a slow one may take
+    db = gsql.connect(dir + "/main", { create: true, wait: 600 })
     if error then
         print "MISMATCH connect: " + error.message
         checks.bad = checks.bad + 1
@@ -108,7 +110,7 @@ function main_checks(dir)
     check("a rollback leaves nothing", len(gsql.query(db, "select k from n where k = 5000")), 0)
     gsql.begin(db, "write")
     gsql.exec(db, "insert into n (k) values (5001)")
-    other = gsql.connect(dir + "/main")
+    other = gsql.connect(dir + "/main", { wait: 600 })
     check("another connection cannot see an uncommitted row", len(gsql.query(other, "select k from n where k = 5001")), 0)
     gsql.commit(db)
     check("and sees it once committed", len(gsql.query(other, "select k from n where k = 5001")), 1)
@@ -236,7 +238,7 @@ end function
 
 ' --- the owner exits under a program that is using it ------------------------
 function lost_checks(dir)
-    db = gsql.connect(dir + "/lost", { create: true })
+    db = gsql.connect(dir + "/lost", { create: true, wait: 600 })
     gsql.exec(db, "create table t (k integer primary key)")
     gsql.exec(db, "insert into t (k) values (1)")
     write({file}(dir + "/ready"), "ready")

@@ -998,7 +998,7 @@ static int gsql_request_ex(GsqlConnectionValue *c, unsigned type, Value body, co
 static Value gsql_eval_connect(AstExpr *expr) {
     size_t argc = expr->as.call.args.count;
     if (argc < 1 || argc > 2) {
-        gsql_module_refuse("gsql.connect expects a database path, and optionally { create: true }");
+        gsql_module_refuse("gsql.connect expects a database path, and optionally { create, linger, wait }");
         return value_null();
     }
     Value p = eval_expr(expr->as.call.args.items[0]);
@@ -1025,6 +1025,7 @@ static Value gsql_eval_connect(AstExpr *expr) {
     value_free(p);
     int create = 0;
     long linger_ms = -1;
+    uint32_t wait_ms = 0;
     if (argc == 2) {
         Value o = eval_expr(expr->as.call.args.items[1]);
         if (error_action_pending()) {
@@ -1060,10 +1061,32 @@ static Value gsql_eval_connect(AstExpr *expr) {
                 } else {
                     linger_ms = (long)(sec * 1000 + 0.5);
                 }
+            } else if (strcmp(fields[i].name, "wait") == 0) {
+                /* HOW LONG AN OWNER MAY TAKE to answer, or to say it is ready
+                   when this connect started it: 10 s by default, which a
+                   large recovery on slow storage can need more than (and an
+                   owner on s390x under QEMU, with the client under valgrind,
+                   did: 2026-11-15). A number of seconds or a duration, as
+                   gsql.close's `wait` is. */
+                double sec = -1;
+                if (v->kind == VALUE_NUMBER) {
+                    sec = v->as.num.value;
+                } else if (v->kind == VALUE_DURATION) {
+                    long long months = 0, seconds = 0;
+                    duration_totals(v->as.duration, &months, &seconds);
+                    sec = months ? -1 : (double)seconds;
+                }
+                if (!(sec > 0 && sec <= 3600)) {
+                    bad = "gsql.connect: `wait` is how long to wait for the database's owner to answer, "
+                          "more than 0 and up to 3600 seconds";
+                } else {
+                    double ms = sec * 1000 + 0.5;
+                    wait_ms = ms < 1 ? 1 : (uint32_t)ms;
+                }
             } else {
                 char msg[300];
-                snprintf(msg, sizeof msg, "gsql.connect has no option `%s`; its options are `create` and `linger`",
-                         fields[i].name);
+                snprintf(msg, sizeof msg, "gsql.connect has no option `%s`; its options are `create`, `linger` and "
+                         "`wait`", fields[i].name);
                 value_free(o);
                 free(path);
                 gsql_module_refuse(msg);
@@ -1085,6 +1108,7 @@ static Value gsql_eval_connect(AstExpr *expr) {
     c->path = path;
     c->create = create;
     c->linger_ms = linger_ms;
+    c->wait_ms = wait_ms;
     if (!gsql_connection_open(c, "connect")) {
         c->closed = 1;
         Value dead = value_gsql_connection(c);
@@ -1127,6 +1151,7 @@ static int gsql_connection_open(GsqlConnectionValue *c, const char *verb) {
     memset(&opt, 0, sizeof opt);
     opt.owner_argv = c->owner_argv;
     opt.create = c->create;
+    opt.wait_ms = c->wait_ms;
     opt.name = "gbasic";
     GsqlError err;
     memset(&err, 0, sizeof err);
@@ -1137,6 +1162,10 @@ static int gsql_connection_open(GsqlConnectionValue *c, const char *verb) {
             snprintf(msg, sizeof msg, c->decl ? "there is no database at %s; give the block create: true to make one"
                                               : "there is no database at %s; give { create: true } to make one",
                      c->path);
+        } else if (err.code == GSQL_NO_OWNER && !c->wait_ms) {
+            /* the default wait ran out: say which option gives it longer */
+            snprintf(msg, sizeof msg, "%s; `wait:` %s gives a slow owner longer than its 10 s", err.message,
+                     c->decl ? "in the database block's head" : "on gsql.connect");
         } else {
             snprintf(msg, sizeof msg, "%s", err.message);
         }
