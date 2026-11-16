@@ -37,7 +37,7 @@
 # already suffered (it was written out THREE times before `win_nearest` was
 # derived from the tables, and the newest word was missing from the third). So
 # the rules moved to src/window_check.c against an ACCESSOR MODEL;
-# src/frontend.c adapts the AST, src/modules/qt.c adapts a record, and neither
+# src/frontend.c adapts the AST, src/modules/ui.c adapts a record, and neither
 # holds a rule. It is `would`/`execute`'s arrangement in `automation`, for the
 # reason stated there: if the two could disagree, a check would describe a
 # different window from the one that opens.
@@ -187,7 +187,7 @@ else
     fail "the vocabulary table appears in: $rules_files"
 fi
 # COMMENTS ARE STRIPPED FIRST, and that was not caution: both adapters ARGUE
-# for this rule at length, so the first draft reported src/modules/qt.c for the
+# for this rule at length, so the first draft reported src/modules/ui.c for the
 # sentence `never "did you mean 'field'?"` inside the comment explaining why
 # the finder lives elsewhere -- the ARGUMENT for a rule read as a breach of it,
 # which is the trap run_libcurl_floor.sh records for smtp.c's dot-stuffing
@@ -229,7 +229,7 @@ code_only() {
 # WHAT THE RULE IS ACTUALLY FOR IS ONE MATCHER, NOT ONE SENTENCE, and the
 # first version of this scanner measured the sentence -- which went red the
 # moment §0.29 added `ui.mark`'s category near-miss, and MEASURING FIRST showed
-# the scanner was wrong rather than the code. `src/modules/qt.c` HAS HELD A
+# the scanner was wrong rather than the code. `src/modules/ui.c` HAS HELD A
 # near-miss sentence since §0.16 (the chooser's option names) and this passed
 # anyway, because that one is written `"did "` + `"you mean"` ACROSS A LINE
 # BREAK and a literal grep cannot see it. So the check was passing by accident
@@ -239,7 +239,7 @@ code_only() {
 # AND THE TWO SENTENCES ARE ABOUT DIFFERENT THINGS, which is why there are
 # legitimately two: `src/window_check.c` owns near-misses about the
 # DECLARATION's vocabulary, where the rules live (§0.9's one-checker-two-
-# adapters), and `src/modules/qt.c` owns them for a VERB'S ARGUMENTS -- a mark
+# adapters), and `src/modules/ui.c` owns them for a VERB'S ARGUMENTS -- a mark
 # category, a chooser option -- which the declaration pass has no business
 # knowing about. What must not be duplicated is the MATCHER.
 #
@@ -247,7 +247,7 @@ code_only() {
 # and that function must be defined exactly once.
 defs=$(grep -c '^const char \*gb_nearest_word' src/window_check.c || true)
 near_bad=""
-for f in src/window_check.c src/frontend.c src/modules/qt.c; do
+for f in src/window_check.c src/frontend.c src/modules/ui.c; do
     says=$(code_only "$f" | tr '\n' ' ' | grep -c 'did "*[[:space:]]*"*you mean' || true)
     [ "${says:-0}" = "0" ] && continue
     asks=$(code_only "$f" | grep -c 'gb_nearest_word' || true)
@@ -297,7 +297,7 @@ else
 fi
 # Both adapters must go THROUGH the shared entry point, or one could quietly
 # grow rules of its own beside it.
-for f in src/frontend.c src/modules/qt.c; do
+for f in src/frontend.c src/modules/ui.c; do
     if grep -q 'gb_window_check' "$f"; then
         pass "$(basename "$f") calls the shared checker"
     else

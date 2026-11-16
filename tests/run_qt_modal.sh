@@ -76,18 +76,18 @@ printf 'TIER one open path: a modal window is the same window by construction\n'
 # counts matching LINES, so two calls on one line read as one -- and the
 # planted control put them on one line, which is exactly how somebody would
 # write a second path by hand (`modal ? a : b`).
-sites=$(grep -o 'gb_qt_window(' src/modules/qt.c | wc -l)
+sites=$(grep -o 'ui->window(' src/modules/ui.c | wc -l)
 if [ "${sites:-0}" = "1" ]; then
     pass "exactly one place builds a window, so both verbs go through it"
 else
-    grep -n 'gb_qt_window(' src/modules/qt.c
-    fail "src/modules/qt.c builds a window in $sites places -- ui.open and ui.open_modal can now drift"
+    grep -n 'ui->window(' src/modules/ui.c
+    fail "src/modules/ui.c builds a window in $sites places -- ui.open and ui.open_modal can now drift"
 fi
 # THE VACUITY CONTROL: "exactly one" is equally satisfied by a grep that cannot
 # match, so a planted second call must break it.
-sed 's|void \*root = gb_qt_window(|void *root = (modal ? gb_qt_window(0,0,0,0,1) : gb_qt_window(|' \
-    src/modules/qt.c > "$work/two.c"
-planted=$(grep -o 'gb_qt_window(' "$work/two.c" | wc -l)
+sed 's|void \*root = ui->window(|void *root = (modal ? ui->window(0,0,0,0,1) : ui->window(|' \
+    src/modules/ui.c > "$work/two.c"
+planted=$(grep -o 'ui->window(' "$work/two.c" | wc -l)
 if [ "${planted:-0}" -gt 1 ]; then
     pass "CONTROL: and a planted second call site is counted"
 else

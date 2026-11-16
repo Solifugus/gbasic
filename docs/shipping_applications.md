@@ -44,7 +44,7 @@ Start from nothing and add what the application actually loads:
 
 | Flag | Turns off | Needed when the app uses |
 |---|---|---|
-| `QT_AVAILABLE=0` | the `qt` module (`window` declarations) | a desktop UI |
+| `QT_AVAILABLE=0` | the `ui` module's Qt backend (`window` declarations) | a desktop UI |
 | `LIBPQ_AVAILABLE=0` | `pg` | PostgreSQL |
 | `LIBXML2_AVAILABLE=0` | `xml`, and `xlsx` | XML or spreadsheets |
 | `LIBCURL_AVAILABLE=0` | `webclient`, and the EDGAR/LLM network paths | outbound HTTP |

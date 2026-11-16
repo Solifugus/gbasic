@@ -1,10 +1,12 @@
 /* SPDX-License-Identifier: Apache-2.0
  * Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
  *
- * THE `qt` MODULE -- the gBASIC-facing half of the Qt backend. The C++ half is
- * `src/modules/qt_backend.cpp` behind the C seam in `include/qt_backend.h`,
- * and the split is forced rather than chosen: this file is `#include`d into
- * `src/eval.c` the way every other module is, and eval.c is C11.
+ * THE `ui` MODULE'S FRONT -- every backend's gBASIC-facing half. What draws
+ * is behind one `GbUiBackend` table (include/ui_backend.h, which also states
+ * the event-loop contract a backend owes); Qt's is src/modules/ui_qt.c over
+ * src/modules/qt_backend.cpp. This file is `#include`d into `src/eval.c` the
+ * way every other module is, and is compiled into every build, with or
+ * without a backend.
  *
  * WHAT THIS FILE OWNS: walking the `window` record. A window block binds an
  * introspectable record (docs/qt_gui_design.md §0.2) and a `Value` can only be
@@ -43,12 +45,66 @@
 
 #define QT_ERROR_CODE 6201
 
+#include "ui_backend.h"
 #if HAVE_QT
-#include "qt_backend.h"
+#include "ui_qt.c"
 #endif
 
 static void qt_raise(const char *message) {
     runtime_error_raise(message, QT_ERROR_CODE, "ui");
+}
+
+/* THE BACKEND, CHOSEN ONCE PER PROCESS (docs/ui_design.md §8 step 4, ruling
+ * Q6): the build says which exist, GBASIC_UI says which of them to use, and a
+ * program never names one. Everything below that draws goes through `ui`,
+ * so this file is compiled into every build, Qt or not -- its checks and
+ * refusals are the same whichever backend is behind it, and on a build with
+ * none they still answer.
+ *
+ * NULL WHEN NONE CAN BE HAD, and then `ui_be_problem` says why: no backend in
+ * this build (the sentence a program has always met there), or GBASIC_UI
+ * naming one this build does not have, which is refused rather than quietly
+ * replaced -- a person who asked for a backend and got another would be
+ * measuring the wrong thing. */
+static const GbUiBackend *const ui_backends[] = {
+#if HAVE_QT
+    &ui_qt_backend,
+#endif
+    NULL
+};
+static const GbUiBackend *ui = NULL;
+static int ui_be_chosen = 0;
+static char ui_be_problem[256];
+
+static const GbUiBackend *ui_be_choose(void) {
+    if (ui_be_chosen) {
+        return ui;
+    }
+    ui_be_chosen = 1;
+    const char *want = getenv("GBASIC_UI");
+    if (!ui_backends[0]) {
+        snprintf(ui_be_problem, sizeof(ui_be_problem),
+                 "Qt support is not available in this build");
+        return NULL;
+    }
+    if (!want || !*want) {
+        ui = ui_backends[0];
+        return ui;
+    }
+    char have[128] = "";
+    for (size_t i = 0; ui_backends[i]; i++) {
+        if (strcmp(ui_backends[i]->name, want) == 0) {
+            ui = ui_backends[i];
+            return ui;
+        }
+        size_t used = strlen(have);
+        snprintf(have + used, sizeof(have) - used, "%s%s", i ? ", " : "",
+                 ui_backends[i]->name);
+    }
+    snprintf(ui_be_problem, sizeof(ui_be_problem),
+             "GBASIC_UI names `%.40s`, and this build has no such backend -- "
+             "it has: %s", want, have);
+    return NULL;
 }
 
 static const char *qt_record_text(Value *record, const char *field) {
@@ -94,9 +150,8 @@ static const char *qt_record_text(Value *record, const char *field) {
  *
  * IT NEEDS NO QT AND NO DISPLAY, and that is deliberate rather than
  * incidental -- it is the `web.routes` property, the same one that let the
- * whole declaration ship before any Qt existed. So it sits OUTSIDE the
- * `#if HAVE_QT` guard, which is this project's own stated convention read the
- * other way: code that is not optional must stay out of those guards.
+ * whole declaration ship before any Qt existed. So it answers before a
+ * backend is asked for at all, and on a build with none.
  *
  * AND THE FIELD NAMES ARE CLOSED, which the vocabulary rules cannot cover
  * because they are about the REPRESENTATION rather than about windows:
@@ -497,7 +552,6 @@ static int qt_check_window_record(Value *win, char *message, size_t cap) {
     return sink.count;
 }
 
-#if HAVE_QT
 
 /* ONE OPEN WINDOW PER DECLARED NAME. A declaration's name is unique in its
  * scope by construction, so it is a key that cannot collide -- which is what
@@ -733,7 +787,7 @@ static int qt_cell_text(const char *fn, int row, int column, char **text) {
         }
         runtime_stopped = saved_stopped;
         error_clear_state();
-        gb_qt_stop();
+        ui->stop();
         ok = 0;
     } else {
         /* THROUGH THE ONE RENDERER (PLAT-RENDER), so a date, money or a
@@ -782,8 +836,7 @@ static void qt_invoke_handler(const char *handler) {
     if (!def || !def->stmt) {
         return;   /* the handler function disappeared; nothing to call */
     }
-#if HAVE_QT
-    if (gb_qt_handler_depth() > QT_HANDLER_MAX_DEPTH) {
+    if (ui->handler_depth() > QT_HANDLER_MAX_DEPTH) {
         /* NOT CALLED, which is what breaks the loop. The message names the
          * handler and the shape, because "too deep" alone leaves an author
          * looking for a bug in the handler's body rather than at the fact that
@@ -795,7 +848,6 @@ static void qt_invoke_handler(const char *handler) {
                  "usual way in", handler, QT_HANDLER_MAX_DEPTH);
         return;
     }
-#endif
     int saved_stopped = runtime_stopped;
     int saved_line = current_line;
     int saved_column = current_column;
@@ -809,7 +861,7 @@ static void qt_invoke_handler(const char *handler) {
         }
         runtime_stopped = saved_stopped;
         error_clear_state();
-        gb_qt_stop();
+        ui->stop();
     }
     value_free(result);
     current_line = saved_line;
@@ -854,7 +906,7 @@ static int qt_fill_choice(void *root, const char *name, Value *list,
     char err[QT_ERRBUF];
     char message[512];
     err[0] = '\0';
-    if (!gb_qt_choice_clear(root, name, err, sizeof(err))) {
+    if (!ui->choice_clear(root, name, err, sizeof(err))) {
         snprintf(message, sizeof(message), "%s: %s", whose,
                  err[0] ? err : "that list could not be cleared");
         qt_raise(message);
@@ -865,7 +917,7 @@ static int qt_fill_choice(void *root, const char *name, Value *list,
         Value text = builtin_string_value(value_copy(list->as.array.store->items[i]));
         const char *shown = (text.kind == VALUE_STRING) ? text.as.string : "";
         err[0] = '\0';
-        int ok = gb_qt_choice_add(root, name, shown, err, sizeof(err));
+        int ok = ui->choice_add(root, name, shown, err, sizeof(err));
         value_free(text);
         if (!ok) {
             snprintf(message, sizeof(message), "%s: %s", whose,
@@ -912,7 +964,7 @@ static int qt_apply_options(void *node, Value *options, const char *word,
                 qt_raise(message);
                 return 0;
             }
-            if (!gb_qt_layout_number(node, f->name, (long)v->as.num.value, err,
+            if (!ui->layout_number(node, f->name, (long)v->as.num.value, err,
                                      sizeof(err))) {
                 snprintf(message, sizeof(message), "window: %s", err);
                 qt_raise(message);
@@ -930,7 +982,7 @@ static int qt_apply_options(void *node, Value *options, const char *word,
                 qt_raise(message);
                 return 0;
             }
-            if (!gb_qt_grow(node, weight, err, sizeof(err))) {
+            if (!ui->grow(node, weight, err, sizeof(err))) {
                 snprintf(message, sizeof(message), "window: %s", err);
                 qt_raise(message);
                 return 0;
@@ -958,7 +1010,7 @@ static int qt_apply_options(void *node, Value *options, const char *word,
                 return 0;
             }
             if (strcmp(f->name, "across") == 0 || !af) {
-                if (!gb_qt_span(node, across, down, err, sizeof(err))) {
+                if (!ui->span(node, across, down, err, sizeof(err))) {
                     snprintf(message, sizeof(message), "window: %s",
                              err[0] ? err : "that span was refused");
                     qt_raise(message);
@@ -977,19 +1029,19 @@ static int qt_apply_options(void *node, Value *options, const char *word,
         int ok = 0;
         switch (v->kind) {
         case VALUE_STRING:
-            ok = gb_qt_set_text(node, f->name, v->as.string, err, sizeof(err));
+            ok = ui->set_text(node, f->name, v->as.string, err, sizeof(err));
             break;
         case VALUE_NUMBER:
-            ok = gb_qt_set_number(node, f->name, v->as.num.value, err, sizeof(err));
+            ok = ui->set_number(node, f->name, v->as.num.value, err, sizeof(err));
             break;
         case VALUE_BOOL:
-            ok = gb_qt_set_bool(node, f->name, v->as.boolean, err, sizeof(err));
+            ok = ui->set_bool(node, f->name, v->as.boolean, err, sizeof(err));
             break;
         case VALUE_ARRAY: {
             size_t n = 0;
             const char **texts = qt_text_list(v, &n, err, sizeof(err));
             if (texts) {
-                ok = gb_qt_set_text_list(node, f->name, texts, n, err,
+                ok = ui->set_text_list(node, f->name, texts, n, err,
                                          sizeof(err));
                 free(texts);
             }
@@ -1094,7 +1146,7 @@ static int qt_fill_menu(void *root, void *node, Value *menu) {
         }
         if (strcmp(word, "separator") == 0) {
             err[0] = '\0';
-            if (!gb_qt_menu_separator(node, err, sizeof(err))) {
+            if (!ui->menu_separator(node, err, sizeof(err))) {
                 snprintf(message, sizeof(message), "window: %s",
                          err[0] ? err : "that separator could not be added");
                 qt_raise(message);
@@ -1114,7 +1166,7 @@ static int qt_fill_menu(void *root, void *node, Value *menu) {
             label = qt_record_text(opts->value, "label");
         }
         err[0] = '\0';
-        void *act = gb_qt_menu_item(root, node, name ? name : "",
+        void *act = ui->menu_item(root, node, name ? name : "",
                                     label ? label : "", err, sizeof(err));
         if (!act) {
             snprintf(message, sizeof(message), "window: %s",
@@ -1135,7 +1187,7 @@ static int qt_build_menu(void *root, void *parent_menu, Value *menu) {
     char message[512];
     const char *title = qt_record_text(menu, "label");
     err[0] = '\0';
-    void *node = gb_qt_menu(root, parent_menu, title ? title : "", err,
+    void *node = ui->menu(root, parent_menu, title ? title : "", err,
                             sizeof(err));
     if (!node) {
         snprintf(message, sizeof(message), "window: %s",
@@ -1154,7 +1206,7 @@ static int qt_build_popup(void *root, Value *menu) {
     char message[512];
     const char *name = qt_record_text(menu, "name");
     err[0] = '\0';
-    void *node = gb_qt_popup_menu(root, name ? name : "", err, sizeof(err));
+    void *node = ui->popup_menu(root, name ? name : "", err, sizeof(err));
     if (!node) {
         snprintf(message, sizeof(message), "window: %s",
                  err[0] ? err : "that popup menu could not be built");
@@ -1232,7 +1284,7 @@ static int qt_build_item(void *parent, Value *item, void *root) {
         const char *slot = qt_record_text(item, "name");
         int is_docks = strcmp(word, "docks") == 0;
         err[0] = '\0';
-        void *node = gb_qt_container(root, word,
+        void *node = ui->container(root, word,
                                      is_docks ? NULL : slot,
                                      is_docks ? slot : NULL,
                                      err, sizeof(err));
@@ -1329,15 +1381,15 @@ static int qt_build_item(void *parent, Value *item, void *root) {
         const char *tdir = qt_record_text(item, "direction");
         void *tnode;
         if (strcmp(word, "tree") == 0) {
-            tnode = gb_qt_tree(parent, name ? name : "", headers, (int)at,
+            tnode = ui->tree(parent, name ? name : "", headers, (int)at,
                                err, sizeof(err));
         } else if (tdir && strcmp(tdir, "ask") == 0) {
             const char *cellfn = qt_record_text(item, "subject");
-            tnode = gb_qt_virtual_table(parent, name ? name : "", headers,
+            tnode = ui->virtual_table(parent, name ? name : "", headers,
                                         (int)at, cellfn ? cellfn : "", err,
                                         sizeof(err));
         } else {
-            tnode = gb_qt_table(parent, name ? name : "", headers, (int)at,
+            tnode = ui->table(parent, name ? name : "", headers, (int)at,
                                 err, sizeof(err));
         }
         free((void *)headers);
@@ -1351,7 +1403,7 @@ static int qt_build_item(void *parent, Value *item, void *root) {
         /* A COLUMN'S `align:`, set before the table is populated so every
          * cell is made with it. The value was checked at load (window_check). */
         for (size_t c = 0; c < at; c++) {
-            if (aligns[c] && !gb_qt_column_align(tnode, (int)c, aligns[c], err,
+            if (aligns[c] && !ui->column_align(tnode, (int)c, aligns[c], err,
                                                  sizeof(err))) {
                 free((void *)aligns);
                 snprintf(message, sizeof(message), "window: %s", err);
@@ -1378,7 +1430,7 @@ static int qt_build_item(void *parent, Value *item, void *root) {
             clabel = name;
             cname = NULL;
         }
-        void *node = gb_qt_container(parent, cword, cname, clabel, err,
+        void *node = ui->container(parent, cword, cname, clabel, err,
                                      sizeof(err));
         if (!node) {
             snprintf(message, sizeof(message), "window: %s",
@@ -1397,7 +1449,7 @@ static int qt_build_item(void *parent, Value *item, void *root) {
         return 1;
     }
 
-    void *node = gb_qt_part(parent, word ? word : "", name, label, err,
+    void *node = ui->part(parent, word ? word : "", name, label, err,
                             sizeof(err));
     if (!node) {
         snprintf(message, sizeof(message), "window: %s",
@@ -1491,8 +1543,8 @@ static int qt_build_item(void *parent, Value *item, void *root) {
              * there are no colours. */
             if (strcmp(theme_text, "light") != 0 &&
                 strcmp(theme_text, "dark") != 0 &&
-                gb_qt_theme_known(theme_text) == 0) {
-                char *all = gb_qt_theme_names();
+                ui->theme_known(theme_text) == 0) {
+                char *all = ui->theme_names();
                 const char *set[128];
                 int n = 0;
                 for (char *p = all; p && *p && n < 127;) {
@@ -1548,7 +1600,7 @@ static int qt_build_item(void *parent, Value *item, void *root) {
                 return 0;
             }
             err[0] = '\0';
-            if (!gb_qt_highlight(root, name, lang->value->as.string,
+            if (!ui->highlight(root, name, lang->value->as.string,
                                  theme_text, err, sizeof(err))) {
                 /* A WARNING, NOT A RAISE, and the distinction is the whole
                  * reason this is affordable: the editor is built, editable
@@ -1564,7 +1616,7 @@ static int qt_build_item(void *parent, Value *item, void *root) {
             }
         } else if (theme_text) {
             err[0] = '\0';
-            if (!gb_qt_theme_plain(root, name, theme_text, err, sizeof(err))) {
+            if (!ui->theme_plain(root, name, theme_text, err, sizeof(err))) {
                 /* A WARNING for the same reason as above: the editor works,
                  * only its colours are missing, and that has to be said. */
                 warn_fmt(2115, "highlighting", "window: %s",
@@ -1622,7 +1674,7 @@ static int qt_build_item(void *parent, Value *item, void *root) {
                 marks = mk->value->as.boolean ? 1 : 0;
             }
             err[0] = '\0';
-            if (!gb_qt_gutter_enable(root, name, numbers, marks, err,
+            if (!ui->gutter_enable(root, name, numbers, marks, err,
                                      sizeof(err))) {
                 snprintf(message, sizeof(message), "window: %s",
                          err[0] ? err : "the margin could not be created");
@@ -1703,7 +1755,7 @@ static int qt_populate_form(void *root, Value *form, Value *slot,
          * silently accepted an edit. */
         if (strcmp(direction, "show") == 0) {
             err[0] = '\0';
-            if (!gb_qt_set_display_only(root, name, 1, err, sizeof(err))) {
+            if (!ui->set_display_only(root, name, 1, err, sizeof(err))) {
                 snprintf(message, sizeof(message), "window `%s`: %s",
                          window_name, err[0] ? err : "that part could not be "
                                                       "made display only");
@@ -1752,7 +1804,7 @@ static int qt_populate_form(void *root, Value *form, Value *slot,
             continue;
         }
         err[0] = '\0';
-        int ok = gb_qt_write(root, name, text.as.string, err, sizeof(err));
+        int ok = ui->write(root, name, text.as.string, err, sizeof(err));
         value_free(text);
         if (ok && filled) {
             *filled = *filled + 1;
@@ -2142,7 +2194,7 @@ static int qt_connect_built(void *root, Value *items, const QtNameSet *built,
                 continue;
             }
             err[0] = '\0';
-            if (!gb_qt_connect(root, target, signal, fn, err, sizeof(err))) {
+            if (!ui->connect(root, target, signal, fn, err, sizeof(err))) {
                 snprintf(message, sizeof(message), "ui.refresh: %s",
                          err[0] ? err : "that handler could not be connected");
                 qt_raise(message);
@@ -2173,7 +2225,7 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
     /* WHAT WAS THERE BEFORE, taken as NODES up front: the walk below both
      * builds and drops, so a list captured afterwards could not tell a child
      * that survived from one that was built to replace it. */
-    int before = gb_qt_child_count(container);
+    int before = ui->child_count(container);
     void **kept = (void **)calloc((size_t)(before > 0 ? before : 1),
                                   sizeof(void *));
     void **was = (void **)calloc((size_t)(before > 0 ? before : 1),
@@ -2185,7 +2237,7 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
         return 0;
     }
     for (int i = 0; i < before; i++) {
-        was[i] = gb_qt_child_at(container, i);
+        was[i] = ui->child_at(container, i);
     }
     int nkept = 0;
     QtNameSet built = { NULL, 0, 0 };
@@ -2200,14 +2252,14 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
         }
         const char *name = qt_record_text(entry, "name");
         const char *word = qt_record_text(entry, "word");
-        void *child = name ? gb_qt_child_named(container, name) : NULL;
-        if (child && word && strcmp(gb_qt_node_word(child), word) != 0) {
+        void *child = name ? ui->child_named(container, name) : NULL;
+        if (child && word && strcmp(ui->node_word(child), word) != 0) {
             /* THE SAME NAME FOR A DIFFERENT WORD IS NOT THE SAME CHILD, which
              * is why the word is part of the key: keeping a `field` where the
              * record now says `source` would leave the window showing a widget
              * the declaration no longer describes. */
             err[0] = '\0';
-            if (!gb_qt_child_drop(container, child, err, sizeof(err))) {
+            if (!ui->child_drop(container, child, err, sizeof(err))) {
                 free(kept);
                 free(was);
                 free(built.names);
@@ -2233,7 +2285,7 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
             kept[nkept++] = child;
             const char *cap = qt_record_text(entry, "label");
             err[0] = '\0';
-            if (!gb_qt_child_caption(container, child, cap ? cap : "", err,
+            if (!ui->child_caption(container, child, cap ? cap : "", err,
                                      sizeof(err))) {
                 free(kept);
                 free(was);
@@ -2271,7 +2323,7 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
             continue;
         }
         err[0] = '\0';
-        if (!gb_qt_child_drop(container, was[i], err, sizeof(err))) {
+        if (!ui->child_drop(container, was[i], err, sizeof(err))) {
             free(kept);
             free(was);
             free(built.names);
@@ -2290,10 +2342,10 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
     for (size_t i = 0; i < count; i++) {
         Value *entry = &items->as.array.store->items[i];
         const char *name = qt_record_text(entry, "name");
-        void *child = name ? gb_qt_child_named(container, name) : NULL;
+        void *child = name ? ui->child_named(container, name) : NULL;
         if (child) {
             err[0] = '\0';
-            if (!gb_qt_child_place(container, child, at, err, sizeof(err))) {
+            if (!ui->child_place(container, child, at, err, sizeof(err))) {
                 snprintf(message, sizeof(message), "ui.refresh: %s",
                          err[0] ? err : "that child could not be placed");
                 qt_raise(message);
@@ -2386,7 +2438,7 @@ static int qt_fold_form(void *root, Value *form, Value *out,
         if (!qt_bindable_word(word) || !name) {
             continue;
         }
-        char *text = gb_qt_read(root, name);
+        char *text = ui->read(root, name);
         if (!text) {
             continue;
         }
@@ -2552,7 +2604,7 @@ static int qt_populate_tree(void *root, Value *tree, Value *slot,
     size_t ncols = cols->value->as.array.store
                        ? cols->value->as.array.store->count : 0;
     size_t nrows = slot->as.array.store ? slot->as.array.store->count : 0;
-    if (!gb_qt_tree_clear(root, name)) {
+    if (!ui->tree_clear(root, name)) {
         snprintf(message, sizeof(message),
                  "window `%s`: `%s` is not a tree", window_name, name);
         qt_raise(message);
@@ -2612,7 +2664,7 @@ static int qt_populate_tree(void *root, Value *tree, Value *slot,
                                                        : "";
             at++;
         }
-        int ok = gb_qt_tree_add(root, name, depth, cells, at);
+        int ok = ui->tree_add(root, name, depth, cells, at);
         for (int i = 0; i < at; i++) {
             value_free(texts[i]);
         }
@@ -2646,7 +2698,7 @@ static int qt_populate_table(void *root, Value *table, Value *slot,
                        ? cols->value->as.array.store->count : 0;
     size_t nrows = slot->as.array.store ? slot->as.array.store->count : 0;
     err[0] = '\0';
-    if (!gb_qt_table_size(root, name, (int)nrows, err, sizeof(err))) {
+    if (!ui->table_size(root, name, (int)nrows, err, sizeof(err))) {
         snprintf(message, sizeof(message), "window `%s`: %s", window_name,
                  err[0] ? err : "that table could not be sized");
         qt_raise(message);
@@ -2683,7 +2735,7 @@ static int qt_populate_table(void *root, Value *table, Value *slot,
                 }
             }
             err[0] = '\0';
-            int ok = gb_qt_table_set(root, name, (int)r, (int)c, shown, err,
+            int ok = ui->table_set(root, name, (int)r, (int)c, shown, err,
                                      sizeof(err));
             value_free(text);
             if (!ok) {
@@ -2757,7 +2809,7 @@ static int qt_bind_table(void *root, Value *table, const char *window_name) {
     }
     if (strcmp(direction, "show") == 0) {
         err[0] = '\0';
-        if (!gb_qt_set_display_only(root, name, 1, err, sizeof(err))) {
+        if (!ui->set_display_only(root, name, 1, err, sizeof(err))) {
             snprintf(message, sizeof(message), "window `%s`: %s", window_name,
                      err[0] ? err : "that table could not be made display only");
             qt_raise(message);
@@ -2815,7 +2867,7 @@ static int qt_fold_table(void *root, Value *table, Value *out,
     }
     size_t ncols = cols->value->as.array.store
                        ? cols->value->as.array.store->count : 0;
-    int rows = gb_qt_table_rows(root, name);
+    int rows = ui->table_rows(root, name);
     if (rows < 0) {
         return 1;
     }
@@ -2835,7 +2887,7 @@ static int qt_fold_table(void *root, Value *table, Value *out,
             if (!field) {
                 continue;
             }
-            char *cell = gb_qt_table_get(root, name, r, (int)c);
+            char *cell = ui->table_get(root, name, r, (int)c);
             if (!cell) {
                 continue;
             }
@@ -2932,7 +2984,7 @@ static int qt_connect_items(void *root, Value *items) {
                 return 0;
             }
             err[0] = '\0';
-            if (!gb_qt_connect(root, target, signal,
+            if (!ui->connect(root, target, signal,
                                hf->value->as.function.name, err, sizeof(err))) {
                 snprintf(message, sizeof(message), "window: %s",
                          err[0] ? err : "that handler could not be connected");
@@ -2951,7 +3003,6 @@ static int qt_connect_items(void *root, Value *items) {
     return 1;
 }
 
-#endif /* HAVE_QT */
 
 /* TEARDOWN, which is a requirement rather than tidiness. run_repl.sh's note
  * says why in as many words: the session teardown is EXTRACTED so a module
@@ -2962,7 +3013,6 @@ static int qt_connect_items(void *root, Value *items) {
  * QApplication, which Qt does not allow. Called from runtime_teardown beside
  * http_shutdown and timer_shutdown. */
 static void qt_shutdown(void) {
-#if HAVE_QT
     for (size_t i = 0; i < qt_window_count; i++) {
         free(qt_windows[i].name);
         for (size_t b = 0; b < qt_windows[i].binding_count; b++) {
@@ -2976,14 +3026,12 @@ static void qt_shutdown(void) {
     qt_windows = NULL;
     qt_window_count = 0;
     if (qt_begun) {
-        gb_qt_end();
+        ui->end();
         qt_begun = 0;
     }
     qt_callbacks_set = 0;
-#endif
 }
 
-#if HAVE_QT
 
 static int qt_window_record(Value *v, const char *verb) {
     char message[256];
@@ -3003,7 +3051,6 @@ static int qt_window_record(Value *v, const char *verb) {
     return 1;
 }
 
-#endif /* HAVE_QT */
 
 /* `ui.check` ANSWERS ON A BUILD WITH NO QT, like `can_display` and for a
  * stronger reason: it is a check on a DECLARATION, and the whole declarative
@@ -3070,19 +3117,7 @@ static Value qt_check_verb(AstExpr *expr, size_t argc) {
     return value_bool(1);
 }
 
-#if HAVE_QT
 
-/* GUARDED, AND THE CONVENTION CUTS BOTH WAYS. This file's note says code that
- * is NOT optional must stay OUT of these guards -- `ui.check` below is exactly
- * that, answering on a build with no Qt. The mirror is this: code that IS
- * optional must stay IN them, and this helper calls `gb_qt_window`,
- * `gb_qt_begin` and `gb_qt_show`, none of which exists without Qt. Written
- * just after the `#endif`, it compiled here and broke `make QT_AVAILABLE=0`
- * with `QT_ERRBUF undeclared` -- caught by run_platform.sh and run_packaging.sh,
- * which are the two suites that build lean, and NOT by the Qt suites, which
- * all run on a full build. The cheap check CLAUDE.md names (`make
- * QT_AVAILABLE=0`) is the one I skipped.
- */
 /* OPEN A WINDOW -- THE WHOLE PATH, ONE COPY. `ui.open` and `ui.open_modal`
  * differ in exactly two things: whether the root is a QDialog (so `exec()`
  * exists) and what happens after it is built. Everything else -- the record
@@ -3142,7 +3177,7 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
      * prints nothing and the failure reads as line 1. The sentence names
      * what is MISSING -- a display -- rather than reporting a Qt plugin
      * failure, which names the one thing the author cannot fix. */
-    if (!gb_qt_can_display()) {
+    if (!ui->can_display()) {
         snprintf(message, sizeof(message),
                  "no display is available, so window `%s` cannot be "
                  "opened. Set QT_QPA_PLATFORM=offscreen to render without "
@@ -3153,7 +3188,7 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
     }
     if (!qt_begun) {
         err[0] = '\0';
-        if (!gb_qt_begin(err, sizeof(err))) {
+        if (!ui->begin(err, sizeof(err))) {
             snprintf(message, sizeof(message), "ui.%s: %s", verb,
                      err[0] ? err : "Qt could not start");
             qt_raise(message);
@@ -3178,7 +3213,7 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
          * tree has recorded three times from the other direction. */
         const char *syn = getenv("GBASIC_SYNTAX_PATH");
         if (syn && *syn) {
-            gb_qt_syntax_path(syn);
+            ui->syntax_path(syn);
         }
         /* RELATIVE TO THE BINARY BEFORE THE BAKED-IN PATH, which is
          * what a DOWNLOAD needs: a release tarball is relocatable and runs
@@ -3187,14 +3222,14 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
          * stdlib uses, for the same reason. */
         const char *near = gb_exe_relative_syntax();
         if (near) {
-            gb_qt_syntax_path(near);
+            ui->syntax_path(near);
         }
 #ifdef GBASIC_DEFAULT_SYNTAX
-        gb_qt_syntax_path(GBASIC_DEFAULT_SYNTAX);
+        ui->syntax_path(GBASIC_DEFAULT_SYNTAX);
 #endif
     }
     if (!qt_callbacks_set) {
-        gb_qt_set_callbacks(qt_invoke_handler, qt_pump_gbasic,
+        ui->set_callbacks(qt_invoke_handler, qt_pump_gbasic,
                             qt_window_closed, qt_cell_text);
         qt_callbacks_set = 1;
     }
@@ -3257,7 +3292,7 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
         value_free(win);
         return 0;
     }
-    void *root = gb_qt_window(name ? name : "",
+    void *root = ui->window(name ? name : "",
                               title ? title : (name ? name : ""),
                               (int)width, (int)height,
                               modal ? 1 : (needs_frame ? 2 : 0));
@@ -3284,16 +3319,14 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
      * shows it, and showing it twice would put it up non-modally for one
      * iteration first. */
     if (!modal) {
-        gb_qt_show(root);
+        ui->show(root);
     }
     *root_out = root;
     value_free(win);
     return 1;
 }
 
-#endif /* HAVE_QT */
 
-#if HAVE_QT
 /* A SPAN FROM A RECORD {line, column, line2, column2}, all numbers. */
 static int qt_span_of(Value v, int *span, const char **text, const char *verb,
                       size_t at) {
@@ -3402,7 +3435,7 @@ static Value qt_text_verb(AstExpr *expr, const char *verb, size_t argc) {
             }
             span[k] = (int)args[2 + k].as.num.value;
         }
-        ok = gb_qt_select_text(root, part, span[0], span[1], span[2], span[3],
+        ok = ui->select_text(root, part, span[0], span[1], span[2], span[3],
                                err, sizeof(err));
         if (ok) {
             result = value_bool(1);
@@ -3436,8 +3469,8 @@ static Value qt_text_verb(AstExpr *expr, const char *verb, size_t argc) {
             }
         }
         ok = is_replace
-                 ? gb_qt_replace_text(root, part, spans, texts, n, err, sizeof(err))
-                 : gb_qt_highlight_text(root, part, spans, n, err, sizeof(err));
+                 ? ui->replace_text(root, part, spans, texts, n, err, sizeof(err))
+                 : ui->highlight_text(root, part, spans, n, err, sizeof(err));
         free(spans);
         free(texts);
         if (ok) {
@@ -3446,7 +3479,7 @@ static Value qt_text_verb(AstExpr *expr, const char *verb, size_t argc) {
     } else if (strcmp(verb, "selection") == 0) {
         int span[4];
         char *text = NULL;
-        int got = gb_qt_selection(root, part, span, &text, err, sizeof(err));
+        int got = ui->selection(root, part, span, &text, err, sizeof(err));
         ok = got >= 0;
         if (got > 0) {
             result = qt_span_record(span);
@@ -3458,7 +3491,7 @@ static Value qt_text_verb(AstExpr *expr, const char *verb, size_t argc) {
     } else if (strcmp(verb, "highlights") == 0) {
         int *spans = NULL;
         size_t n = 0;
-        ok = gb_qt_highlights(root, part, &spans, &n, err, sizeof(err));
+        ok = ui->highlights(root, part, &spans, &n, err, sizeof(err));
         if (ok) {
             Value *items = malloc(sizeof(Value) * (n ? n : 1));
             for (size_t i = 0; items && i < n; i++) {
@@ -3469,7 +3502,7 @@ static Value qt_text_verb(AstExpr *expr, const char *verb, size_t argc) {
         free(spans);
     } else {                                  /* label */
         char *text = NULL;
-        int got = gb_qt_label(root, part, &text, err, sizeof(err));
+        int got = ui->label(root, part, &text, err, sizeof(err));
         ok = got >= 0;
         if (got > 0) {
             result = value_string(text);
@@ -3489,14 +3522,49 @@ done:
     }
     return result;
 }
-#endif
 
 static Value qt_eval_call(AstExpr *expr) {
     const char *verb = expr->as.call.name;
     size_t argc = expr->as.call.args.count;
     char message[512];
 
-#if HAVE_QT
+    /* NO BACKEND: this build has none, or GBASIC_UI asked for one it lacks.
+     * A few verbs still answer; every other one refuses with the reason. */
+    if (!ui_be_choose()) {
+        /* `ui.can_display` answers rather than raising, deliberately and for
+         * the same reason `has_builtin` exists: a program asking whether it
+         * may open a window is DEGRADING GRACEFULLY, and a build with no
+         * backend is one of the answers to that question. Every other verb
+         * refuses in the convention's own words. */
+        if (strcmp(verb, "can_display") == 0 && argc == 0) {
+            return value_bool(0);
+        }
+        /* ANSWERS WITHOUT A BACKEND, like can_display and for the same
+         * reason: "can this build highlight?" is a question a program asks in
+         * order to choose, so refusing it would make the choice unmakeable. */
+        if (strcmp(verb, "can_highlight") == 0 && argc == 0) {
+            return value_bool(0);
+        }
+        /* ANSWERS WITHOUT A BACKEND for the same reason: a program asking
+         * whether its window is still there is choosing what to do next, and
+         * on a build that cannot open one the true answer is no. Refusing
+         * would make a program that degrades gracefully have to special-case
+         * the degradation. */
+        if (strcmp(verb, "is_open") == 0 && argc == 1) {
+            Value win = eval_expr(expr->as.call.args.items[0]);
+            value_free(win);
+            if (error_action_pending()) {
+                return value_null();
+            }
+            return value_bool(0);
+        }
+        if (strcmp(verb, "check") == 0) {
+            return qt_check_verb(expr, argc);
+        }
+        qt_raise(ui_be_problem);
+        return value_null();
+    }
+
     /* ANYTHING A RE-ENTRANT REFRESH TOOK OUT BUT COULD NOT FREE IS FREED HERE
      * (§0.31), and this is the one moment it is safe to: at the top of a verb
      * dispatch with no handler running, nothing of the backend's is on the
@@ -3504,45 +3572,8 @@ static Value qt_eval_call(AstExpr *expr) {
      * delete its items -- the Qt call that emitted the signal is still running
      * on one of them -- so it takes them out and leaves them here. The depth
      * test lives in the backend, so this call cannot get the timing wrong. */
-    gb_qt_retire_drain();
-#endif
+    ui->retire_drain();
 
-#if !HAVE_QT
-    (void)argc;
-    /* `ui.can_display` answers rather than raising, deliberately and for the
-     * same reason `has_builtin` exists: a program asking whether it may open a
-     * window is DEGRADING GRACEFULLY, and a build with no Qt is one of the
-     * answers to that question. Every other verb refuses in the convention's
-     * own words. */
-    if (strcmp(verb, "can_display") == 0 && argc == 0) {
-        return value_bool(0);
-    }
-    /* ANSWERS WITHOUT QT, like can_display and for the same reason: "can this
-     * build highlight?" is a question a program asks in order to choose, so
-     * refusing it would make the choice unmakeable. */
-    if (strcmp(verb, "can_highlight") == 0 && argc == 0) {
-        return value_bool(0);
-    }
-    /* ANSWERS WITHOUT QT for the same reason: a program asking whether its
-     * window is still there is choosing what to do next, and on a build that
-     * cannot open one the true answer is no. Refusing would make a program
-     * that degrades gracefully have to special-case the degradation. */
-    if (strcmp(verb, "is_open") == 0 && argc == 1) {
-        Value win = eval_expr(expr->as.call.args.items[0]);
-        value_free(win);
-        if (error_action_pending()) {
-            return value_null();
-        }
-        return value_bool(0);
-    }
-    if (strcmp(verb, "check") == 0) {
-        return qt_check_verb(expr, argc);
-    }
-    snprintf(message, sizeof(message),
-             "Qt support is not available in this build");
-    qt_raise(message);
-    return value_null();
-#else
     char err[QT_ERRBUF];
 
     if (strcmp(verb, "can_display") == 0) {
@@ -3550,7 +3581,7 @@ static Value qt_eval_call(AstExpr *expr) {
             qt_raise("ui.can_display takes no arguments");
             return value_null();
         }
-        return value_bool(gb_qt_can_display() ? 1 : 0);
+        return value_bool(ui->can_display() ? 1 : 0);
     }
 
     /* A BUILD-LEVEL QUESTION, where `ui.highlighting` is a per-widget one, and
@@ -3563,7 +3594,7 @@ static Value qt_eval_call(AstExpr *expr) {
             qt_raise("ui.can_highlight takes no arguments");
             return value_null();
         }
-        return value_bool(gb_qt_has_highlighting() ? 1 : 0);
+        return value_bool(ui->has_highlighting() ? 1 : 0);
     }
 
     /* ---- THE CLIPBOARD (§0.33) --------------------------------------------
@@ -3613,14 +3644,14 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(v);
             return value_null();
         }
-        if (!gb_qt_can_display()) {
+        if (!ui->can_display()) {
             qt_raise("no display is available, so there is no clipboard to "
                      "copy to. Guard with ui.can_display()");
             value_free(v);
             return value_null();
         }
         err[0] = '\0';
-        int ok = gb_qt_copy(given, (long)len, err, sizeof(err));
+        int ok = ui->copy(given, (long)len, err, sizeof(err));
         value_free(v);
         if (!ok) {
             snprintf(message, sizeof(message), "ui.copy: %s",
@@ -3642,7 +3673,7 @@ static Value qt_eval_call(AstExpr *expr) {
                      "the clipboard, and ui.copy(text) puts something there");
             return value_null();
         }
-        if (!gb_qt_can_display()) {
+        if (!ui->can_display()) {
             qt_raise("no display is available, so there is no clipboard to "
                      "read. Guard with ui.can_display()");
             return value_null();
@@ -3650,7 +3681,7 @@ static Value qt_eval_call(AstExpr *expr) {
         char *text = NULL;
         long len = 0;
         err[0] = '\0';
-        int rc = gb_qt_clipboard(&text, &len, err, sizeof(err));
+        int rc = ui->clipboard(&text, &len, err, sizeof(err));
         if (rc < 0) {
             snprintf(message, sizeof(message), "ui.clipboard: %s",
                      err[0] ? err : "the clipboard could not be read");
@@ -3702,7 +3733,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         int accepted = 0;
         err[0] = '\0';
-        if (!gb_qt_show_modal(root, &accepted, err, sizeof(err))) {
+        if (!ui->show_modal(root, &accepted, err, sizeof(err))) {
             snprintf(message, sizeof(message), "ui.open_modal: %s",
                      err[0] ? err : "that window could not be shown modally");
             qt_raise(message);
@@ -3714,7 +3745,7 @@ static Value qt_eval_call(AstExpr *expr) {
         const char *still = qt_window_name_of(root);
         if (still) {
             err[0] = '\0';
-            if (!gb_qt_close(root, err, sizeof(err))) {
+            if (!ui->close(root, err, sizeof(err))) {
                 snprintf(message, sizeof(message), "ui.open_modal: %s",
                          err[0] ? err : "that window could not be closed");
                 qt_raise(message);
@@ -3763,7 +3794,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         err[0] = '\0';
-        int ok = gb_qt_answer_modal(root, accepting, err, sizeof(err));
+        int ok = ui->answer_modal(root, accepting, err, sizeof(err));
         value_free(win);
         if (!ok) {
             snprintf(message, sizeof(message),
@@ -3816,7 +3847,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         err[0] = '\0';
-        int ok = gb_qt_close(root, err, sizeof(err));
+        int ok = ui->close(root, err, sizeof(err));
         value_free(win);
         if (!ok) {
             snprintf(message, sizeof(message), "ui.close: %s",
@@ -3946,11 +3977,11 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         char *text;
         if (is_align) {
-            const char *where = gb_qt_cell_alignment(
+            const char *where = ui->cell_alignment(
                 root, which.as.string, (int)rowv.as.num.value, col);
             text = where ? copy_string(where) : NULL;
         } else {
-            text = gb_qt_table_get(root, which.as.string,
+            text = ui->table_get(root, which.as.string,
                                    (int)rowv.as.num.value, col);
         }
         snprintf(message, sizeof(message),
@@ -4044,7 +4075,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         char *kindt = NULL, *dirt = NULL;
         int panes = 0, at = -1, resizable = 0;
-        int ok = gb_qt_pane_of(root, which.as.string, &kindt, &dirt, &panes,
+        int ok = ui->pane_of(root, which.as.string, &kindt, &dirt, &panes,
                                &at, &resizable);
         /* THE NAME OUTLIVES THE VALUE, because the sizes are read BELOW and
          * `value_free(which)` would leave `which.as.string` dangling -- which
@@ -4075,14 +4106,14 @@ static Value qt_eval_call(AstExpr *expr) {
              * carries NO `sizes` field at all, which is a different claim from
              * an empty list. */
             int howmany = 0;
-            if (part && gb_qt_pane_sizes(root, part, NULL, &howmany, err,
+            if (part && ui->pane_sizes(root, part, NULL, &howmany, err,
                                          sizeof(err)) && howmany > 0) {
                 int *got = malloc(sizeof(int) * (size_t)howmany);
                 if (!got) {
                     abort();
                 }
                 int filled = howmany;
-                if (gb_qt_pane_sizes(root, part, got, &filled, err,
+                if (ui->pane_sizes(root, part, got, &filled, err,
                                      sizeof(err))) {
                     Value *items = malloc(sizeof(Value) * (size_t)filled);
                     if (!items) {
@@ -4136,7 +4167,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         int row = 0, col = 0, across = 0, down = 0;
-        int ok = gb_qt_cell_of(root, which.as.string, &row, &col, &across,
+        int ok = ui->cell_of(root, which.as.string, &row, &col, &across,
                                &down);
         if (!ok) {
             snprintf(message, sizeof(message),
@@ -4224,22 +4255,22 @@ static Value qt_eval_call(AstExpr *expr) {
         int ok = 0;
         switch (v.kind) {
         case VALUE_STRING:
-            ok = gb_qt_set_part_text(root, which.as.string, prop.as.string,
+            ok = ui->set_part_text(root, which.as.string, prop.as.string,
                                      v.as.string, err, sizeof(err));
             break;
         case VALUE_NUMBER:
-            ok = gb_qt_set_part_number(root, which.as.string, prop.as.string,
+            ok = ui->set_part_number(root, which.as.string, prop.as.string,
                                        v.as.num.value, err, sizeof(err));
             break;
         case VALUE_BOOL:
-            ok = gb_qt_set_part_bool(root, which.as.string, prop.as.string,
+            ok = ui->set_part_bool(root, which.as.string, prop.as.string,
                                      v.as.boolean, err, sizeof(err));
             break;
         case VALUE_ARRAY: {
             size_t n = 0;
             const char **texts = qt_text_list(&v, &n, err, sizeof(err));
             if (texts) {
-                ok = gb_qt_set_part_text_list(root, which.as.string,
+                ok = ui->set_part_text_list(root, which.as.string,
                                               prop.as.string, texts, n, err,
                                               sizeof(err));
                 free(texts);
@@ -4306,7 +4337,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         char cerr[QT_ERRBUF];
         cerr[0] = '\0';
-        void *container = gb_qt_container_node(root, which.as.string, cerr,
+        void *container = ui->container_node(root, which.as.string, cerr,
                                                sizeof(cerr));
         if (!container) {
             snprintf(message, sizeof(message), "ui.children: %s",
@@ -4316,13 +4347,13 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         value_free(win); value_free(which);
-        int n = gb_qt_child_count(container);
+        int n = ui->child_count(container);
         Value *names = n > 0 ? malloc(sizeof(Value) * (size_t)n) : NULL;
         if (n > 0 && !names) {
             abort();
         }
         for (int i = 0; i < n; i++) {
-            char *nm = gb_qt_child_name(container, i);
+            char *nm = ui->child_name(container, i);
             names[i] = value_string(nm ? nm : "");
             free(nm);
         }
@@ -4386,7 +4417,7 @@ static Value qt_eval_call(AstExpr *expr) {
         char err[QT_ERRBUF];
         err[0] = '\0';
         if (putting) {
-            int ok = gb_qt_caret_to(root, pname, (int)want_line,
+            int ok = ui->caret_to(root, pname, (int)want_line,
                                     (int)want_col, err, sizeof(err));
             if (!ok) {
                 snprintf(message, sizeof(message), "ui.caret_to: %s",
@@ -4399,7 +4430,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_bool(1);
         }
         int line = 0, column = 0, selecting = 0;
-        int got = gb_qt_caret(root, pname, &line, &column, &selecting, err,
+        int got = ui->caret(root, pname, &line, &column, &selecting, err,
                              sizeof(err));
         if (got < 0) {
             snprintf(message, sizeof(message), "ui.caret: %s",
@@ -4493,14 +4524,14 @@ static Value qt_eval_call(AstExpr *expr) {
          * and the backend has to know both. So an unknown one is refused by
          * name with a near-miss hint, through the same matcher the chooser's
          * options and the window's words use. */
-        int kind = gb_qt_mark_kind(cname);
+        int kind = ui->mark_kind(cname);
         if (kind < 0) {
             char listing[160];
             size_t at = 0;
-            int total = gb_qt_mark_count();
+            int total = ui->mark_count();
             const char *set[16];
             for (int i = 0; i < total && i < 15; i++) {
-                set[i] = gb_qt_mark_name(i);
+                set[i] = ui->mark_name(i);
                 at += (size_t)snprintf(listing + at, sizeof(listing) - at,
                                        "%s`%s`", i ? ", " : "", set[i]);
             }
@@ -4525,7 +4556,7 @@ static Value qt_eval_call(AstExpr *expr) {
         err[0] = '\0';
         if (!setting) {
             int buf[4096];
-            int n = gb_qt_mark_get(root, pname, kind, buf,
+            int n = ui->mark_get(root, pname, kind, buf,
                                    (int)(sizeof(buf) / sizeof(buf[0])), err,
                                    sizeof(err));
             if (n < 0) {
@@ -4587,7 +4618,7 @@ static Value qt_eval_call(AstExpr *expr) {
             nums[i] = (int)line;
         }
         value_free(lines);
-        int ok = gb_qt_mark_set(root, pname, kind, nums, (int)count, err,
+        int ok = ui->mark_set(root, pname, kind, nums, (int)count, err,
                                 sizeof(err));
         free(nums);
         if (!ok) {
@@ -4647,7 +4678,7 @@ static Value qt_eval_call(AstExpr *expr) {
         int floating = 0, tabbed = 0, visible = 0;
         err[0] = '\0';
         area[0] = '\0';
-        int got = gb_qt_dock_info(root, pname, area, sizeof(area), &floating,
+        int got = ui->dock_info(root, pname, area, sizeof(area), &floating,
                                   &tabbed, &visible, err, sizeof(err));
         if (got < 0) {
             snprintf(message, sizeof(message), "ui.dock: %s",
@@ -4730,7 +4761,7 @@ static Value qt_eval_call(AstExpr *expr) {
         char err[QT_ERRBUF];
         err[0] = '\0';
         if (saving) {
-            char *out = gb_qt_layout_save(root, err, sizeof(err));
+            char *out = ui->layout_save(root, err, sizeof(err));
             if (!out) {
                 snprintf(message, sizeof(message), "ui.layout: %s",
                          err[0] ? err : "this window has no layout to save");
@@ -4741,7 +4772,7 @@ static Value qt_eval_call(AstExpr *expr) {
             free(out);
             return v;
         }
-        int ok = gb_qt_layout_restore(root, blob, err, sizeof(err));
+        int ok = ui->layout_restore(root, blob, err, sizeof(err));
         free(blob);
         if (!ok) {
             /* REPORTED AS A VALUE, NOT A RAISE, which the implementation's own
@@ -4796,7 +4827,7 @@ static Value qt_eval_call(AstExpr *expr) {
         value_free(win); value_free(which); value_free(linev);
         char err[QT_ERRBUF];
         err[0] = '\0';
-        if (!gb_qt_gutter_press(root, pname, (int)line, err, sizeof(err))) {
+        if (!ui->gutter_press(root, pname, (int)line, err, sizeof(err))) {
             snprintf(message, sizeof(message), "ui.gutter_press: %s",
                      err[0] ? err : "that margin could not be pressed");
             free(pname);
@@ -4850,7 +4881,7 @@ static Value qt_eval_call(AstExpr *expr) {
         char err[QT_ERRBUF];
         err[0] = '\0';
         int numbers = 0, marks = 0, width = 0;
-        int got = gb_qt_gutter_info(root, pname, &numbers, &marks, &width, err,
+        int got = ui->gutter_info(root, pname, &numbers, &marks, &width, err,
                                     sizeof(err));
         if (got < 0) {
             snprintf(message, sizeof(message), "ui.gutter: %s",
@@ -4887,7 +4918,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         int line = 0;
-        if (!gb_qt_gutter_click(&line)) {
+        if (!ui->gutter_click(&line)) {
             return value_unknown();
         }
         Value out = value_record(NULL, 0);
@@ -4929,7 +4960,7 @@ static Value qt_eval_call(AstExpr *expr) {
                      "the event being handled is about");
             return value_null();
         }
-        int which = gb_qt_which_tab();
+        int which = ui->which_tab();
         if (which < 0) {
             return value_unknown();
         }
@@ -4985,7 +5016,7 @@ static Value qt_eval_call(AstExpr *expr) {
         err[0] = '\0';
         if (is_key) {
             int handled = 0;
-            int ok = gb_qt_key(root, pname, ktext, &handled, err, sizeof(err));
+            int ok = ui->key(root, pname, ktext, &handled, err, sizeof(err));
             free(pname); free(ktext);
             if (!ok) {
                 snprintf(message, sizeof(message), "ui.key: %s",
@@ -4995,7 +5026,7 @@ static Value qt_eval_call(AstExpr *expr) {
             }
             return value_bool(handled);
         }
-        char *joined = gb_qt_shortcuts(root, pname, err, sizeof(err));
+        char *joined = ui->shortcuts(root, pname, err, sizeof(err));
         free(pname);
         if (!joined) {
             snprintf(message, sizeof(message), "ui.shortcuts: %s",
@@ -5072,7 +5103,7 @@ static Value qt_eval_call(AstExpr *expr) {
         char *tname = copy_string(which.as.string);
         long row = (long)rowv.as.num.value;
         value_free(win); value_free(which); value_free(rowv);
-        int d = gb_qt_tree_depth(root, tname, (int)row);
+        int d = ui->tree_depth(root, tname, (int)row);
         if (d == -2) {
             /* NOT A TREE IS A DIFFERENT ANSWER FROM NO SUCH ROW, which is the
              * distinction `ui.selected` already rests on: "that is a field" and
@@ -5127,7 +5158,7 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(win); value_free(which);
             return value_null();
         }
-        int n = gb_qt_tab_count(root, which.as.string);
+        int n = ui->tab_count(root, which.as.string);
         if (n < 0) {
             /* NAMES WHAT IT LOOKED FOR, because the mistake this catches is
              * naming a window's other container where a `tabs` was meant --
@@ -5152,7 +5183,7 @@ static Value qt_eval_call(AstExpr *expr) {
             abort();
         }
         for (int i = 0; i < n; i++) {
-            char *cap = gb_qt_tab_caption(root, tname, i);
+            char *cap = ui->tab_caption(root, tname, i);
             caps[i] = value_string(cap ? cap : "");
             free(cap);
         }
@@ -5218,11 +5249,11 @@ static Value qt_eval_call(AstExpr *expr) {
         value_free(win);
         int n;
         if (pname) {
-            n = gb_qt_popup_entry_count(root, pname);
+            n = ui->popup_entry_count(root, pname);
         } else if (which < 0) {
-            n = gb_qt_menu_count(root);
+            n = ui->menu_count(root);
         } else {
-            n = gb_qt_menu_entry_count(root, which);
+            n = ui->menu_entry_count(root, which);
         }
         if (n < 0) {
             if (pname) {
@@ -5256,11 +5287,11 @@ static Value qt_eval_call(AstExpr *expr) {
             int is_sep = 0;
             char *t;
             if (pname) {
-                t = gb_qt_popup_entry_title(root, pname, i, &is_sep);
+                t = ui->popup_entry_title(root, pname, i, &is_sep);
             } else if (which < 0) {
-                t = gb_qt_menu_title(root, i);
+                t = ui->menu_title(root, i);
             } else {
-                t = gb_qt_menu_entry_title(root, which, i, &is_sep);
+                t = ui->menu_entry_title(root, which, i, &is_sep);
             }
             /* A SEPARATOR ANSWERS `unknown`, NOT "". It HAS no caption, where
              * `item x( label: "" )` has an empty one -- the absent/empty
@@ -5309,7 +5340,7 @@ static Value qt_eval_call(AstExpr *expr) {
             if (theme_is_record) {
                 return value_copy(theme_record);
             }
-            char *css = gb_qt_theme_get();
+            char *css = ui->theme_get();
             Value out = value_string(css ? css : "");
             free(css);
             return out;
@@ -5368,7 +5399,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 }
             }
             err[0] = '\0';
-            if (!bad && !gb_qt_theme_record(names, vals, n, err, sizeof(err))) {
+            if (!bad && !ui->theme_record(names, vals, n, err, sizeof(err))) {
                 snprintf(message, sizeof(message), "ui.theme: %s",
                          err[0] ? err : "that theme was refused");
                 bad = 1;
@@ -5394,7 +5425,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         err[0] = '\0';
-        int ok = gb_qt_theme_set(v.as.string, err, sizeof(err));
+        int ok = ui->theme_set(v.as.string, err, sizeof(err));
         value_free(v);
         if (!ok) {
             snprintf(message, sizeof(message), "ui.theme: %s",
@@ -5520,7 +5551,7 @@ static Value qt_eval_call(AstExpr *expr) {
             }
             char cerr[QT_ERRBUF];
             cerr[0] = '\0';
-            void *container = gb_qt_container_node(root, which.as.string, cerr,
+            void *container = ui->container_node(root, which.as.string, cerr,
                                                    sizeof(cerr));
             if (!container) {
                 snprintf(message, sizeof(message), "ui.refresh: %s",
@@ -5725,13 +5756,13 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(win); value_free(which);
             return value_null();
         }
-        char *lang = gb_qt_highlight_language(root, which.as.string);
+        char *lang = ui->highlight_language(root, which.as.string);
         if (!lang) {
             value_free(win); value_free(which);
             return value_unknown();
         }
-        char *file = gb_qt_highlight_file(root, which.as.string);
-        char *theme = gb_qt_highlight_theme(root, which.as.string);
+        char *file = ui->highlight_file(root, which.as.string);
+        char *theme = ui->highlight_theme(root, which.as.string);
         Value out = value_record(NULL, 0);
         record_set(&out, "language", value_string(lang));
         record_set(&out, "file", value_string(file ? file : ""));
@@ -5791,7 +5822,7 @@ static Value qt_eval_call(AstExpr *expr) {
              * arrive here and the one case where that sentence names the wrong
              * cause. This tree has recorded that class five times; it costs
              * three lines to avoid. */
-            if (!gb_qt_can_display()) {
+            if (!ui->can_display()) {
                 snprintf(message, sizeof(message),
                          "no display is available, so ui.%s has no window to "
                          "put a dialog on. Guard with ui.can_display()", verb);
@@ -5806,8 +5837,8 @@ static Value qt_eval_call(AstExpr *expr) {
         err[0] = '\0';
         int answered = 0;
         int ok = asking
-            ? gb_qt_confirm(root, text.as.string, &answered, err, sizeof(err))
-            : gb_qt_inform(root, text.as.string, err, sizeof(err));
+            ? ui->confirm(root, text.as.string, &answered, err, sizeof(err))
+            : ui->inform(root, text.as.string, err, sizeof(err));
         if (!ok) {
             snprintf(message, sizeof(message), "ui.%s: %s", verb,
                      err[0] ? err : "the dialog could not be shown");
@@ -5854,7 +5885,7 @@ static Value qt_eval_call(AstExpr *expr) {
         else if (v.kind == VALUE_DIR)  { given = v.as.dir_path; }
         if (given) {
             err[0] = '\0';
-            int pok = gb_qt_answer_path(given, err, sizeof(err));
+            int pok = ui->answer_path(given, err, sizeof(err));
             value_free(v);
             if (!pok) {
                 snprintf(message, sizeof(message), "ui.answer: %s",
@@ -5879,7 +5910,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         err[0] = '\0';
-        if (!gb_qt_answer(yes, err, sizeof(err))) {
+        if (!ui->answer(yes, err, sizeof(err))) {
             snprintf(message, sizeof(message), "ui.answer: %s",
                      err[0] ? err : "the dialog could not be answered");
             qt_raise(message);
@@ -5917,9 +5948,9 @@ static Value qt_eval_call(AstExpr *expr) {
      * "no definition", and `if path then` on it RAISES, which is loud. */
     if (strcmp(verb, "choose_file") == 0 || strcmp(verb, "choose_save") == 0 ||
         strcmp(verb, "choose_folder") == 0) {
-        int kind = GB_QT_PICK_OPEN;
-        if (strcmp(verb, "choose_save") == 0)   { kind = GB_QT_PICK_SAVE; }
-        if (strcmp(verb, "choose_folder") == 0) { kind = GB_QT_PICK_FOLDER; }
+        int kind = GB_UI_PICK_OPEN;
+        if (strcmp(verb, "choose_save") == 0)   { kind = GB_UI_PICK_SAVE; }
+        if (strcmp(verb, "choose_folder") == 0) { kind = GB_UI_PICK_FOLDER; }
         if (argc < 1 || argc > 2) {
             snprintf(message, sizeof(message),
                      "ui.%s expects a window, and optionally a record of "
@@ -5988,7 +6019,7 @@ static Value qt_eval_call(AstExpr *expr) {
                  * elsewhere: a folder has no name filter, and `folder:` is
                  * already how you say where to start, so a second spelling
                  * would be two ways to say one thing. */
-                if (kind == GB_QT_PICK_FOLDER &&
+                if (kind == GB_UI_PICK_FOLDER &&
                     (strcmp(fname, "filter") == 0 ||
                      strcmp(fname, "name") == 0)) {
                     snprintf(message, sizeof(message),
@@ -6085,7 +6116,7 @@ static Value qt_eval_call(AstExpr *expr) {
             /* THE DISPLAY, NOT THE WINDOW, when that is the real cause -- the
              * correction §0.15 records, made once and then applied rather than
              * rediscovered. */
-            if (!gb_qt_can_display()) {
+            if (!ui->can_display()) {
                 snprintf(message, sizeof(message),
                          "no display is available, so ui.%s has no window to "
                          "put a chooser on. Guard with ui.can_display()", verb);
@@ -6099,7 +6130,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         err[0] = '\0';
         int cancelled = 0;
-        char *path = gb_qt_choose(root, kind, title, folder, pname,
+        char *path = ui->choose(root, kind, title, folder, pname,
                                   filter[0] ? filter : NULL, &cancelled, err,
                                   sizeof(err));
         value_free(win); value_free(opts);
@@ -6134,7 +6165,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         char *dkind = NULL, *dtitle = NULL, *dtext = NULL, *dfolder = NULL,
              *dfilter = NULL;
-        int open = gb_qt_dialog_info(&dkind, &dtitle, &dtext, &dfolder,
+        int open = ui->dialog_info(&dkind, &dtitle, &dtext, &dfolder,
                                      &dfilter);
         if (!open) {
             /* `unknown` RATHER THAN AN EMPTY RECORD, the distinction
@@ -6220,13 +6251,13 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(win); value_free(which); value_free(colv);
             return value_null();
         }
-        char *text = gb_qt_table_heading(root, which.as.string, col);
+        char *text = ui->table_heading(root, which.as.string, col);
         /* NAMES WHICH OF THE TWO THINGS IS WRONG. A NULL means either "no such
          * column" or "that column carries no caption", and §0.28's fixture
          * asked for one past the end deliberately -- to pin that a tree's
          * depth column is declared and NOT drawn -- and was told the column
          * had no caption, naming the one thing that was not wrong with it. */
-        int ncols = gb_qt_column_count(root, which.as.string);
+        int ncols = ui->column_count(root, which.as.string);
         char *asked = copy_string(which.as.string);
         value_free(win); value_free(which); value_free(colv);
         if (!text && ncols >= 0 && (col < 0 || col >= ncols)) {
@@ -6282,7 +6313,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         int row = (rowv.kind == VALUE_UNKNOWN) ? -1 : (int)rowv.as.num.value;
         err[0] = '\0';
-        int ok = gb_qt_table_select(root, which.as.string, row, err,
+        int ok = ui->table_select(root, which.as.string, row, err,
                                     sizeof(err));
         value_free(win); value_free(which); value_free(rowv);
         if (!ok) {
@@ -6334,7 +6365,7 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(which);
             return value_null();
         }
-        int row = gb_qt_table_rows(root, which.as.string);
+        int row = ui->table_rows(root, which.as.string);
         if (row < 0) {
             /* A PART THAT IS NOT A TABLE IS ITS OWN SENTENCE. `ui.selected`
              * on a field is a mistake about what the thing IS, and answering
@@ -6348,7 +6379,7 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(which);
             return value_null();
         }
-        int at = gb_qt_table_selected(root, which.as.string);
+        int at = ui->table_selected(root, which.as.string);
         value_free(win);
         value_free(which);
         if (at < 0) {
@@ -6509,7 +6540,7 @@ static Value qt_eval_call(AstExpr *expr) {
             double num = 0.0;
             char *text = NULL;
             err[0] = '\0';
-            int ok = gb_qt_get(root, which.as.string, prop.as.string, &kind,
+            int ok = ui->get(root, which.as.string, prop.as.string, &kind,
                                &num, &text, err, sizeof(err));
             value_free(win);
             value_free(which);
@@ -6548,7 +6579,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return out;
         }
         if (!writing) {
-            char *text = gb_qt_read(root, which.as.string);
+            char *text = ui->read(root, which.as.string);
             /* THE NAME IS COPIED BEFORE THE VALUE GOES. The refusal below
              * names the part, and reading `which.as.string` after
              * `value_free(which)` is a USE-AFTER-FREE -- §0.22's own defect,
@@ -6594,7 +6625,7 @@ static Value qt_eval_call(AstExpr *expr) {
         int ok = 0;
         err[0] = '\0';
         if (text.kind == VALUE_STRING) {
-            ok = gb_qt_write(root, which.as.string, text.as.string, err,
+            ok = ui->write(root, which.as.string, text.as.string, err,
                              sizeof(err));
         }
         value_free(text);
@@ -6668,7 +6699,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         int shown = 0;
         err[0] = '\0';
-        if (!gb_qt_popup(root, which.as.string, under, &shown, err,
+        if (!ui->popup(root, which.as.string, under, &shown, err,
                          sizeof(err))) {
             free(under);
             snprintf(message, sizeof(message), "ui.popup: %s",
@@ -6755,8 +6786,8 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         err[0] = '\0';
-        int clicked = left ? gb_qt_click(root, which.as.string, row, err, sizeof(err))
-                           : gb_qt_right_click(root, which.as.string, row, err, sizeof(err));
+        int clicked = left ? ui->click(root, which.as.string, row, err, sizeof(err))
+                           : ui->right_click(root, which.as.string, row, err, sizeof(err));
         if (!clicked) {
             snprintf(message, sizeof(message), "ui.%s: %s", verb,
                      err[0] ? err : "that part could not be clicked");
@@ -6782,7 +6813,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         int dy = 0, dx = 0, ctrl = 0, shift = 0, alt = 0;
-        if (!gb_qt_wheel_event(&dy, &dx, &ctrl, &shift, &alt)) {
+        if (!ui->wheel_event(&dy, &dx, &ctrl, &shift, &alt)) {
             qt_raise("ui.wheel: no wheel event is being handled");
             return value_null();
         }
@@ -6795,7 +6826,7 @@ static Value qt_eval_call(AstExpr *expr) {
          * trackpad's small deltas, which the rounded value makes impossible:
          * a half-notch arrives as 1. Asked for by gBASIC Studio. */
         double dy_exact = 0.0, dx_exact = 0.0;
-        gb_qt_wheel_exact(&dy_exact, &dx_exact);
+        ui->wheel_exact(&dy_exact, &dx_exact);
         record_set(&out, "dy_exact", value_number(dy_exact));
         record_set(&out, "dx_exact", value_number(dx_exact));
         record_set(&out, "ctrl", value_bool(ctrl));
@@ -6811,7 +6842,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         err[0] = '\0';
-        if (!gb_qt_swallow(err, sizeof(err))) {
+        if (!ui->swallow(err, sizeof(err))) {
             snprintf(message, sizeof(message), "ui.swallow: %s",
                      err[0] ? err : "that event could not be claimed");
             qt_raise(message);
@@ -6877,7 +6908,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         err[0] = '\0';
-        int ok = gb_qt_resize_panes(root, which.as.string, sizes, (int)n, err,
+        int ok = ui->resize_panes(root, which.as.string, sizes, (int)n, err,
                                     sizeof(err));
         free(sizes);
         value_free(win); value_free(which); value_free(list);
@@ -6955,8 +6986,8 @@ static Value qt_eval_call(AstExpr *expr) {
         char *pname = copy_string(which.as.string);
         value_free(win); value_free(which);
         if (argc == 2) {
-            static GbQtBlockInfo info[1024];
-            int n = gb_qt_blocks_get(root, pname, info, 1024, err, sizeof(err));
+            static GbUiBlockInfo info[1024];
+            int n = ui->blocks_get(root, pname, info, 1024, err, sizeof(err));
             free(pname);
             if (n < 0) {
                 snprintf(message, sizeof(message), "ui.blocks: %s", err);
@@ -6985,7 +7016,7 @@ static Value qt_eval_call(AstExpr *expr) {
             qt_raise("ui.blocks: at most 1024 blocks in one source");
             return value_null();
         }
-        GbQtBlockItem *items = count ? calloc(count, sizeof(GbQtBlockItem)) : NULL;
+        GbUiBlockItem *items = count ? calloc(count, sizeof(GbUiBlockItem)) : NULL;
         QtNameSet owned = { NULL, 0, 0 };     /* every string made here, freed at the end */
         int ok = 1;
         static const char *const fields[] = { "id", "line", "kind", "content",
@@ -6993,7 +7024,7 @@ static Value qt_eval_call(AstExpr *expr) {
         static const char *const kinds[] = { "text", "table", "image", "markdown", NULL };
         for (size_t i = 0; ok && i < count; i++) {
             Value *v = &list.as.array.store->items[i];
-            GbQtBlockItem *it = &items[i];
+            GbUiBlockItem *it = &items[i];
             it->max_height = 240;
             char where[96];
             snprintf(where, sizeof(where), "block %zu", i + 1);
@@ -7196,7 +7227,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (ok) {
             err[0] = '\0';
-            ok = gb_qt_blocks_set(root, pname, items, (int)count, err, sizeof(err));
+            ok = ui->blocks_set(root, pname, items, (int)count, err, sizeof(err));
             if (!ok) {
                 snprintf(message, sizeof(message), "ui.blocks: %s",
                          err[0] ? err : "the blocks could not be set");
@@ -7251,7 +7282,7 @@ static Value qt_eval_call(AstExpr *expr) {
         value_free(win); value_free(which);
         static int from[4096], to[4096];
         if (argc == 2) {
-            int n = gb_qt_fold_get(root, pname, from, to, 4096, err, sizeof(err));
+            int n = ui->fold_get(root, pname, from, to, 4096, err, sizeof(err));
             free(pname);
             if (n < 0) {
                 snprintf(message, sizeof(message), "ui.fold: %s", err);
@@ -7291,7 +7322,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (ok) {
             err[0] = '\0';
-            ok = gb_qt_fold_set(root, pname, from, to, (int)count, err, sizeof(err));
+            ok = ui->fold_set(root, pname, from, to, (int)count, err, sizeof(err));
             if (!ok) {
                 snprintf(message, sizeof(message), "ui.fold: %s",
                          err[0] ? err : "the folds could not be set");
@@ -7314,7 +7345,7 @@ static Value qt_eval_call(AstExpr *expr) {
                      "handled");
             return value_null();
         }
-        char *t = gb_qt_link_event();
+        char *t = ui->link_event();
         if (!t) {
             return value_unknown();
         }
@@ -7341,7 +7372,7 @@ static Value qt_eval_call(AstExpr *expr) {
             err[0] = '\0';
             if (!root) {
                 qt_raise("ui.link_press: that window is not open");
-            } else if (!(ok = gb_qt_link_press(root, which.as.string, tgt.as.string,
+            } else if (!(ok = ui->link_press(root, which.as.string, tgt.as.string,
                                                err, sizeof(err)))) {
                 snprintf(message, sizeof(message), "ui.link_press: %s", err);
                 qt_raise(message);
@@ -7364,7 +7395,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         char *id = NULL, *action = NULL, *target = NULL;
-        if (!gb_qt_block_event(&id, &action, &target)) {
+        if (!ui->block_event(&id, &action, &target)) {
             return value_unknown();
         }
         Value out = value_record(NULL, 0);
@@ -7408,7 +7439,7 @@ static Value qt_eval_call(AstExpr *expr) {
             qt_raise("ui.block_press: that window is not open");
         } else {
             err[0] = '\0';
-            ok = gb_qt_block_press(root, a[1].as.string, a[2].as.string,
+            ok = ui->block_press(root, a[1].as.string, a[2].as.string,
                                    a[3].as.string, argc == 5 ? a[4].as.string : NULL,
                                    err, sizeof(err));
             if (!ok) {
@@ -7510,7 +7541,7 @@ static Value qt_eval_call(AstExpr *expr) {
         long len = 0;
         int ow = 0, oh = 0;
         err[0] = '\0';
-        int ok = gb_qt_render_svg(svg.as.string, (long)string_length(svg.as.string),
+        int ok = ui->render_svg(svg.as.string, (long)string_length(svg.as.string),
                                   (int)width, (int)height, scale, &png, &len,
                                   &ow, &oh, err, sizeof(err));
         value_free(svg); value_free(opts);
@@ -7631,7 +7662,7 @@ static Value qt_eval_call(AstExpr *expr) {
         long len = 0;
         int width = 0, height = 0;
         err[0] = '\0';
-        int ok = gb_qt_capture(root, part, scale, &png, &len, &width, &height,
+        int ok = ui->capture(root, part, scale, &png, &len, &width, &height,
                                err, sizeof(err));
         value_free(win); value_free(opts);
         if (!ok) {
@@ -7685,7 +7716,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         int has = 0;
         err[0] = '\0';
-        int ok = gb_qt_has_icon(root, which.as.string, &has, err, sizeof(err));
+        int ok = ui->has_icon(root, which.as.string, &has, err, sizeof(err));
         value_free(win); value_free(which);
         if (!ok) {
             snprintf(message, sizeof(message), "ui.has_icon: %s",
@@ -7760,10 +7791,10 @@ static Value qt_eval_call(AstExpr *expr) {
         err[0] = '\0';
         int ok;
         if (setting) {
-            ok = gb_qt_virtual_rows(root, which.as.string, howmany, err,
+            ok = ui->virtual_rows(root, which.as.string, howmany, err,
                                     sizeof(err));
         } else {
-            ok = gb_qt_virtual_row_count(root, which.as.string, &howmany, err,
+            ok = ui->virtual_row_count(root, which.as.string, &howmany, err,
                                          sizeof(err));
         }
         value_free(win); value_free(which);
@@ -7827,9 +7858,9 @@ static Value qt_eval_call(AstExpr *expr) {
         err[0] = '\0';
         int ok;
         if (writing) {
-            ok = gb_qt_scroll_to(root, which.as.string, at, err, sizeof(err));
+            ok = ui->scroll_to(root, which.as.string, at, err, sizeof(err));
         } else {
-            ok = gb_qt_scrolled(root, which.as.string, &at, err, sizeof(err));
+            ok = ui->scrolled(root, which.as.string, &at, err, sizeof(err));
         }
         value_free(win); value_free(which);
         if (!ok) {
@@ -7899,11 +7930,11 @@ static Value qt_eval_call(AstExpr *expr) {
              * they sent Ctrl+wheel -- which would make every check about the
              * plain case while reading as the modified one. */
             if (strcmp(mv.as.string, "ctrl") == 0) {
-                mods = GB_QT_MOD_CTRL;
+                mods = GB_UI_MOD_CTRL;
             } else if (strcmp(mv.as.string, "shift") == 0) {
-                mods = GB_QT_MOD_SHIFT;
+                mods = GB_UI_MOD_SHIFT;
             } else if (strcmp(mv.as.string, "alt") == 0) {
-                mods = GB_QT_MOD_ALT;
+                mods = GB_UI_MOD_ALT;
             } else {
                 snprintf(message, sizeof(message),
                          "ui.scroll: `%s` is not a modifier -- use ctrl, "
@@ -7925,7 +7956,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         int claimed = 0;
         err[0] = '\0';
-        if (!gb_qt_scroll(root, which.as.string, notches, mods, &claimed, err,
+        if (!ui->scroll(root, which.as.string, notches, mods, &claimed, err,
                           sizeof(err))) {
             snprintf(message, sizeof(message), "ui.scroll: %s",
                      err[0] ? err : "that part could not be scrolled");
@@ -7983,7 +8014,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         err[0] = '\0';
-        int ok = gb_qt_invoke(root, which.as.string, method.as.string, err,
+        int ok = ui->invoke(root, which.as.string, method.as.string, err,
                               sizeof(err));
         value_free(win);
         value_free(which);
@@ -8010,7 +8041,7 @@ static Value qt_eval_call(AstExpr *expr) {
          * webserver_run_event_loop polls with a 50 ms timeout, so a source
          * serviced on this timer is serviced exactly as often as it would have
          * been without Qt in the picture. */
-        int rc = gb_qt_run(50);
+        int rc = ui->run(50);
         if (error_action_pending()) {
             return value_null();
         }
@@ -8022,12 +8053,11 @@ static Value qt_eval_call(AstExpr *expr) {
             qt_raise("ui.stop takes no arguments");
             return value_null();
         }
-        gb_qt_stop();
+        ui->stop();
         return value_bool(1);
     }
 
     module_unknown_verb(message, sizeof(message), "ui", verb);
     qt_raise(message);
     return value_null();
-#endif
 }

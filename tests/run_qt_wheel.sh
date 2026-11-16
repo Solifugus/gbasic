@@ -80,7 +80,7 @@ fi
 # reached by `ui.invoke` anyway, so the verb would have to carry its own
 # argument marshalling.
 printf 'TIER no zoom verb: the font route is the only one\n'
-zoomverbs=$(grep -c 'strcmp(verb, "zoom' src/modules/qt.c || true)
+zoomverbs=$(grep -c 'strcmp(verb, "zoom' src/modules/ui.c || true)
 if [ "${zoomverbs:-0}" = "0" ]; then
     pass "no ui.zoom -- the zoom is gBASIC arithmetic over the font property"
 else

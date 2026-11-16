@@ -30,7 +30,7 @@
  * vocabulary had already been written out THREE times before `win_nearest`
  * was derived from the tables instead. The rules are therefore expressed
  * against an ACCESSOR MODEL: `src/frontend.c` supplies an adapter over the
- * AST, `src/modules/qt.c` one over a record, and neither holds a rule. It is
+ * AST, `src/modules/ui.c` one over a record, and neither holds a rule. It is
  * the arrangement `would` and `execute` share in `automation`, for the reason
  * stated there: if the two could disagree, a check would describe a different
  * window from the one that opens.

@@ -21,7 +21,7 @@ document is what the application IS.
 |---|---|
 | `qt.read(win, "book", "count")` on a two-tab `tabs` | **2** — the set is observable |
 | `qt.refresh(win, "book")` | refused: *"window `studio` declares no table named `book` and nothing bound to a subject of that name"* |
-| `qt.invoke`'s argument count | **zero** (`src/modules/qt.c`: `argc != 3`, then `method` is the third) |
+| `qt.invoke`'s argument count | **zero** (`src/modules/ui.c`: `argc != 3`, then `method` is the third) |
 | so `QTabWidget::removeTab(int)` | unreachable by construction |
 | so `QTabWidget::setTabText(int, QString)` | unreachable by construction |
 

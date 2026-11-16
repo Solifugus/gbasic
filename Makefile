@@ -586,7 +586,7 @@ src/ast.o: src/ast.c include/ast.h .buildswitch-stamp
 src/gsql/%.o: src/gsql/%.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gb_decimal.h include/serialize_tags.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/crypto_ssh.c src/vendor/bcrypt_pbkdf.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/qt.c src/modules/gsql.c src/modules/csv.c src/modules/net.c src/modules/zip.c include/gb_csv.h include/gb_decimal.h include/gb_number_text.h include/gsql_sql.h $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gsql_owner.h include/gsql_table.h include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/lexer.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h include/window_check.h src/currency_table.h third_party/yescrypt/yescrypt.h .stdlibdir-stamp .buildswitch-stamp
+src/eval.o: src/eval.c src/modules/crypto_ssh.c src/vendor/bcrypt_pbkdf.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/ui.c src/modules/ui_qt.c src/modules/gsql.c src/modules/csv.c src/modules/net.c src/modules/zip.c include/gb_csv.h include/gb_decimal.h include/gb_number_text.h include/gsql_sql.h $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gsql_owner.h include/gsql_table.h include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/lexer.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h include/ui_backend.h include/window_check.h src/currency_table.h third_party/yescrypt/yescrypt.h .stdlibdir-stamp .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # THE QT BACKEND: moc, then C++. The generated unit is `#include`d by the .cpp
@@ -608,10 +608,10 @@ editors/kate/syntax/gbasic.xml: editors/kate/gbasic.xml
 	@mkdir -p $(dir $@)
 	cp $< $@
 
-src/modules/qt_backend.moc: src/modules/qt_backend.cpp include/qt_backend.h
+src/modules/qt_backend.moc: src/modules/qt_backend.cpp include/qt_backend.h include/ui_backend.h
 	$(QT_MOC) -Iinclude $< -o $@
 
-src/modules/qt_backend.o: src/modules/qt_backend.cpp src/modules/qt_backend.moc include/qt_backend.h .buildswitch-stamp
+src/modules/qt_backend.o: src/modules/qt_backend.cpp src/modules/qt_backend.moc include/qt_backend.h include/ui_backend.h .buildswitch-stamp
 	$(CXX) $(QT_CXXFLAGS) $(QT_CFLAGS) -c $< -o $@
 
 src/builtins.o: src/builtins.c include/builtins.h .buildswitch-stamp

@@ -84,9 +84,9 @@ fi
 # is the rule `would`/`execute` already follow in `automation`. The three
 # constructors differ only in how the QMenu itself is made.
 printf 'TIER one walk: a popup and a bar menu share one entry walk\n'
-walks=$(grep -c 'static int qt_fill_menu' src/modules/qt.c || true)
-callers=$(grep -c 'return qt_fill_menu(root, node, menu);' src/modules/qt.c || true)
-additem=$(grep -c 'gb_qt_menu_item(root, node' src/modules/qt.c || true)
+walks=$(grep -c 'static int qt_fill_menu' src/modules/ui.c || true)
+callers=$(grep -c 'return qt_fill_menu(root, node, menu);' src/modules/ui.c || true)
+additem=$(grep -c 'ui->menu_item(root, node' src/modules/ui.c || true)
 if [ "${walks:-0}" = "1" ] && [ "${callers:-0}" = "2" ] && [ "${additem:-0}" = "1" ]; then
     pass "one walk, two constructors, one place that adds an item"
 else
@@ -96,7 +96,7 @@ fi
 # call site written by hand goes on one line (`popup ? a : b`) -- which is how
 # the equivalent control in run_qt_modal.sh was found to be unable to fail.
 sed 's/return qt_fill_menu(root, node, menu);/return qt_fill_menu(root, node, menu); \/* and again *\/ return qt_fill_menu(root, node, menu);/' \
-    src/modules/qt.c > "$work/two.c"
+    src/modules/ui.c > "$work/two.c"
 planted=$(grep -o 'return qt_fill_menu(root, node, menu);' "$work/two.c" | wc -l)
 if [ "${planted:-0}" -gt 2 ]; then
     pass "CONTROL: a planted extra call site is counted ($planted)"

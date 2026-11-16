@@ -123,5 +123,74 @@ else
     fail "CONTROL: a window in words did not run: $(./gbasic "$work/ok.bas" 2>&1 | head -2 | tr '\n' '|')"
 fi
 
+printf 'TIER seam: the front reaches a backend only through its table\n'
+# docs/ui_design.md §8 step 4. include/ui_backend.h lists the members; each
+# backend's table (src/modules/ui_<name>.c) must set every one, since a member
+# left out is a NULL the front calls. The compiler checks each entry's TYPE;
+# this checks that none is missing.
+members_of() {   # the GbUiBackend members, from the header
+    sed -n '/^typedef struct GbUiBackend {/,/^} GbUiBackend;/p' include/ui_backend.h \
+        | grep -oE '\(\*[a-z_0-9]+\)\(' | tr -d '(*)' | sort -u
+}
+table_of() {     # $1 = a table file: the members it sets
+    grep -oE '^\s*\.[a-z_0-9]+\s*=' "$1" | tr -d ' .=' | grep -vx name | sort -u
+}
+members_of > "$work/members"
+n=$(wc -l < "$work/members")
+if [ "$n" -lt 100 ]; then
+    fail "read only $n members from include/ui_backend.h -- the extraction is broken"
+fi
+tables=$(grep -l '^static const GbUiBackend ' src/modules/ui_*.c)
+for t in $tables; do
+    gaps=$(table_of "$t" | comm -3 "$work/members" - | tr -d '\t' | tr '\n' ' ')
+    if [ -z "$gaps" ]; then
+        pass "$t sets all $n members, and nothing else"
+    else
+        fail "$t and include/ui_backend.h disagree on: $gaps"
+    fi
+done
+[ -n "$tables" ] || fail "no backend table found under src/modules/ui_*.c"
+# THE CONTROL: a table with one entry taken out must be reported.
+grep -v '^\s*\.tab_caption\s*=' src/modules/ui_qt.c > "$work/ui_short.c"
+if table_of "$work/ui_short.c" | comm -3 "$work/members" - | grep -q tab_caption; then
+    pass "CONTROL: a table missing one member is reported"
+else
+    fail "CONTROL: a table missing tab_caption went unseen"
+fi
+# AND THE FRONT CALLS NO BACKEND FUNCTION BY ITS OWN NAME: one that did would
+# work on Qt and fail to link, or call the wrong toolkit, beside any other.
+# Comment lines (` * ...`) may still name gb_qt_ functions, as documentation.
+direct() { grep -nE '(^|[^_a-z])gb_qt_[a-z_0-9]+\s*\(' "$1" | grep -vE '^[0-9]+:\s*(\*|/\*)'; }
+found=$(direct src/modules/ui.c)
+if [ -z "$found" ]; then
+    pass "src/modules/ui.c calls no gb_qt_ function directly"
+else
+    printf '%s\n' "$found" | head -5 | sed 's/^/     /'
+    fail "src/modules/ui.c calls the Qt backend by name, around its table"
+fi
+sed 's/ui->retire_drain();/gb_qt_retire_drain();/' src/modules/ui.c > "$work/front.c"
+if [ -n "$(direct "$work/front.c")" ]; then
+    pass "CONTROL: a planted direct call is found"
+else
+    fail "CONTROL: a planted gb_qt_retire_drain() call went unseen"
+fi
+# GBASIC_UI NAMING A BACKEND THIS BUILD LACKS IS REFUSED, never quietly
+# replaced by another (ruling Q6). With no backend at all the build's own
+# sentence comes first. Either way nothing is constructed, so no display is
+# needed. `ui.check` answers regardless: it is about the declaration.
+printf 'window w( title: "W" )\n    column\n        field a( hint: "x" )\n    end column\nend window\nprogram main()\n    print ui.check(w)\n    print ui.can_display()\n    ui.open(w)\n    print "OPENED"\nend program\n' > "$work/be.bas"
+out=$(GBASIC_UI=nonesuch ./gbasic "$work/be.bas" 2> "$work/be.err")
+err=$(cat "$work/be.err")
+if printf '%s' "$err" | grep -q 'GBASIC_UI names `nonesuch`, and this build has no such backend -- it has: ' \
+   || printf '%s' "$err" | grep -q 'Qt support is not available in this build'; then
+    if [ "$out" = "$(printf 'true\nfalse')" ]; then
+        pass "GBASIC_UI=nonesuch: check and can_display answer, open is refused naming it"
+    else
+        fail "GBASIC_UI=nonesuch answered wrongly: $(printf '%s' "$out" | tr '\n' '|')"
+    fi
+else
+    fail "GBASIC_UI=nonesuch was not refused: $(printf '%s' "$err" | tr '\n' '|')"
+fi
+
 [ "$status" = 0 ] && printf 'PASS tests/run_ui_vocabulary.sh\n'
 exit "$status"

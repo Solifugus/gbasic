@@ -48,7 +48,7 @@
 # see), so a backend that stored five lists and painted nothing satisfies every
 # check in the fixture. A QWidget's pixels are not reachable from gBASIC at
 # all. tests/qt/gutter_probe.cpp links the REAL backend object and drives the
-# same `gb_qt_*` seam `src/modules/qt.c` uses -- which is the difference from
+# same `gb_qt_*` seam `src/modules/ui.c` uses -- which is the difference from
 # tests/qt/source_probe.cpp and is strictly stronger, since what it measures is
 # the painter the product runs rather than a second copy that could be right
 # while the first is wrong. Three things make its numbers evidence: the count
@@ -116,7 +116,7 @@ fi
 # the third.
 printf 'TIER one vocabulary: the categories are named in one place and asked for\n'
 # THE SCAN TAKES A PATH, which the GATE'S OWN LANE CHECK FORCED rather than
-# taste: the first version planted its control copy in `src/modules/qt.c`
+# taste: the first version planted its control copy in `src/modules/ui.c`
 # itself and restored it, and `src/` IS A BUILD INPUT -- so the scan reported
 # this suite as one that rebuilds the tree, which in a parallel gate means
 # another suite's plain `make` compiles the planted file. Correct, and caught
@@ -128,13 +128,13 @@ spells_a_category() {                   # path -> prints each name it spells
         [ "${n:-0}" != "0" ] && printf '%s\n' "$name"
     done
 }
-cat_dupes=$(spells_a_category src/modules/qt.c | wc -l)
+cat_dupes=$(spells_a_category src/modules/ui.c | wc -l)
 asks=0
-for fn in gb_qt_mark_kind gb_qt_mark_name gb_qt_mark_count; do
-    grep -q "$fn" src/modules/qt.c && asks=$((asks + 1))
+for fn in 'ui->mark_kind' 'ui->mark_name' 'ui->mark_count'; do
+    grep -q "$fn" src/modules/ui.c && asks=$((asks + 1))
 done
 if [ "${cat_dupes:-1}" != "0" ]; then
-    spells_a_category src/modules/qt.c | sed 's/^/     src\/modules\/qt.c spells /'
+    spells_a_category src/modules/ui.c | sed 's/^/     src\/modules\/ui.c spells /'
     fail "the module holds its own copy of the category names"
 elif [ "$asks" != "3" ]; then
     fail "the module does not ask the backend for the categories ($asks of 3)"
@@ -143,7 +143,7 @@ else
 fi
 # THE CONTROL, because "no duplicates" is equally satisfied by a scan that read
 # nothing -- planted in a COPY, so nothing under src/ is written.
-cp src/modules/qt.c "$work/planted.c"
+cp src/modules/ui.c "$work/planted.c"
 printf 'static const char *dupe[] = { "section", "warning", "note", "break" };\n' \
     >> "$work/planted.c"
 planted=$(spells_a_category "$work/planted.c" | wc -l)

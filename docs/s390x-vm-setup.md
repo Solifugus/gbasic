@@ -102,7 +102,7 @@ named differently on other distributions.
 
 The GUI is Qt 6 and is optional (GTK was removed on 2026-10-23, so `HAVE_GTK`
 no longer exists). A headless guest builds without it automatically; install
-`qt6-base-dev` only to test the `qt` module, which needs a display.
+`qt6-base-dev` only to test the `ui` module, which needs a display.
 
 Clone and test:
 

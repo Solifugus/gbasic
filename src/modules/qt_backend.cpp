@@ -187,16 +187,16 @@ extern "C" int gb_qt_can_display(void) {
 
 /* ------------------------------------------------------------------ */
 
-static GbQtInvokeFn g_invoke = nullptr;
+static GbUiInvokeFn g_invoke = nullptr;
 /* ONE DOOR INTO gBASIC -- defined with the retire list it drains, below, and
  * declared here because the first of its four callers is a relay above it. */
 static void invoke_handler(const char *handler);
-static GbQtCellFn g_cell = nullptr;
-static GbQtTickFn g_tick = nullptr;
-static GbQtClosedFn g_closed = nullptr;
+static GbUiCellFn g_cell = nullptr;
+static GbUiTickFn g_tick = nullptr;
+static GbUiClosedFn g_closed = nullptr;
 
-extern "C" void gb_qt_set_callbacks(GbQtInvokeFn invoke, GbQtTickFn tick,
-                                    GbQtClosedFn closed, GbQtCellFn cell) {
+extern "C" void gb_qt_set_callbacks(GbUiInvokeFn invoke, GbUiTickFn tick,
+                                    GbUiClosedFn closed, GbUiCellFn cell) {
     g_invoke = invoke;
     g_tick = tick;
     g_closed = closed;
@@ -498,7 +498,7 @@ static void invoke_handler(const char *handler) {
  * THE SAFE MOMENT IS A FRESH ENTRY FROM gBASIC, which is §0.17's arrangement
  * for a retired window reached by the same reasoning: at the top of a verb
  * dispatch, with no handler running, nothing of ours is on the stack at all.
- * `src/modules/qt.c` calls this there, and the depth test is here rather than
+ * `src/modules/ui.c` calls this there, and the depth test is here rather than
  * at the call site so a second caller cannot get it wrong. */
 extern "C" int gb_qt_handler_depth(void) { return g_handler_depth; }
 
@@ -2280,7 +2280,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
          *
          * ITS ITEMS COME FROM DATA, so they are filled by `ui.options` rather
          * than guessed here; a declared `options:` literal is handled above in
-         * qt.c, for the fixed case where typing them out is the honest thing. */
+         * ui.c, for the fixed case where typing them out is the honest thing. */
         w = new QComboBox(host_of(p));
     } else if (strcmp(word, "markdown") == 0) {
         /* RENDERED PROSE, read-only (§0.38 B4): Studio's preview pane. A
@@ -4764,9 +4764,9 @@ extern "C" int gb_qt_scroll(void *window, const char *name, double notches,
     }
     QWidget *target = mouse_target(w);
     Qt::KeyboardModifiers m = Qt::NoModifier;
-    if (mods & GB_QT_MOD_CTRL)  { m |= Qt::ControlModifier; }
-    if (mods & GB_QT_MOD_SHIFT) { m |= Qt::ShiftModifier; }
-    if (mods & GB_QT_MOD_ALT)   { m |= Qt::AltModifier; }
+    if (mods & GB_UI_MOD_CTRL)  { m |= Qt::ControlModifier; }
+    if (mods & GB_UI_MOD_SHIFT) { m |= Qt::ShiftModifier; }
+    if (mods & GB_UI_MOD_ALT)   { m |= Qt::AltModifier; }
     QPoint at(4, 4);
     if (target->width() > 8 && target->height() > 8) {
         at = QPoint(target->width() / 2, target->height() / 2);
@@ -5500,7 +5500,7 @@ void GbQtSourceEdit::wireBlocks() {
  * thing, so a replace keeps the widget (no flicker, and no cost). An image
  * named by path is keyed by its file's bytes, so a rerun that rewrote the
  * same file is a change. */
-static QByteArray block_key(const GbQtBlockItem *it, QByteArray *image_bytes) {
+static QByteArray block_key(const GbUiBlockItem *it, QByteArray *image_bytes) {
     QByteArray key;
     key += it->kind; key += '\x1f';
     key += it->title ? it->title : ""; key += '\x1f';
@@ -5569,7 +5569,7 @@ static QImage block_image(const QByteArray &bytes, const char *format,
 
 /* One block's widget: a header (the collapse control and the title) over a
  * body of its kind. Children of the viewport, so they inherit its palette. */
-static bool block_build(GbQtSourceEdit *e, GbQtBlock *k, const GbQtBlockItem *it,
+static bool block_build(GbQtSourceEdit *e, GbQtBlock *k, const GbUiBlockItem *it,
                         const QByteArray &image_bytes, char *err, size_t err_size) {
     QFrame *frame = new QFrame(e->viewport());
     frame->setFrameShape(QFrame::NoFrame);
@@ -5669,7 +5669,7 @@ static bool block_build(GbQtSourceEdit *e, GbQtBlock *k, const GbQtBlockItem *it
 }
 
 extern "C" int gb_qt_blocks_set(void *window, const char *name,
-                                const GbQtBlockItem *items, int count,
+                                const GbUiBlockItem *items, int count,
                                 char *err, size_t err_size) {
     GbQtSourceEdit *e = source_edit_named(window, name, err, err_size);
     if (!e) {
@@ -5677,7 +5677,7 @@ extern "C" int gb_qt_blocks_set(void *window, const char *name,
     }
     QTextDocument *d = e->document();
     /* checked whole before anything changes, so a refusal leaves the old set.
-     * Ids are unique here as well as in qt.c: two blocks under one id would
+     * Ids are unique here as well as in ui.c: two blocks under one id would
      * be one widget freed twice (a perturbation that let them through
      * crashed with SIGSEGV). */
     QSet<QString> seen;
@@ -5708,7 +5708,7 @@ extern "C" int gb_qt_blocks_set(void *window, const char *name,
     }
     QVector<GbQtBlock *> next;
     for (int i = 0; i < count; i++) {
-        const GbQtBlockItem *it = &items[i];
+        const GbUiBlockItem *it = &items[i];
         QByteArray image_bytes;
         QByteArray key = block_key(it, &image_bytes);
         QString id = QString::fromUtf8(it->id);
@@ -5763,7 +5763,7 @@ extern "C" int gb_qt_blocks_set(void *window, const char *name,
 }
 
 extern "C" int gb_qt_blocks_get(void *window, const char *name,
-                                GbQtBlockInfo *out, int max, char *err,
+                                GbUiBlockInfo *out, int max, char *err,
                                 size_t err_size) {
     GbQtSourceEdit *e = source_edit_named(window, name, err, err_size);
     if (!e) {
@@ -6430,7 +6430,7 @@ static KSyntaxHighlighting::Theme theme_named(QPlainTextEdit *e, const char *the
         return repo()->defaultTheme(KSyntaxHighlighting::Repository::LightTheme);
     }
     /* A THEME BY ITS NAME (§0.38 D1): "Breeze Light", "Printing", or one in
-     * <syntax path>/themes/NAME.theme. qt.c has already refused a name the
+     * <syntax path>/themes/NAME.theme. ui.c has already refused a name the
      * repository does not know, so an invalid one here is not reached. */
     if (theme && *theme) {
         KSyntaxHighlighting::Theme t = repo()->theme(QString::fromUtf8(theme));
@@ -7502,11 +7502,11 @@ extern "C" char *gb_qt_choose(void *window, int kind, const char *title,
     QPointer<GbQtChooser> dlg = new GbQtChooser(parent);
     dlg->setOption(QFileDialog::DontUseNativeDialog, true);   /* measured; §0.16 */
     switch (kind) {
-    case GB_QT_PICK_SAVE:
+    case GB_UI_PICK_SAVE:
         dlg->setFileMode(QFileDialog::AnyFile);
         dlg->setAcceptMode(QFileDialog::AcceptSave);
         break;
-    case GB_QT_PICK_FOLDER:
+    case GB_UI_PICK_FOLDER:
         dlg->setFileMode(QFileDialog::Directory);
         dlg->setOption(QFileDialog::ShowDirsOnly, true);
         break;

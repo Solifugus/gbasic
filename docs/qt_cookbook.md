@@ -1,6 +1,6 @@
 # Qt cookbook
 
-Worked recipes for the `qt` module — a declarative `window` block rendered with
+Worked recipes for the `ui` module — a declarative `window` block rendered with
 Qt 6 Widgets.
 
 **This page cannot lie.** Every code block below is a real file under

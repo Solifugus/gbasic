@@ -5213,13 +5213,21 @@ Parse failures and misuse (bad argument types, a closed reader, a non-element
 subtree) raise structured errors. See `docs/xml_design.md` and the `examples/xml_*`
 programs for the full surface and worked SEC-filing examples.
 
-## Qt Module
+## UI Module
 
-The `qt` module renders a `window` declaration with Qt 6 Widgets. It is
-available when gBASIC is built with Qt 6 and `moc`; otherwise every verb but
-one raises a clean runtime error (`error.source = "qt"`), the way the other
-optional modules degrade. Every verb that takes a window first is also the
-window's method: `app.open()`, `app.read("who", "text")`, `app.close()`.
+The `ui` module renders a `window` declaration. What draws it is the build's
+GUI backend, today Qt 6 Widgets, available when gBASIC is built with Qt 6 and
+`moc`. On a build with no backend, `ui.check`, `ui.can_display` and
+`ui.is_open` still answer and every other verb raises a clean runtime error
+(`error.source = "ui"`), the way the other optional modules degrade. Every
+verb that takes a window first is also the window's method: `app.open()`,
+`app.read("who", "text")`, `app.close()`.
+
+A program never names a backend. Where a build has more than one, the
+environment variable `GBASIC_UI` chooses (`GBASIC_UI=qt`); unset, the build's
+first is used. Naming one the build lacks is refused at the first verb that
+needs a backend, listing the ones it has, rather than quietly drawing with
+another.
 
 ```basic
 window customer( title: "Customer", width: 480 )
@@ -5253,7 +5261,7 @@ end program
 
 | | |
 |---|---|
-| `ui.can_display()` | whether a window can be opened at all. **Answers rather than raising**, including on a build with no Qt — a program asking this is degrading gracefully, and "this build has no Qt" is one of the answers |
+| `ui.can_display()` | whether a window can be opened at all. **Answers rather than raising**, including on a build with no GUI backend — a program asking this is degrading gracefully, and "this build has none" is one of the answers |
 | `ui.open(win)` | build and show the declaration. Refuses, naming **a display**, when there is none, and runs `ui.check` first so a window nobody validated cannot open |
 | `win.open_modal()` (`ui.open_modal`) | open it **modally and block** until somebody answers, which is what `ui.confirm` is not: two buttons is the whole of what a message box offers, so anything with a layout of its own comes through here. Answers **true** when accepted and **false** for a reject, a close, or the window being dismissed. It is the **same window** — one shared open path, so the declaration, the binding and the handlers are the same code — and it **closes the window before returning**, so the `closed` handler is where the form is read |
 | `win.accept()` (`ui.accept`) / `win.reject()` (`ui.reject`) | say yes or no to a modally shown window, which is what a button handler calls. Refused on a window that was not opened modally, naming the verb that would have made it one. Not `ui.answer`, which drives a *dialog* from the program when nobody is there |

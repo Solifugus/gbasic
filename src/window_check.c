@@ -220,7 +220,7 @@ static const char *ui_event_words[] = {
     "closed", "wheel", "gutter", "block", "link", NULL};
 
 /* Options that are not properties: they build or place something, so no
- * backend sets them on a widget. Was `qt_structural_option` in qt.c. */
+ * backend sets them on a widget. Was `qt_structural_option` in ui.c. */
 static const char *ui_structural_options[] = {
     "label", "margin", "spacing", "grow", "show", "edit", "type", "across",
     "down", "options", "language", "theme", "line_numbers", "marks", NULL};

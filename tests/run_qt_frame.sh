@@ -274,10 +274,10 @@ fi
 # "an ordinary window still works" passes either way. What must be true is that
 # the frame is built ONLY when the declaration asks.
 printf 'TIER root: a main window is built only when the declaration asks\n'
-asks=$(grep -c 'needs_frame = 1' src/modules/qt.c || true)
-words=$(grep -c 'strcmp(iw, "docks") == 0' src/modules/qt.c || true)
+asks=$(grep -c 'needs_frame = 1' src/modules/ui.c || true)
+words=$(grep -c 'strcmp(iw, "docks") == 0' src/modules/ui.c || true)
 if [ "${asks:-0}" -lt 1 ] || [ "${words:-0}" -lt 1 ]; then
-    fail "nothing in src/modules/qt.c decides the root from the declaration"
+    fail "nothing in src/modules/ui.c decides the root from the declaration"
 else
     pass "the root kind is decided by the declaration's own words"
 fi

@@ -4281,7 +4281,6 @@ static void raise_report_fatal(void) {
  * instead of dying: report the diagnostic -- the old model reported at raise
  * time, so silence here would be a regression -- then clear the flight so the
  * loop that pumped the handler keeps running. */
-#if HAVE_QT   /* its one caller is the Qt module's: unused, and said so, without it */
 static void raise_report_contained(void) {
     gb_span span = { current_error.line, current_error.column,
                      current_error.line, current_error.column };
@@ -4292,7 +4291,6 @@ static void raise_report_contained(void) {
     raise_in_flight = 0;
     error_clear_state();
 }
-#endif
 
 
 static Value value_warning_object(void);
@@ -24087,7 +24085,6 @@ static int webserver_run_event_loop(void) {
  * nothing when there is nothing of ours to service is deliberate: a window
  * with no webserver, no transfer and no timer behind it must not be torn down
  * because gBASIC had no work. */
-#if HAVE_QT   /* the Qt tick is its one caller */
 static int webserver_run_event_loop_once(void) {
     if (runtime_stopped ||
         (!webserver_any_active() && !aux_loop_sources_active())) {
@@ -24099,7 +24096,6 @@ static int webserver_run_event_loop_once(void) {
     }
     return 1;
 }
-#endif
 
 /* PLAT-WEB-1 Gap A: where to bind.
  *
@@ -29554,7 +29550,7 @@ static int crypto_ed25519_verify(const unsigned char *pub, size_t publen,
  * is the thing `type:` being a modifier exists to avoid. */
 static Value apply_assignment_modifier(AstModifierUse modifier, Value value);
 
-#include "modules/qt.c"
+#include "modules/ui.c"
 
 /* ===================== process.run (NAP-6) ==============================
  * A general, shell-injection-safe synchronous process runner. Structured argv is

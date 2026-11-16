@@ -14,7 +14,7 @@
  * exercised here ON ITS OWN, with Qt's clipboard as the other side.
  *
  * IT LINKS THE REAL BACKEND OBJECT and drives the same `gb_qt_*` seam
- * `src/modules/qt.c` uses -- tests/qt/gutter_probe.cpp's arrangement and for
+ * `src/modules/ui.c` uses -- tests/qt/gutter_probe.cpp's arrangement and for
  * its reason: what is measured is the code the product runs rather than a
  * second copy that could be right while the first is wrong.
  *

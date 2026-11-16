@@ -634,7 +634,7 @@ already suffered: it was written out three times before `win_nearest` was derive
 from the tables, and the newest word was missing from the third.
 
 So they moved to `src/window_check.c`, expressed against an **accessor model**:
-`src/frontend.c` adapts the AST, `src/modules/qt.c` adapts a record, and neither
+`src/frontend.c` adapts the AST, `src/modules/ui.c` adapts a record, and neither
 holds a rule. It is the arrangement `would` and `execute` share in `automation`,
 for the reason stated there — *if the two could disagree, a check would describe
 a different window from the one that opens.* A source tripwire asserts there is
@@ -702,7 +702,7 @@ have drifted, and it is the only tier that can see that.
 ### Three of this suite's own controls caught my scanner, not the tree
 
 Each is a trap already written down somewhere in `tests/`. The `one_copy` scanner
-first reported `src/modules/qt.c` for the sentence `never "did you mean
+first reported `src/modules/ui.c` for the sentence `never "did you mean
 'field'?"` **inside the comment explaining why the finder lives elsewhere** — the
 *argument* for a rule read as a breach of it, which is `run_libcurl_floor.sh`'s
 `smtp.c` trap. Stripping comments with a sed **range** then deleted to end of
@@ -2973,7 +2973,7 @@ able to ask.
   option where that matters. Every text option crosses the seam as a
   `const char *` (`gb_qt_set_part_text` and the option path both pass
   `v.as.string`), so a string with an interior NUL **truncates** — measured by
-  reading, not by a probe: nothing in `src/modules/qt.c` or
+  reading, not by a probe: nothing in `src/modules/ui.c` or
   `qt_backend.cpp` checks for one. For a label that is meaningless; for an
   icon it is a **path**, and a truncated path silently becomes a theme lookup
   that finds nothing and warns about a name nobody wrote.
@@ -3074,7 +3074,7 @@ Reading rather than assuming showed otherwise: **`invoke_function(stmt, args,
 argc, receiver)` already takes arguments and returns a `Value`** — the handler
 path simply passes `NULL, 0, NULL` because handlers take none, and
 `qt_invoke_handler` is already a caller. So this is one more callback beside
-`GbQtInvokeFn`, not a new kind of crossing.
+`GbUiInvokeFn`, not a new kind of crossing.
 
 ### `ask` is the third direction, at zero grammar cost
 
@@ -3737,7 +3737,7 @@ document*, where a margin that never repaints still looks right.
 Ten perturbations proven red in all, each caught by the check written for it.
 
 **And the gate caught the suite itself.** The source tripwire's control planted
-its copy in `src/modules/qt.c` and restored it — and `src/` is a **build
+its copy in `src/modules/ui.c` and restored it — and `src/` is a **build
 input**, so `run_all.sh`'s lane scan reported this suite as one that *rebuilds
 the tree*, which in a parallel run means another suite's plain `make` compiles
 the planted file. Correct, and caught within minutes of the suite existing:

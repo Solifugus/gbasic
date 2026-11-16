@@ -821,7 +821,7 @@ if [ -f "$ERRDOC" ] && [ -f src/eval.c ]; then
     # EVERY FILE THE RUNTIME IS MADE OF, which is NOT just src/eval.c: the
     # optional modules are `#include`d into it, so a warning raised from one is
     # emitted by the same translation unit while living in another file.
-    # MEASURED when warning 2115 arrived in src/modules/qt.c as the first of
+    # MEASURED when warning 2115 arrived in src/modules/ui.c as the first of
     # its kind: the check read src/eval.c literally and reported a live warning
     # as a GHOST -- a derived check blind to where the code actually is, which
     # is the rot this whole section exists to prevent. The list is DERIVED from
@@ -1100,15 +1100,15 @@ fi
 #     second list of verbs is a list a new verb silently stays off, which is
 #     this whole section's argument.
 QTREF=docs/reference.md
-if [ -f "$QTREF" ] && [ -f src/modules/qt.c ] && [ -f src/window_check.c ]; then
+if [ -f "$QTREF" ] && [ -f src/modules/ui.c ] && [ -f src/window_check.c ]; then
     qt_ok=1
-    verbs=$(grep -oE 'strcmp\(verb, "[a-z_]+"\)' src/modules/qt.c \
+    verbs=$(grep -oE 'strcmp\(verb, "[a-z_]+"\)' src/modules/ui.c \
             | grep -oE '"[a-z_]+"' | tr -d '"' | sort -u)
     nverbs=0
     for v in $verbs; do
         nverbs=$((nverbs + 1))
         grep -q "ui\.$v" "$QTREF" \
-            || { echo "FAIL qt surface    $QTREF has no mention of \`ui.$v\`, which src/modules/qt.c dispatches"; qt_ok=0; status=1; }
+            || { echo "FAIL qt surface    $QTREF has no mention of \`ui.$v\`, which src/modules/ui.c dispatches"; qt_ok=0; status=1; }
     done
     words=$(sed -n '/^static const char \*win_container_words/,/NULL};/p;/^static const char \*win_leaf_words/,/NULL};/p' src/window_check.c \
             | grep -oE '"[a-z]+"' | tr -d '"' | sort -u)

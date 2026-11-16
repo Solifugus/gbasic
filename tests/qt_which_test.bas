@@ -124,7 +124,7 @@ end window
 program main()
     rows = [ { depth: 0, name: "src" },
              { depth: 1, name: "eval.c" },
-             { depth: 1, name: "qt.c" },
+             { depth: 1, name: "ui.c" },
              { depth: 0, name: "README.md" } ]
 
     if not ui.can_display() then

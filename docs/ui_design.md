@@ -1,6 +1,6 @@
 # `ui.` — one GUI module, more than one backend
 
-**Status: ruled on 2026-11-16; push A (§8 steps 1–3: the rename, the vocabulary, the theme record) built the same day, gated, not yet pushed. Steps 4–6 are not built.** Written 2026-11-16 against gBASIC
+**Status: ruled on 2026-11-16; push A (§8 steps 1–3: the rename, the vocabulary, the theme record) built and pushed the same day (`eb783aa8`), and Studio migrated onto it (gbasic-studio `21246fa`). Step 4, the split, is built (§8 records how it departs from the plan). Steps 5–6 are not built.** Written 2026-11-16 against gBASIC
 `4eafb557` (0.11.0) and gBASIC Studio `4aa0420`. It answers whisker's
 proposal (`~/development/whisker/docs/gbasic-ui-proposal.md` §7) and ends
 with Matthew's rulings (§9, 2026-11-16). Every count below is
@@ -14,7 +14,7 @@ GUI suite's source, and no suite was run for it.
 whisker's proposal, in four steps:
 
 1. rename the `qt` module to `ui`;
-2. split `src/modules/qt.c` into a toolkit-neutral front over a table of
+2. split `src/modules/ui.c` into a toolkit-neutral front over a table of
    backend functions, Qt's filled by today's `qt_backend.cpp`;
 3. add `ui.can(...)`, so a backend may refuse a verb by name, plus a
    neutral theme record;
@@ -198,7 +198,7 @@ tiers that hold it:
 1. **The backend owns the wait; gBASIC gets ticks.** The interface is
    `gb_qt_set_callbacks(invoke, tick, closed, cell)`. `tick` is one
    non-blocking iteration of gBASIC's loop, called every 50 ms, which is
-   webserver_run_event_loop's own poll interval (`qt.c`, verb `run`). Qt
+   webserver_run_event_loop's own poll interval (`ui.c`, verb `run`). Qt
    calls it from a `QTimer`. For whisker, which owns no loop (`wsk_feed` is
    a function of one event), `ui_whisker.c` owns the loop and calls the same
    `tick`. Nothing in gBASIC changes.
@@ -225,7 +225,7 @@ tiers that hold it:
    front-end behaviour; a backend reports accept/reject and close.
 7. **A handler may call back into the backend** (select then refresh inside
    a handler). Re-entry is capped at depth 16 with warning 2117
-   (`run_qt_reentry` `bounded`, raised in `qt.c`).
+   (`run_qt_reentry` `bounded`, raised in `ui.c`).
 
 A backend table that leaves out 1–7 has the right function names and
 breaks programs.
@@ -237,7 +237,7 @@ tiers of `run_net`, `run_stdin_lines`, `run_watch_scope`,
 `run_handle_methods` and `run_bag_smoke`. Each is classed:
 
 - **N**: needs no backend: grammar, declaration checks, `qt.check`,
-  source tripwires on `qt.c`.
+  source tripwires on `ui.c`.
 - **C**: the contract: a gBASIC program drives verbs, and what is
   asserted is what gBASIC observes.
 - **C\***: the contract, but the expected output encodes a Qt fact.
@@ -437,6 +437,31 @@ migrates the same day):
    `qt_backend.cpp` behind it, with the word-to-Qt mapping inside it. The
    loop contract of §4 is written into the table's header, and the
    backend's refusals move to the front.
+   **As built (2026-11-16).** `include/ui_backend.h` holds the
+   `GbUiBackend` table (148 members, one per `gb_qt_*` function), the
+   types a backend shares, and §4's seven rules with the tier holding each.
+   `src/modules/qt.c` became `src/modules/ui.c`, the front, compiled into
+   every build: it reaches a backend only through the table, chosen once
+   per process by the build and then `GBASIC_UI`. Three departures from the
+   plan above:
+   - **Qt's table is `src/modules/ui_qt.c`, in C, not in
+     `qt_backend.cpp`.** C11's designated initializers check each entry
+     against its member by name; C++17, which the backend is compiled as,
+     has only positional ones, where two same-typed functions swapped
+     would compile.
+   - **The backend's refusals did not move.** The vocabulary check already
+     happens in the front before any call (step 2), and what a backend
+     still writes into `err` is per part and in words (`a \`button\` has
+     no \`checked\``). Moving those would need the front to know every
+     part's members, which is step 5's capability question, not step 4's.
+   - **`GBASIC_UI` is read now**, since a table needs a chooser; a name the
+     build lacks is refused, never replaced. `ui.backend()` waits for step
+     5 with `ui.can`.
+   `tests/run_ui_vocabulary.sh` `seam` holds it: every table sets every
+   member, the front calls no `gb_qt_` function by name, and
+   `GBASIC_UI=nonesuch` is refused while `ui.check` and `ui.can_display`
+   answer. The wording Studio matches ("Qt support is not available in
+   this build") is unchanged.
 5. **`ui.can` and the capability groups (§6).**
 6. **The suites.** Contract tiers read `GBASIC_UI` and run under every
    built backend. Q tiers move to Qt-backend suites. Whisker's backend

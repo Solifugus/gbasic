@@ -4,9 +4,12 @@
  * THE C FACE OF THE QT BACKEND. Nothing here mentions Qt, and that is the
  * whole point: `src/eval.c` is C11 and Qt is C++ with a code generator, so
  * every other optional module's arrangement -- a `.c` file `#include`d into
- * eval.c -- is unavailable. This header is the seam. `src/modules/qt.c` is the
- * gBASIC-facing half and is `#include`d as usual; `src/modules/qt_backend.cpp`
- * is compiled by the C++ compiler, run through `moc`, and linked in beside it.
+ * eval.c -- is unavailable. This header is the C face of that C++;
+ * `src/modules/qt_backend.cpp` is compiled by the C++ compiler, run through
+ * `moc`, and linked in beside eval.c. The front, `src/modules/ui.c`, never
+ * calls these by name: it reaches them through Qt's `GbUiBackend` table,
+ * `src/modules/ui_qt.c`, whose members and event-loop contract are
+ * include/ui_backend.h's. What each function does is documented here.
  *
  * WHO WALKS THE DECLARATION: the C side. A `window` block binds an
  * introspectable record (docs/qt_gui_design.md §0.2) and eval.c is where a
@@ -24,6 +27,8 @@
 #define GBASIC_QT_BACKEND_H
 
 #include <stddef.h>
+
+#include "ui_backend.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,37 +51,8 @@ extern "C" {
  * docs/qt_gui_design.md §0.3; tests/run_qt_loop.sh asserts all four cases. */
 int gb_qt_can_display(void);
 
-/* A connected signal fired. `handler` is the function NAME the declaration
- * registered for it -- by name rather than as a value, which is what
- * `gi_signal_marshal` already does for GTK (§5). */
-typedef void (*GbQtInvokeFn)(const char *handler);
-/* WHAT IS IN ONE CELL, asked of gBASIC. Answers 1 and fills `*text` with a
- * malloc'd string the caller frees, or 0 if the function is gone or raised --
- * in which case the cell is drawn empty rather than the program stopped, the
- * position a model has to take because `data()` is called during a PAINT and
- * there is nothing sensible to unwind into. */
-typedef int (*GbQtCellFn)(const char *fn, int row, int column, char **text);
-
-/* A WINDOW HAS CLOSED, and gBASIC's own registry has to learn about it. The
- * backend cannot do that bookkeeping itself: which declaration a window came
- * from, and what a form captured when it opened, are facts the C side holds.
- *
- * CALLED FOR EVERY CLOSE, however it arrived -- `gb_qt_close`, a `close`
- * invoked by name, or the window manager's own button -- because all three
- * deliver the same QEvent::Close and one hook catches them all. That
- * uniformity is the point: a program must not be able to tell them apart,
- * since a person clicking X is the ordinary case and the other two exist to
- * be drivable. */
-typedef void (*GbQtClosedFn)(void *window);
-
-/* ONE ITERATION OF gBASIC'S OWN EVENT LOOP, NON-BLOCKING. Qt owns the wait
- * (direction A, measured in §5.1), so gBASIC's sources cannot have a `poll()`
- * of their own; they ride a Qt timer instead. Returns 0 to ask Qt's loop to
- * stop. */
-typedef int (*GbQtTickFn)(void);
-
-void gb_qt_set_callbacks(GbQtInvokeFn invoke, GbQtTickFn tick,
-                         GbQtClosedFn closed, GbQtCellFn cell);
+void gb_qt_set_callbacks(GbUiInvokeFn invoke, GbUiTickFn tick,
+                         GbUiClosedFn closed, GbUiCellFn cell);
 
 /* THE APPLICATION'S OWN STYLESHEET -- the half of theming the by-name property
  * route does NOT already give. Measured before this was written: `styleSheet`
@@ -619,34 +595,9 @@ int gb_qt_render_svg(const char *svg, long svg_len, int width, int height,
 int gb_qt_theme_known(const char *name);
 char *gb_qt_theme_names(void);
 
-/* BLOCKS BETWEEN A `source`'s LINES, AND FOLDS (§0.38 A, B2). One item per
- * block; `text` holds a text or markdown block's text, an image's path, or
- * (image_bytes) the image's bytes. A table's `cells` are its column names and
- * then each row's cells, all as text. Set replaces the whole set, reconciled
- * by id; get answers what Qt holds now (strings caller-freed). */
-typedef struct {
-    const char *id;
-    const char *kind;          /* "text" | "table" | "image" | "markdown" */
-    const char *title;
-    int line;                  /* 1-based */
-    const char *text;
-    long text_len;
-    int image_bytes;
-    const char *format;        /* "png" | "svg" | NULL */
-    int columns, rows, more_rows;
-    const char *const *cells;
-    int max_height, collapsed, covers;
-} GbQtBlockItem;
-
-typedef struct {
-    char *id;
-    char *kind;
-    int line, height, visible, collapsed, covers;
-} GbQtBlockInfo;
-
-int gb_qt_blocks_set(void *window, const char *name, const GbQtBlockItem *items,
+int gb_qt_blocks_set(void *window, const char *name, const GbUiBlockItem *items,
                      int count, char *err, size_t err_size);
-int gb_qt_blocks_get(void *window, const char *name, GbQtBlockInfo *out,
+int gb_qt_blocks_get(void *window, const char *name, GbUiBlockInfo *out,
                      int max, char *err, size_t err_size);
 int gb_qt_fold_set(void *window, const char *name, const int *from,
                    const int *to, int count, char *err, size_t err_size);
@@ -669,12 +620,6 @@ int gb_qt_scrolled(void *window, const char *name, double *at, char *err,
                    size_t err_size);
 int gb_qt_scroll_to(void *window, const char *name, double at, char *err,
                     size_t err_size);
-
-/* The modifier bits `gb_qt_scroll` takes, so a caller does not depend on Qt's
- * own values. */
-#define GB_QT_MOD_CTRL  1
-#define GB_QT_MOD_SHIFT 2
-#define GB_QT_MOD_ALT   4
 
 /* A TABLE. ITS PARTS ARE COLUMNS, NOT WIDGETS (§7), so it is built in ONE call
  * from the declaration's whole `field` list rather than by the part walk that
@@ -724,7 +669,7 @@ int gb_qt_choice_add(void *window, const char *name, const char *item,
  * assessment: `invoke_function(stmt, args, argc, receiver)` ALREADY takes
  * arguments and returns a Value -- the handler path simply passes
  * `NULL, 0, NULL` because handlers take none. So this is one more callback
- * beside `GbQtInvokeFn` rather than a new kind of crossing.
+ * beside `GbUiInvokeFn` rather than a new kind of crossing.
  *
  * `ask` IS THE THIRD DIRECTION WORD, beside `show` and `edit`, and it costs
  * ZERO grammar: `IDENT IDENT TO IDENT IDENT` is the production a named
@@ -1049,7 +994,7 @@ int gb_qt_dialog_info(char **kind, char **title, char **text, char **folder,
  * for, so the measurement is recorded here rather than asserted in a tier that
  * would pass either way.
  *
- * `kind` is one of the three below. `title`, `folder`, `name` and `filter` may
+ * `kind` is one of GB_UI_PICK_* (ui_backend.h). `title`, `folder`, `name` and `filter` may
  * each be NULL for "no opinion"; `filter` is Qt's own `;;`-separated form, so a
  * caller handing over one string passes it through and a caller with a list
  * joins it.
@@ -1060,10 +1005,6 @@ int gb_qt_dialog_info(char **kind, char **title, char **text, char **folder,
  * REJECTED QFileDialog STILL REPORTS ITS SELECTION: reading selectedFiles()
  * without checking the result code hands back a path for a dialog the person
  * cancelled, which is a plausible wrong answer and the worst kind. */
-#define GB_QT_PICK_OPEN   0
-#define GB_QT_PICK_SAVE   1
-#define GB_QT_PICK_FOLDER 2
-
 char *gb_qt_choose(void *window, int kind, const char *title,
                    const char *folder, const char *name, const char *filter,
                    int *cancelled, char *err, size_t err_size);

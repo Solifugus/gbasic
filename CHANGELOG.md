@@ -51,6 +51,15 @@ reader sees.
   `default` (the button Enter presses), `clear`, `select_all`, `fit_columns`,
   `focused`, `fixed_width`, `shown_text` (a markdown part as rendered) and
   `direction` (which way a separator runs).
+- **`GBASIC_UI` chooses the GUI backend** where a build has more than one.
+  Today's builds have one, Qt, so it is chosen when the variable is unset.
+  Naming a backend the build lacks is refused at the first verb that needs
+  one (`GBASIC_UI names \`whisker\`, and this build has no such backend --
+  it has: qt`); `ui.check`, `ui.can_display` and `ui.is_open` still answer,
+  as they do on a build with none. Behind it, the module is one front
+  (`src/modules/ui.c`) over a backend table (`include/ui_backend.h`, which
+  states the event-loop contract a backend owes), so a second backend is a
+  table and not a fork of the module.
 
 ---
 

@@ -12,7 +12,7 @@
  *
  * IT LINKS THE REAL BACKEND rather than reimplementing the setup in C++, which
  * is the difference from source_probe.cpp and is strictly stronger: everything
- * below goes through the same `gb_qt_*` seam `src/modules/qt.c` uses, so what
+ * below goes through the same `gb_qt_*` seam `src/modules/ui.c` uses, so what
  * is measured is the painter the product runs and not a second copy of it that
  * could be right while the first is wrong.
  *

@@ -10,7 +10,7 @@
  * and a replace that sends the same block again keeps its widget (no
  * flicker). None of that is readable from gBASIC.
  *
- * IT LINKS THE REAL BACKEND and goes through the same gb_qt_* seam qt.c uses,
+ * IT LINKS THE REAL BACKEND and goes through the same gb_qt_* seam ui.c uses,
  * as gutter_probe.cpp does, so what is measured is what the product runs.
  * Prints `ok`/`BAD` lines and `checks N bad M`.
  */
@@ -41,8 +41,8 @@ static void check(const char *label, bool ok, const QString &detail = QString())
     printf("%s %s %s\n", ok ? "ok  " : "BAD ", label, qPrintable(detail));
 }
 
-static GbQtBlockItem text_item(const char *id, int line, const char *text) {
-    GbQtBlockItem it;
+static GbUiBlockItem text_item(const char *id, int line, const char *text) {
+    GbUiBlockItem it;
     memset(&it, 0, sizeof(it));
     it.id = id;
     it.kind = "text";
@@ -109,7 +109,7 @@ int main(int argc, char **argv) {
     const int rev0 = doc->revision();
     const int caret0 = e->textCursor().position();
 
-    GbQtBlockItem items[3] = { text_item("a", 5, "first\nblock"),
+    GbUiBlockItem items[3] = { text_item("a", 5, "first\nblock"),
                                text_item("b", 50, "second"),
                                text_item("c", 120, "third") };
     gb_qt_blocks_set(win, "ed", items, 3, err, sizeof(err));
@@ -134,7 +134,7 @@ int main(int argc, char **argv) {
     QApplication::processEvents();
     QRect r5 = e->cursorRect(QTextCursor(doc->findBlockByNumber(4)));
     QRect r6 = e->cursorRect(QTextCursor(doc->findBlockByNumber(5)));
-    GbQtBlockInfo info[8];
+    GbUiBlockInfo info[8];
     int n = gb_qt_blocks_get(win, "ed", info, 8, err, sizeof(err));
     int ha = n > 0 ? info[0].height : -1;
     check("line 6 is lower than line 5 by a line and block a's height",
@@ -180,7 +180,7 @@ int main(int argc, char **argv) {
     /* the scrollbar's end still reaches the last line, with tall blocks in
      * the last screenful: the range has to include their heights (it did
      * not, until the layout announced a size change on every relayout) */
-    GbQtBlockItem tail[3] = { text_item("t1", 185, "1\n2\n3\n4\n5\n6\n7\n8"),
+    GbUiBlockItem tail[3] = { text_item("t1", 185, "1\n2\n3\n4\n5\n6\n7\n8"),
                               text_item("t2", 190, "1\n2\n3\n4\n5\n6\n7\n8"),
                               text_item("t3", 195, "1\n2\n3\n4\n5\n6\n7\n8") };
     gb_qt_blocks_set(win, "ed", tail, 3, err, sizeof(err));

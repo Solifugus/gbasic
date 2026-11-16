@@ -13014,7 +13014,7 @@ release script is the one place to change, and it wants watching.
 - **Severity:** medium
 - **What:** **A child built by `qt.refresh(win, name, items)` never has its
   handlers connected.** `qt_connect_items` runs from `qt.open`
-  (`src/modules/qt.c`); the reconcile's build pass calls `qt_build_item` and
+  (`src/modules/ui.c`); the reconcile's build pass calls `qt_build_item` and
   not `qt_connect_items`, so a `{ kind: "handler", … }` record carried by a
   newly built child is skipped. Measured on a two-page `tabs`, each page a
   button plus its own `clicked` handler:
