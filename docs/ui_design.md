@@ -1,6 +1,6 @@
 # `ui.` — one GUI module, more than one backend
 
-**Status: ruled on 2026-11-16; push A (§8 steps 1–3: the rename, the vocabulary, the theme record) built and pushed the same day (`eb783aa8`), and Studio migrated onto it (gbasic-studio `21246fa`). Step 4, the split, is built and pushed (`ffa9d221`), step 5, `ui.can`, is built and pushed (`306e2936`), and step 6, the suites, is built (§8 records how each departs from the plan). The renames of Q5 that remain (suite files, the cookbook, `examples/qt`) are step 6's second commit.** Written 2026-11-16 against gBASIC
+**Status: ruled on 2026-11-16; push A (§8 steps 1–3: the rename, the vocabulary, the theme record) built and pushed the same day (`eb783aa8`), and Studio migrated onto it (gbasic-studio `21246fa`). Step 4, the split, is built and pushed (`ffa9d221`), step 5, `ui.can`, is built and pushed (`306e2936`), and step 6, the suites, is built, with Q5's renames (§8 records how each departs from the plan). §1–§8 are done; whisker's backend is whisker's step.** Written 2026-11-16 against gBASIC
 `4eafb557` (0.11.0) and gBASIC Studio `4aa0420`. It answers whisker's
 proposal (`~/development/whisker/docs/gbasic-ui-proposal.md` §7) and ends
 with Matthew's rulings (§9, 2026-11-16). Every count below is
@@ -144,7 +144,7 @@ uses today. The mapping as built (the lists are `src/window_check.c`; Qt's map i
 **Built, the words above grew by nine** where a fixture or an example needed
 one: each was a real need the old by-name route had met with a Qt name. And
 two tiers had asserted pure Qt state (`contextMenuPolicy`, `widgetResizable`);
-the first became a source tripwire on the backend (`run_qt_context.sh`
+the first became a source tripwire on the backend (`run_ui_context.sh`
 `policy`), the second is the `ui.pane` oracle's `resizable`, already read from
 Qt's own scroll area.
 
@@ -203,9 +203,9 @@ tiers that hold it:
    a function of one event), `ui_whisker.c` owns the loop and calls the same
    `tick`. Nothing in gBASIC changes.
 2. **Ticks continue inside a modal.** A dialog or `open_modal` opened from
-   `main` keeps gBASIC's sources served (`run_qt_modal` `extent`,
+   `main` keeps gBASIC's sources served (`run_ui_modal` `extent`,
    `run_net` tier 5). One opened from inside a watcher body suspends them
-   (`run_qt_dialog` `modal extent`). The second rule is held by gBASIC's
+   (`run_ui_dialog` `modal extent`). The second rule is held by gBASIC's
    `watcher_drain` guard alone (§0.15's "two guards, each sufficient"), so
    it is backend-free. The first is the backend's duty: Qt keeps a
    reference-counted pump armed. Whisker re-enters its own loop with another
@@ -214,25 +214,25 @@ tiers that hold it:
    display, so it is asked in a forked child. Whisker's SDL host fails
    without aborting, and its browser host always can.
 4. **Closing the last window ends `run`.** This is Qt's
-   `quitOnLastWindowClosed`, and `run_qt_lifecycle` `loop` asserts it. It
+   `quitOnLastWindowClosed`, and `run_ui_lifecycle` `loop` asserts it. It
    becomes a stated rule of the contract rather than a Qt default we
    happened to inherit.
 5. **`stop` ends `run` and leaves the windows open and readable**
-   (`run_qt_lifecycle` `stop`; the `exit(0)`-not-`quit()` correction).
+   (`run_ui_lifecycle` `stop`; the `exit(0)`-not-`quit()` correction).
 6. **The four endings of a modal window** (`qt_backend.h` above
    `gb_qt_show_modal`): `closed` fires exactly once however it ended,
    because gBASIC closes the window before `open_modal` returns. That is
    front-end behaviour; a backend reports accept/reject and close.
 7. **A handler may call back into the backend** (select then refresh inside
    a handler). Re-entry is capped at depth 16 with warning 2117
-   (`run_qt_reentry` `bounded`, raised in `ui.c`).
+   (`run_ui_reentry` `bounded`, raised in `ui.c`).
 
 A backend table that leaves out 1–7 has the right function names and
 breaks programs.
 
 ## 5. The tier sort
 
-Every tier of every GUI suite: the 28 `run_qt_*`, `run_window`, and the Qt
+Every tier of every GUI suite: the 28 `run_ui_*`, `run_window`, and the Qt
 tiers of `run_net`, `run_stdin_lines`, `run_watch_scope`,
 `run_handle_methods` and `run_bag_smoke`. Each is classed:
 
@@ -249,34 +249,34 @@ tiers of `run_net`, `run_stdin_lines`, `run_watch_scope`,
 | suite | N | C | C\* | Q | the C\* facts |
 |---|---|---|---|---|---|
 | run_window | 7 | | | | |
-| run_qt_builder | 4 | 1 | 1 | 1 | `click`/`clicked` |
-| run_qt_backend | | 1 | 13 | 2 | property names; refusals naming QPushButton/QLabel; `QT_QPA_PLATFORM` as the display switch |
-| run_qt_lifecycle | 1 | 2 | 4 | 1 | `windowTitle`, `visible`; last-window-quits |
-| run_qt_modal | 1 | 2 | 2 | 1 | `windowTitle`, `clicked` |
-| run_qt_dialog | | 2 | 2 | 1 | `click` |
+| run_ui_builder | 4 | 1 | 1 | 1 | `click`/`clicked` |
+| run_ui_backend | | 1 | 13 | 2 | property names; refusals naming QPushButton/QLabel; `QT_QPA_PLATFORM` as the display switch |
+| run_ui_lifecycle | 1 | 2 | 4 | 1 | `windowTitle`, `visible`; last-window-quits |
+| run_ui_modal | 1 | 2 | 2 | 1 | `windowTitle`, `clicked` |
+| run_ui_dialog | | 2 | 2 | 1 | `click` |
 | run_qt_loop | | | | 7 | (a C++ probe of Qt itself) |
-| run_qt_reentry | | 1 | 1 | 3 | `itemSelectionChanged`, `plainText` |
-| run_qt_chooser | | 1 | 2 | 2 | the filter's `;;` join; Qt's dialog wording |
-| run_qt_source | 1 | 1 | 2 | 4 | KSyntaxHighlighting names; `lineWrapMode` |
-| run_qt_gutter | 2 | 1 | | 2 | |
-| run_qt_find | | | 1 | 1 | invoke `undo`/`redo` |
-| run_qt_notebook | | | 2 | 3 | "an SVG QtSvg can draw"; KSH themes; pixel heights |
-| run_qt_capture | | | 1 | 2 | `styleSheet`, `setFocus`, "a QAction" |
-| run_qt_clipboard | | 2 | | 2 | |
-| run_qt_keys | | | 1 | 1 | QKeySequence spelling; class names in refusals |
-| run_qt_icon | | | 2 | 2 | `SP_*` names; class names in refusals |
-| run_qt_frame | 2 | | 1 | 2 | (semantics is QMainWindow docking, with a C core) |
-| run_qt_align | 1 | 1 | | 1 | |
-| run_qt_ask | 2 | | 1 | 1 | lazy viewport fetch (Qt model/view) |
-| run_qt_children | 2 | | 1 | 2 | `count`, `checkable`, `click` |
-| run_qt_context | 3 | | 1 | 1 | `contextMenuPolicy`, `frameShape`; QTableWidget/QAction in refusals |
-| run_qt_panes | 1 | | 1 | 2 | sizes total 700–900 of 900 (Qt's handle loss) |
-| run_qt_split | 2 | 1 | 1 | 2 | `widgetResizable`, `orientation`, scroll-bar policy |
-| run_qt_tree | 2 | | 1 | 1 | `headerHidden`, `indentation` |
-| run_qt_wheel | 3 | | 1 | 1 | the QFont string |
-| run_qt_which | | | 1 | 2 | `tabPosition`, `currentChanged`, `toggled` |
-| run_qt_cookbook | 3 | 17 recipes | 7 recipes | 2 recipes | 01 maxLength, 06 key text, 09 KSH, 13/22 run, 19 font, 21 SP_ |
-| run_qt_examples | 2 | 1 | 1 | | stderr filter of Qt plugin noise |
+| run_ui_reentry | | 1 | 1 | 3 | `itemSelectionChanged`, `plainText` |
+| run_ui_chooser | | 1 | 2 | 2 | the filter's `;;` join; Qt's dialog wording |
+| run_ui_source | 1 | 1 | 2 | 4 | KSyntaxHighlighting names; `lineWrapMode` |
+| run_ui_gutter | 2 | 1 | | 2 | |
+| run_ui_find | | | 1 | 1 | invoke `undo`/`redo` |
+| run_ui_notebook | | | 2 | 3 | "an SVG QtSvg can draw"; KSH themes; pixel heights |
+| run_ui_capture | | | 1 | 2 | `styleSheet`, `setFocus`, "a QAction" |
+| run_ui_clipboard | | 2 | | 2 | |
+| run_ui_keys | | | 1 | 1 | QKeySequence spelling; class names in refusals |
+| run_ui_icon | | | 2 | 2 | `SP_*` names; class names in refusals |
+| run_ui_frame | 2 | | 1 | 2 | (semantics is QMainWindow docking, with a C core) |
+| run_ui_align | 1 | 1 | | 1 | |
+| run_ui_ask | 2 | | 1 | 1 | lazy viewport fetch (Qt model/view) |
+| run_ui_children | 2 | | 1 | 2 | `count`, `checkable`, `click` |
+| run_ui_context | 3 | | 1 | 1 | `contextMenuPolicy`, `frameShape`; QTableWidget/QAction in refusals |
+| run_ui_panes | 1 | | 1 | 2 | sizes total 700–900 of 900 (Qt's handle loss) |
+| run_ui_split | 2 | 1 | 1 | 2 | `widgetResizable`, `orientation`, scroll-bar policy |
+| run_ui_tree | 2 | | 1 | 1 | `headerHidden`, `indentation` |
+| run_ui_wheel | 3 | | 1 | 1 | the QFont string |
+| run_ui_which | | | 1 | 2 | `tabPosition`, `currentChanged`, `toggled` |
+| run_ui_cookbook | 3 | 17 recipes | 7 recipes | 2 recipes | 01 maxLength, 06 key text, 09 KSH, 13/22 run, 19 font, 21 SP_ |
+| run_ui_examples | 2 | 1 | 1 | | stderr filter of Qt plugin noise |
 | run_net / stdin_lines / watch_scope | | 3 | | | |
 | run_handle_methods (qt) | | | 1 | | `enabled`, `click` |
 | run_bag_smoke (GUI) | | | 2 | | a QSS in `theme`; `rowCount`, `returnPressed` |
@@ -290,7 +290,7 @@ leak policy.
 
 1. **No verb is reached only by a Q tier** except `theme` (its one real
    assertion is the QSS recipe 12) and `dock`, `layout`, `restore_layout`
-   (QMainWindow docking: run_qt_frame and recipe 25). Everything else
+   (QMainWindow docking: run_ui_frame and recipe 25). Everything else
    whisker's §4.3 listed has a C or C\* tier.
 2. **Most C\* tiers become C once the neutral vocabulary of §3 exists**,
    by rewriting the fixture's Qt names into neutral words. That rewrite is
@@ -308,11 +308,11 @@ leak policy.
    gutter paint, blocks, clipboard), the `qt_backend.cpp` tripwires
    (children `drop`, panes `one walk`, split `guards`, which `slot choice`,
    chooser `native`, icon and reentry `one door`), the KSH tiers of
-   `run_qt_source`, the PIL pixel tiers. They move into Qt-backend suites
+   `run_ui_source`, the PIL pixel tiers. They move into Qt-backend suites
    and are never run under another backend.
-5. **One tier is mixed and should be split**: run_qt_notebook's
+5. **One tier is mixed and should be split**: run_ui_notebook's
    "figures and themes" (`render_svg` is C\*, the KSH theme half is Q).
-   Likewise run_qt_frame `semantics`: its status bar, toolbar labels and
+   Likewise run_ui_frame `semantics`: its status bar, toolbar labels and
    menu bar checks are C, and the docking is Q.
 
 ## 6. Verbs every backend answers, and capability groups
@@ -489,7 +489,7 @@ migrates the same day):
 
    **As built (2026-11-16).** `tests/ui_backend.sh` lists the build's
    backends (from the `GBASIC_UI` refusal's "it has:"), and every
-   `run_qt_*` suite but `run_qt_loop` calls `ui_each_backend` first: one
+   `run_ui_*` suite but `run_qt_loop` calls `ui_each_backend` first: one
    pass per backend, then one more on the first **with every capability
    group withheld**. Every TIER line carries its class, `[N]` 49, `[C]`
    94, `[Q]` 13, held by run_ui_vocabulary `classes`. Departures:
@@ -504,14 +504,29 @@ migrates the same day):
    - **Q tiers stay in their topic's suite**, gated, rather than moving to
      separate files: a tier's fixture and its Qt half share setup.
    - **Gated on `windows` because a fixture keeps windows open**, not
-     because the tier is about windows: run_qt_backend binding, table,
+     because the tier is about windows: run_ui_backend binding, table,
      refresh, text and valgrind; builder built; children; lifecycle
      semantics and loop; split semantics. These are the first fixtures to
      rewrite when a backend without `windows` arrives, or their contract
      is unmeasured there.
    - The examples and cookbook runners skip one program refused for a
      missing group, by that sentence: a backend with the group cannot
-     produce it. Whisker's backend
+     produce it.
+   - **Valgrind is not rerun in the withheld pass** (`ui_tier_once`): it
+     would measure the code the backend's own pass just measured. Without
+     it the GUI suites' CPU went from 7m41s to 5m42s. The whole gate's wall
+     time did not move measurably: about 20.5 and 21.5 minutes before step
+     6, 21.2 with the pass and 21.9 with it and this change (start times
+     from the ETA printed at each start, end times from the logs). The one
+     gate in between failed run_gsql_owner's timing-sensitive `group` tier
+     (eight clients 1.49x one, where several times is asked); it passed
+     alone twice and in the next gate, and load was not shown to be the
+     cause.
+   - **Q5's renames:** the contract suites are `run_ui_*`, and
+     `run_qt_loop`, all Qt's own, keeps its name; the cookbook is
+     `docs/ui_cookbook.md` over `examples/ui_cookbook`; `examples/qt` is
+     `examples/ui`. The fixtures `tests/qt_*.bas` keep theirs, as Q5 did
+     not name them. Whisker's backend
    (`ui_whisker.c`, its own `HAVE_WHISKER`, whisker as a header) is
    whisker's step, measured by step 6's contract tiers.
 

@@ -445,7 +445,7 @@ LSP_OBJS := src/lsp/main.o src/lsp/rpc.o src/lsp/handlers.o src/lsp/lsp_position
 # BUILD` -- a true sentence about something entirely unrelated to regex.
 #
 # NOTHING IS HIDDEN BY THIS. `install` names editors/kate/gbasic.xml directly
-# and fails loudly if it is absent, and run_qt_source.sh's `layout` tier
+# and fails loudly if it is absent, and run_ui_source.sh's `layout` tier
 # requires the generated copy to exist and to match. What the guard says is
 # that an interpreter should still build in a tree that carries no editor
 # integrations, which is the right priority when somebody asked for make.

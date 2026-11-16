@@ -256,7 +256,7 @@ int gb_qt_set_part_bool(void *window, const char *name, const char *prop,
  * assertable at all. Until this existed a suite could say an option was
  * ACCEPTED and not that it had any effect, so a backend that took every option
  * and applied none passed every check; measured, that is exactly what
- * run_qt_backend.sh's refusal tier could not see.
+ * run_ui_backend.sh's refusal tier could not see.
  *
  * `kind` comes back as 'b' bool, 'n' number or 't' text, DECIDED BY THE
  * QVariant rather than by the caller, so `readOnly` arrives as a gBASIC

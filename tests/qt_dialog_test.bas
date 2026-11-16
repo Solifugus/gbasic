@@ -17,7 +17,7 @@
 ' OWN HANDLER. A dialog raised outside a handler leaves the sources running; a
 ' dialog raised FROM a handler -- the normal case, since somebody clicked --
 ' suspends them until it is answered, so `ui.answer` cannot reach it and a
-' person is the only answer. run_qt_dialog.sh asserts that with a real server
+' person is the only answer. run_ui_dialog.sh asserts that with a real server
 ' on a real port, because a limitation nobody can observe is a limitation
 ' nobody will believe.
 '

@@ -1,4 +1,4 @@
-' HOW FAR A MODAL DIALOG REACHES -- the fixture behind run_qt_dialog.sh's
+' HOW FAR A MODAL DIALOG REACHES -- the fixture behind run_ui_dialog.sh's
 ' load-bearing tier, driven from outside because the claim is about what
 ' ANOTHER PROCESS can see.
 '

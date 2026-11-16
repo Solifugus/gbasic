@@ -218,7 +218,7 @@ program main()
     ' THE LOAD-BEARING HALF: Qt emits no context request for a part until it
     ' is asked for a custom menu, so a handler alone would never fire. That it
     ' DOES fire, below, is the check; that a part with no handler keeps the
-    ' toolkit's own menu is Qt's state, held by run_qt_context.sh's `policy`
+    ' toolkit's own menu is Qt's state, held by run_ui_context.sh's `policy`
     ' tripwire on the backend's source.
 
     ' ---- the right-click, and the row it lands on -------------------------
@@ -259,7 +259,7 @@ program main()
           ui.popup(app, "editor_actions"), true)
 
     ' AND A SUBMENU COUNTS FOR WHAT IT LEADS TO, NOT FOR ITSELF. Found by
-    ' examples/qt/browser.bas rather than reasoned: hiding every item INSIDE a
+    ' examples/ui/browser.bas rather than reasoned: hiding every item INSIDE a
     ' submenu does not hide the submenu, and measured, Qt then reports
     ' `isEmpty()` FALSE and SHOWS a menu holding nothing but an arrow leading
     ' nowhere -- "reads as a control that failed" one level in, which is

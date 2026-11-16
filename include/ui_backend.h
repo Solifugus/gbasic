@@ -18,21 +18,21 @@
  *     poll interval -- and stops `run` when it answers 0. A backend with no
  *     loop of its own owns one for `run` and calls the same `tick`.
  *  2. TICKS CONTINUE INSIDE A MODAL. A dialog or `open_modal` opened from
- *     `main` keeps gBASIC's sources served (run_qt_modal `extent`, run_net
+ *     `main` keeps gBASIC's sources served (run_ui_modal `extent`, run_net
  *     tier 5). One opened inside a watcher body suspends them, and that half
- *     is gBASIC's `watcher_drain` guard, not the backend's (run_qt_dialog).
+ *     is gBASIC's `watcher_drain` guard, not the backend's (run_ui_dialog).
  *  3. `can_display` CANNOT CRASH. It is a question, asked before anything is
  *     opened; Qt aborts with no display, so Qt asks in a forked child.
- *  4. CLOSING THE LAST WINDOW ENDS `run` (run_qt_lifecycle `loop`).
+ *  4. CLOSING THE LAST WINDOW ENDS `run` (run_ui_lifecycle `loop`).
  *  5. `stop` ENDS `run` AND LEAVES THE WINDOWS OPEN AND READABLE
- *     (run_qt_lifecycle `stop`).
+ *     (run_ui_lifecycle `stop`).
  *  6. EVERY CLOSE IS REPORTED ONCE, however it arrived -- `close`, a `close`
  *     invoked by word, the window manager's button, a modal's accept or
  *     reject -- through the `closed` callback, so a program cannot tell them
- *     apart (run_qt_lifecycle, run_qt_modal).
+ *     apart (run_ui_lifecycle, run_ui_modal).
  *  7. A HANDLER MAY CALL BACK INTO THE BACKEND (select, then refresh, inside a
  *     handler). The backend counts the depth (`handler_depth`); the front caps
- *     it at 16 with warning 2117 (run_qt_reentry `bounded`). Anything a
+ *     it at 16 with warning 2117 (run_ui_reentry `bounded`). Anything a
  *     re-entrant call could not free yet waits for `retire_drain`, which the
  *     front calls at the top of every verb, when nothing of the backend's is
  *     on the stack.

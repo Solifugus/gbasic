@@ -1,0 +1,219 @@
+' A SHELL -- the layout an IDE has: a file list beside an editor above an
+' output table, with every boundary draggable.
+'
+' Run it:
+'     ./gbasic examples/ui/shell.bas
+'     QT_QPA_PLATFORM=offscreen ./gbasic examples/ui/shell.bas check
+'
+' THIS SHAPE IS WHY `split` AND `scroll` EXIST, and it was derived from gBASIC
+' Studio's own source rather than guessed: its shell is `gtk.paned` three times
+' nested and `gtk.scrolled` five times, and nothing in the vocabulary could
+' express either. `row` and `column` are BOXES -- they pack things and nobody
+' can drag the boundary -- and while `source`, `memo` and `table` scroll
+' themselves, an ordinary column of widgets does not.
+'
+' A SPLIT'S DIRECTION IS A WORD, NOT A NAME. `across` or `down`, refused by
+' name with a near-miss hint if it is anything else. The reason is measured: a
+' container carries a name OR options and never both (§0.8), so there is one
+' free slot, and a splitter with no direction is not a splitter -- where a name
+' is something only some splitters ever want.
+'
+' WHICH MEANS A SPLIT CANNOT BE NAMED, so nothing addresses it and nothing
+' could say whether it was built, which way round it is, or how many panes it
+' got. `ui.pane` is how you see one: it walks up from a part you CAN name and
+' asks the LAYOUT, which is the rule `ui.at` already follows for a grid.
+'
+' A SCROLL NEEDS NO DIRECTION, so its slot is free and it MAY be named.
+'
+' THE MENU ITEMS CARRY ICONS, and they are `SP_` names on purpose: those are
+' Qt's own eighty-one standard icons, which work with NO desktop icon theme
+' installed -- measured, a headless machine has none at all, so a freedesktop
+' name like "document-open" would warn here and show nothing. `ui.has_icon`
+' is how a program asks whether one arrived, a QIcon having no text form.
+'
+' AND CTRL + WHEEL ZOOMS THE EDITOR, because a shell without that is not one.
+' A wheel is an EVENT and not a signal -- a Qt widget receives one rather than
+' emitting it -- so `on code.wheel` is handled the way `on <window>.closed` is
+' and the handler asks `ui.wheel()` for the event. The zoom itself needs no
+' verb: `font` reads back as text, so the size is a number in a list. And
+' `ui.swallow()` is what stops the editor ALSO scrolling, which is not optional
+' -- Ctrl + wheel scrolls a text view FASTER than a plain wheel, so the view
+' would jump about while the text resized.
+window shell( title: "Shell", width: 820, height: 520 )
+    menu "File"
+        item act_open( label: "Open", shortcut: "Ctrl+O",
+                       icon: "SP_DialogOpenButton" )
+        separator()
+        item act_quit( label: "Quit", shortcut: "Ctrl+Q",
+                       icon: "SP_DialogCloseButton" )
+    end menu
+
+    ' THE TOOLBAR MENU, which is Studio's own header shape: a button that drops
+    ' a menu UNDER ITSELF rather than at the pointer, which is what
+    ' `ui.popup`'s third argument is for. The arrow glyph is in the LABEL on
+    ' purpose -- Studio's comment records that GTK's own `always-show-arrow`
+    ' drew nothing on 4.22, and Geometric Shapes is in every mainstream UI font.
+    popup proj_menu
+        item proj_new(  label: "New Project" )
+        item proj_open( label: "Open Project" )
+    end popup
+
+    column( margin: 6, spacing: 6 )
+        ' A SEPARATOR DIVIDES A LAYOUT TOO, and its orientation comes from the
+        ' parent: VERTICAL between groups of toolbar buttons in this `row`,
+        ' HORIZONTAL under it in the `column`. There is no option for it,
+        ' because the only correct value is the one the parent already knows.
+        row
+            button proj_btn( label: "Project \u{25be}" )
+            separator group_bar()
+            button run_btn( label: "Run" )
+            stretch()
+        end row
+        separator header_rule()
+
+    split across
+        ' THE NAV PANE. A column of labels does not scroll on its own, which is
+        ' exactly what `scroll` is for.
+        scroll files
+            column( margin: 6, spacing: 2 )
+                text f1( label: "main.bas" )
+                text f2( label: "shell.bas" )
+                text f3( label: "studio.bas" )
+                text f4( label: "widgets.bas" )
+                text f5( label: "window.bas" )
+                stretch()
+            end column
+        end scroll
+
+        split down
+            ' A `source` IS A PANE DIRECTLY -- no label, because a pane has
+            ' nowhere to put one. `source code()` with empty parentheses is
+            ' legal (and was a parse error until this increment, found because
+            ' this is the natural thing to write).
+            source code()
+            table out to show lines
+                field at(   label: "Line" )
+                field says( label: "Message" )
+            end table
+            end split
+    end split
+    end column
+
+    on act_open.pressed
+        g.log = g.log + "opened" + chr(10)
+        x = shell.write("code", ("' " + shell.read("f1") + chr(10) +
+                     "print hello" + chr(10)))
+    end on
+
+    on act_quit.pressed
+        ui.stop()
+    end on
+
+    on out.chosen
+        at = shell.selected("out")
+        if not is_unknown(at) then
+            g.log = g.log + "picked row " + string(at) + chr(10)
+        end if
+    end on
+
+    on proj_btn.pressed
+        g.menu_shown = shell.popup("proj_menu", "proj_btn")
+    end on
+
+    on code.wheel
+        ev = ui.wheel()
+        if not ev.ctrl then
+            ' DECLINED, so the editor scrolls as it always did.
+            return
+        end if
+        bigger = 1
+        if ev.dy < 0 then
+            bigger = 0 - 1
+        end if
+        shell.set("code", "font_size", shell.read("code", "font_size") + bigger)
+        g.zooms = g.zooms + 1
+        ui.swallow()
+    end on
+end window
+
+program main(args)
+    g = { log: "", zooms: 0, menu_shown: false }
+
+    if not ui.can_display() then
+        print "No display is available, so there is no window to open."
+        print "Set QT_QPA_PLATFORM=offscreen to render without one."
+        return
+    end if
+
+    lines = [ { at: "1", says: "ready" },
+              { at: "2", says: "no errors" } ]
+
+    ui.open(shell)
+    x = shell.write("code", "x = 1" + chr(10) + "print x" + chr(10))
+
+    if contains(args, "check") then
+        print "-- the shell's regions, asked of the layout"
+        nav = shell.pane("files")
+        print("the file list is pane " + string(nav.index) + " of " +
+              string(nav.panes) + " in the " + nav.direction + " split")
+        ' TWO PANES IS THE NESTING CHECK: the outer split holds the file list
+        ' AND the inner split, so an inner one hung off the window instead of
+        ' its parent would report ONE here and every other line would still
+        ' read correctly.
+        ed = shell.pane("code")
+        tb = shell.pane("out")
+        print("the editor is pane " + string(ed.index) + " of " +
+              string(ed.panes) + " in the " + ed.direction + " split")
+        print "the table is pane  " + string(tb.index)
+
+        print "-- the toolbar"
+        shell.invoke("proj_btn", "press")
+        print("the Project menu dropped under its button: " +
+              string(g.menu_shown))
+        print("the group divider runs " +
+              string(shell.read("group_bar", "direction")) +
+              ", the header rule runs " +
+              string(shell.read("header_rule", "direction")))
+        ' AND PUT IT AWAY. A popped menu STAYS UP until something dismisses it
+        ' -- a person clicks an item or presses Escape, and a program that
+        ' pops one in `check` mode has to close it, or it goes on grabbing
+        ' the mouse while everything below runs. `hide` is an ordinary method.
+        shell.invoke("proj_menu", "hide")
+
+        print "-- the menu items' icons"
+        print("Open has an icon:   " + string(shell.has_icon("act_open")))
+        print("Quit has an icon:   " + string(shell.has_icon("act_quit")))
+
+        print "-- ctrl + wheel over the editor"
+        was = shell.read("code", "font_size")
+        claimed = shell.scroll("code", 2, "ctrl")
+        print("claimed " + string(claimed) + ", font " + string(was) + " -> " +
+              string(shell.read("code", "font_size")))
+        ' A PLAIN WHEEL IS LEFT ALONE, which is what keeps the editor usable.
+        print("a plain wheel claims nothing: " +
+              string(shell.scroll("code", -1)))
+
+        print "-- the nearest region wins"
+        deep = shell.pane("f1")
+        print("a file label reports the " + deep.kind +
+              ", resizable " + string(deep.resizable))
+        ' QT DEFAULTS A SCROLL'S CONTENT TO A FIXED SIZE, and left alone it
+        ' keeps its original size for ever -- so content never reflows and a
+        ' resized window shows a stripe of widgets beside a grey expanse, with
+        ' nothing raised. `resizable` above is read back from Qt's own scroll
+        ' area, so it says the backend set it.
+
+        print "-- and it all works"
+        e = shell.refresh("out")
+        print "the table drew " + string(e) + " rows"
+        shell.invoke("act_open", "press")
+        shell.select("out", 1)
+        print "the log says: " + replace(g.log, chr(10), " / ")
+        print "the editor now starts: " + left(shell.read("code"), 12)
+        ui.stop()
+        return
+    end if
+
+    print "Drag the boundaries. File > Open loads the first name; Ctrl+Q quits."
+    ui.run()
+end program

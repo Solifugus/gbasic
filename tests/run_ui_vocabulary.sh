@@ -323,7 +323,7 @@ classes_problems() {   # $@ = suite files; prints what is wrong
         esac
     done
 }
-gui_suites=$(ls tests/run_qt_*.sh tests/run_window.sh tests/run_ui_vocabulary.sh)
+gui_suites=$(ls tests/run_ui_*.sh tests/run_qt_*.sh tests/run_window.sh)
 problems=$(classes_problems $gui_suites)
 counts=$(cat $gui_suites | grep -oE "^printf 'TIER \[[NCQ]\]" | grep -oE '[NCQ]' | sort | uniq -c | tr -s ' ' | tr '\n' ' ')
 if [ -z "$problems" ]; then
@@ -335,8 +335,8 @@ fi
 # THE CONTROL: a planted tier line with no class, and a [C] suite that has
 # lost its per-backend call, must both be reported.
 sed "s/^printf 'TIER \[C\] semantics/printf 'TIER semantics/; s/^ui_each_backend \"\$0\" \"\$@\"/: /" \
-    tests/run_qt_tree.sh > "$work/run_qt_planted.sh"
-planted=$(classes_problems "$work/run_qt_planted.sh")
+    tests/run_ui_tree.sh > "$work/run_ui_planted.sh"
+planted=$(classes_problems "$work/run_ui_planted.sh")
 if printf '%s' "$planted" | grep -q '^unclassed: ' && printf '%s' "$planted" | grep -q '^C without ui_each_backend'; then
     pass "CONTROL: an unclassed tier and a lost per-backend call are reported"
 else

@@ -75,7 +75,7 @@ program main(args)
     ' running with nothing to do: the timer is cancelled and the listener is
     ' drained (`server.draining = true` stops it accepting and lets the loop
     ' run out of work). A fixture the suite has to kill is one that can be left
-    ' behind, which is the leak run_qt_dialog.sh had to be fixed for.
+    ' behind, which is the leak run_ui_dialog.sh had to be fixed for.
     c = timer.cancel(beat)
     sv.draining = true
     print "DONE"

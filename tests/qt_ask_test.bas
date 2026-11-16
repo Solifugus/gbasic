@@ -63,7 +63,7 @@ end window
 ' THE GAP RATHER THAN A FAILURE: a splitter has no layout, so every door that
 ' asks a parent for one has to admit it (§0.19), and the model-backed table was
 ' a FOURTH such door that no behavioural check in this file could reach, every
-' table here living in a `column`. run_qt_split's guard tier reported it on the
+' table here living in a `column`. run_ui_split's guard tier reported it on the
 ' gate before §0.25 was pushed, which is what that tier is for; measured, the
 ' backend was right all along and the scanner could not see an if/else chain
 ' whose splitter arm comes first. So the claim is asserted BEHAVIOURALLY here,

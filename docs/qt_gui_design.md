@@ -1,13 +1,20 @@
 # A Qt GUI for gBASIC — design
 
+> **Since 0.12.0 the module is `ui`, not `qt`, and Qt is one backend behind
+> a table** (docs/ui_design.md: the rename, one vocabulary of gBASIC words in
+> place of Qt's names, the theme record, `ui.can` and the capability groups,
+> the suites per backend). This page is the history of the Qt backend and
+> keeps its name; the `qt.` calls and Qt property names below are as they
+> were written.
+
 **Status: largely shipped.** The `window` declaration (§0.2), the `qt` module
 (§0.4), binding (§0.5), `table` (§0.6), menus and theming (§0.7),
 `tabs`/`cells` (§0.8), the builder (§0.9), `text`/`memo` (§0.10) and
 `qt.refresh` (§0.11), `choice` (§0.13), `source` (§0.14) and dialogs (§0.15) exist, with §0.12 a
 whole application built on them, gated by
-`tests/run_window.sh`, `tests/run_qt_backend.sh`,
-`tests/run_qt_builder.sh`, `tests/run_qt_examples.sh` and
-`tests/run_qt_source.sh` and `tests/run_qt_dialog.sh`. Still proposal: `stdlib/qt.bas`, `show:`/`edit:` in
+`tests/run_window.sh`, `tests/run_ui_backend.sh`,
+`tests/run_ui_builder.sh`, `tests/run_ui_examples.sh` and
+`tests/run_ui_source.sh` and `tests/run_ui_dialog.sh`. Still proposal: `stdlib/qt.bas`, `show:`/`edit:` in
 option position, binding into a container nested inside a form, more than one
 window, and threads. **This line has been wrong three times by being left
 alone** — twice in one day claiming the declaration could not render, and then
@@ -202,7 +209,7 @@ Two consequences worth keeping:
 
 ## 0.4 THE BACKEND (2026-10-17): the `qt` module
 
-**Built, and `tests/run_qt_backend.sh` holds it.** Four things in it come from
+**Built, and `tests/run_ui_backend.sh` holds it.** Four things in it come from
 measurement rather than from this document's arguments, and are not re-decided
 in the code:
 
@@ -577,7 +584,7 @@ property, and an unlabelled widget raises nothing.
 
 ## 0.9 The builder (2026-10-18): §4, and the door that was already open
 
-**Shipped.** `tests/run_qt_builder.sh`, `tests/qt_check_test.bas`,
+**Shipped.** `tests/run_ui_builder.sh`, `tests/qt_check_test.bas`,
 `tests/qt_builder_test.bas`.
 
 §4 called for a second door: the block for fixed layouts, and a builder for
@@ -723,7 +730,7 @@ whether they earn their place is a question a real consumer answers. Studio
 
 ## 0.10 `text` and `memo` (2026-10-18): the toolkit could not display a sentence
 
-**Shipped.** `tests/qt_text_test.bas`, a tier in `tests/run_qt_backend.sh`.
+**Shipped.** `tests/qt_text_test.bas`, a tier in `tests/run_ui_backend.sh`.
 
 **Found by setting out to write one example per aspect**, which is the argument
 for writing them. The leaf vocabulary constructed **`QLineEdit`,
@@ -794,7 +801,7 @@ needs rather than against Qt's catalogue.
 
 ## 0.11 `qt.refresh` (2026-10-18): a table did not follow its list
 
-**Shipped.** `tests/qt_refresh_test.bas`, a tier in `tests/run_qt_backend.sh`.
+**Shipped.** `tests/qt_refresh_test.bas`, a tier in `tests/run_ui_backend.sh`.
 
 **Found by building a whole small application** — BAG in a window (§0.12) — and
 it was a **gap rather than a limit**: a `table to show` captured its subject
@@ -939,7 +946,7 @@ items and triggers are the same shapes again.
 
 ## 0.13 `choice` (2026-10-18): the last widget with no substitute
 
-**Shipped.** `tests/qt_choice_test.bas`, a tier in `tests/run_qt_backend.sh`.
+**Shipped.** `tests/qt_choice_test.bas`, a tier in `tests/run_ui_backend.sh`.
 
 **Decided by a real program rather than Qt's catalogue.** BAG's area editor
 gives every area six exits and **each one names another area**; an item names its
@@ -1559,7 +1566,7 @@ served.
 
 - ~~**Re-entry into the evaluator.**~~ **MEASURED 2026-10-17 by the backend**
   (§0.4): a real `clicked` signal reaches a gBASIC handler through one generic
-  relay, and the handler reads the live widget. `run_qt_backend.sh` asserts it
+  relay, and the handler reads the live widget. `run_ui_backend.sh` asserts it
   on its own and with a control that it fired when the button was clicked and
   **not** when the window opened — which would be the registration-time firing
   `watch` has, and here would mean every button acting before anybody pressed
@@ -1719,7 +1726,7 @@ a baked-in `$(DATADIR)/syntax-highlighting` otherwise, and `make` derives the
 engine's `<dir>/syntax/` layout from the one definition the repo ships. A tier
 runs with `XDG_DATA_HOME` moved aside and requires the file to be **ours**.
 
-**It caught a second instance within the hour.** `run_qt_examples.sh` ran
+**It caught a second instance within the hour.** `run_ui_examples.sh` ran
 `editor.bas` with no path set and reported clean stderr — on this machine only;
 pointed at an empty `XDG_DATA_HOME` it fails. The suite exports the path now.
 
@@ -1740,7 +1747,7 @@ no build knew about, with no `GBASIC_SYNTAX_PATH` and an empty
 `XDG_DATA_HOME`: `gBASIC` from its own path with the resolver, `applied=none`
 without it. The walk is **shared** with the stdlib's rather than copied —
 `gb_exe_relative_share(subdir)` — because two representations of one layout
-drift. `run_qt_source.sh`'s `relocated` tier keeps it.
+drift. `run_ui_source.sh`'s `relocated` tier keeps it.
 
 ### "It highlights" is two claims in two places
 
@@ -1845,7 +1852,7 @@ happen is **gBASIC being serviced while a watcher body is on the stack**:
 body, a webserver handler, an actor mailbox watcher, an `http` event watcher
 and a button clicked from any of them all run inside one. So a modal dialog is
 modal to the whole *program*. Measured both ways through the interpreter, and
-`run_qt_dialog.sh` asserts it with a real `server` block on an OS-assigned
+`run_ui_dialog.sh` asserts it with a real `server` block on an OS-assigned
 port: the route answers with no dialog up and does **not** answer during one,
 with a third check that the dialog was still open so what was measured was a
 stall and not a crash. **If that tier ever passes, the limitation is gone** and
@@ -2665,7 +2672,7 @@ menu *"reads as a control that failed"*, and Qt agrees — an all-hidden menu is
 be about a program that did nothing wrong. Both halves asserted, since `true`
 alone passes on a verb that always says yes.
 
-**And the count recurses, which `examples/qt/browser.bas` found rather than any
+**And the count recurses, which `examples/ui/browser.bas` found rather than any
 reasoning.** Hiding every item *inside* a submenu does not hide the submenu:
 measured, Qt then reports `isEmpty()` **false** and **shows** a 120×25 menu
 holding nothing but an arrow leading nowhere — which is *"reads as a control
@@ -3256,7 +3263,7 @@ if this did nothing?"* decided a design detail — `qt.right_click`,
 
 **And a usage note the example found rather than any check.** A popped menu
 **stays up** until something dismisses it, and a visible `QMenu` grabs the
-mouse — so adding a menu button to `examples/qt/shell.bas` broke the Ctrl+wheel
+mouse — so adding a menu button to `examples/ui/shell.bas` broke the Ctrl+wheel
 check two tiers below it, with the menu still open and swallowing the wheel. A
 person clicks an item or presses Escape; a program driving itself calls
 `qt.invoke(win, menu, "hide")`. Auto-dismissing was considered and rejected
@@ -3743,7 +3750,7 @@ the tree*, which in a parallel run means another suite's plain `make` compiles
 the planted file. Correct, and caught within minutes of the suite existing:
 the third time a tripwire here has caught my own brand-new work, after
 `run_portable.sh` on a `set -e` that armed rather than restored and
-`run_qt_split.sh`'s guard tier on §0.25's model-backed table. A scan reads a
+`run_ui_split.sh`'s guard tier on §0.25's model-backed table. A scan reads a
 file, so it can read a copy. The gate run it fired on was **discarded** rather
 than explained away, since the lane verdict is taken at pre-flight from the
 file as it then was.
@@ -3881,7 +3888,7 @@ tested against, with the crash as the merciful case.
 
 ### Why no existing fixture could see it
 
-`run_qt_tree.sh` selects and then refreshes, and connects no selection handler,
+`run_ui_tree.sh` selects and then refreshes, and connects no selection handler,
 so nothing re-enters. **The ordering was never the bug**, which the Studio
 session established before reporting it: four orderings clean, and only *"a
 selection handler that refreshes, then two selects"* reproduces.
@@ -4212,7 +4219,7 @@ no diagnostic, and every other verb still right.
 
 **§0.28's own fixture declares the depth last**, where the drawn indices and the
 declared ones agree by accident. That is the whole lesson: the order was never a
-decision, so nothing exercised the other one. `run_qt_tree.sh` now carries a
+decision, so nothing exercised the other one. `run_ui_tree.sh` now carries a
 second window declaring it first, and asking for the undrawn column by name is
 refused saying it **carries the depth** rather than that there is no such
 column — "there is no such column" being false about a field the author can see
@@ -4245,7 +4252,7 @@ indices, which no slot here takes — nobody has asked.
 
 **The limit, stated rather than tested around.** `qt.key` sends the key Qt *delivers*, not the physical keys pressed. On a real keyboard, Ctrl+Shift+= reaches `Ctrl++` because the platform key mapper also offers the combination without Shift; a synthesized event has no layout behind it. So `qt.key(…, "Ctrl++")` tests that route, and pressing `"Ctrl+Shift+="` does not reproduce it.
 
-**The load-bearing check is a difference** (`tests/run_qt_keys.sh`): the same press of Ctrl+= does nothing against the single `Ctrl++` (Studio's bug, reproduced) and fires once the list is set. Either half alone passes on a backend that ignores the list, or on a `qt.key` that fires everything. Its control is that a key nothing takes answers `false`. Four perturbations proven red: a list keeping only its first entry, no unknown-key check, the window not made active, and `qt.key` always answering `true`.
+**The load-bearing check is a difference** (`tests/run_ui_keys.sh`): the same press of Ctrl+= does nothing against the single `Ctrl++` (Studio's bug, reproduced) and fires once the list is set. Either half alone passes on a backend that ignores the list, or on a `qt.key` that fires everything. Its control is that a key nothing takes answers `false`. Four perturbations proven red: a list keeping only its first entry, no unknown-key check, the window not made active, and `qt.key` always answering `true`.
 
 ## 0.35 A column's alignment (2026-10-22)
 
@@ -4255,7 +4262,7 @@ indices, which no slot here takes — nobody has asked.
 
 **And a defect found on the way.** A column's options were read for `label`, `type` and `depth` and nothing else, so any other option was ignored in silence: measured, `alignn: "right"` and `bogus: 1` opened without a word. Unlike a leaf's options, which are widget properties and an open set, a column's are read by the backend, so the set **can** be closed. It is now, in the shared load-time pass (`src/window_check.c`), so a declared window and a built one refuse identically, with the near miss. That needed three accessors on the checker's model (an item's option names and a literal text value), implemented by both adapters. Measured before closing it: no column in this tree or in Studio uses any other option.
 
-**The oracle is Qt.** `qt.alignment` reads the model's alignment role or the cell item's alignment, never the declaration, so a backend that stored `align:` and never applied it is caught. Five perturbations proven red: the model ignoring it, the held table ignoring it, the tree ignoring it, unknown column options accepted, and the value unchecked (`tests/run_qt_align.sh`).
+**The oracle is Qt.** `qt.alignment` reads the model's alignment role or the cell item's alignment, never the declaration, so a backend that stored `align:` and never applied it is caught. Five perturbations proven red: the model ignoring it, the held table ignoring it, the tree ignoring it, unknown column options accepted, and the value unchecked (`tests/run_ui_align.sh`).
 
 
 ## 0.36 Studio's find-and-replace requests (2026-11-03)
@@ -4339,7 +4346,7 @@ land, aimed exactly as `qt.right_click` aims, so Qt itself emits `clicked`,
 
 ### Evidence, and what is open
 
-`tests/run_qt_find.sh` over `tests/qt_find_test.bas`, 55 checks, plus valgrind
+`tests/run_ui_find.sh` over `tests/qt_find_test.bas`, 55 checks, plus valgrind
 and no stderr. Twelve perturbations, each red: placement testing `field` alone
 (3: Studio's licence, a choice in a row, in cells), a caption with no buddy (3),
 a form memo keeping its label as text (1), no edit block (one undo restored one
@@ -4418,7 +4425,7 @@ that. Hover states were not measured; the offscreen platform has no pointer.
 
 ### Evidence
 
-`tests/run_qt_capture.sh` over `tests/qt_capture_test.bas`. The fixture runs 37
+`tests/run_ui_capture.sh` over `tests/qt_capture_test.bas`. The fixture runs 37
 checks, with sizes taken from the PNG header's own bytes and compared against
 Qt's report of the part. A pixel tier decodes every picture with Python's PIL, 11
 checks: colours set by a stylesheet, the window containing its parts' pixels,

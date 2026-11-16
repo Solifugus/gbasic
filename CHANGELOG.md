@@ -68,6 +68,11 @@ reader sees.
   part that does nothing. Qt has all eight, so no program's answers change.
   `GBASIC_UI_WITHHOLD="docking notebook"` takes groups away, to try a
   program against a smaller backend before one exists.
+- **Paths that moved with the name:** the GUI examples are in
+  `examples/ui` (was `examples/qt`), the cookbook is `docs/ui_cookbook.md`
+  over `examples/ui_cookbook` (was `qt_cookbook`), and the GUI suites are
+  `tests/run_ui_*.sh` (`run_qt_loop`, a probe of Qt itself, keeps its
+  name).
 
 ---
 

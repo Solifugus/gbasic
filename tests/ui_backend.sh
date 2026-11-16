@@ -72,7 +72,7 @@ ui_each_backend() {
     if [ -z "${GBASIC_UI_WITHHOLD:-}" ]; then
         be=$(printf '%s\n' "$list" | head -1)
         printf '== backend %s, every capability group withheld\n' "$be"
-        UI_SUITE_PASS=1 GBASIC_UI="$be" \
+        UI_SUITE_PASS=1 UI_WITHHELD_PASS=1 GBASIC_UI="$be" \
             GBASIC_UI_WITHHOLD="highlighting docking stylesheet figures file_dialogs notebook icons windows" \
             bash "$suite" "$@"
         rc=$?
@@ -119,4 +119,17 @@ ui_tier_qt() {
 # run_ui_vocabulary `groups`.
 ui_group_refused() {   # $1 = a file holding the program's output
     sed -n 's/.* needs `\([a-z_]*\)`, which the [a-z_]* backend does not have -- ask ui\.can(.*/\1/p' "$1" | head -1 | grep .
+}
+
+# A TIER THAT MEASURES NOTHING NEW WITHOUT ITS GROUPS: valgrind over the same
+# fixture the backend's own pass just ran it on. Skipped in the
+# every-group-withheld pass, which exists to find tiers using a group they do
+# not declare; rerunning valgrind there cost about a third more GUI-suite CPU
+# (7m41s against 5m42s, 2026-11-16) for nothing new.
+ui_tier_once() {
+    if [ -n "${UI_WITHHELD_PASS:-}" ]; then
+        printf '  SKIP (measured in the backend'"'"'s own pass; this pass withholds every group)\n'
+        return 1
+    fi
+    return 0
 }

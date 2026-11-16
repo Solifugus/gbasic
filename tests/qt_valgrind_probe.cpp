@@ -11,13 +11,13 @@
 // depends on uninitialised value(s)" inside Qt's own text shaping and layout
 // sizing here, the same five functions it reported under every run_qt_* suite
 // (2026-11-14); on x86 it reports nothing. Three more paths came from
-// run_qt_backend and run_qt_notebook and are made here too: a line edit given
+// run_ui_backend and run_ui_notebook and are made here too: a line edit given
 // its text through setProperty (QWidgetLineControl::finishChange), an image
 // scaled smoothly (QTransform::operator*, via QImage::trueMatrix) and a tool
 // button's menu arrow painted (an unnamed function under
 // QRasterPaintEngine::fillPolygon). --track-origins put every one of the
 // uninitialised values in a Qt allocation: a local of internalSetText, a local
-// of trueMatrix, a heap block under Qt's own painting. And run_qt_backend's
+// of trueMatrix, a heap block under Qt's own painting. And run_ui_backend's
 // menu, tabs and cells fixtures added the sizing of a menu bar, a tab bar and
 // a grid layout, their values allocated by QMenuBar's and QGridLayout's own
 // constructors; a main window with a menu, a tab widget and a grid are here.
@@ -34,7 +34,7 @@
 // sheet with `#id` selectors, set last below. On x86 (Qt 6.10.2), 2026-11-16,
 // valgrind reported "Invalid read of size 16" under QCss::StyleSheet::
 // buildIndexes, 18 bytes into a 28-byte QString Qt's own CSS lexer allocated,
-// in 13 of 20 runs of this step alone and about 1 in 10 of run_qt_capture's
+// in 13 of 20 runs of this step alone and about 1 in 10 of run_ui_capture's
 // access tier; with QT_HASH_SEED fixed (0 or 1) in none of 20. So it is Qt's
 // seeded string hash reading a selector's name 16 bytes at a time.
 //
@@ -149,7 +149,7 @@ int main(int argc, char **argv) {
     chooser.setOption(QFileDialog::DontUseNativeDialog);
     chooser.show();
     // the application's style sheet with ID selectors, as ui.theme(text) sets
-    // it and run_qt_capture writes it (tests/qt_hash.supp)
+    // it and run_ui_capture writes it (tests/qt_hash.supp)
     styled.setObjectName("heading");
     choice.setObjectName("note");
     app.setStyleSheet("#heading { background: #ff0000; } #note { background: #0000ff; }");

@@ -9,7 +9,7 @@
 # introspection -- is gated on every platform, headless, before a widget exists.
 #
 # WHAT IS DELIBERATELY NOT HERE: anything that renders. That is
-# tests/run_qt_backend.sh, which needs Qt in the build and so can SKIP, which is
+# tests/run_ui_backend.sh, which needs Qt in the build and so can SKIP, which is
 # exactly why everything decidable about the declaration is asserted here
 # instead -- a gate that shrinks when a dependency is absent is the failure this
 # file's own glob-discovery note argues against.

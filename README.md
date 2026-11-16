@@ -213,7 +213,7 @@ records, and no module system beyond `load`.
 | **Actors** — shared-nothing multiprocessing | Shipped | — | [design](docs/multiprocessing_design.md) |
 | **LDAP** — bind and search against a directory | Shipped | libldap | [design](docs/ldap_design.md) |
 | **Cryptography** — hashing, HMAC, AES-GCM, Ed25519, JWT | Shipped | libcrypto | [reference](docs/reference.md#cryptography) |
-| **`qt`** — native windows, declared as data (Qt 6) | Shipped | Qt 6 Widgets | [design](docs/qt_gui_design.md) · [cookbook](docs/qt_cookbook.md) |
+| **`qt`** — native windows, declared as data (Qt 6) | Shipped | Qt 6 Widgets | [design](docs/qt_gui_design.md) · [cookbook](docs/ui_cookbook.md) |
 
 Every optional dependency is detected at build time. **The interpreter always
 builds**; a missing library turns its module into a clean runtime error rather
@@ -670,7 +670,7 @@ without a test going red. Eighteen of them:
 
 *Applications and analysis*
 
-- [Windows with Qt](docs/qt_cookbook.md) — a declarative `window` block
+- [Windows with Qt](docs/ui_cookbook.md) — a declarative `window` block
   rendered with Qt 6: a form bound to a record, a list feeding it, menus,
   layout, tabs, theming, a code editor, a window built from data, and the
   event loop that keeps gBASIC's own work running while Qt holds the thread

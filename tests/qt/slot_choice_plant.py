@@ -3,7 +3,7 @@
 something it must flag. "No offenders" is equally satisfied by a scanner that
 read nothing, and a copy under the work directory is the only safe place to
 plant one: src/ is a BUILD INPUT, and the gate's lane scan reports a suite that
-writes one -- it was right to when run_qt_gutter.sh did it (§0.29).
+writes one -- it was right to when run_ui_gutter.sh did it (§0.29).
 
 Usage: slot_choice_plant.py <source> <destination>
 """

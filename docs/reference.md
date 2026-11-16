@@ -5845,7 +5845,7 @@ in the path compiled in at build time — the same two steps `GBASIC_PATH` and
 the installed stdlib already follow — so from the source tree:
 
 ```sh
-GBASIC_SYNTAX_PATH=editors/kate ./gbasic examples/qt/editor.bas
+GBASIC_SYNTAX_PATH=editors/kate ./gbasic examples/ui/editor.bas
 ```
 
 After `make install` that is unnecessary. If no definition is found the editor
@@ -5949,7 +5949,7 @@ webserver handler, an actor mailbox watcher, an `http` event watcher and a
 button clicked from any of them all run inside one. So a `timer`, a webserver
 and an actor mailbox all stop until the question is answered — defensible for a
 desktop application and surprising for one that is also a server. Measured both
-ways through the interpreter, and `tests/run_qt_dialog.sh` asserts it with a
+ways through the interpreter, and `tests/run_ui_dialog.sh` asserts it with a
 real `server` on an OS-assigned port, because a limitation nobody can observe
 is one nobody will believe. A dialog with no display refuses **naming the
 display**, not the shut window.

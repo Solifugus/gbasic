@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# GATE-SCOPE: whole-tree -- parses every program in examples/qt by GLOB, so a new or edited one is in scope without being named
-# Parse-only smoke for the display examples in examples/qt.
+# GATE-SCOPE: whole-tree -- parses every program in examples/ui by GLOB, so a new or edited one is in scope without being named
+# Parse-only smoke for the display examples in examples/ui.
 #
-# run_qt_examples.sh RUNS these, but it skips on a build without Qt, and they
+# run_ui_examples.sh RUNS these, but it skips on a build without Qt, and they
 # can still rot at the syntax level there. This runner parses every one with
 # `--ast` (parse, don't run: no eval, no display, no toolkit needed) and fails
 # if any stops parsing. The GTK and gi example directories it once covered were
@@ -20,11 +20,11 @@ fi
 
 status=0
 shopt -s nullglob
-files=(examples/qt/*.bas)
+files=(examples/ui/*.bas)
 shopt -u nullglob
 
 if [ ${#files[@]} -eq 0 ]; then
-    echo "FAIL run_gui_parse: no display examples found (expected examples/qt/*.bas)"
+    echo "FAIL run_gui_parse: no display examples found (expected examples/ui/*.bas)"
     exit 1
 fi
 

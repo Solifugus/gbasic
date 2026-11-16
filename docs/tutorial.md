@@ -1621,7 +1621,7 @@ the frame chain. A bare `count = count + 1` would not, and would warn.
 
 ### Trying it without a screen
 
-Every example in `examples/qt/` takes a `check` argument: it opens the window,
+Every example in `examples/ui/` takes a `check` argument: it opens the window,
 prints what the program can observe about it, and exits — which is how to
 verify a Qt install without looking at anything, and how the suites gate the
 whole surface. The same trick works for your own programs, and it is worth
@@ -1636,7 +1636,7 @@ renders on a headless server.
 
 ### Where to go next
 
-`examples/qt/` has eleven programs, the first seven taking one aspect each —
+`examples/ui/` has eleven programs, the first seven taking one aspect each —
 layout, tabs, properties, theming, a timer on the loop, menus, and a code
 editor — and the last four combining them into a bound form, a table feeding a
 form, a menu-driven screen and a window built from data. `docs/reference.md`'s

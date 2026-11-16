@@ -2088,7 +2088,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
     QSplitter *psplit = p ? qobject_cast<QSplitter *>(p->widget) : nullptr;
     /* A STATUS BAR HAS NO LAYOUT EITHER and still holds things (§0.30) -- this
      * is the SIXTH door that asks a parent for a layout, and the fifth was
-     * found by run_qt_split.sh's guard tripwire rather than by reading, which
+     * found by run_ui_split.sh's guard tripwire rather than by reading, which
      * is why that tripwire exists. A QStatusBar places its own children with
      * `addWidget`, so what it needs here is for the layout requirement not to
      * be asked of them. */
@@ -7101,7 +7101,7 @@ extern "C" char *gb_qt_table_heading(void *window, const char *name,
  * something CALLS BACK INTO the backend from inside it is invisible to a
  * fixture that drives the verbs in sequence. This is the third such defect in
  * a row (§0.22's own use-after-free, §0.27's reconcile never connecting a
- * built child's handlers, and this), and run_qt_reentry.sh is the answer to
+ * built child's handlers, and this), and run_ui_reentry.sh is the answer to
  * the class rather than to the instance. */
 extern "C" int gb_qt_table_select(void *window, const char *name, int row,
                                  char *err, size_t err_size) {
@@ -8236,7 +8236,7 @@ extern "C" void *gb_qt_tree(void *parent, const char *name,
                             char *err, size_t err_size) {
     GbQtNode *p = (GbQtNode *)parent;
     /* A SPLITTER PARENT HAS NO LAYOUT and still holds things -- the fourth
-     * door to learn it, and the one the guard tier in run_qt_split.sh counts
+     * door to learn it, and the one the guard tier in run_ui_split.sh counts
      * so a fifth cannot be added without one. A file tree beside an editor is
      * the ordinary shape, so this is the parent it will usually have. */
     if (!p || (!p->layout && !qobject_cast<QSplitter *>(p->widget))) {
@@ -8293,10 +8293,10 @@ extern "C" int gb_qt_tree_clear(void *window, const char *name) {
      * takeTopLevelItem's beginRemoveRows when a selected row goes, so a
      * selection handler that refreshes this tree removed rows from inside
      * that removal, and Qt crashed in it (riscv64's Ubuntu 24.04, 6 of 10 runs
-     * of run_qt_reentry, 2026-11-11). Qt 6.10 announces it once the removal is
+     * of run_ui_reentry, 2026-11-11). Qt 6.10 announces it once the removal is
      * over. So the selection model is held quiet while the rows go, and the
      * change -- the selection and the current item emptied -- is announced
-     * afterwards, as 6.10 does: a handler still hears it (run_qt_reentry's
+     * afterwards, as 6.10 does: a handler still hears it (run_ui_reentry's
      * 2117 depends on that), just never mid-removal. */
     QItemSelectionModel *sm = t->selectionModel();
     const bool had_selection = sm && sm->hasSelection();

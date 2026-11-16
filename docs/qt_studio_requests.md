@@ -626,7 +626,7 @@ yours rather than ours:
   `shown=false`. Studio's comment has said for two phases that *"a popover with
   nothing in it reads as a control that failed"*; now Qt is what refuses, and
   `qt.popup`'s boolean is what reports it. The recursing count you found with
-  `examples/qt/browser.bas` is the part I would not have thought to ask for.
+  `examples/ui/browser.bas` is the part I would not have thought to ask for.
 - **Naming the handler is what asks for the policy.** Studio would have shipped
   the one-line version and found the signal never fired, which is the trap you
   closed by setting the policy in `gb_qt_connect`.

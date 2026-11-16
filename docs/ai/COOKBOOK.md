@@ -354,7 +354,7 @@ for error handling, `ERRORS.md`.
   keeps firing while `ui.run()` holds the thread. No actor and no mailbox are
   needed, because `start`/`poll`/`read` never block, so a GUI loop can drive a
   live child without a worker. → `tests/native_platform/plat_proc_basic.bas`
-  (the non-blocking primitives), `examples/qt/clock.bas` (a timer under
+  (the non-blocking primitives), `examples/ui/clock.bas` (a timer under
   `ui.run()`)
 - **Seeing a child's output while it runs** — a gBASIC child's stdout is BLOCK-buffered
   on a pipe, so short output only appears when it exits, and output still buffered when
@@ -448,14 +448,14 @@ for error handling, `ERRORS.md`.
 - **Desktop UI, where to start** — a `window` declaration opened with
   `ui.open`, which is what gBASIC Studio is built on. A window is a record, so
   the same thing can be declared or built from data. Recipes:
-  `docs/qt_cookbook.md`. → `examples/qt_cookbook/01_first_window.bas`
+  `docs/ui_cookbook.md`. → `examples/ui_cookbook/01_first_window.bas`
 - **STATE IN A GUI HANDLER MUST LIVE IN A RECORD** — gBASIC has no closures,
   so a handler can READ a variable in `main` and cannot REBIND one: assigning
   makes a function-local and the outer value never changes (warning 2104 names
   the remedy). Keep the program's state in one record and mutate its fields.
   This is the single most common way gBASIC GUI code fails.
-  → `examples/qt_cookbook/03_state_in_handlers.bas`
+  → `examples/ui_cookbook/03_state_in_handlers.bas`
 - **Testing GUI code** — `QT_QPA_PLATFORM=offscreen` builds real widgets with
   nothing on screen, and `ui.invoke`, `ui.key`, `ui.right_click` and
   `ui.scroll` drive them the way a person would, so a suite asserts behaviour
-  without a display. → `examples/qt_cookbook/13_the_event_loop.bas`
+  without a display. → `examples/ui_cookbook/13_the_event_loop.bas`
