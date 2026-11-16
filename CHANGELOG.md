@@ -16,6 +16,117 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+Nothing yet.
+
+---
+
+## 0.11.0 — 2026-11-16
+
+**Read this first.** This is the largest release so far: 550 commits over a
+month, and **it changes answers an existing program gets**. The first part
+below is what a program written for 0.10.0 may see differently; read it before
+upgrading anything that runs unattended. The second part is what was added.
+Every item names the section below that has the detail.
+
+### What a 0.10.0 program may see differently
+
+**Removed.** GTK and the `gi` bridge, with the `gui`, `gtk`, `gtkui`,
+`gtkui_gtk`, `sourceeditor` and `datagrid` libraries. A GUI is a `window`
+declaration rendered by Qt (*Recorded at release*, and the Qt sections).
+
+**Different answers**, the ones most likely to matter first:
+
+- **Every instant is UTC.** `now()`, `from_epoch`, `file_mtime` and a listing's
+  `modified` answer UTC; `epoch(dt)`, `number(dt)` and `set_mtime` read UTC.
+  Ask for local time by name: `now("local")`, `to_zone(dt, "local")`
+  (*BREAKING: every instant is UTC*).
+- **`unknown` is three-valued.** `unknown = 1` is `unknown`, not false, so
+  `if x = v` with `x` unknown raises; write `not is_unknown(x) and x = v`
+  (*Recorded at release*).
+- **Decimal numbers are exact.** `0.1 + 0.2 = 0.3` is true, `round(2.675, 2)`
+  is 2.68, and `x * 1.0` no longer makes a double (write `x * 1e0`). The
+  database drivers bind exact numbers as exact (*Exact decimal numbers*).
+- **Whole numbers are exact** wherever they arise: `file_size`,
+  `floor`/`ceil`/`round`, `error.code`, positions from `process.run`,
+  `byte_find` and xml, SQLite integers past 2^53, a `for` counter, and the
+  deep comparison of arrays and records (several sections).
+- **`serialize` writes version 3.** Old payloads still read; an exact 7 and an
+  inexact 7.0 now serialize differently, so compare values with `=`, not
+  their serializations (*Recorded at release*).
+- **Regular expressions run on PCRE2**: the first alternative that matches
+  wins (`a|ab` on "ab" is "a"), and PCRE2 is now required to build
+  (*Regular expressions on PCRE2*).
+- **`"\r"` and `"\f"` are a carriage return and a form feed**; write `\\r`
+  and `\\f` for the two characters.
+- **`exit(n)` ends the program from any depth**, where the rest of the calling
+  function used to run (*the core half of the books' last gaps*).
+- **Files and listings:** `read` of a `/proc` or `/sys` file returns its
+  contents, not `""`; a listing labels a dangling link `unknown` and a FIFO or
+  socket `other`, where both were `file`; a broken stderr no longer kills a
+  program.
+- **Spreadsheets and XML:** an xlsx date, time or percent cell comes back
+  typed rather than as a serial number; XML attributes are keyed as written
+  (`r:id`, not `id`); `xml.find` and `xml.find_all` reach every match.
+- **Libraries:** `grid`, `consolidate`, `frame.write_csv`, `market.daily`,
+  `ocr`, `camt`, `llm.from_response` and `ari` each moved an answer; their
+  sections say how.
+- **Smaller:** money that rounds to zero prints `0.00`, not `-0.00`;
+  `--version` on a build that is not a tag reads `0.11.0+<revision>`; `./gbasic`
+  inside its own source tree loads that tree's stdlib first; deep recursion
+  raises error 1005 instead of crashing.
+
+**Now refused**, where it used to run:
+
+- `try` is a reserved word; rename a variable or function called `try`.
+- A statement at the top level of a `library` (an assignment, a `print`):
+  a library is declarations, and a loaded library is checked as a program is.
+- A `watch` in a function on a global, which used to register nothing.
+- A duration scaled to a fraction of a second: `(1 second) * 2.5`.
+- `decode` of an object with a key written twice; a regex replacement naming
+  a group that is not there; an XML entity declared in a DTD; `xml.text`
+  of `unknown`.
+- `frame.read_csv` on a row with the wrong number of fields (it padded it).
+- `csv` and `zip` are native module names, so `load mylib as csv` is refused.
+- Loading `finio_rates` needs libcurl; `process.start` refuses a `stdout:`
+  that is not one of its four words; an LDAP host too long for an address.
+
+**Messages reworded**, so anything quoting one verbatim must re-capture it:
+the file verbs say "expects a path string or file reference"; `append`
+names the `{file}path` form; `for each` lists "an array, a file, an sql block
+or a csv source"; `pg.query` and `odbc.query` take "two to four arguments";
+scrypt's memory refusal states the memory needed; a named watch outside its
+scope explains the rule; `elseif` and `endif` name gBASIC's spelling. New
+warnings: 2121 (an `sql` block never used), 2122 (`1 = "1"` is false), 2123
+(a database timestamp's fraction dropped), 2112 (an exact decimal past 2^53).
+`./tools/since-release.sh v0.10.0` lists every pinned message that moved.
+
+### What was added
+
+- **G-SQL, gBASIC's own database**: SQL with `sql` and `database` blocks,
+  windows, recursive queries, cascades, upserts, `RETURNING`, savepoints,
+  backups, dumps, and an owner process shared by every program using a
+  database.
+- **A GUI on Qt**: the `window` declaration rendered by Qt, with tables,
+  trees, a code editor, menus, docks and dialogs, and `qt.capture` for
+  pictures of a window.
+- **Networking**: `net` (TCP, Unix sockets, TLS, UDP), WebSockets, client
+  certificates on the web server, and MCP over Streamable HTTP.
+- **The language**: typed variables (`x:number = e`), `try expr`, `wait until`,
+  a watch scoped to its function, methods on handles (`h.verb()`), exact
+  decimals, and recursion that raises rather than crashes.
+- **Files, processes and formats**: `csv`, `zip`, PDF reading and embedded
+  fonts, `mail.parse`, text encodings, `read_at`, scratch files, file
+  metadata, `disk_space`, and a child's memory limit.
+- **Cryptography**: SSH's primitives, and what verifying a SAML signature needs.
+- **Business libraries**: `acctexport` for an outside accountant, ECB exchange
+  rates, and the remaining gaps the gBASIC books found.
+- **Ports and installation**: riscv64 and s390x pass the gate (on an Orange Pi
+  RV and under QEMU), `./install.sh` builds and installs on Debian/Ubuntu,
+  Fedora and Arch, and the build prints no warnings.
+
+This is a minor release by the rule 0.6.1 set: things are added, removed and
+reworded. Until 1.0.0 the language surface may still change between releases.
+
 ### The build prints no warnings, and six of them were defects (2026-11-15)
 
 - A fresh clone built on gcc 11 printed 22 warnings, which a newcomer took for
@@ -2250,6 +2361,110 @@ reader terminates — `overwrite` refuses past the end for the opposite and
 equally good reason: writing there would have to invent the bytes in between.
 
 ---
+
+### Recorded at release: changes that landed without an entry
+
+These landed in this release with no section of their own and were found by
+reading the commit list against this file when it was closed. Each is dated by
+its commit.
+
+#### GTK and the `gi` bridge are removed; Qt is gBASIC's GUI (2026-10-22, 19a830fe)
+
+- **REMOVED.** The GTK 3 `gui` module, the `gi` GObject-Introspection bridge,
+  the `gobject`/`gboxed` value kinds (`type()` no longer answers them), the
+  `gtk`, `gtkui`, `gtkui_gtk`, `gui`, `sourceeditor` and `datagrid` libraries,
+  `stdlib/gtksourceview`, and the `HAVE_GTK`/`HAVE_GIR`/`HAVE_GIO` build
+  switches. A GUI is a `window` declaration rendered by Qt now (see the Qt
+  sections above). `gi` went with GTK because nothing used it for anything
+  else. `bound` was kept: it is a general feature. The last commit containing
+  the GTK stack is `d997c94`.
+
+#### `unknown` is three-valued: SQL's truth tables (2026-10-24, 4f3eb1ed)
+
+- **ANSWERS CHANGE.** `unknown` is gBASIC's SQL NULL, so `not`, `and` and `or`
+  follow Kleene's tables and `unknown` propagates through comparison and
+  arithmetic: `unknown = 1`, `unknown > 1`, `-unknown` and even
+  `unknown = unknown` are all `unknown`. `unknown and false` is `false` and
+  `unknown or true` is `true`. `if`, `while` and `until` still refuse an
+  unknown, so **`if x = v` with `x` unknown now raises** where it was false:
+  write `not is_unknown(x) and x = v`, or `default(x, ...)`. The same-value
+  routes (`contains`, `find`, `unique`) still treat `unknown` as itself;
+  `nothing` stays two-valued. Three cookbook recipes now print `unknown`
+  where they printed `false`. `unknown > 5` now says "unknown cannot be used
+  as a condition" where it said "unknown and nothing support only = and !=".
+  `tests/run_three_valued.sh` holds SQL's tables, written by hand.
+
+#### The second equality, and one order for NaN (2026-10-23, f8859430)
+
+- The routes that ask "is this the same value" (`contains`, `find`,
+  `remove_value`, `unique`, the deep comparison of arrays and records, a
+  watcher's change test) treat NaN as the same value as NaN; `sort`, `min`,
+  `max`, `median` and the percentiles put NaN after +inf and before any
+  absence. `=` and `<` keep IEEE's answer.
+- **ANSWER CHANGES:** the deep comparison compared numbers by their double, so
+  `[9007199254740993] = [9007199254740992]` was true while the scalar
+  comparison said false. It compares exactly now.
+
+#### `serialize` writes version 3, the portable encoding (2026-10-23, f0313ef6)
+
+- **BYTES CHANGE.** `serialize` copied integers in the writing machine's byte
+  order and carried only a number's double, so a payload was readable only by
+  the same kind of machine and 2^53 + 1 came back as 2^53. Version 3 is
+  little-endian, carries a number's exactness, writes dates and durations
+  field by field and money with its currency code, and is the encoding G-SQL's
+  rows share. The reader still accepts versions 1 and 2 (and, since this
+  release, from either byte order). **An exact 7 and an inexact 7.0 now
+  serialize differently while `=` calls them equal**, so code that compared
+  serialize output as a stand-in for `=` must compare with `=`. A 0.10.0
+  binary cannot read a version 3 payload.
+
+#### A counted loop's counter is exact (2026-10-30, 27432622)
+
+- `for i = a to b` rebuilt its counter from a double on every pass. It is an
+  exact integer whenever its start and step are (the default step is an exact
+  1): invisible below 2^53, but `i + 2^53` came out one short and a loop
+  starting at 2^53 never ended.
+
+#### `{date}`, `{time}` and `{datetime}` take a datetime (2026-10-31, 7a3df4b4)
+
+- A datetime value converts to its date, its time of day, or a datetime; a
+  value lacking what the kind needs is refused naming what it lacks
+  (`tests/run_datetime_convert.sh`). G-SQL's `CAST AS DATE` takes text's date.
+
+#### Methods on handles (2026-11-01, 6a9d3aec, e4a472e3)
+
+- `h.verb(args)` is `module.verb(h, args)` for G-SQL connections and blocks,
+  Qt windows, and sqlite, pg, odbc, ldap, xml reader, process, http and xlsx
+  workbook handles: a handle's methods are its module's verbs, derived rather
+  than listed. A record's own function field and a variable named like the
+  module still win (`tests/run_handle_methods.sh`).
+
+#### `platform()` (2026-10-17, 2c977d63)
+
+- `platform()` answers `"linux"`, `"windows"`, `"macos"` or `"posix"`, so a
+  program (or a test) can ask rather than assume; merged with the Windows
+  port's path-separator fixes.
+
+#### `elseif`, `elsif`, `elif` and `endif` name gBASIC's spelling (2026-11-02, 815395dd)
+
+- They said `unexpected DOT, expecting LPAREN` (the word parsed as the start of
+  a call). Each now says what to write: "write `else if`, two words, and one
+  `end if` closes the whole chain"; "an if ends with `end if`, two words". A
+  function named `elseif` still works.
+
+#### The Qt widget surface (2026-10-17 to 2026-11-03)
+
+- The Qt sections above describe the backend's opening and its later
+  additions; the widgets between landed without sections of their own. A
+  `window` can hold, and a program drive: form binding, `table` (and a table
+  that asks for its rows), `tree`, `tabs`, `cells`, `text`, `memo`, `choice`,
+  `source` (a code editor with gutter marks), `split`, `scroll`, menus,
+  context menus, docks, a toolbar and a status bar, dialogs and the file
+  chooser, a modal window, icons, the wheel, keyboard shortcuts, the
+  clipboard, column alignment, and a window built at run time as a record (the
+  builder, checked by `qt.check`). `docs/qt_gui_design.md` and
+  `docs/qt_cookbook.md` are the reference; each feature has its own
+  `tests/run_qt_*.sh`.
 
 ## 0.10.0 — 2026-10-16
 

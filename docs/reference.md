@@ -2134,7 +2134,7 @@ end program
 If a `program` block exists, only that program executes. If no `program` block exists, top-level statements are treated as an implicit program.
 
 **A library's body is declarations**: `load`, `function`, `modifier`,
-`database` and `sql` (*since 2026-11-09*). Loading a library runs none of its
+`database` and `sql` (*since 0.11.0*). Loading a library runs none of its
 code, so any other statement at the top of a `library` block is refused when
 it is loaded, at its own line, before the program runs. That includes an
 assignment, a `print`, a `watch`, and a `function obj.f()` attached to a
@@ -7186,7 +7186,7 @@ csrf_token = secure_token(43)
 ### Current Time
 
 **`now()`** - Returns the current time **in UTC** as a second-precision
-`datetime` value. It takes no arguments. *(UTC since 2026-11-10; it was the
+`datetime` value. It takes no arguments. *(UTC since 0.11.0; it was the
 system's local time before. See "Every instant is UTC" below.)* Because `datetime` values support duration
 arithmetic and exact comparison, `now()` is the primitive for expiration and
 deadline logic; everything else (a date-only "today", relative windows) derives
@@ -7207,7 +7207,7 @@ truncation lens as shown above.
 `now("Asia/Tokyo")` — and **`now("local")`** in the system's own zone (`TZ`,
 or `/etc/localtime`). An unknown name is refused.
 
-**Every instant is UTC** *(since 2026-11-10)*. A gBASIC datetime carries no
+**Every instant is UTC** *(since 0.11.0)*. A gBASIC datetime carries no
 zone, so the language fixes one: a datetime that stands for a moment is in
 UTC. `now()`, `from_epoch(n)`, `file_mtime(f)` and a directory entry's
 `modified` all answer UTC; `epoch(dt)`, `number(dt)` and `set_mtime(f, dt)`
@@ -7350,7 +7350,7 @@ because "could not parse" alone cannot tell you whether the data is wrong or
 your list is short.
 
 **`epoch()`** returns the current instant as Unix seconds. **`epoch(dt)`**
-places a datetime on the timeline by reading it as **UTC** *(since 2026-11-10;
+places a datetime on the timeline by reading it as **UTC** *(since 0.11.0;
 it read local before)*; **`epoch(dt, zone)`** reads it as civil time in that
 zone, for a value that came from somewhere in local time:
 
@@ -9475,7 +9475,7 @@ File metadata and atomic replacement:
   `integer` column takes it *(2026-11-09; it was inexact)*. Takes a path string or a file reference. A directory has
   no content size and raises; a missing path raises with the OS reason.
 - `file_mtime(f)` — the file's last-modification time as a `datetime`, from
-  `stat`, in UTC *(since 2026-11-10; local time before)*. **Second resolution:** gBASIC's `datetime` has no
+  `stat`, in UTC *(since 0.11.0; local time before)*. **Second resolution:** gBASIC's `datetime` has no
   sub-second field, so any nanosecond part of the filesystem timestamp is
   dropped rather than fabricated. Takes a path string or a file reference; works for
   directories too (a directory's mtime is a real change signal). A missing path
@@ -11768,7 +11768,7 @@ whole program without needing a call site.
   it also refuses a page whose skew, across the words' span, drifts more than
   half its median line pitch, where a row starts to carry the next row's
   figures (measured on real invoices at 2.2 degrees). The refusal names the
-  page's own `units`, so a page from `pdf` says points (*since 2026-11-10*).
+  page's own `units`, so a page from `pdf` says points (*since 0.11.0*).
 
   **It never returns a bare string, never silently drops a low-confidence word,
   and corrects nothing.** Each is a refusal with a measurement behind it. Plain
@@ -11804,7 +11804,7 @@ whole program without needing a call site.
   and `ari_discover` infers a specification from — so this is a front door to
   machinery that already exists rather than a new pipeline.
 
-- `pdf` — **reading a PDF** (`docs/pdf_read_design.md`, *since 2026-11-09*).
+- `pdf` — **reading a PDF** (`docs/pdf_read_design.md`, *since 0.11.0*).
   Pure gBASIC over poppler's programs (`pdfinfo`, `pdftotext`, `pdftohtml`,
   `pdfimages`, the poppler-utils package), which are run rather than linked:
   poppler is GPL. `pdf.available()` says whether they are installed, and every
@@ -11837,7 +11837,7 @@ whole program without needing a call site.
     `scan_rotation` is the turn `ocr` found the scan needed (0, 90, 180 or
     270 clockwise; `unknown` when the engine could not tell, which tesseract
     says of a page with few characters) and `scan_rotation_confidence` its
-    confidence. **A turned scan is answered as read** (*since 2026-11-10*,
+    confidence. **A turned scan is answered as read** (*since 0.11.0*,
     book gap G66): its words, its pictures, `width` and `height` are in the
     upright page, so a scan fed through sideways is 612 by 792 points with
     its words where they print, not a 792 by 612 page with its words on
