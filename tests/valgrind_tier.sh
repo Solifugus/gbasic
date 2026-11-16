@@ -46,6 +46,11 @@ if [ "$(uname -m 2>/dev/null)" = s390x ]; then
     VG_FLAGS="$VG_FLAGS --suppressions=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qt.supp"
     VG_ACCESS_FLAGS="$VG_ACCESS_FLAGS --suppressions=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qt.supp"
 fi
+# AND ONE ON EVERY ARCHITECTURE: tests/qt_hash.supp names a 16-byte read in
+# Qt's style sheet parser, under its seeded string hash, reproduced with no
+# gBASIC by tests/qt_valgrind_probe.cpp. It names Qt's own frames only.
+VG_FLAGS="$VG_FLAGS --suppressions=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qt_hash.supp"
+VG_ACCESS_FLAGS="$VG_ACCESS_FLAGS --suppressions=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qt_hash.supp"
 vg_available() { command -v valgrind >/dev/null 2>&1; }
 
 # shellcheck disable=SC2086

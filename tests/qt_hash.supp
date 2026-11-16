@@ -1,0 +1,30 @@
+# A valgrind suppression for a read INSIDE Qt, applied on EVERY architecture
+# through tests/valgrind_tier.sh (tests/qt.supp's entries are s390x's alone).
+#
+# tests/odbc.supp's rule: reproduced with NO gBASIC in the stack before it was
+# written. tests/qt_valgrind_probe.cpp's last step is that program -- the
+# application's style sheet set with `#heading` and `#note` selectors, as
+# run_qt_capture's fixture sets it through ui.theme(text).
+#
+# ON x86 (Qt 6.10.2), 2026-11-16: "Invalid read of size 16" whose innermost
+# frames are unnamed code in libQt6Core and libQt6Gui under
+# QCss::StyleSheet::buildIndexes, 18 bytes into a 28-byte QString allocated
+# by Qt's own CSS lexer (QCss::Symbol::lexem). The probe alone reported it in
+# 13 of 20 runs; run_qt_capture's access tier in about 1 of 10, which is the
+# flake that tier showed from 2026-11-16. With QT_HASH_SEED fixed at 0 or 1
+# the probe reported it in none of 20 -- so it is Qt hashing a selector's name
+# with 16-byte loads, whose overrun depends on the per-process random seed.
+#
+# NARROW ON PURPOSE: a 16-byte read (Addr16, which our C does not make),
+# innermost in libQt6Core, under the index builder of Qt's style sheet parser.
+# The text gBASIC hands Qt is copied into Qt's own strings before this runs,
+# so no gBASIC buffer can be the block it reads.
+
+{
+   qt-qcss-buildindexes-seeded-hash-addr16
+   Memcheck:Addr16
+   obj:*/libQt6Core.so*
+   obj:*/libQt6Gui.so*
+   obj:*/libQt6Gui.so*
+   fun:_ZN4QCss10StyleSheet12buildIndexesEN2Qt15CaseSensitivityE
+}

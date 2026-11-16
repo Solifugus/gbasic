@@ -30,6 +30,14 @@
 // origin was in QLabel's, QComboBox's or QFileDialog's own construction.
 // Whether it is Qt's s390x build or valgrind's s390x support was not separated.
 //
+// AND ONE ON EVERY ARCHITECTURE, tests/qt_hash.supp's: the application's style
+// sheet with `#id` selectors, set last below. On x86 (Qt 6.10.2), 2026-11-16,
+// valgrind reported "Invalid read of size 16" under QCss::StyleSheet::
+// buildIndexes, 18 bytes into a 28-byte QString Qt's own CSS lexer allocated,
+// in 13 of 20 runs of this step alone and about 1 in 10 of run_qt_capture's
+// access tier; with QT_HASH_SEED fixed (0 or 1) in none of 20. So it is Qt's
+// seeded string hash reading a selector's name 16 bytes at a time.
+//
 //   g++ -o probe tests/qt_valgrind_probe.cpp $(pkg-config --cflags --libs Qt6Widgets)
 //   QT_QPA_PLATFORM=offscreen QT_ENABLE_REGEXP_JIT=0 valgrind --suppressions=tests/qt.supp ./probe
 //
@@ -140,6 +148,11 @@ int main(int argc, char **argv) {
     QFileDialog chooser(nullptr, "Open", "/tmp");
     chooser.setOption(QFileDialog::DontUseNativeDialog);
     chooser.show();
+    // the application's style sheet with ID selectors, as ui.theme(text) sets
+    // it and run_qt_capture writes it (tests/qt_hash.supp)
+    styled.setObjectName("heading");
+    choice.setObjectName("note");
+    app.setStyleSheet("#heading { background: #ff0000; } #note { background: #0000ff; }");
     QTimer::singleShot(200, &app, &QApplication::quit);
     return app.exec();
 }
