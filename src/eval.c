@@ -1131,7 +1131,9 @@ static int gsql_library_loaded = 0;
 static int odbc_library_loaded = 0;
 static int webclient_library_loaded = 0;
 static int http_library_loaded = 0;
+#if HAVE_LIBCURL
 static void http_bind_events_global(void);
+#endif
 static int inbox_events_watched(void);
 static void inbox_bind_global(void);
 static int inbox_loop_active(void);
@@ -4279,6 +4281,7 @@ static void raise_report_fatal(void) {
  * instead of dying: report the diagnostic -- the old model reported at raise
  * time, so silence here would be a regression -- then clear the flight so the
  * loop that pumped the handler keeps running. */
+#if HAVE_QT   /* its one caller is the Qt module's: unused, and said so, without it */
 static void raise_report_contained(void) {
     gb_span span = { current_error.line, current_error.column,
                      current_error.line, current_error.column };
@@ -4289,6 +4292,7 @@ static void raise_report_contained(void) {
     raise_in_flight = 0;
     error_clear_state();
 }
+#endif
 
 
 static Value value_warning_object(void);
@@ -4395,15 +4399,6 @@ static int warn_site_first_time(int line, int column) {
     warn_sites = grown;
     warn_site_count++;
     return 1;
-}
-
-static void warn_sites_clear(void) {
-    for (size_t i = 0; i < warn_site_count; i++) {
-        free(warn_sites[i]);
-    }
-    free(warn_sites);
-    warn_sites = NULL;
-    warn_site_count = 0;
 }
 
 /* Takes ownership of `details` (VALUE_NULL for none). */
@@ -14301,12 +14296,6 @@ static Value eval_user_function_bound(AstExpr *expr,
     return invoke_function(stmt, args, supplied, receiver);
 }
 
-static Value eval_user_function_with_receiver(AstExpr *expr,
-                                              FunctionDef *function,
-                                              Value *receiver) {
-    return eval_user_function_bound(expr, function, receiver, NULL);
-}
-
 static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
     return eval_user_function_bound(expr, function, NULL, NULL);
 }
@@ -19702,6 +19691,7 @@ static int json_strict_decode(const char *body, size_t length, Value *out, char 
     return 0;
 }
 
+#if HAVE_ODBC || HAVE_LIBPQ   /* its callers are odbc's and pg's: unused, and said so, without both */
 /* A DATABASE TIMESTAMP'S FRACTION, DROPPED, IS SAID (book gap G47, Matthew's
  * ruling): a gBASIC datetime holds whole seconds, so `10:00:00.75` arrives as
  * 10:00:00, and two rows a quarter-second apart compare equal. Warned rather
@@ -19723,6 +19713,7 @@ static void datetime_fraction_warn(const char *module, const char *column, const
                  module, text, column ? column : "?");
     }
 }
+#endif
 
 #if HAVE_LIBCURL
 #define WEBCLIENT_ERROR_CODE 3001
@@ -20036,10 +20027,6 @@ static int webclient_validate_url(const char *url) {
     return 1;
 }
 
-
-static int webclient_decode_json(const char *body, Value *out) {
-    return json_strict_decode(body, strlen(body), out, NULL, 0);
-}
 
 /* A RESPONSE BODY IS BYTES (PLAT-NUL, 2026-09-25).
  *
@@ -21396,7 +21383,6 @@ static void http_shutdown(void) {
  * module does; these exist so the value lifecycle and the event loop compile
  * and behave identically in a build with the feature switched off. */
 static void http_handle_detach(HttpHandle *handle) { (void)handle; }
-static void http_bind_events_global(void) {}
 static int http_loop_active(void) { return 0; }
 static int http_loop_service(void) { return 1; }
 static size_t http_collect_fds(int *fds, short *events, size_t max) {
@@ -24101,6 +24087,7 @@ static int webserver_run_event_loop(void) {
  * nothing when there is nothing of ours to service is deliberate: a window
  * with no webserver, no transfer and no timer behind it must not be torn down
  * because gBASIC had no work. */
+#if HAVE_QT   /* the Qt tick is its one caller */
 static int webserver_run_event_loop_once(void) {
     if (runtime_stopped ||
         (!webserver_any_active() && !aux_loop_sources_active())) {
@@ -24112,6 +24099,7 @@ static int webserver_run_event_loop_once(void) {
     }
     return 1;
 }
+#endif
 
 /* PLAT-WEB-1 Gap A: where to bind.
  *
@@ -25952,6 +25940,7 @@ static Value sqlite_eval_call(AstExpr *expr) {
 }
 #endif
 
+#if HAVE_ODBC || HAVE_LIBPQ   /* its callers are odbc's and pg's: unused, and said so, without both */
 /* A ROW CAP THAT DOES NOT BUFFER PAST IT (gdash's GDASH-16 B2): `max_rows` on
  * `pg.query` and `odbc.query`. Over the cap is RAISED, not truncated, so a
  * caller cannot quietly keep a partial result: code 1003 from the module, and
@@ -25998,6 +25987,7 @@ static int db_query_options(Value options, const char *module, long long *out, i
     }
     return 1;
 }
+#endif
 
 #if HAVE_ODBC
 #define ODBC_ERROR_CODE 2003
@@ -31887,7 +31877,7 @@ static Value reflect_eval_call(AstExpr *expr) {
 /* A method call whose receiver is an arbitrary expression: a.b.method(),
  * a[0].widget.present(), make().show(). The receiver is evaluated exactly ONCE
  * and dispatched by runtime kind through the SAME invocation machinery as the
- * single-identifier forms (eval_user_function_with_receiver for record methods,
+ * single-identifier forms (eval_user_function_bound for record methods,
  * gi_invoke_method_on for gobject/boxed). An lvalue receiver (ident/field/index)
  * is resolved to its LIVE cell so a record method mutates through it exactly like
  * obj.method(); a non-lvalue receiver (a call result) is evaluated to a temporary.

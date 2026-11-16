@@ -867,7 +867,6 @@ static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
 %destructor { free($$); }                              <text>
 %destructor { ast_free_expr($$); }                     <expr>
 %destructor { ast_free_stmt($$); }                     <stmt>
-%destructor { ast_free_program($$); }                  <stmt_list>
 %destructor { ast_free_expr_list($$); }                <expr_list>
 %destructor { ast_free_record_field_list($$); }        <record_field_list>
 %destructor { ast_free_consider_branch_list($$); }     <consider_branch_list>
@@ -883,10 +882,10 @@ static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
 /* Bison also treats THE START SYMBOL AS DISCARDED WHEN THE PARSE SUCCEEDS: on
  * YYACCEPT the cleanup loop pops the whole stack, `program` included. Its value
  * has already been handed to ctx->parsed_program (and thence to the caller's
- * out_program), so letting the <stmt_list> destructor above run on it frees the
- * finished AST out from under the evaluator. This per-symbol destructor overrides
- * the per-type one for `program` alone and deliberately does nothing — ownership
- * moved to ctx. `program` is only ever on the stack after its own reduction, i.e.
+ * out_program), so a destructor freeing it would free the finished AST out from
+ * under the evaluator. This one deliberately does nothing -- ownership moved to
+ * ctx. (A per-TYPE <stmt_list> destructor stood above until 2026-11-15; every
+ * symbol of that type has its own, so bison never applied it and said so.) `program` is only ever on the stack after its own reduction, i.e.
  * one step from accepting, so exempting it leaks nothing on the error paths. */
 %destructor { (void) $$; }                             program
 
@@ -1670,6 +1669,7 @@ on_error_statement
                     "its statement, so there is nothing to jump away from "
                     "(use goto next, stop, ignore or print)");
         free($2); free($4);
+        $$ = NULL;   /* never used: YYERROR discards it, but bison asks every rule to set one */
         YYERROR;
       }
     | ON IDENT STOP {
@@ -2631,8 +2631,15 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     {
         /* Convert exactly the token's bytes (handles decimal and 0x hex), so a
          * following character can never extend what strtod reads. */
-        char numbuf[64];
-        size_t nlen = token.length < sizeof(numbuf) - 1 ? token.length : sizeof(numbuf) - 1;
+        /* ALL OF IT: a literal longer than this buffer used to be cut to
+         * its first 63 characters, so `1` and 69 zeros read as 1e62
+         * (2026-11-15); a longer one is copied to the heap. */
+        char small[64];
+        size_t nlen = token.length > 0 ? (size_t)token.length : 0;
+        char *numbuf = nlen < sizeof small ? small : malloc(nlen + 1);
+        if (!numbuf) {
+            abort();
+        }
         memcpy(numbuf, token.start, nlen);
         numbuf[nlen] = '\0';
         lvalp->numlit.value = strtod(numbuf, NULL);
@@ -2664,6 +2671,9 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
                 lvalp->numlit.exact = mantissa;
                 lvalp->numlit.scale = scale;
                 lvalp->numlit.value = gb_decimal_to_double(mantissa, scale);
+            }
+            if (numbuf != small) {
+                free(numbuf);
             }
             return NUMBER;
         }
@@ -2697,6 +2707,9 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
                     lvalp->numlit.value = (double)parsed;
                 }
             }
+        }
+        if (numbuf != small) {
+            free(numbuf);
         }
         return NUMBER;
     }

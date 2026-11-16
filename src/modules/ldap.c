@@ -258,14 +258,21 @@ static Value ldap_eval_connect(AstExpr *expr) {
     }
     value_free(config);
 
+    /* REFUSED IF IT DOES NOT FIT: it was cut silently to the buffer, so a
+     * connection went to a host that was not the one named (2026-11-15) */
     char uri[1024];
-    snprintf(uri, sizeof(uri), "%s://%s:%ld",
-             is_ldaps ? "ldaps" : "ldap", host, port);
+    int ulen = snprintf(uri, sizeof(uri), "%s://%s:%ld",
+                        is_ldaps ? "ldaps" : "ldap", host, port);
+    if (ulen < 0 || (size_t)ulen >= sizeof(uri)) {
+        free(host); free(security); free(ca_file);
+        ldap_raise("ldap.connect: the host is too long; the server's address must fit in 1023 bytes");
+        return value_null();
+    }
 
     LDAP *ld = NULL;
     int rc = ldap_initialize(&ld, uri);
     if (rc != LDAP_SUCCESS || !ld) {
-        char msg[512];
+        char msg[sizeof(uri) + 512];   /* the whole address, and the reason */
         snprintf(msg, sizeof(msg), "ldap.connect could not initialize %s: %s",
                  uri, ldap_err2string(rc));
         free(host); free(security); free(ca_file);
@@ -318,7 +325,7 @@ static Value ldap_eval_connect(AstExpr *expr) {
     if (is_starttls) {
         rc = ldap_start_tls_s(ld, NULL, NULL);
         if (rc != LDAP_SUCCESS) {
-            char msg[512];
+            char msg[sizeof(uri) + 512];   /* the whole address, and the reason */
             char *diag = NULL;
             ldap_get_option(ld, LDAP_OPT_DIAGNOSTIC_MESSAGE, &diag);
             snprintf(msg, sizeof(msg), "StartTLS failed against %s: %s%s%s",

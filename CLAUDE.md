@@ -312,6 +312,13 @@ native dependency is missing. GUI testing is manual (needs a display).
   `builtins.o` made it LIE ABOUT THE BINARY IT WAS IN, which is the defect that
   change was made to remove. Measured — after `make LIBCRYPTO_AVAILABLE=0
   ZLIB_AVAILABLE=0` with no clean, `has_builtin("sha256")` still answered true.
+- **The build prints no warnings**, on gcc 11 (22.04) and the newest
+  compilers, with every module and with any of them switched off; CI fails on
+  one (`grep "warning:"` over the build, not `-Werror`, so a newer compiler
+  cannot break a newcomer's build). Fix a warning at its cause: on 2026-11-15
+  six of the 22 were real defects (`--add-loads` skipping `for ... to`, `do`
+  and `unwatch`; a numeric literal cut at 63 characters; an LDAP host cut to
+  fit). A helper used only under some `HAVE_*` takes that same guard.
 - Design docs in `docs/` may describe unimplemented future work; check the
   implementation-status documents (and `eval.c`) before treating a proposal as a
   shipped feature. `docs/historical_development_archive.md` records completed

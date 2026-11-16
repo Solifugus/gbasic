@@ -1056,6 +1056,8 @@ const char *token_type_name(TokenType type) {
     case TOKEN_FALSE: return "FALSE";
     case TOKEN_NOTHING: return "NOTHING";
     case TOKEN_UNKNOWN: return "UNKNOWN";
+    case TOKEN_EXCLUDING: return "EXCLUDING";
+    case TOKEN_INTERSECTING: return "INTERSECTING";
     case TOKEN_AND: return "AND";
     case TOKEN_OR: return "OR";
     case TOKEN_NOT: return "NOT";

@@ -86,8 +86,19 @@ jobs:
       - name: Report what was detected
         run: ./tools/check-deps.sh
 
-      - name: Build everything
-        run: make dev
+      # NO WARNINGS, asserted here rather than by -Werror: a newer compiler
+      # adding one must not break the build for everyone who clones the
+      # repository, but it must redden CI. A fresh clone printed 22 on gcc 11
+      # and a newcomer read them as errors (2026-11-15); six of them were
+      # pointing at real defects.
+      - name: Build everything, with no warnings
+        run: |
+          make dev 2>&1 | tee build.log
+          test "${PIPESTATUS[0]}" = 0
+          if grep "warning:" build.log; then
+            echo "::error::the build printed warnings (above); fix each at its cause"
+            exit 1
+          fi
 
       # AND THE DETECTION IS ASSERTED, not merely reported, which is why this
       # sits AFTER the build and asks THE BINARY the build produced rather than
@@ -284,8 +295,16 @@ jobs:
           # 22.04 packages 10.39, above the 10.34 MATCH_INVALID_UTF needs
           sudo apt-get install -y -qq build-essential bison libpcre2-dev
 
-      - name: Build
-        run: make
+      # NO WARNINGS on the oldest compiler with nothing optional installed,
+      # which is the build a newcomer on 22.04 makes first (see the job above)
+      - name: Build, with no warnings
+        run: |
+          make 2>&1 | tee build.log
+          test "${PIPESTATUS[0]}" = 0
+          if grep "warning:" build.log; then
+            echo "::error::the build printed warnings (above); fix each at its cause"
+            exit 1
+          fi
 
       - name: The interpreter must work
         run: |

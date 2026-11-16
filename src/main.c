@@ -710,6 +710,22 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
         analyze_expr(ctx, stmt->as.for_each.iterable);
         analyze_stmt_list(ctx, stmt->as.for_each.body);
         break;
+    /* THESE THREE HAD NO CASE, so a call in one was never seen (2026-11-15,
+       found by -Wswitch): every statement kind is named here, with no
+       `default:`, so the compiler says when a new one arrives unwalked */
+    case AST_STMT_FOR_RANGE:
+        analyze_expr(ctx, stmt->as.for_range.start);
+        analyze_expr(ctx, stmt->as.for_range.limit);
+        analyze_expr(ctx, stmt->as.for_range.step);
+        analyze_stmt_list(ctx, stmt->as.for_range.body);
+        break;
+    case AST_STMT_DO_LOOP:
+        analyze_stmt_list(ctx, stmt->as.do_loop.body);
+        analyze_expr(ctx, stmt->as.do_loop.condition);
+        break;
+    case AST_STMT_UNWATCH:
+        analyze_expr(ctx, stmt->as.unwatch_expr);
+        break;
     case AST_STMT_RETURN:
         analyze_expr(ctx, stmt->as.return_expr);
         break;
@@ -772,6 +788,10 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
     case AST_STMT_ON_ERROR_GOTO:
     case AST_STMT_ON_ERROR_GOTO_NEXT:
     case AST_STMT_ON_ERROR_STOP:
+    case AST_STMT_ON_WARNING:   /* a mode, nothing to walk */
+        break;
+    case AST_STMT_WARNING:      /* the parser builds none (warnings are the builtin); walked anyway */
+        analyze_expr(ctx, stmt->as.error_message);
         break;
     }
 }

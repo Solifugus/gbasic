@@ -16,6 +16,30 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+### The build prints no warnings, and six of them were defects (2026-11-15)
+
+- A fresh clone built on gcc 11 printed 22 warnings, which a newcomer took for
+  errors. Each is fixed at its cause, and six were pointing at real defects:
+  - `--add-loads` never looked inside a counted `for`, a `do` loop or an
+    `unwatch`, so a library call there got no `load` line (the statement
+    walk had no case for them);
+  - a numeric literal longer than 63 characters was cut to its first 63, so
+    `1` and 69 zeros read as 1e62 while `number()` on the same text gave
+    1e69; a literal of any length is now converted whole;
+  - an LDAP host too long for the 1023-byte server address was cut to fit, so
+    a connection went to a host that was not the one named; it is refused;
+  - `--ast` printed an `unwatch` as an empty line and hung the next statement
+    on it, and `--tokens` printed `excluding` and `intersecting` as UNKNOWN;
+  - an xlsx refusal's name too long for its buffer was cut silently; it ends
+    in `...` now, so a cut name cannot pass for a whole one.
+- The rest: three functions nothing called, removed; helpers used only by Qt,
+  libcurl, ODBC/PostgreSQL or xlsx guarded as their callers are; a bison
+  destructor bison never applied; a vendored OpenSSH constant that is 32 bytes
+  of data by design. Checked on gcc 11 and gcc 15, with every module and with
+  all of them and each of them switched off. CI now fails on a warning, in the
+  newest-compiler job and the 22.04 job, without `-Werror`, so a newer
+  compiler cannot break the build for someone cloning it.
+
 ### `wait:` on gsql.connect and in a database block (2026-11-15)
 
 - How long a connect waits for the database's owner to answer, or for one it

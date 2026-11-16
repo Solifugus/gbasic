@@ -180,6 +180,14 @@ check("a connection with no host is refused",
         contains(error.message, "needs a host"), true)
 error.clear()
 
+' A HOST TOO LONG FOR THE SERVER'S ADDRESS: it was cut silently to fit 1023
+' bytes, so a connection went to a host that was not the one named (found
+' from a -Wformat-truncation warning, 2026-11-15)
+x = ldap.connect({ host: repeat("a", 2000), port: plain_port, security: "plain" })
+check("a host too long for an address is refused, not cut",
+        contains(error.message, "too long"), true)
+error.clear()
+
 x = ldap.search(c, { base: "dc=example,dc=com", scope: "sideways",
                        filter: "(uid=alice)" })
 check("an unknown scope is refused",

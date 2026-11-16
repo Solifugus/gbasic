@@ -2224,6 +2224,24 @@ typedef struct {
     char unsupported_name[64];
 } XlsxEval;
 
+/* What is refused, and by what name: the flag, and the name formatted into
+ * its buffer. A name too long for it ENDS IN "..." so a cut one cannot pass
+ * for a whole one (the blockers ranking counts refusals by name); it was cut
+ * silently, which gcc 11 said at each site that formats one (2026-11-15). */
+#if defined(__GNUC__)
+static void xlsx_refuse_name(XlsxEval *ev, const char *fmt, ...) __attribute__((format(printf, 2, 3)));
+#endif
+static void xlsx_refuse_name(XlsxEval *ev, const char *fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int n = vsnprintf(ev->unsupported_name, sizeof ev->unsupported_name, fmt, ap);
+    va_end(ap);
+    if (n >= (int)sizeof ev->unsupported_name) {
+        memcpy(ev->unsupported_name + sizeof ev->unsupported_name - 4, "...", 4);
+    }
+    ev->unsupported = 1;
+}
+
 /* The snapshot for `sheet`, or NULL if there is no such sheet. An empty name
  * means the sheet under evaluation. */
 static const XlsxSnap *xlsx_eval_sheet(XlsxEval *ev, const char *sheet) {
@@ -2317,9 +2335,7 @@ static XlsxVal xlsx_cell_value_in(XlsxEval *ev, const char *sheet, int external,
          * value in xl/externalLinks, but reading a stale copy of a file we do
          * not have and presenting it as current would be exactly the confident
          * wrong number this module refuses. Reported by name instead. */
-        ev->unsupported = 1;
-        snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
-                 "external workbook reference %s!%s", sheet, ref);
+        xlsx_refuse_name(ev, "external workbook reference %s!%s", sheet, ref);
         return xv_err("#REF!");
     }
     long col, row;
@@ -2555,9 +2571,7 @@ static XlsxVal xlsx_intersect_range(XlsxEval *ev, const char *sheet, int ext,
                                     const char *first, const char *second) {
     if (ev->fr) return xv_err("#REF!");
     if (ext) {
-        ev->unsupported = 1;
-        snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
-                 "external workbook reference %s", sheet);
+        xlsx_refuse_name(ev, "external workbook reference %s", sheet);
         return xv_err("#REF!");
     }
     const XlsxSnap *rs = xlsx_eval_sheet(ev, sheet);
@@ -2658,9 +2672,7 @@ static void xlsx_arg_values(XlsxEval *ev, XlsxVal **vals, const XlsxSnapCell ***
                 }
                 const XlsxSnap *rs = ext ? NULL : xlsx_eval_sheet(ev, sheet);
                 if (ext) {
-                    ev->unsupported = 1;
-                    snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
-                             "external workbook reference %s", sheet);
+                    xlsx_refuse_name(ev, "external workbook reference %s", sheet);
                 }
                 if (rs && xlsx_range_bounds(rs, first, second, &c1, &r1, &c2, &r2)) {
                     if (c1 > c2) { long t = c1; c1 = c2; c2 = t; }
@@ -3644,9 +3656,7 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         if (!is_match && argc >= 5) { xlsx_as_num(ARG_AT(4, 0), &mode); has_mode = 1; }
         if (is_match && argc >= 3) { xlsx_as_num(ARG_AT(mode_arg, 0), &mode); has_mode = 1; }
         if (has_mode && mode != 0) {
-            ev->unsupported = 1;
-            snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
-                     "%s (match_mode %g)", name, mode);
+            xlsx_refuse_name(ev, "%s (match_mode %g)", name, mode);
             out = xv_err("#NAME?");
             goto done;
         }
@@ -3846,9 +3856,7 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         }
         int op = (int)fn;
         if (op > 13) {
-            ev->unsupported = 1;
-            snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
-                     "AGGREGATE (function %d)", op);
+            xlsx_refuse_name(ev, "AGGREGATE (function %d)", op);
             out = xv_err("#NAME?");
             goto done;
         }
@@ -3877,9 +3885,7 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         case 6:  out = xv_num(cnt ? prod : 0); break;
         case 9:  out = xv_num(total); break;
         default:
-            ev->unsupported = 1;
-            snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
-                     "AGGREGATE (function %d)", op);
+            xlsx_refuse_name(ev, "AGGREGATE (function %d)", op);
             out = xv_err("#NAME?");
             break;
         }
@@ -3967,9 +3973,7 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         } else if (ib == 2 || ib == 3) {
             out = xv_num((double)(s1 - s0) / (ib == 2 ? 360.0 : 365.0));
         } else {
-            ev->unsupported = 1;
-            snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
-                     "YEARFRAC (basis %d)", ib);
+            xlsx_refuse_name(ev, "YEARFRAC (basis %d)", ib);
             out = xv_err("#NAME?");
         }
     } else if (strcmp(name, "EOMONTH") == 0 || strcmp(name, "EDATE") == 0) {
@@ -4123,8 +4127,7 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
          * the rest of the module follows. */
         if (fold && (strchr(nee, '*') || strchr(nee, '?'))) {
             free(nee); free(hay);
-            ev->unsupported = 1;
-            snprintf(ev->unsupported_name, sizeof ev->unsupported_name, "SEARCH with wildcards");
+            xlsx_refuse_name(ev, "SEARCH with wildcards");
             out = xv_err("#NAME?"); goto done;
         }
         const char *base = hay + xlsx_cp_off(hay, from_cp);
@@ -4415,8 +4418,7 @@ static XlsxVal xlsx_call(XlsxEval *ev, const char *raw_name) {
         /* REFUSE LOUDLY. In a financial model a plausible wrong number is worse
          * than a failure, so an unimplemented function is reported by name
          * rather than defaulted to zero (§13.G). */
-        ev->unsupported = 1;
-        snprintf(ev->unsupported_name, sizeof ev->unsupported_name, "%s", name);
+        xlsx_refuse_name(ev, "%s", name);
         out = xv_err("#NAME?");
     }
 
@@ -4484,9 +4486,7 @@ static XlsxVal xlsx_primary(XlsxEval *ev) {
          * class off the roadmap -- the blockers ranking counts refusals by
          * the name refused, and this path never recorded one. */
         if (!xlsx_next_is_lparen(&ev->lx)) {
-            ev->unsupported = 1;
-            snprintf(ev->unsupported_name, sizeof ev->unsupported_name,
-                     "defined name %s", ev->lx.cur.text);
+            xlsx_refuse_name(ev, "defined name %s", ev->lx.cur.text);
             v = xv_err("#NAME?");
             xlsx_lex_next(&ev->lx);
             break;
@@ -4605,8 +4605,11 @@ static XlsxVal xlsx_expr(XlsxEval *ev) {
            (strcmp(ev->lx.cur.text, "=") == 0 || strcmp(ev->lx.cur.text, "<>") == 0 ||
             strcmp(ev->lx.cur.text, "<") == 0 || strcmp(ev->lx.cur.text, ">") == 0 ||
             strcmp(ev->lx.cur.text, "<=") == 0 || strcmp(ev->lx.cur.text, ">=") == 0)) {
+        /* one of the six above, so one or two bytes */
         char op[4];
-        snprintf(op, sizeof op, "%s", ev->lx.cur.text);
+        size_t oplen = strlen(ev->lx.cur.text);
+        memcpy(op, ev->lx.cur.text, oplen < sizeof op ? oplen : sizeof op - 1);
+        op[oplen < sizeof op ? oplen : sizeof op - 1] = '\0';
         xlsx_lex_next(&ev->lx);
         XlsxVal b = xlsx_concat(ev);
         XlsxVal r;
@@ -6325,6 +6328,7 @@ static xmlNodePtr xlsx_cell_node(xmlDocPtr doc, const char *ref, int create) {
 
 #endif /* HAVE_ZLIB && HAVE_LIBXML2: creating */
 
+#if HAVE_ZLIB && HAVE_LIBXML2   /* xlsx.try_open's, which needs both */
 /* {ok, value, workbook, message}: the try_decode shape, whose field is
  * `value` (gap G15 from the gBASIC books), and `workbook`, the name it had,
  * the same handle, kept so programs written against it still run. */
@@ -6347,6 +6351,7 @@ static Value xlsx_try_result(int ok, Value workbook, const char *message) {
     *fields[3].value = value_string(message);
     return value_record(fields, 4);
 }
+#endif
 
 static Value xlsx_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;

@@ -1250,6 +1250,10 @@ static void dump_stmt(AstStmt *stmt, int indent) {
     case AST_STMT_GOSUB:
         printf("Gosub %s\n", stmt->as.gosub_label);
         break;
+    case AST_STMT_UNWATCH:
+        printf("Unwatch\n");
+        dump_expr(stmt->as.unwatch_expr, indent + 1);
+        break;
     case AST_STMT_WATCH:
         printf("Watch");
         if (stmt->as.watch.name) {

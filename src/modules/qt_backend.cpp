@@ -5743,7 +5743,7 @@ static KSyntaxHighlighting::Theme theme_named(QPlainTextEdit *e, const char *the
         return repo()->defaultTheme(KSyntaxHighlighting::Repository::LightTheme);
     }
     /* A THEME BY ITS NAME (§0.38 D1): "Breeze Light", "Printing", or one in
-     * <syntax path>/themes/*.theme. qt.c has already refused a name the
+     * <syntax path>/themes/NAME.theme. qt.c has already refused a name the
      * repository does not know, so an invalid one here is not reached. */
     if (theme && *theme) {
         KSyntaxHighlighting::Theme t = repo()->theme(QString::fromUtf8(theme));

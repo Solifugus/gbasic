@@ -2554,7 +2554,6 @@ static const char *qt_tree_depth_field(Value *tree) {
  * afterwards is the defect that extraction exists to prevent. */
 static int qt_populate_tree(void *root, Value *tree, Value *slot,
                             const char *window_name) {
-    char err[QT_ERRBUF];
     char message[512];
     const char *name = qt_record_text(tree, "name");
     const char *subject = qt_record_text(tree, "subject");
@@ -2629,7 +2628,6 @@ static int qt_populate_tree(void *root, Value *tree, Value *slot,
                                                        : "";
             at++;
         }
-        err[0] = '\0';
         int ok = gb_qt_tree_add(root, name, depth, cells, at);
         for (int i = 0; i < at; i++) {
             value_free(texts[i]);
@@ -7288,11 +7286,11 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         Value a[5];
-        for (int i = 0; i < argc; i++) {
+        for (size_t i = 0; i < argc; i++) {
             a[i] = eval_expr(expr->as.call.args.items[i]);
         }
         int bad = error_action_pending() || !qt_window_record(&a[0], verb);
-        for (int i = 1; !bad && i < argc; i++) {
+        for (size_t i = 1; !bad && i < argc; i++) {
             bad = a[i].kind != VALUE_STRING;
         }
         void *root = NULL;
@@ -7318,7 +7316,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 qt_raise(message);
             }
         }
-        for (int i = 0; i < argc; i++) {
+        for (size_t i = 0; i < argc; i++) {
             value_free(a[i]);
         }
         return ok ? value_bool(1) : value_null();
@@ -7680,7 +7678,7 @@ static Value qt_eval_call(AstExpr *expr) {
 
     if (strcmp(verb, "scrolled") == 0 || strcmp(verb, "scroll_to") == 0) {
         int writing = strcmp(verb, "scroll_to") == 0;
-        int want = writing ? 3 : 2;
+        size_t want = writing ? 3 : 2;
         if (argc != want) {
             qt_raise(writing
                          ? "qt.scroll_to expects a window, a part's name and a "

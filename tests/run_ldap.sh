@@ -152,7 +152,8 @@ for needle in \
     "an empty password is refused rather than sent" \
     "a single-valued attribute is still an array" \
     "naming the CA makes the same certificate acceptable" \
-    "a connection with no declared security is refused"
+    "a connection with no declared security is refused" \
+    "a host too long for an address is refused, not cut"
 do
     if grep -qF "ok   $needle" "$scratch/out"; then
         pass "ran: $needle"

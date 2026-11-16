@@ -339,6 +339,27 @@ else
     printf '  SKIP valgrind (unavailable)\n'
 fi
 
+# `--ast` OF AN UNWATCH: its dump had no case, so the line held only the
+# indent and the NEXT node was printed on it, as though a child (2026-11-15,
+# found by -Wswitch). The node is named, and the statement after it is its
+# sibling, at the same depth.
+printf 'TIER ast\n'
+printf 'x = 1\nunwatch(timer.ticks)\nprint x\n' > "$scratch/ast.bas"
+./gbasic --ast "$scratch/ast.bas" > "$scratch/ast.out" 2>&1
+uw=$(grep -n '^ *Unwatch$' "$scratch/ast.out" | head -1)
+if [ -z "$uw" ]; then
+    bad "ast: no Unwatch node: $(tr '\n' '|' < "$scratch/ast.out")"
+else
+    depth() { sed -n "$1p" "$scratch/ast.out" | sed 's/[^ ].*//' | wc -c; }
+    l=${uw%%:*}
+    p=$(grep -n '^ *Print$' "$scratch/ast.out" | head -1 | cut -d: -f1)
+    if [ -n "$p" ] && [ "$(depth "$l")" = "$(depth "$p")" ]; then
+        ok "ast: an unwatch is named, and the print after it is its sibling"
+    else
+        bad "ast: the print after an unwatch is not at its depth: $(tr '\n' '|' < "$scratch/ast.out")"
+    fi
+fi
+
 if [ "$fails" = "0" ]; then
     printf 'run_timer: all cases passed\n'
 else

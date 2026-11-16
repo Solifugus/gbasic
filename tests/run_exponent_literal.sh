@@ -67,6 +67,29 @@ else
     fi
 fi
 
+# LONG LITERALS, by the same oracle. The lexer converted at most 63 of a
+# literal's characters, so `1` and 69 zeros read as 1e62 while number() on the
+# same text gave 1e69 -- seven orders of magnitude, silently (found from a
+# -Wsign-compare warning on the length test, 2026-11-15). Lengths either side
+# of that buffer, and a decimal whose digits run past it.
+printf 'TIER long: a literal of any length is the number its text says\n'
+zeros() { printf '0%.0s' $(seq "$1"); }
+{
+    for n in 62 63 64 70 200; do
+        t="1$(zeros "$n")"
+        printf 'if %s = number("%s") then\n    print "ok %d"\nelse\n    print "MISMATCH %d"\nend if\n' "$t" "$t" "$n" "$n"
+    done
+    t="3.$(printf '14159%.0s' $(seq 20))"
+    printf 'if %s = number("%s") then\n    print "ok decimal"\nelse\n    print "MISMATCH decimal"\nend if\n' "$t" "$t"
+} > "$work/long.bas"
+if ! ./gbasic "$work/long.bas" >"$work/long.out" 2>&1; then
+    cat "$work/long.out"; fail "the long literals did not run"
+elif grep -q MISMATCH "$work/long.out" || [ "$(grep -c '^ok ' "$work/long.out")" != 6 ]; then
+    grep -v '^ok ' "$work/long.out"; fail "a long literal is not the number its text says"
+else
+    pass "62, 63, 64, 70 and 200 digits, and a 102-digit decimal, each equal to number() on its text"
+fi
+
 printf 'TIER refusal: an unknown duration unit stops the program\n'
 printf 'print 1 fortnight\nprint "ran anyway"\n' > "$work/bad.bas"
 if ./gbasic "$work/bad.bas" >"$work/bad.out" 2>"$work/bad.err"; then

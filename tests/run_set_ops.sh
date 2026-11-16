@@ -182,6 +182,16 @@ echo "--- TIER 6: valgrind ---"
 # refcounted storage, while `array_find_index` copies BOTH sides of every
 # comparison -- a borrow freed once too often there gives the right answer and a
 # corrupted heap.
+# THE TOKENS BY NAME: `--tokens` printed both operators as UNKNOWN, since the
+# token-name switch had no case for them -- said by -Wswitch on every build
+# and read by nobody until 2026-11-15
+printf 'x = a excluding b intersecting c\n' > "$tmp/tok.bas"
+toks=$(./gbasic --tokens "$tmp/tok.bas" | awk '{ print $2 }' | tr '\n' ' ')
+case "$toks" in
+    *"EXCLUDING"*"INTERSECTING"*) printf 'PASS --tokens names both operators\n' ;;
+    *) printf 'FAIL --tokens: %s\n' "$toks"; status=1 ;;
+esac
+
 . "$(dirname "$0")/valgrind_tier.sh"
 if vg_available; then
     GBASIC_PATH=stdlib vg_run ./gbasic tests/set_ops/set_ops_test.bas \

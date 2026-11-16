@@ -199,6 +199,42 @@ else
     fail "round (exit)"; cat "$work/round.err"
 fi
 
+echo "== WALKED: every statement that holds an expression or a body =="
+# FOUND BY A COMPILER WARNING, not a report (2026-11-15): the statement walk's
+# switch had no case for a counted `for`, a `do` loop or `unwatch`, so a call
+# in one was never seen and --add-loads returned the program unchanged, the
+# silent no-op the header above describes. -Wswitch said so on every build.
+out="$(addloads for_body 'for i = 1 to 2
+    print stats.zscore(7, 5, 2)
+end for
+')"
+says "a call in a counted for's body" "load stats" "$out"
+out="$(addloads for_limit 'for i = 1 to stats.zscore(7, 5, 2)
+    print i
+end for
+')"
+says "a call in its limit" "load stats" "$out"
+out="$(addloads for_step 'for i = 10 to 1 step stats.zscore(1, 3, 2)
+    print i
+end for
+')"
+says "a call in its step" "load stats" "$out"
+out="$(addloads do_body 'n = 0
+do
+    n = n + stats.zscore(7, 5, 2)
+until n > 3
+')"
+says "a call in a do loop's body" "load stats" "$out"
+out="$(addloads do_until 'n = 0
+do
+    n = n + 1
+until n > stats.zscore(7, 5, 2)
+')"
+says "a call in its until" "load stats" "$out"
+out="$(addloads unwatch_expr 'unwatch(stats.zscore(7, 5, 2))
+')"
+says "a call in an unwatch" "load stats" "$out"
+
 echo
 if [ "$status" = "0" ]; then echo "run_add_loads: all checks passed"; fi
 exit "$status"
