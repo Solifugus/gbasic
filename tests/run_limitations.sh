@@ -119,6 +119,7 @@ spawn_bare_name|resolves a bare function **name**
 nul_string_literal|is refused in a string literal
 deep_value_teardown|segfaults when it is RELEASED
 decimal_key_collision|share an index key
+load_xlsx_not_found|needs no load at all
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -274,6 +275,21 @@ probe_spawn_bare_name() {
 }
 
 
+
+probe_load_xlsx_not_found() {
+    # Red while `load xlsx` is refused as a missing library, where xlsx is a
+    # module that needs no load. Skips without xlsx (zlib/libxml2) in the build.
+    printf 'load xlsx\nprint "loaded"\n' > "$WORK/lx.bas"
+    lx_out=$(timeout 30 ./gbasic "$WORK/lx.bas" 2>&1 | tr '\n' ' ')
+    if ! ./gbasic --capabilities 2>/dev/null | grep -q '^xlsx'; then
+        ok "SKIP load xlsx (xlsx not in this build)"
+    elif printf '%s' "$lx_out" | grep -q 'library not found: xlsx'; then
+        ok "\`load xlsx\` still says the library is not found, where xlsx needs no load"
+    else
+        printf '     %s\n' "$lx_out"
+        fixed "\`load xlsx\` no longer says \"library not found\""
+    fi
+}
 
 probe_decimal_key_collision() {
     # Red when a UNIQUE index takes two decimals that differ past 17 digits
