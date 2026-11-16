@@ -60,6 +60,14 @@ reader sees.
   (`src/modules/ui.c`) over a backend table (`include/ui_backend.h`, which
   states the event-loop contract a backend owes), so a second backend is a
   table and not a fork of the module.
+- **`ui.can(group)` and `ui.backend()`.** What one backend can do and
+  another may not is eight capability groups (`highlighting`, `docking`,
+  `stylesheet`, `figures`, `file_dialogs`, `notebook`, `icons`,
+  `windows`); `ui.can` answers whether this one has a group, and using a
+  group it lacks is refused by name before anything is built, never by a
+  part that does nothing. Qt has all eight, so no program's answers change.
+  `GBASIC_UI_WITHHOLD="docking notebook"` takes groups away, to try a
+  program against a smaller backend before one exists.
 
 ---
 

@@ -1,6 +1,6 @@
 # `ui.` — one GUI module, more than one backend
 
-**Status: ruled on 2026-11-16; push A (§8 steps 1–3: the rename, the vocabulary, the theme record) built and pushed the same day (`eb783aa8`), and Studio migrated onto it (gbasic-studio `21246fa`). Step 4, the split, is built (§8 records how it departs from the plan). Steps 5–6 are not built.** Written 2026-11-16 against gBASIC
+**Status: ruled on 2026-11-16; push A (§8 steps 1–3: the rename, the vocabulary, the theme record) built and pushed the same day (`eb783aa8`), and Studio migrated onto it (gbasic-studio `21246fa`). Step 4, the split, is built and pushed (`ffa9d221`), and step 5, `ui.can`, is built (§8 records how each departs from the plan). Step 6 is not built.** Written 2026-11-16 against gBASIC
 `4eafb557` (0.11.0) and gBASIC Studio `4aa0420`. It answers whisker's
 proposal (`~/development/whisker/docs/gbasic-ui-proposal.md` §7) and ends
 with Matthew's rulings (§9, 2026-11-16). Every count below is
@@ -463,6 +463,27 @@ migrates the same day):
    answer. The wording Studio matches ("Qt support is not available in
    this build") is unchanged.
 5. **`ui.can` and the capability groups (§6).**
+
+   **As built (2026-11-16).** Each table says its groups in one string
+   (`groups`, space-separated; Qt's names all eight), and the front asks
+   it: `ui.can(group)` answers, `ui.backend()` answers the name (`unknown`
+   with none), and a group the backend lacks is refused by name, in one
+   sentence shape, before any member is called -- a verb at dispatch; a
+   window's parts, options and events by one walk at `ui.open` and at
+   `ui.refresh` with new children; `ui.theme(text)`; `ui.set` of an icon.
+   Departures:
+   - **A member of a missing group is still set** (to a function that
+     refuses), so `seam` keeps one rule and the front never meets a NULL.
+   - **`GBASIC_UI_WITHHOLD` takes groups away** from the chosen backend.
+     With one backend that has every group, it is the only way a refusal
+     can be measured, and it lets a program be tried against a smaller
+     backend before whisker exists.
+   - **`icons` is decided by whether the icon is a readable file**: a file
+     is every backend's, any other text is a name and needs the group.
+   - **`windows` counts every open window**, a modal one included, since a
+     backend without it cannot show two at once either way.
+   `tests/run_ui_vocabulary.sh` `groups` holds all of it, each refusal
+   beside the same program with nothing withheld.
 6. **The suites.** Contract tiers read `GBASIC_UI` and run under every
    built backend. Q tiers move to Qt-backend suites. Whisker's backend
    (`ui_whisker.c`, its own `HAVE_WHISKER`, whisker as a header) is

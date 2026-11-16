@@ -133,7 +133,7 @@ members_of() {   # the GbUiBackend members, from the header
         | grep -oE '\(\*[a-z_0-9]+\)\(' | tr -d '(*)' | sort -u
 }
 table_of() {     # $1 = a table file: the members it sets
-    grep -oE '^\s*\.[a-z_0-9]+\s*=' "$1" | tr -d ' .=' | grep -vx name | sort -u
+    grep -oE '^\s*\.[a-z_0-9]+\s*=' "$1" | tr -d ' .=' | grep -vxE 'name|groups' | sort -u
 }
 members_of > "$work/members"
 n=$(wc -l < "$work/members")
@@ -190,6 +190,114 @@ if printf '%s' "$err" | grep -q 'GBASIC_UI names `nonesuch`, and this build has 
     fi
 else
     fail "GBASIC_UI=nonesuch was not refused: $(printf '%s' "$err" | tr '\n' '|')"
+fi
+
+printf 'TIER groups: ui.can, ui.backend, and each group refused by name\n'
+# docs/ui_design.md §6, step 5. A group a backend lacks is refused BY NAME --
+# its verbs, and a window's parts, options and events -- before anything is
+# built. Today's one backend has every group, so GBASIC_UI_WITHHOLD takes one
+# away; the same program with nothing withheld must not meet that refusal,
+# or the refusals below are satisfied by refusing everything.
+if [ "$(printf 'program main()\n    print ui.backend()\nend program\n' > "$work/b.bas"; ./gbasic "$work/b.bas" 2>&1)" = "unknown" ]; then
+    printf 'SKIP groups (this build has no GUI backend; ui.backend() answered unknown -- NOTHING about groups was measured)\n'
+else
+    export QT_QPA_PLATFORM=offscreen
+    group_case() {   # $1 label, $2 group, $3 parts, $4 handlers, $5 main, $6 expected
+        printf 'window w( title: "W" )\n    column body\n%s\n    end column\n%s\nend window\nwindow v( title: "V" )\n    column\n        field b()\n    end column\nend window\nprogram main()\n%s\n    print "RAN"\nend program\n' \
+            "$3" "$4" "$5" > "$work/g.bas"
+        local held free
+        held=$(GBASIC_UI_WITHHOLD="$2" ./gbasic "$work/g.bas" 2>&1)
+        free=$(./gbasic "$work/g.bas" 2>&1)
+        if ! printf '%s' "$held" | grep -qF -- "$6 needs \`$2\`, which the $(./gbasic "$work/b.bas") backend does not have -- ask ui.can(\"$2\") first"; then
+            fail "$1: withheld, not refused as expected: $(printf '%s' "$held" | grep -v propagateSize | head -2 | tr '\n' '|')"
+        elif printf '%s' "$held" | grep -q RAN; then
+            fail "$1: refused, and the program went on"
+        elif printf '%s' "$free" | grep -qF "needs \`$2\`"; then
+            fail "$1: refused with nothing withheld: $(printf '%s' "$free" | head -2 | tr '\n' '|')"
+        else
+            pass "$1"
+        fi
+    }
+    ok_parts='        field a()'
+    group_case "a source's language: needs highlighting" highlighting \
+        '        source ed( language: "gBASIC" )' '' '    ui.open(w)' \
+        'window `w`: `ed`'"'"'s `language:`'
+    group_case "ui.highlighting needs highlighting" highlighting "$ok_parts" '' \
+        '    x = ui.highlighting(w, "a")' 'ui.highlighting'
+    group_case "a docks declaration needs docking" docking "$ok_parts" \
+        '    docks right
+        dock side "Side"
+            memo out()
+        end dock
+    end docks' '    ui.open(w)' 'window `w`: a `docks`'
+    group_case "ui.dock needs docking" docking "$ok_parts" '' \
+        '    ui.dock(w, "side")' 'ui.dock'
+    group_case "ui.theme(text) needs stylesheet" stylesheet "$ok_parts" '' \
+        '    ui.theme("#a { color: red; }")' \
+        "ui.theme with a stylesheet (a theme record is every backend's)"
+    group_case "ui.capture needs figures" figures "$ok_parts" '' \
+        '    ui.open(w)
+    ui.capture(w, "'"$work"'/w.png")' 'ui.capture'
+    group_case "ui.render_svg needs figures" figures "$ok_parts" '' \
+        '    x = ui.render_svg("<svg/>")' 'ui.render_svg'
+    group_case "ui.choose_file needs file_dialogs" file_dialogs "$ok_parts" '' \
+        '    x = ui.choose_file(w)' 'ui.choose_file'
+    group_case "a markdown part needs notebook" notebook \
+        '        markdown preview()' '' '    ui.open(w)' 'window `w`: a `markdown`'
+    group_case "an on ed.block handler needs notebook" notebook \
+        '        source ed()' '    on ed.block
+        print "x"
+    end on' '    ui.open(w)' 'window `w`: `on ed.block`'
+    group_case "ui.fold needs notebook" notebook "$ok_parts" '' \
+        '    x = ui.fold(w, "a")' 'ui.fold'
+    group_case "a markdown part added by ui.refresh needs notebook" notebook \
+        "$ok_parts" '' '    ui.open(w)
+    ui.refresh(w, "body", [{ kind: "part", word: "markdown", name: "m" }])' \
+        'window `w`: a `markdown`'
+    group_case "an icon by name needs icons" icons \
+        '        button ok( text: "OK", icon: "SP_DialogOkButton" )' '' \
+        '    ui.open(w)' 'window `w`: `ok`'"'"'s icon `SP_DialogOkButton`, a name and not a file,'
+    group_case "ui.set of an icon by name needs icons" icons \
+        '        button ok( text: "OK" )' '' '    ui.open(w)
+    ui.set(w, "ok", "icon", "SP_DialogOkButton")' \
+        'ui.set of `ok`'"'"'s icon `SP_DialogOkButton`, a name and not a file,'
+    group_case "a second window open at once needs windows" windows "$ok_parts" '' \
+        '    ui.open(w)
+    ui.open(v)' 'ui.open of `v` while `w` is open'
+    # AN ICON THAT IS A FILE is every backend's, so withholding `icons` must
+    # not refuse it: the control that the walk asks about names, not icons.
+    printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' \
+        | base64 -d > "$work/i.png"   # one pixel, a real PNG
+    printf 'window w( title: "W" )\n    column\n        button ok( text: "OK", icon: "%s" )\n    end column\nend window\nprogram main()\n    ui.open(w)\n    print "RAN"\nend program\n' "$work/i.png" > "$work/f.bas"
+    if GBASIC_UI_WITHHOLD=icons ./gbasic "$work/f.bas" 2>&1 | grep -q RAN; then
+        pass "CONTROL: an icon that is a file opens with icons withheld"
+    else
+        fail "CONTROL: an icon file was refused with icons withheld: $(GBASIC_UI_WITHHOLD=icons ./gbasic "$work/f.bas" 2>&1 | head -2 | tr '\n' '|')"
+    fi
+    # ui.can answers from the same place the refusals ask.
+    printf 'program main()\n    print ui.backend()\n    print ui.can("figures")\n    print ui.can("notebook")\nend program\n' > "$work/c.bas"
+    a=$(./gbasic "$work/c.bas" 2>&1 | tr '\n' ' ')
+    b=$(GBASIC_UI_WITHHOLD="notebook" ./gbasic "$work/c.bas" 2>&1 | tr '\n' ' ')
+    if [ "$a" = "qt true true " ] && [ "$b" = "qt true false " ]; then
+        pass "ui.can answers true, and false for the group withheld; ui.backend() is qt"
+    else
+        fail "ui.can answered [$a] and, notebook withheld, [$b]"
+    fi
+    printf 'program main()\n    x = ui.can("figurs")\nend program\n' > "$work/c.bas"
+    if ./gbasic "$work/c.bas" 2>&1 | grep -qF 'ui.can: `figurs` is not a capability group -- did you mean `figures`?'; then
+        pass "ui.can of a group that does not exist is refused, naming the nearest"
+    else
+        fail "ui.can(\"figurs\"): $(./gbasic "$work/c.bas" 2>&1 | head -1)"
+    fi
+    printf 'program main()\n    print ui.can("figures")\n    print ui.check(w)\nend program\nwindow w( title: "W" )\n    column\n        field a()\n    end column\nend window\n' > "$work/c.bas"
+    out=$(GBASIC_UI_WITHHOLD=figurs ./gbasic "$work/c.bas" 2>&1 | tr '\n' ' ')
+    if [ "$out" = "false true " ] && printf 'program main()\n    x = ui.backend()\n    ui.run()\nend program\n' > "$work/d.bas" \
+       && GBASIC_UI_WITHHOLD=figurs ./gbasic "$work/d.bas" 2>&1 | grep -qF 'GBASIC_UI_WITHHOLD names `figurs`, which is not a capability group -- did you mean `figures`?'; then
+        pass "GBASIC_UI_WITHHOLD naming no group: questions answer, a verb is refused naming it"
+    else
+        fail "GBASIC_UI_WITHHOLD=figurs answered [$out]"
+    fi
+    unset QT_QPA_PLATFORM
 fi
 
 [ "$status" = 0 ] && printf 'PASS tests/run_ui_vocabulary.sh\n'

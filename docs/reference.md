@@ -5227,7 +5227,34 @@ A program never names a backend. Where a build has more than one, the
 environment variable `GBASIC_UI` chooses (`GBASIC_UI=qt`); unset, the build's
 first is used. Naming one the build lacks is refused at the first verb that
 needs a backend, listing the ones it has, rather than quietly drawing with
-another.
+another. `ui.backend()` answers its name (`"qt"`), or `unknown` on a build
+with none.
+
+**What one backend can do and another may not** comes in eight capability
+groups, asked with `ui.can("<group>")`, which answers `true` or `false`
+(`false` on a build with no backend) and refuses a name that is not a group,
+naming the nearest. A group is all or nothing, so a program asks once. Using
+a group the backend lacks is refused by name before anything is built --
+``ui.capture needs `figures`, which the qt backend does not have -- ask
+ui.can("figures") first`` -- never by a part that silently does nothing. Qt
+has all eight.
+
+| group | what needs it |
+|---|---|
+| `highlighting` | `ui.highlighting`; a `source`'s `language:` and `theme:` |
+| `docking` | `ui.dock`, `ui.layout`, `ui.restore_layout`; `docks` and `dock` |
+| `stylesheet` | `ui.theme(text)`; a theme record is every backend's |
+| `figures` | `ui.capture`, `ui.render_svg` |
+| `file_dialogs` | `ui.choose_file`, `ui.choose_save`, `ui.choose_folder`, `ui.dialog` |
+| `notebook` | `ui.blocks`, `ui.fold`, `ui.block_press`, `ui.block_event`, `ui.link_press`, `ui.link`; the `markdown` part; the `block` and `link` events |
+| `icons` | `ui.has_icon`; an `icon:` given by name (`"SP_DialogOkButton"`, a theme's name) -- an icon that is a file is every backend's |
+| `windows` | a second window open at the same time |
+
+`ui.can_display()` and `ui.can_highlight()` are not groups: they ask about
+the machine. To try a program against a smaller backend, `GBASIC_UI_WITHHOLD`
+takes groups away from the chosen one (`GBASIC_UI_WITHHOLD="docking
+notebook"`); a name in it that is not a group is refused as `GBASIC_UI`
+naming no backend is.
 
 ```basic
 window customer( title: "Customer", width: 480 )

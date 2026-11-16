@@ -43,9 +43,8 @@
  * qt_backend.cpp). Refusals a backend writes into `err` name gBASIC's part
  * words too, never a class.
  *
- * EVERY MEMBER IS SET in every table (tests/run_ui_vocabulary.sh `seam`).
- * Which ones a backend may leave out, and what `ui.can` then answers, is
- * step 5 of the design note.
+ * EVERY MEMBER IS SET in every table (tests/run_ui_vocabulary.sh `seam`),
+ * and what a backend cannot do is said by `groups` below, never by a NULL.
  */
 #ifndef GBASIC_UI_BACKEND_H
 #define GBASIC_UI_BACKEND_H
@@ -127,6 +126,13 @@ typedef struct {
  * measured. */
 typedef struct GbUiBackend {
     const char *name;          /* what GBASIC_UI says to choose it: "qt" */
+    /* THE CAPABILITY GROUPS IT HAS (docs/ui_design.md §6), space-separated,
+     * each one of src/modules/ui.c's `ui_groups`. A group is all or nothing:
+     * the front asks it once, answers `ui.can` from it, and refuses a verb,
+     * a part or an option of a group the backend lacks before calling any
+     * member. So a member of a missing group is never called, though it
+     * must still be set (to a function that refuses). */
+    const char *groups;
     int (*can_display)(void);
     void (*set_callbacks)(GbUiInvokeFn invoke, GbUiTickFn tick,
                           GbUiClosedFn closed, GbUiCellFn cell);

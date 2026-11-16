@@ -14,6 +14,8 @@
 
 static const GbUiBackend ui_qt_backend = {
     .name = "qt",
+    .groups = "highlighting docking stylesheet figures file_dialogs notebook "
+              "icons windows",
     .can_display        = gb_qt_can_display,
     .set_callbacks      = gb_qt_set_callbacks,
     .theme_set          = gb_qt_theme_set,

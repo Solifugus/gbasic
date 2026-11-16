@@ -54,6 +54,14 @@ static void qt_raise(const char *message) {
     runtime_error_raise(message, QT_ERROR_CODE, "ui");
 }
 
+static const char *qt_record_text(Value *record, const char *field) {
+    RecordField *f = record_find(record, field);
+    if (!f || !f->value || f->value->kind != VALUE_STRING) {
+        return NULL;
+    }
+    return f->value->as.string;
+}
+
 /* THE BACKEND, CHOSEN ONCE PER PROCESS (docs/ui_design.md §8 step 4, ruling
  * Q6): the build says which exist, GBASIC_UI says which of them to use, and a
  * program never names one. Everything below that draws goes through `ui`,
@@ -76,11 +84,7 @@ static const GbUiBackend *ui = NULL;
 static int ui_be_chosen = 0;
 static char ui_be_problem[256];
 
-static const GbUiBackend *ui_be_choose(void) {
-    if (ui_be_chosen) {
-        return ui;
-    }
-    ui_be_chosen = 1;
+static const GbUiBackend *ui_be_find(void) {
     const char *want = getenv("GBASIC_UI");
     if (!ui_backends[0]) {
         snprintf(ui_be_problem, sizeof(ui_be_problem),
@@ -107,12 +111,181 @@ static const GbUiBackend *ui_be_choose(void) {
     return NULL;
 }
 
-static const char *qt_record_text(Value *record, const char *field) {
-    RecordField *f = record_find(record, field);
-    if (!f || !f->value || f->value->kind != VALUE_STRING) {
+/* CAPABILITY GROUPS (docs/ui_design.md §6): what one backend has and another
+ * may not, asked with `ui.can` and refused BY NAME, never by a part that
+ * silently does nothing. A group is all or nothing per backend, so a program
+ * asks once. The verbs of each are below; the parts, options and events of
+ * each are in `ui_group_walk`, and `stylesheet` is `ui.theme(text)`.
+ * `ui.can_display` and `ui.can_highlight` are not groups: they ask about the
+ * machine, not the backend. */
+static const char *const ui_groups[] = {
+    "highlighting", "docking", "stylesheet", "figures", "file_dialogs",
+    "notebook", "icons", "windows", NULL
+};
+static const struct { const char *verb, *group; } ui_group_verbs[] = {
+    {"highlighting", "highlighting"},
+    {"dock", "docking"}, {"layout", "docking"}, {"restore_layout", "docking"},
+    {"render_svg", "figures"}, {"capture", "figures"},
+    {"choose_file", "file_dialogs"}, {"choose_save", "file_dialogs"},
+    {"choose_folder", "file_dialogs"}, {"dialog", "file_dialogs"},
+    {"blocks", "notebook"}, {"fold", "notebook"}, {"block_press", "notebook"},
+    {"block_event", "notebook"}, {"link_press", "notebook"},
+    {"link", "notebook"},
+    {"has_icon", "icons"},
+    {NULL, NULL}
+};
+
+/* GBASIC_UI_WITHHOLD takes groups away from the chosen backend, so a program
+ * can be run against a smaller backend than the build's -- its `ui.can`
+ * answers and its refusals -- before that backend exists. Space- or
+ * comma-separated group names; one that is not a group is refused, as
+ * GBASIC_UI naming no backend is. */
+static char ui_withheld[256];
+
+static int ui_word_in(const char *list, const char *word) {
+    size_t n = strlen(word);
+    for (const char *p = list; p && *p; ) {
+        while (*p == ' ' || *p == ',') {
+            p++;
+        }
+        size_t len = strcspn(p, " ,");
+        if (len == n && n && strncmp(p, word, n) == 0) {
+            return 1;
+        }
+        p += len;
+    }
+    return 0;
+}
+
+static int ui_group_known(const char *group) {
+    for (size_t i = 0; ui_groups[i]; i++) {
+        if (strcmp(ui_groups[i], group) == 0) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static const GbUiBackend *ui_be_choose(void) {
+    if (ui_be_chosen) {
+        return ui;
+    }
+    ui_be_chosen = 1;
+    if (!ui_be_find()) {
         return NULL;
     }
-    return f->value->as.string;
+    const char *hold = getenv("GBASIC_UI_WITHHOLD");
+    snprintf(ui_withheld, sizeof(ui_withheld), "%s", hold ? hold : "");
+    for (const char *p = ui_withheld; *p; ) {
+        while (*p == ' ' || *p == ',') {
+            p++;
+        }
+        size_t len = strcspn(p, " ,");
+        if (len) {
+            char word[64];
+            snprintf(word, sizeof(word), "%.*s", (int)len, p);
+            if (!ui_group_known(word)) {
+                const char *near = gb_nearest_word(word, ui_groups);
+                snprintf(ui_be_problem, sizeof(ui_be_problem),
+                         "GBASIC_UI_WITHHOLD names `%.40s`, which is not a "
+                         "capability group%s%s%s", word,
+                         near ? " -- did you mean `" : "", near ? near : "",
+                         near ? "`?" : "");
+                ui = NULL;
+                return NULL;
+            }
+        }
+        p += len;
+    }
+    return ui;
+}
+
+/* Has the chosen backend this group? Only asked once one is chosen. */
+static int ui_has(const char *group) {
+    return ui && ui_word_in(ui->groups, group) &&
+           !ui_word_in(ui_withheld, group);
+}
+
+/* THE ONE SENTENCE every group refusal uses, so a reader meets one shape:
+ * what needed it, the group, the backend, and the question to ask first. */
+static void ui_group_refusal(char *out, size_t cap, const char *what,
+                             const char *group) {
+    snprintf(out, cap,
+             "%s needs `%s`, which the %s backend does not have -- ask "
+             "ui.can(\"%s\") first", what, group, ui ? ui->name : "",
+             group);
+}
+
+/* THE PARTS, OPTIONS AND EVENTS OF A GROUP, over a window's items before any
+ * of them is built: at `ui.open` (nothing constructed yet) and at
+ * `ui.refresh` with new children. Answers 1, or 0 with the refusal in `out`.
+ * An icon NAMED (Qt's SP_ standard pixmaps, a theme's names) needs `icons`;
+ * an icon that is a file every backend can draw. */
+static int ui_group_walk(Value *items, const char *window, char *out,
+                         size_t cap) {
+    if (!items || items->kind != VALUE_ARRAY) {
+        return 1;
+    }
+    char what[192];
+    for (size_t i = 0; i < items->as.array.store->count; i++) {
+        Value *it = &items->as.array.store->items[i];
+        if (it->kind != VALUE_RECORD) {
+            continue;
+        }
+        const char *kind = qt_record_text(it, "kind");
+        const char *word = qt_record_text(it, "word");
+        const char *name = qt_record_text(it, "name");
+        const char *group = NULL;
+        what[0] = '\0';
+        if (kind && strcmp(kind, "handler") == 0) {
+            const char *ev = qt_record_text(it, "event");
+            const char *target = qt_record_text(it, "target");
+            if (ev && (strcmp(ev, "block") == 0 || strcmp(ev, "link") == 0)) {
+                group = "notebook";
+                snprintf(what, sizeof(what), "window `%s`: `on %s.%s`",
+                         window, target ? target : "?", ev);
+            }
+        } else if (word && (strcmp(word, "docks") == 0 ||
+                            strcmp(word, "dock") == 0)) {
+            group = "docking";
+        } else if (word && strcmp(word, "markdown") == 0) {
+            group = "notebook";
+        }
+        RecordField *of = record_find(it, "options");
+        Value *opts = (of && of->value && of->value->kind == VALUE_RECORD)
+                          ? of->value : NULL;
+        if (!group && opts && word && strcmp(word, "source") == 0 &&
+            (record_find(opts, "language") || record_find(opts, "theme"))) {
+            group = "highlighting";
+            snprintf(what, sizeof(what), "window `%s`: `%s`'s `%s:`", window,
+                     name ? name : word,
+                     record_find(opts, "language") ? "language" : "theme");
+        }
+        const char *icon = opts ? qt_record_text(opts, "icon") : NULL;
+        if (!icon) {
+            icon = qt_record_text(it, "icon");
+        }
+        if (!group && icon && *icon && access(icon, R_OK) != 0) {
+            group = "icons";
+            snprintf(what, sizeof(what),
+                     "window `%s`: `%s`'s icon `%.60s`, a name and not a "
+                     "file,", window, name ? name : (word ? word : "?"), icon);
+        }
+        if (group && !ui_has(group)) {
+            if (!what[0]) {
+                snprintf(what, sizeof(what), "window `%s`: a `%s`", window,
+                         word ? word : "?");
+            }
+            ui_group_refusal(out, cap, what, group);
+            return 0;
+        }
+        RecordField *sub = record_find(it, "items");
+        if (sub && sub->value &&
+            !ui_group_walk(sub->value, window, out, cap)) {
+            return 0;
+        }
+    }
+    return 1;
 }
 
 /* ---- `ui.check`: the declaration's own rules, over a window a program BUILT
@@ -3171,6 +3344,27 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
         value_free(win);
         return 0;
     }
+    /* WHAT THIS WINDOW NEEDS OF THE BACKEND, refused before anything is
+     * constructed: a second window open at once, then any part, option or
+     * event of a group the backend lacks. */
+    if (qt_window_count > 0 && !ui_has("windows")) {
+        char what[192];
+        snprintf(what, sizeof(what), "ui.%s of `%s` while `%s` is open",
+                 verb, name ? name : "", qt_windows[0].name);
+        ui_group_refusal(message, sizeof(message), what, "windows");
+        qt_raise(message);
+        value_free(win);
+        return 0;
+    }
+    {
+        RecordField *wi = record_find(&win, "items");
+        if (wi && !ui_group_walk(wi->value, name ? name : "", message,
+                                 sizeof(message))) {
+            qt_raise(message);
+            value_free(win);
+            return 0;
+        }
+    }
     /* THE REFUSAL, BEFORE ANYTHING IS CONSTRUCTED (§0.3). With no display
      * Qt calls `qFatal`, which aborts uncatchably and takes
      * block-buffered stdout with it, so a program printing its progress
@@ -3528,6 +3722,50 @@ static Value qt_eval_call(AstExpr *expr) {
     size_t argc = expr->as.call.args.count;
     char message[512];
 
+    /* WHICH BACKEND, AND WHAT IT CAN DO (docs/ui_design.md §6, ruling Q6).
+     * Both answer on a build with none, as `can_display` does: a program
+     * asks them in order to choose, so refusing would make the choice
+     * unmakeable. A group that does not exist is a misspelling, though, and
+     * is refused whatever the build. */
+    if (strcmp(verb, "backend") == 0) {
+        if (argc != 0) {
+            qt_raise("ui.backend takes no arguments");
+            return value_null();
+        }
+        return ui_be_choose() ? value_string(ui->name) : value_unknown();
+    }
+    if (strcmp(verb, "can") == 0) {
+        if (argc != 1) {
+            qt_raise("ui.can expects one capability group's name, as text");
+            return value_null();
+        }
+        Value g = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(g);
+            return value_null();
+        }
+        if (g.kind != VALUE_STRING) {
+            value_free(g);
+            qt_raise("ui.can expects one capability group's name, as text");
+            return value_null();
+        }
+        if (!ui_group_known(g.as.string)) {
+            const char *near = gb_nearest_word(g.as.string, ui_groups);
+            snprintf(message, sizeof(message),
+                     "ui.can: `%.60s` is not a capability group%s%s%s (they "
+                     "are highlighting, docking, stylesheet, figures, "
+                     "file_dialogs, notebook, icons and windows)",
+                     g.as.string, near ? " -- did you mean `" : "",
+                     near ? near : "", near ? "`?" : "");
+            value_free(g);
+            qt_raise(message);
+            return value_null();
+        }
+        int yes = ui_be_choose() && ui_has(g.as.string);
+        value_free(g);
+        return value_bool(yes);
+    }
+
     /* NO BACKEND: this build has none, or GBASIC_UI asked for one it lacks.
      * A few verbs still answer; every other one refuses with the reason. */
     if (!ui_be_choose()) {
@@ -3573,6 +3811,20 @@ static Value qt_eval_call(AstExpr *expr) {
      * on one of them -- so it takes them out and leaves them here. The depth
      * test lives in the backend, so this call cannot get the timing wrong. */
     ui->retire_drain();
+
+    /* A VERB OF A GROUP THIS BACKEND LACKS is refused before any argument
+     * is evaluated or any member called. */
+    for (size_t i = 0; ui_group_verbs[i].verb; i++) {
+        if (strcmp(verb, ui_group_verbs[i].verb) == 0 &&
+            !ui_has(ui_group_verbs[i].group)) {
+            char what[64];
+            snprintf(what, sizeof(what), "ui.%s", verb);
+            ui_group_refusal(message, sizeof(message), what,
+                             ui_group_verbs[i].group);
+            qt_raise(message);
+            return value_null();
+        }
+    }
 
     char err[QT_ERRBUF];
 
@@ -4242,6 +4494,21 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!root) {
             snprintf(message, sizeof(message), "window `%s` is not open",
                      wname ? wname : "");
+            qt_raise(message);
+            value_free(win); value_free(which);
+            value_free(prop); value_free(v);
+            return value_null();
+        }
+        /* AN ICON BY NAME is the `icons` group's, as it is in a declaration
+         * (ui_group_walk); a file is every backend's. */
+        if (strcmp(prop.as.string, "icon") == 0 && v.kind == VALUE_STRING &&
+            *v.as.string && access(v.as.string, R_OK) != 0 &&
+            !ui_has("icons")) {
+            char what[192];
+            snprintf(what, sizeof(what),
+                     "ui.set of `%s`'s icon `%.60s`, a name and not a file,",
+                     which.as.string, v.as.string);
+            ui_group_refusal(message, sizeof(message), what, "icons");
             qt_raise(message);
             value_free(win); value_free(which);
             value_free(prop); value_free(v);
@@ -5424,6 +5691,14 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(v);
             return value_null();
         }
+        if (!ui_has("stylesheet")) {
+            value_free(v);
+            ui_group_refusal(message, sizeof(message),
+                             "ui.theme with a stylesheet (a theme record is "
+                             "every backend's)", "stylesheet");
+            qt_raise(message);
+            return value_null();
+        }
         err[0] = '\0';
         int ok = ui->theme_set(v.as.string, err, sizeof(err));
         value_free(v);
@@ -5545,6 +5820,11 @@ static Value qt_eval_call(AstExpr *expr) {
             if (!root) {
                 snprintf(message, sizeof(message), "window `%s` is not open",
                          wname ? wname : "");
+                qt_raise(message);
+                value_free(win); value_free(which); value_free(items);
+                return value_null();
+            }
+            if (!ui_group_walk(&items, wname, message, sizeof(message))) {
                 qt_raise(message);
                 value_free(win); value_free(which); value_free(items);
                 return value_null();
