@@ -5254,7 +5254,10 @@ has all eight.
 the machine. To try a program against a smaller backend, `GBASIC_UI_WITHHOLD`
 takes groups away from the chosen one (`GBASIC_UI_WITHHOLD="docking
 notebook"`); a name in it that is not a group is refused as `GBASIC_UI`
-naming no backend is.
+naming no backend is. It is how a program's `if ui.can(...) else` branch
+gets run on a backend that has everything. It only refuses what a missing
+group would refuse: a smaller backend also lays out and draws differently,
+so a program that passes with groups withheld has not been run on one.
 
 ```basic
 window customer( title: "Customer", width: 480 )
