@@ -7,7 +7,7 @@ window app( title: "Methods", width: 240, height: 120 )
         field who( label: "Who" )
         button save( text: "Save" )
     end column
-    on save.clicked
+    on save.pressed
         g.clicks = g.clicks + 1
     end on
 end window
@@ -36,7 +36,7 @@ program main(args)
     s = app.set("save", "enabled", false)
     check("set through a method", ui.read(app, "save", "enabled"), false)
     s = app.set("save", "enabled", true)
-    i = app.invoke("save", "click")
+    i = app.invoke("save", "press")
     check("invoke fires the handler", g.clicks, 1)
     c = app.close()
     check("close through a method", ui.is_open(app), false)

@@ -115,18 +115,18 @@ program main()
     ui.open(both)
 
     print "-- what the table showed at open"
-    check("two rows at open", ui.read(board, "queue", "rowCount"), 2)
+    check("two rows at open", ui.read(board, "queue", "count"), 2)
     check("and the first is ada", ui.cell(board, "queue", 0, "who"), "ada")
 
     print "-- THE DEFECT: the list changes and the table does not"
     jobs = append(jobs, { who: "alan", state: "waiting" })
     check("appending to the subject changes NOTHING on its own",
-          ui.read(board, "queue", "rowCount"), 2)
+          ui.read(board, "queue", "count"), 2)
 
     print "-- and what ui.refresh does about it"
     n = ui.refresh(board, "queue")
     check("it answers how many rows it showed", n, 3)
-    check("the table grew", ui.read(board, "queue", "rowCount"), 3)
+    check("the table grew", ui.read(board, "queue", "count"), 3)
     check("the new row is there", ui.cell(board, "queue", 2, "who"), "alan")
     ' AND THE OLD ROWS ARE STILL RIGHT, which a refresh that appended rather
     ' than rewrote would also satisfy -- so the shrink below is what separates
@@ -136,7 +136,7 @@ program main()
     print "-- IT SHRINKS, which is the half an append-only refresh fails"
     jobs = [ { who: "only", state: "done" } ]
     check("it answers the new count", ui.refresh(board, "queue"), 1)
-    check("the table shrank", ui.read(board, "queue", "rowCount"), 1)
+    check("the table shrank", ui.read(board, "queue", "count"), 1)
     check("and shows the new list", ui.cell(board, "queue", 0, "who"), "only")
     ' A STALE ROW BELOW IS THE DEFECT THIS CATCHES: if row 1 still existed it
     ' would hold "grace", a perfectly ordinary name under a correct heading.
@@ -152,7 +152,7 @@ program main()
     print "-- an empty list is a list"
     jobs = []
     check("refreshing to nothing answers 0", ui.refresh(board, "queue"), 0)
-    check("and the table is empty", ui.read(board, "queue", "rowCount"), 0)
+    check("and the table is empty", ui.read(board, "queue", "count"), 0)
     ' THE CONTROL FOR THAT: it comes BACK. A refresh that broke on empty would
     ' pass the check above and fail here.
     jobs = [ { who: "back", state: "waiting" } ]

@@ -104,6 +104,35 @@ else
     fail "CONTROL: the scan counts lines rather than occurrences, so it cannot see a second call site"
 fi
 
+printf 'TIER policy: only a part with a `context` handler loses Qt'"'"'s own menu\n'
+# QT'S STATE, SO ASKED OF QT'S SOURCE. Declaring a `context` handler must set a
+# custom context menu policy (or Qt never emits the request); a part with no
+# handler must keep Qt's own cut/copy/paste menu. Until 0.12.0 the fixture read
+# `contextMenuPolicy` by name; with one vocabulary (docs/ui_design.md §3) no
+# program can, so the rule is held here: the policy is set in ONE place, and
+# that place is the context-request branch of gb_qt_connect.
+policy_scan() {
+    awk '/setContextMenuPolicy\(Qt::CustomContextMenu\)/ { n++; if (guarded) ok++ }
+         /strcmp\(signal, "customContextMenuRequested"\) == 0/ { guarded = 1; left = 4 }
+         guarded && left-- <= 0 { guarded = 0 }
+         END { printf "%d %d", n, ok }' "$1"
+}
+read -r pn pok <<< "$(policy_scan src/modules/qt_backend.cpp)"
+if [ "$pn" = "1" ] && [ "$pok" = "1" ]; then
+    pass "the custom menu policy is set once, only for a part with a context handler"
+else
+    fail "setContextMenuPolicy(Custom) appears $pn times, $pok of them under the context-request branch"
+fi
+# THE CONTROL: the same line set unconditionally must be seen.
+sed 's/^\(extern "C" int gb_qt_connect(.*\)$/\1 \/\* \*\/ static void planted(QWidget *w) { w->setContextMenuPolicy(Qt::CustomContextMenu); }/' \
+    src/modules/qt_backend.cpp > "$work/planted.cpp"
+read -r cn cok <<< "$(policy_scan "$work/planted.cpp")"
+if [ "$cn" = "2" ] && [ "$cok" = "1" ]; then
+    pass "CONTROL: a policy set outside that branch is counted"
+else
+    fail "CONTROL: a planted unconditional policy was not seen ($cn/$cok)"
+fi
+
 # -------------------------------------------------------------- DECLARATION
 # RUNS WHETHER OR NOT QT IS IN THE BUILD, because these are claims about the
 # DECLARATION -- the property that let the whole window vocabulary ship before
@@ -224,7 +253,7 @@ decl 'a handler naming no item is refused' \
 '    popup row_actions
         item a( label: "A" )
     end popup
-    on nobody.triggered
+    on nobody.pressed
         print "x"
     end on' \
     'nobody'
@@ -244,11 +273,11 @@ elif [ "$rc" != "0" ]; then
 else
     checks=$(grep -c '^ok' "$work/sem.out" || true)
     bad=$(grep -c 'MISMATCH' "$work/sem.out" || true)
-    if [ "$bad" = "0" ] && [ "${checks:-0}" -ge 35 ]; then
+    if [ "$bad" = "0" ] && [ "${checks:-0}" -ge 31 ]; then
         pass "$checks checks, 0 mismatches"
     else
         grep MISMATCH "$work/sem.out" | head -6
-        fail "$checks checks, $bad mismatches (want >= 35 and none)"
+        fail "$checks checks, $bad mismatches (want >= 31 and none)"
     fi
     # QT'S OFFSCREEN PLUGIN SAYS THESE ON EVERY RUN AND THEY ARE NOT OURS:
     # `propagateSizeHints` on any window, and `raise` and `grabbing the
@@ -261,11 +290,13 @@ else
         pass "and nothing of its own on stderr"
     fi
     # NAMED, so a failure says which claim went rather than only moving a count.
-    if grep -q "^ok   a part with a handler got the policy" "$work/sem.out" &&
-       grep -q "^ok   a memo with no handler keeps Qt's own menu" "$work/sem.out"; then
-        pass "POLICY: set where a handler was declared, and nowhere else"
+    # THE POLICY ITSELF is Qt's state, held by the `policy` tier above; what a
+    # program can see is that the declared handler FIRES.
+    if grep -q "^ok   the handler fired" "$work/sem.out" &&
+       grep -q "^ok   a right-click in the editor fired" "$work/sem.out"; then
+        pass "POLICY: a declared handler fires, on a list and on an editor"
     else
-        fail "the policy difference was not measured -- without it a declared handler is connected to a signal Qt never emits"
+        fail "the declared handler did not fire -- it is connected to a request Qt never makes"
     fi
     if grep -q "^ok   every kind answered a right-click" "$work/sem.out" &&
        grep -q "^ok   and each one is the part that was clicked" "$work/sem.out"; then
@@ -324,7 +355,7 @@ else
     # which is as true of a rule between two sections as of a line in a menu --
     # one word, two widgets. A row is divided by a VERTICAL line, which is the
     # half a menu separator cannot show.
-    if grep -q "^ok   a toolbar divider is vertical" "$work/sem.out"; then
+    if grep -q "^ok   a toolbar divider runs down" "$work/sem.out"; then
         pass "RULE: a separator in a row, beside the menu separator above"
     else
         fail "the layout separator was not measured here -- its orientation comes from the parent and is the one thing that can be built wrong"

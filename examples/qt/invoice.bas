@@ -26,12 +26,12 @@ function invoice_window(lines, total)
             items: [
                 { kind: "part", word: "field", name: "d_" + line.code,
                   options: { label: line.what, text: line.what,
-                             readOnly: true } },
+                             read_only: true } },
                 { kind: "part", word: "field", name: "q_" + line.code,
-                  options: { text: string(line.qty), readOnly: true } },
+                  options: { text: string(line.qty), read_only: true } },
                 { kind: "part", word: "field", name: "a_" + line.code,
                   options: { text: money.text(line.amount, 2),
-                             readOnly: true } }
+                             read_only: true } }
             ] })
     end for
     return { kind: "window", name: "invoice",
@@ -48,7 +48,7 @@ function invoice_window(lines, total)
                     { kind: "part", word: "stretch", options: {} },
                     { kind: "part", word: "field", name: "sum",
                       options: { label: "Total", text: money.text(total, 2),
-                                 readOnly: true } }
+                                 read_only: true } }
                 ] },
                 { kind: "container", word: "row", options: {}, items: [
                     { kind: "part", word: "stretch", options: {} },
@@ -56,7 +56,7 @@ function invoice_window(lines, total)
                       options: { label: "Close", text: "Close" } }
                 ] }
               ] },
-            { kind: "handler", target: "close", signal: "clicked",
+            { kind: "handler", target: "close", event: "pressed",
               handler: on_close }
         ] }
 end function

@@ -50,13 +50,13 @@ window app( title: "Browser", width: 620, height: 420 )
             scroll side
                 column( margin: 6, spacing: 6 )
                     text header( label: "Log" )
-                    memo log( readOnly: true )
+                    memo log( read_only: true )
                 end column
             end scroll
         end split
     end column
 
-    on files.customContextMenuRequested
+    on files.context
         ' QT MOVED THE SELECTION ON THE RIGHT-PRESS, so this is the row under
         ' the pointer and not wherever the selection happened to be.
         at = app.selected("files")
@@ -86,27 +86,27 @@ window app( title: "Browser", width: 620, height: 420 )
         x = app.write("log", join(g.lines, chr(10)))
     end on
 
-    on open_it.triggered
+    on open_it.pressed
         g.lines = append(g.lines, "  -> open " + g.clicked)
         x = app.write("log", join(g.lines, chr(10)))
     end on
 
-    on rename_it.triggered
+    on rename_it.pressed
         g.lines = append(g.lines, "  -> rename " + g.clicked)
         x = app.write("log", join(g.lines, chr(10)))
     end on
 
-    on new_here.triggered
+    on new_here.pressed
         g.lines = append(g.lines, "  -> new file in " + g.clicked)
         x = app.write("log", join(g.lines, chr(10)))
     end on
 
-    on delete_it.triggered
+    on delete_it.pressed
         g.lines = append(g.lines, "  -> delete " + g.clicked)
         x = app.write("log", join(g.lines, chr(10)))
     end on
 
-    on info_it.triggered
+    on info_it.pressed
         g.lines = append(g.lines, "  -> properties of " + g.clicked)
         x = app.write("log", join(g.lines, chr(10)))
     end on
@@ -147,7 +147,7 @@ program main(args)
                string(app.read("open_it", "visible")) +
                ", new-here offered " +
                string(app.read("new_here", "visible")))
-        app.invoke("open_it", "trigger")
+        app.invoke("open_it", "press")
 
         app.right_click("files", 3)
         print "project:  clicked " + g.clicked + ", menu " + string(g.offered)

@@ -318,7 +318,7 @@ decl 'a handler on the direction word names nothing' \
         field a()
         field b()
     end split
-    on across.clicked
+    on across.pressed
         print "never"
     end on' \
     'names nothing in this window'
@@ -378,9 +378,8 @@ else
     else
         fail "the nesting check did not run -- a split hung off the window instead of its parent would pass everything else"
     fi
-    if grep -q "^ok   the oracle says it was set" "$work/sem.out" &&
-       grep -q "^ok   and so does the by-name read" "$work/sem.out"; then
-        pass "widgetResizable was set, asserted through both doors"
+    if grep -q "^ok   the oracle says it was set" "$work/sem.out"; then
+        pass "the scroll reflows its content, read back from Qt's own scroll area"
     else
         fail "the resizable trap was not measured -- Qt defaults it FALSE and content then never reflows"
     fi

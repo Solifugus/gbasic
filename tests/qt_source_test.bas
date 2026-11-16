@@ -46,7 +46,7 @@ window ed( title: "Editor", width: 640, height: 420 )
         ' A `source` WITH NO LANGUAGE IS A PLAIN CODE EDITOR and a legitimate
         ' thing to want -- an author editing something the engine has never
         ' heard of. It must therefore be silent rather than warn.
-        source plain( placeholderText: "no language here" )
+        source plain( hint: "no language here" )
         ' ANOTHER LANGUAGE ENTIRELY, which is what says the name is honoured:
         ' `*.bas` is claimed by FreeBASIC at the same priority as gBASIC, so a
         ' backend that looked a definition up by EXTENSION would answer
@@ -91,20 +91,19 @@ program main()
     ' (1) IT DOES NOT WRAP. The opposite default from `text`, and for the
     ' opposite reason: a wrapped line of code makes a line number stop
     ' matching the file, where an unwrapped paragraph truncates.
-    check("the editor does not wrap", ui.read(ed, "code", "lineWrapMode"),
-          "NoWrap")
-    check("and a memo still does", ui.read(ed, "log", "lineWrapMode"),
-          "WidgetWidth")
+    check("the editor does not wrap", ui.read(ed, "code", "wrap"), false)
+    check("and a memo still does", ui.read(ed, "log", "wrap"), true)
     ' (2) A NARROWER TAB. Asserted as a DIFFERENCE, never a value: the width
     ' is four spaces of the system's monospaced font, so the number is a fact
     ' about this machine's fonts and would make the check a transcript.
     ok("a tab is narrower than Qt's default",
-       ui.read(ed, "code", "tabStopDistance") <
-       ui.read(ed, "log", "tabStopDistance"))
+       ui.read(ed, "code", "tab_width") <
+       ui.read(ed, "log", "tab_width"))
     ' (3) A MONOSPACED FONT, asked of the system rather than named -- a
     ' hardcoded family is how a port acquires a fallback nobody chose.
-    ok("the editor's font is not the memo's",
-       ui.read(ed, "code", "font") != ui.read(ed, "log", "font"))
+    check("the editor's font has one width", ui.read(ed, "code", "fixed_width"),
+          true)
+    check("and the memo's does not", ui.read(ed, "log", "fixed_width"), false)
     ' (4) AND THE HIGHLIGHTER, which is the one thing here the by-name
     ' property route cannot reach, being an object rather than a property.
     ok("a memo has no highlighting at all",
@@ -156,7 +155,7 @@ program main()
     ui.open(editor)
     check("the form populated it from the record",
           ui.read(editor, "body"), doc.body)
-    check("and it is editable", ui.read(editor, "body", "readOnly"), false)
+    check("and it is editable", ui.read(editor, "body", "read_only"), false)
     ' THE FOLD, which is what makes it a form part rather than a widget that
     ' happens to sit in one.
     ui.write(editor, "body", "edited")
@@ -168,7 +167,7 @@ program main()
     print "-- `to show` makes it read-only, as it does a memo"
     ui.open(viewer)
     check("a shown source cannot be typed into",
-          ui.read(viewer, "body", "readOnly"), true)
+          ui.read(viewer, "body", "read_only"), true)
     shown = ui.subject(viewer, "doc")
     ui.write(viewer, "body", "tampered")
     after = ui.subject(viewer, "doc")
@@ -189,7 +188,7 @@ program main()
     check("and is highlighted the same way",
           ui.highlighting(built, "pane").language, "gBASIC")
     check("and does not wrap either",
-          ui.read(built, "pane", "lineWrapMode"), "NoWrap")
+          ui.read(built, "pane", "wrap"), false)
     ui.stop()
 
     print "-- refusals, each beside its nearest legal neighbour"
@@ -219,9 +218,9 @@ program main()
     ' ASKED FOR BY gBASIC STUDIO: its editor for a file with no syntax (a .txt,
     ' a LICENSE) could not take a theme, so in a dark Studio it was the one
     ' light pane. A theme alone now gives the editor the theme's background and
-    ' text and NO highlighter. The colours are read back through the palette,
-    ' because a QPalette's own text form is empty (measured) and a theme that
-    ' did nothing would otherwise read back exactly like one that worked.
+    ' text and NO highlighter. The colours are read back with `colors`, what
+    ' the part is DRAWN in, because a theme that did nothing would otherwise
+    ' read back exactly like one that worked.
     themed = { kind: "window", name: "themed", options: { title: "Themed" },
                items: [ { kind: "container", word: "column", options: {},
                           items: [ { kind: "part", word: "source", name: "d",
@@ -229,20 +228,20 @@ program main()
                                    { kind: "part", word: "source", name: "l",
                                      options: { theme: "light" } } ] } ] }
     ui.open(themed)
-    dark = ui.read(themed, "d", "palette")
-    light = ui.read(themed, "l", "palette")
+    dark = ui.read(themed, "d", "colors")
+    light = ui.read(themed, "l", "colors")
     check("a dark theme alone gives a dark background", brightness(base_of(dark)) < 384, true)
     check("with text lighter than it",
           brightness(text_of(dark)) > brightness(base_of(dark)), true)
     check("a light theme alone gives a light background", brightness(base_of(light)) > 384, true)
     check("the same colours a highlighted dark source gets",
-          dark, ui.read(ed, "code", "palette"))
+          dark, ui.read(ed, "code", "colors"))
     check("and no highlighter, since there is no language",
           is_unknown(ui.highlighting(themed, "d")), true)
     ' THE CONTROL: an editor asking for no theme keeps its own colours, or
     ' "a theme alone applies" is satisfied by colouring every source dark.
     check("while a source with no theme keeps its own background",
-          base_of(ui.read(ed, "plain", "palette")) = base_of(dark), false)
+          base_of(ui.read(ed, "plain", "colors")) = base_of(dark), false)
     ui.close(themed)
 
     ' ---- THE CARET (§0.32) ---------------------------------------------
@@ -347,12 +346,12 @@ caught:
 end function
 
 ' "#rrggbb on #rrggbb": the text colour, then the background.
-function text_of(pal)
-    return mid(pal, 1, 6)
+function text_of(c)
+    return mid(c.fg, 1, 6)
 end function
 
-function base_of(pal)
-    return mid(pal, len(pal) - 6, 6)
+function base_of(c)
+    return mid(c.base, 1, 6)
 end function
 
 function brightness(hex6)

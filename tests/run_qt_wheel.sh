@@ -126,7 +126,7 @@ BAS
 }
 decl 'a wheel handler on a real part is accepted' \
 '    column
-        source code( plainText: "x" )
+        source code( text: "x" )
     end column
     on code.wheel
         print "turned"
@@ -136,7 +136,7 @@ decl 'a wheel handler on a real part is accepted' \
 # and nothing at run time would ever say so.
 decl 'a wheel handler naming no part is refused' \
 '    column
-        source code( plainText: "x" )
+        source code( text: "x" )
     end column
     on nobody.wheel
         print "turned"

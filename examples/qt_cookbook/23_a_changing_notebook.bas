@@ -25,7 +25,7 @@ function page_for(doc)
     return { kind: "container", word: "tab", name: "p" + doc.id,
              label: doc.title,
              items: [ { kind: "part", word: "source", name: "ed" + doc.id,
-                        options: { plainText: doc.text } } ] }
+                        options: { text: doc.text } } ] }
 end function
 
 function pages_for(docs)

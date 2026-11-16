@@ -27,10 +27,10 @@ window app( title: "Keys", width: 360, height: 220 )
         field note( label: "Note" )
         button go( text: "Go" )
     end column
-    on big.triggered
+    on big.pressed
         g.big = g.big + 1
     end on
-    on small.triggered
+    on small.pressed
         g.small = g.small + 1
     end on
 end window

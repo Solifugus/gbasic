@@ -163,7 +163,7 @@ static const char *qr_label(const void *p)     { return qr_field(p, "label"); }
 static const char *qr_subject(const void *p)   { return qr_field(p, "subject"); }
 static const char *qr_direction(const void *p) { return qr_field(p, "direction"); }
 static const char *qr_target(const void *p)    { return qr_field(p, "target"); }
-static const char *qr_signal(const void *p)    { return qr_field(p, "signal"); }
+static const char *qr_signal(const void *p)    { return qr_field(p, "event"); }
 
 /* A RECORD HAS NO `end` WORD, there being no source to close, so this is
  * always absent -- which the shared checker reads as "nothing to disagree
@@ -332,7 +332,7 @@ static void qr_report(void *ctx, const void *win, const void *item,
  * it, a misspelled key leaves an author believing they asked for something. */
 static const char *qt_check_keys(const char *kind) {
     if (kind && strcmp(kind, "handler") == 0) {
-        return "kind target signal handler";
+        return "kind target event handler";
     }
     if (kind && strcmp(kind, "container") == 0) {
         return "kind word name label subject direction options items";
@@ -402,6 +402,14 @@ static int qt_check_shape(Value *v, const char *where, size_t depth,
         const char *fname = v->as.record.fields[i].name;
         if (!qt_check_key_known(allowed, fname)) {
             sink->count++;
+            if (!sink->reported && strcmp(kind, "handler") == 0 &&
+                strcmp(fname, "signal") == 0) {
+                snprintf(sink->message, sizeof(sink->message),
+                         "window: a handler's `signal:` is called `event:` "
+                         "since 0.12.0 (at %s)",
+                         where && *where ? where : "items");
+                sink->reported = 1;
+            }
             if (!sink->reported) {
                 snprintf(sink->message, sizeof(sink->message),
                          "window: a %s carries no '%s' (the fields are %s) "
@@ -833,30 +841,6 @@ static int qt_pump_gbasic(void) {
 
 #define QT_ERRBUF 256
 
-/* The options this backend owns because they are NOT widget properties.
- * Everything else goes to the widget's own QMetaObject by name, which is the
- * whole argument for the by-name route (§1): QPushButton alone exposes 75
- * properties, and a table of them would be bindings forever. */
-static int qt_structural_option(const char *name) {
-    static const char *structural[] = {
-        "label", "margin", "spacing", "grow", "show", "edit", "type",
-        "across", "down", "options", "language", "theme",
-        /* THE MARGIN'S TWO OPTIONS (§0.29). Structural because each builds a
-         * CHILD WIDGET rather than setting a property -- `setProperty("marks",
-         * ...)` would store a dynamic property nothing reads, which is the
-         * silent-no-op class this backend is tested against. Note `margin:` is
-         * already taken, by a layout's own margin, which is why the gutter is
-         * spelled as the two things it carries. */
-        "line_numbers", "marks", NULL
-    };
-    for (size_t i = 0; structural[i]; i++) {
-        if (strcmp(name, structural[i]) == 0) {
-            return 1;
-        }
-    }
-    return 0;
-}
-
 /* FILL A `choice`'S LIST FROM AN ARRAY. ONE PIECE OF CODE for both doors --
  * the declared `options:` literal and the run-time `ui.options` -- because a
  * choice filled one way and refilled the other must hold the same thing, which
@@ -983,7 +967,7 @@ static int qt_apply_options(void *node, Value *options, const char *word,
             }
             continue;
         }
-        if (qt_structural_option(f->name)) {
+        if (gb_ui_option_structural(f->name)) {
             continue;
         }
         /* BY NAME, THROUGH QMetaObject. A property the widget does not carry
@@ -2134,7 +2118,7 @@ static int qt_connect_built(void *root, Value *items, const QtNameSet *built,
         const char *kind = qt_record_text(entry, "kind");
         if (kind && strcmp(kind, "handler") == 0) {
             const char *target = qt_record_text(entry, "target");
-            const char *signal = qt_record_text(entry, "signal");
+            const char *signal = qt_record_text(entry, "event");
             RecordField *hf = record_find(entry, "handler");
             if (!target || !qt_names_has(built, target)) {
                 continue;
@@ -2941,7 +2925,7 @@ static int qt_connect_items(void *root, Value *items) {
         const char *kind = qt_record_text(entry, "kind");
         if (kind && strcmp(kind, "handler") == 0) {
             const char *target = qt_record_text(entry, "target");
-            const char *signal = qt_record_text(entry, "signal");
+            const char *signal = qt_record_text(entry, "event");
             RecordField *hf = record_find(entry, "handler");
             if (!target || !signal || !hf || !hf->value || hf->value->kind != VALUE_FUNCTION) {
                 qt_raise("window: this handler carries no function to call");
@@ -4213,6 +4197,15 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(prop); value_free(v);
             return value_null();
         }
+        if (!gb_ui_word_known(prop.as.string, GB_UI_PROPERTY)) {
+            char why[200];
+            gb_ui_word_refusal(prop.as.string, GB_UI_PROPERTY, why, sizeof(why));
+            snprintf(message, sizeof(message), "ui.set: %s", why);
+            qt_raise(message);
+            value_free(win); value_free(which);
+            value_free(prop); value_free(v);
+            return value_null();
+        }
         const char *wname = qt_record_text(&win, "name");
         void *root = wname ? qt_window_find(wname) : NULL;
         if (!root) {
@@ -5302,12 +5295,20 @@ static Value qt_eval_call(AstExpr *expr) {
      * resolution, missing-file behaviour and a search path inside a GUI
      * module that has no business owning them. */
     if (strcmp(verb, "theme") == 0) {
+        /* A RECORD IS EVERY BACKEND'S THEME (docs/ui_design.md §7); TEXT IS
+         * A Qt STYLESHEET, the `stylesheet` capability, kept for a program
+         * that is Qt's on purpose. Reading answers whichever was set last. */
+        static Value theme_record;
+        static int theme_is_record = 0;
         if (argc > 1) {
-            qt_raise("ui.theme takes a stylesheet to set, or nothing to read "
-                     "the current one");
+            qt_raise("ui.theme takes a theme record (or a Qt stylesheet) to "
+                     "set, or nothing to read the current one");
             return value_null();
         }
         if (argc == 0) {
+            if (theme_is_record) {
+                return value_copy(theme_record);
+            }
             char *css = gb_qt_theme_get();
             Value out = value_string(css ? css : "");
             free(css);
@@ -5318,9 +5319,77 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(v);
             return value_null();
         }
+        if (v.kind == VALUE_RECORD) {
+            static const char *needed[] = {"bg", "base", "ctl", "hi", "fg",
+                                           "faint", "line", "sel", "on_sel",
+                                           NULL};
+            static const char *allowed[] = {"bg", "base", "ctl", "hi", "fg",
+                                            "faint", "line", "sel", "on_sel",
+                                            "accent", "arrow", "tick",
+                                            "dock_close", "dock_float", NULL};
+            size_t n = v.as.record.count;
+            const char **names = calloc(n + 1, sizeof(char *));
+            const char **vals = calloc(n + 1, sizeof(char *));
+            int bad = 0;
+            for (size_t i = 0; i < n && !bad; i++) {
+                RecordField *f = &v.as.record.fields[i];
+                int known = 0;
+                for (size_t k = 0; allowed[k]; k++) {
+                    if (strcmp(allowed[k], f->name) == 0) {
+                        known = 1;
+                    }
+                }
+                if (!known) {
+                    const char *near = gb_nearest_word(f->name, allowed);
+                    snprintf(message, sizeof(message),
+                             "ui.theme: a theme has no `%s`%s%s%s -- its fields "
+                             "are bg, base, ctl, hi, fg, faint, line, sel, "
+                             "on_sel, and optionally accent, arrow, tick, "
+                             "dock_close and dock_float", f->name,
+                             near ? " (did you mean `" : "", near ? near : "",
+                             near ? "`?)" : "");
+                    bad = 1;
+                } else if (!f->value || f->value->kind != VALUE_STRING) {
+                    snprintf(message, sizeof(message),
+                             "ui.theme: `%s` must be text", f->name);
+                    bad = 1;
+                } else {
+                    names[i] = f->name;
+                    vals[i] = f->value->as.string;
+                }
+            }
+            for (size_t k = 0; needed[k] && !bad; k++) {
+                if (!record_find(&v, needed[k])) {
+                    snprintf(message, sizeof(message),
+                             "ui.theme: the theme has no `%s` -- a theme says "
+                             "all of bg, base, ctl, hi, fg, faint, line, sel "
+                             "and on_sel", needed[k]);
+                    bad = 1;
+                }
+            }
+            err[0] = '\0';
+            if (!bad && !gb_qt_theme_record(names, vals, n, err, sizeof(err))) {
+                snprintf(message, sizeof(message), "ui.theme: %s",
+                         err[0] ? err : "that theme was refused");
+                bad = 1;
+            }
+            free(names);
+            free(vals);
+            if (bad) {
+                value_free(v);
+                qt_raise(message);
+                return value_null();
+            }
+            if (theme_is_record) {
+                value_free(theme_record);
+            }
+            theme_record = v;
+            theme_is_record = 1;
+            return value_bool(1);
+        }
         if (v.kind != VALUE_STRING) {
-            qt_raise("ui.theme expects a stylesheet as text -- "
-                     "`ui.theme(read({file}\"dark.qss\"))` to load one");
+            qt_raise("ui.theme expects a theme record, or a Qt stylesheet as "
+                     "text");
             value_free(v);
             return value_null();
         }
@@ -5332,6 +5401,10 @@ static Value qt_eval_call(AstExpr *expr) {
                      err[0] ? err : "that stylesheet was refused");
             qt_raise(message);
             return value_null();
+        }
+        if (theme_is_record) {
+            value_free(theme_record);
+            theme_is_record = 0;
         }
         return value_bool(1);
     }
@@ -6421,6 +6494,17 @@ static Value qt_eval_call(AstExpr *expr) {
                 value_free(prop);
                 return value_null();
             }
+            if (!gb_ui_word_known(prop.as.string, GB_UI_PROPERTY)) {
+                char why[200];
+                gb_ui_word_refusal(prop.as.string, GB_UI_PROPERTY, why,
+                                   sizeof(why));
+                snprintf(message, sizeof(message), "ui.read: %s", why);
+                qt_raise(message);
+                value_free(win);
+                value_free(which);
+                value_free(prop);
+                return value_null();
+            }
             char kind = 't';
             double num = 0.0;
             char *text = NULL;
@@ -6442,6 +6526,22 @@ static Value qt_eval_call(AstExpr *expr) {
             }
             if (kind == 'n') {
                 return value_number(num);
+            }
+            if (kind == 'c') {
+                /* `colors`: `name=#rrggbb;...` from the backend, as a record
+                 * in the theme record's field names. */
+                Value rec = value_record(NULL, 0);
+                char *save = NULL;
+                for (char *pair = strtok_r(text, ";", &save); pair;
+                     pair = strtok_r(NULL, ";", &save)) {
+                    char *eq = strchr(pair, '=');
+                    if (eq) {
+                        *eq = '\0';
+                        record_set(&rec, pair, value_string(eq + 1));
+                    }
+                }
+                free(text);
+                return rec;
             }
             Value out = value_string(text ? text : "");
             free(text);
@@ -7856,6 +7956,16 @@ static Value qt_eval_call(AstExpr *expr) {
             if (!error_action_pending()) {
                 qt_raise("ui.invoke expects the part's name and the method as text");
             }
+            value_free(win);
+            value_free(which);
+            value_free(method);
+            return value_null();
+        }
+        if (!gb_ui_word_known(method.as.string, GB_UI_METHOD)) {
+            char why[200];
+            gb_ui_word_refusal(method.as.string, GB_UI_METHOD, why, sizeof(why));
+            snprintf(message, sizeof(message), "ui.invoke: %s", why);
+            qt_raise(message);
             value_free(win);
             value_free(which);
             value_free(method);

@@ -15,11 +15,11 @@ window tally( title: "Tally", width: 280, height: 150 )
         end row
     end column
 
-    on up.clicked
+    on up.pressed
         g.count = g.count + 1
         show_count()
     end on
-    on reset.clicked
+    on reset.pressed
         g.count = 0
         show_count()
     end on
@@ -42,15 +42,15 @@ program main(args)
     end if
     ui.open(tally)
 
-    tally.invoke("up", "click")
-    tally.invoke("up", "click")
-    tally.invoke("up", "click")
+    tally.invoke("up", "press")
+    tally.invoke("up", "press")
+    tally.invoke("up", "press")
     print "after three clicks the widget says: " + tally.read("shown")
     ' AND MAIN CAN SEE IT, which is the whole point: the handler mutated the
     ' record this frame holds.
     print "and main's own record says:        " + string(g.count)
 
-    tally.invoke("reset", "click")
+    tally.invoke("reset", "press")
     print "after reset:                       " + string(g.count)
     ui.stop()
 end program

@@ -126,4 +126,16 @@ const char *gb_window_word_nearest(const char *word);
  * nonsense is worse than none. `set` is NULL-terminated. */
 const char *gb_nearest_word(const char *word, const char *const *set);
 
+/* ONE VOCABULARY for every backend (docs/ui_design.md §3): the words
+ * `ui.read`/`ui.set` (properties), `ui.invoke` (methods) and `on x.<event>`
+ * may use, and the options that place or build rather than set a property.
+ * A toolkit's own name is refused; `gb_ui_word_refusal` says what to write. */
+typedef enum { GB_UI_PROPERTY, GB_UI_METHOD, GB_UI_EVENT } GbUiWordKind;
+int gb_ui_word_known(const char *word, GbUiWordKind kind);
+int gb_ui_option_structural(const char *name);
+const char *const *gb_ui_words(GbUiWordKind kind);
+const char *gb_ui_former_word(const char *name);
+void gb_ui_word_refusal(const char *word, GbUiWordKind kind, char *out,
+                        size_t cap);
+
 #endif /* GBASIC_WINDOW_CHECK_H */

@@ -92,7 +92,7 @@ program main()
 
     print "-- the refusal load-time validation exists for"
     m = refused(win([ col([ field("a") ]),
-                      { kind: "handler", target: "nobody", signal: "clicked",
+                      { kind: "handler", target: "nobody", event: "pressed",
                         handler: noop } ]))
     check("a handler naming nothing could never fire",
           contains(m, "names nothing in this window"), true)
@@ -101,9 +101,32 @@ program main()
     ' get different sentences.
     m = refused(win([ col([ { kind: "part", word: "button", name: "go",
                               options: {} } ]),
-                      { kind: "handler", target: "go", signal: "clicked" } ]))
+                      { kind: "handler", target: "go", event: "pressed" } ]))
     check("a handler with no function is refused separately",
           contains(m, "carries nothing to call"), true)
+
+    print "-- one vocabulary, in a BUILT window too (docs/ui_design.md §3)"
+    m = refused(win([ col([ { kind: "part", word: "button", name: "go",
+                              options: {} } ]),
+                      { kind: "handler", target: "go", event: "clicked",
+                        handler: noop } ]))
+    check("Qt's name for an event is refused, naming the word",
+          contains(m, "`clicked` is Qt's name, not ui's -- write `pressed`"),
+          true)
+    m = refused(win([ col([ { kind: "part", word: "button", name: "go",
+                              options: {} } ]),
+                      { kind: "handler", target: "go", signal: "pressed",
+                        handler: noop } ]))
+    check("a handler's old `signal:` field says it is `event:` now",
+          contains(m, "`signal:` is called `event:` since 0.12.0"), true)
+    m = refused(win([ col([ { kind: "part", word: "field", name: "a",
+                              options: { placeholderText: "x" } } ]) ]))
+    check("and so is Qt's name for an option, naming the part and the word",
+          contains(m, "on `a`, `placeholderText` is Qt's name, not ui's -- write `hint`"),
+          true)
+    check("CONTROL: the word itself is accepted",
+          ui.check(win([ col([ { kind: "part", word: "field", name: "a",
+                                 options: { hint: "x" } } ]) ])), true)
 
     print "-- placement, which depends on an item's surroundings"
     m = refused(win([ col([ { kind: "part", word: "item", name: "x",
@@ -207,13 +230,13 @@ program main()
     check("a handler carrying a function and naming a real part is fine",
           ui.check(win([ col([ { kind: "part", word: "button", name: "go",
                                  options: {} } ]),
-                         { kind: "handler", target: "go", signal: "clicked",
+                         { kind: "handler", target: "go", event: "pressed",
                            handler: noop } ])), true)
     check("a handler may name a named CONTAINER",
           ui.check(win([ { kind: "container", word: "table", name: "t",
                            subject: "rows", direction: "show", options: {},
                            items: [ field("who") ] },
-                         { kind: "handler", target: "t", signal: "activated",
+                         { kind: "handler", target: "t", event: "activated",
                            handler: noop } ])), true)
 
     print "-- DEPTH, which only a BUILT window can get wrong"

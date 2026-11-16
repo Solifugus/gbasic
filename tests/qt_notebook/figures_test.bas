@@ -103,7 +103,7 @@ program main(args)
                     { kind: "part", word: "source", name: "dark", options: { language: "gBASIC", theme: "dark" } },
                     { kind: "part", word: "source", name: "plain", options: { theme: "Gray Print" } } ] } ] }
         ui.open(win)
-        ui.set(win, "gray", "plainText", "' a comment\nx = 42\n")
+        ui.set(win, "gray", "text", "' a comment\nx = 42\n")
         check("a theme from the syntax path's themes/", ui.highlighting(win, "gray").theme, "Gray Print")
         check("one KSyntaxHighlighting ships", ui.highlighting(win, "printing").theme, "Printing")
         check("dark still names the theme it resolved to", ui.highlighting(win, "dark").theme, "Breeze Dark")

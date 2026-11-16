@@ -42,7 +42,7 @@ window customer( title: "Customer", width: 420 )
     ' A handler is ordinary gBASIC. `ui.subject` answers the WHOLE record the
     ' form is working on, read from the widgets at this moment -- so a handler
     ' says `saving` once rather than naming every part it wants back.
-    on save.clicked
+    on save.pressed
         edited = customer.subject("cust")
         print "saving:"
         print "  account " + edited.id
@@ -53,7 +53,7 @@ window customer( title: "Customer", width: 420 )
         ui.stop()
     end on
 
-    on cancel.clicked
+    on cancel.pressed
         print "cancelled"
         ui.stop()
     end on

@@ -12,11 +12,9 @@
 ' GTK: Studio records that its scroll and key controllers are its only
 ' untested controls BECAUSE `Gtk.EventControllerScroll` has no emit, so this
 ' closes an exception it had to sanction. (2) THE ZOOM NEEDS NOTHING NEW --
-' `font` is Q_PROPERTY 27 of QWidget and reads back as TEXT
-' ("monospace,9,-1,5,400,..."), so a program splits it, changes the number and
-' writes it back, which is asserted below rather than taken on trust. That is
-' why there is no `ui.zoom`: `zoomIn`/`zoomOut` take a defaulted argument so
-' `ui.invoke` cannot reach them, and nothing needs them to.
+' `font_size` is a part's size in points, read and written as a number, so a
+' program adds to it, which is asserted below rather than taken on trust. That
+' is why there is no `ui.zoom`.
 '
 ' AND WHY `ui.swallow` IS NOT OPTIONAL. Measured, Ctrl+wheel scrolls a
 ' QPlainTextEdit FASTER than a plain one (95 -> 111 against 92 -> 95), so a
@@ -42,7 +40,7 @@ end function
 
 window app( title: "Wheel", width: 480, height: 360 )
     column
-        source code( plainText: "one" )   ' filled in `main`, to have somewhere to scroll
+        source code( text: "one" )   ' filled in `main`, to have somewhere to scroll
         table grid to show rows
             field name( label: "Name" )
         end table
@@ -61,15 +59,13 @@ window app( title: "Wheel", width: 480, height: 360 )
         ' STUDIO'S OWN RULE: only with Ctrl. Without the modifier this must do
         ' NOTHING and leave the event alone, or the editor stops scrolling.
         if ev.ctrl then
-            ' THE ZOOM, IN ARITHMETIC. `font` reads back as text, so the size
-            ' is a number in a list -- no verb needed, which is what the
-            ' measurement said and what this asserts.
-            f = split(ui.read(app, "code", "font"), ",")
+            ' THE ZOOM, IN ARITHMETIC: `font_size` is a number, so no verb is
+            ' needed, which is what the measurement said and what this asserts.
             bigger = 2
             if ev.dy < 0 then
                 bigger = 0 - 2
             end if
-            ui.set(app, "code", "font", f[0] + "," + string(number(f[1]) + bigger))
+            ui.set(app, "code", "font_size", ui.read(app, "code", "font_size") + bigger)
             g.zoomed = g.zoomed + 1
             ' CLAIMED, so the view does not also scroll.
             ui.swallow()
@@ -86,7 +82,7 @@ end window
 ' "swallowing works" by one that swallows everywhere.
 window plain_win( title: "Plain", width: 300, height: 200 )
     column
-        source untouched( plainText: "two" )
+        source untouched( text: "two" )
     end column
 end window
 
@@ -105,7 +101,7 @@ program main()
     x = ui.write(app, "code", join(lines, chr(10)))
 
     ' ---- the event reaches the handler, with its direction and modifiers ----
-    before = number(split(ui.read(app, "code", "font"), ",")[1])
+    before = ui.read(app, "code", "font_size")
     unclaimed = ui.scroll(app, "code", 1)
     check("a plain wheel reached the handler", g.seen, 1)
     ' THE OTHER HALF: a handler that declined must leave the event alone, or
@@ -119,7 +115,7 @@ program main()
     ' STUDIO'S RULE HELD: a plain wheel changed nothing.
     check("a plain wheel did not zoom", g.zoomed, 0)
     check("so the font is unchanged",
-          number(split(ui.read(app, "code", "font"), ",")[1]), before)
+          ui.read(app, "code", "font_size"), before)
 
     ui.scroll(app, "code", -1)
     check("one notch down is a negative dy", g.dy < 0, true)
@@ -138,10 +134,10 @@ program main()
     ' THE ZOOM IS ASSERTED ON THE FONT, not on the counter: a handler that ran
     ' and set nothing reads identically.
     check("the font grew by two points",
-          number(split(ui.read(app, "code", "font"), ",")[1]), before + 2)
+          ui.read(app, "code", "font_size"), before + 2)
     ui.scroll(app, "code", -1, "ctrl")
     check("and shrank back", 
-          number(split(ui.read(app, "code", "font"), ",")[1]), before)
+          ui.read(app, "code", "font_size"), before)
 
     ' ---- SWALLOWING MUST STOP THE VIEW, not merely report that it did -----
     ' THIS TIER EXISTS BECAUSE A PERTURBATION WENT GREEN. `ui.scroll` answers

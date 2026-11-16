@@ -38,7 +38,7 @@ window orders( title: "Orders", width: 560, height: 380 )
     ' selectable -- a display-only table is uneditable, not disabled.
     ' `ui.selected` answers an INDEX, which is what lets it index the very
     ' list the table was built from.
-    on lines_view.itemSelectionChanged
+    on lines_view.chosen
         at = orders.selected("lines_view")
         if not is_unknown(at) then
             row = lines[at]
@@ -47,7 +47,7 @@ window orders( title: "Orders", width: 560, height: 380 )
         end if
     end on
 
-    on done.clicked
+    on done.pressed
         ui.stop()
     end on
 end window

@@ -14,7 +14,7 @@ window greeter( title: "Greeter", width: 360, height: 160 )
         text said( label: "" )
     end column
 
-    on hello.clicked
+    on hello.pressed
         greeter.write("said", "Hello, " + greeter.read("who") + "!")
     end on
 end window
@@ -38,11 +38,11 @@ program main(args)
     ' A real program ends with `ui.run()`, which hands Qt the thread until
     ' something calls `ui.stop()`. A recipe fires the button itself instead, so
     ' it finishes without anybody clicking.
-    greeter.invoke("hello", "click")
+    greeter.invoke("hello", "press")
     print "after the click:   " + greeter.read("said")
 
     ' ANY QT PROPERTY, BY NAME, IN THE KIND QT DECLARES IT.
     print "the button's text: " + greeter.read("hello", "text")
-    print "the field accepts:  " + string(greeter.read("who", "maxLength")) + " characters"
+    print "the field accepts:  " + string(greeter.read("who", "max_length")) + " characters"
     ui.stop()
 end program

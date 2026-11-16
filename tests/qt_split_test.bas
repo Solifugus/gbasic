@@ -43,7 +43,7 @@ window app( title: "Shell", width: 760, height: 480 )
             end column
         end scroll
         split down
-            source code( plainText: "x = 1" )
+            source code( text: "x = 1" )
             table out to show rows
                 field line( label: "Line" )
             end table
@@ -134,14 +134,9 @@ program main(args)
     print "-- the trap: widgetResizable defaults to FALSE in Qt"
     ' LEFT ALONE, the inner widget keeps its original size for ever, so content
     ' never reflows to the viewport and a resized window shows a stripe of
-    ' widgets beside a grey expanse -- with nothing raised. Asserted through
-    ' BOTH doors: the oracle and the ordinary by-name property read, because a
-    ' `scroll` can be named where a `split` cannot.
+    ' widgets beside a grey expanse -- with nothing raised. The oracle reads
+    ' it back from Qt's own scroll area, not from a flag we kept.
     check("the oracle says it was set", f.resizable, true)
-    check("and so does the by-name read",
-          ui.read(app, "files", "widgetResizable"), true)
-    check("its scrollbar policy is readable too, by name",
-          ui.read(app, "files", "verticalScrollBarPolicy"), "ScrollBarAsNeeded")
 
     print "-- the scroll really holds its children"
     x = ui.write(app, "f2", "renamed.bas")
@@ -175,7 +170,7 @@ program main(args)
 
     print "-- and the split is not addressable, which is the stated cost"
     on error goto no_name
-    bad = ui.read(app, "across", "orientation")
+    bad = ui.read(app, "across", "direction")
     print "MISMATCH the direction word was registered as a name"
     return
 no_name:

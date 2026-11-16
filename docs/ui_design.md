@@ -1,6 +1,6 @@
 # `ui.` — one GUI module, more than one backend
 
-**Status: a design note, ruled on 2026-11-16; nothing built.** Written 2026-11-16 against gBASIC
+**Status: ruled on 2026-11-16; push A (§8 steps 1–3: the rename, the vocabulary, the theme record) built the same day, gated, not yet pushed. Steps 4–6 are not built.** Written 2026-11-16 against gBASIC
 `4eafb557` (0.11.0) and gBASIC Studio `4aa0420`. It answers whisker's
 proposal (`~/development/whisker/docs/gbasic-ui-proposal.md` §7) and ends
 with Matthew's rulings (§9, 2026-11-16). Every count below is
@@ -95,7 +95,7 @@ gBASIC and Studio together (`qt.read`/`qt.set`/`qt.invoke` with a literal
 name, Studio's `qt_on`, and `on x.y` handlers): **55 property and method
 names** (three of them deliberate misspellings in refusal tiers) and **16
 event names**. About 60 gBASIC words, then, cover every name any program
-uses today. A first mapping, to be fixed in the increment, not here:
+uses today. The mapping as built (the lists are `src/window_check.c`; Qt's map is `src/modules/qt_backend.cpp`; `tests/run_ui_vocabulary.sh` holds them and the reference's *Words* to each other):
 
 | gBASIC word | Qt today |
 |---|---|
@@ -132,6 +132,21 @@ uses today. A first mapping, to be fixed in the increment, not here:
 | event `entered` | `returnPressed` |
 | event `context` | `customContextMenuRequested` |
 | events `closed`, `wheel`, `gutter`, `block`, `link` | gBASIC's already |
+| `default` | a button's `default` (the one Enter presses) |
+| `secret` | a field's `echoMode` Password or Normal |
+| invoke `clear` | `clear`; a table's `clearContents` |
+| `focused` | `focus`, read only |
+| `fixed_width` | the resolved font's `fixedPitch`, read only |
+| `shown_text` | a `markdown` part's rendered `plainText`, read only (`text` is the markdown written) |
+| `direction` | a separator's `HLine`/`VLine`, a split's orientation, as `"across"`/`"down"`, read only |
+| `bold` | the font's weight |
+
+**Built, the words above grew by nine** where a fixture or an example needed
+one: each was a real need the old by-name route had met with a Qt name. And
+two tiers had asserted pure Qt state (`contextMenuPolicy`, `widgetResizable`);
+the first became a source tripwire on the backend (`run_qt_context.sh`
+`policy`), the second is the `ui.pane` oracle's `resizable`, already read from
+Qt's own scroll area.
 
 **Selection and activation are two events, never one.** Studio's check
 found the first draft folding `itemClicked` into `chosen`. Studio opens a

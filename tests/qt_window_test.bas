@@ -63,8 +63,8 @@ window customer( title: "Customer", width: 480, height: 320 )
     ' a connect-time fire raises inside `ui.read` and prints NOTHING -- so the
     ' ordering control could not see it, which is how the perturbation written
     ' for that control came back green.
-    on save.clicked
-        print "SIGNAL save.clicked"
+    on save.pressed
+        print "SIGNAL save.pressed"
         print "SIGNAL read -> " + ui.read(customer, "name")
     end on
 end window
@@ -161,7 +161,7 @@ program main()
     ' THE SIGNAL. `click` is invoked BY NAME through QMetaObject, which emits
     ' the real `clicked` signal through the real connection -- so what is being
     ' tested is the whole path and not a short cut around it.
-    check("invoking a method by name", ui.invoke(customer, "save", "click"), true)
+    check("invoking a method by name", ui.invoke(customer, "save", "press"), true)
     print "after click"
 
     ' REFUSALS, each beside a legal neighbour above it.
@@ -197,15 +197,15 @@ program main()
     ' HORIZONTAL line and a row by a VERTICAL one, which is the opposite of
     ' what the direction's name suggests until you picture it. Either reading
     ' alone passes on a backend that hardcodes one shape.
-    check("a column's rule is horizontal",
-          ui.read(customer, "rule", "frameShape"), "HLine")
-    check("and a row's divider is vertical",
-          ui.read(customer, "bar", "frameShape"), "VLine")
-    ' AND IT IS A REAL WIDGET, which is why it may be named at all: Studio
-    ' styles its own rule, so one that could not be addressed could not be
-    ' themed.
-    ui.set(customer, "rule", "styleSheet", "color: #808080")
-    check("a rule can be themed like anything else",
-          ui.read(customer, "rule", "styleSheet"), "color: #808080")
+    check("a column's rule runs across",
+          ui.read(customer, "rule", "direction"), "across")
+    check("and a row's divider runs down",
+          ui.read(customer, "bar", "direction"), "down")
+    ' AND IT IS A REAL PART, which is why it may be named at all: Studio
+    ' marks its own rule, so one that could not be addressed could not be
+    ' marked.
+    ui.set(customer, "rule", "emphasis", "outline")
+    check("a rule can be marked like anything else",
+          ui.read(customer, "rule", "emphasis"), "outline")
 
 end program

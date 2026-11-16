@@ -405,7 +405,7 @@ QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 40 ./gbasic \
     --line-buffered "$work/part_closed.bas" > "$work/part_closed.out" 2>&1
 if grep -q "NO DISPLAY" "$work/part_closed.out"; then
     printf '  SKIP a part has no close (no display)\n'
-elif grep -q 'emits no .closed. signal' "$work/part_closed.out"; then
+elif grep -q 'a `button` has no `closed` event' "$work/part_closed.out"; then
     pass 'a part has no `closed` -- the special case is the window only'
 else
     head -3 "$work/part_closed.out"

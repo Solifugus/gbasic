@@ -73,7 +73,7 @@ window shapes( title: "Layout", width: 520, height: 460 )
         end row
     end column
 
-    on close.clicked
+    on close.pressed
         ui.stop()
     end on
 end window

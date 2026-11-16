@@ -12,8 +12,8 @@
 ' window manager's own button, which is the case you cannot test and your users
 ' will do every day.
 '
-' THE WINDOW IS A PART OF ITSELF. Its own name reaches it in the same by-name
-' table every part lives in, so `ui.read(app, "app", "windowTitle")`,
+' THE WINDOW IS A PART OF ITSELF. Its own name reaches it in the same
+' table every part lives in, so `ui.read(app, "app", "title")`,
 ' `ui.set(app, "app", ...)` and `ui.invoke(app, "app", "close")` all work with
 ' no extra vocabulary. The one cost: a part may NOT take the window's name, and
 ' is refused by name if it tries.
@@ -47,9 +47,9 @@ program main(args)
     print "open:    " + string(app.is_open())
 
     ' THE WINDOW ITSELF, ADDRESSED BY ITS OWN NAME.
-    print "title:   " + app.read("app", "windowTitle")
-    x = app.set("app", "windowTitle", "Closing (edited)")
-    print "renamed: " + app.read("app", "windowTitle")
+    print "title:   " + app.read("app", "title")
+    x = app.set("app", "title", "Closing (edited)")
+    print "renamed: " + app.read("app", "title")
 
     ' Somebody types.
     y = app.write("who", "Grace Hopper")
@@ -73,7 +73,7 @@ program main(args)
     ' undo.
     ui.open(app)
     print "reopened who: " + app.read("who")
-    print "reopened title: " + app.read("app", "windowTitle")
+    print "reopened title: " + app.read("app", "title")
 
     ' AND `ui.stop()` IS NOT A CLOSE. It means "give me the thread back" and
     ' nothing more: the window stays open, stays readable, and no `closed`

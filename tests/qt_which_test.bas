@@ -22,7 +22,7 @@
 ' THE TABS ARE AT THE BOTTOM ON PURPOSE AND IT IS THE LOAD-BEARING DETAIL. The
 ' point a context-menu signal carries is in the EMITTING WIDGET'S coordinates
 ' and the bar is not at its origin, so `tabAt` has to be asked of a MAPPED
-' point. Measured with `tabPosition: South`, an unmapped `tabAt` answers -1 --
+' point. Measured with the tabs at the bottom, an unmapped `tabAt` answers -1 --
 ' "no tab" for a click squarely on one -- while with tabs at the TOP the bar IS
 ' at the origin and the two agree. Comfortable test data would have hidden the
 ' mapping entirely, so both positions are exercised and the bottom one is the
@@ -68,25 +68,25 @@ window app( title: "Which", width: 700, height: 420 )
 
             tabs book
             tab "One"
-                memo first( plainText: "first document" )
+                memo first( text: "first document" )
             end tab
             tab "Two"
-                memo second( plainText: "second document" )
+                memo second( text: "second document" )
             end tab
             tab "Three"
-                memo third( plainText: "third document" )
+                memo third( text: "third document" )
             end tab
             end tabs
         end column
     end split
 
-    on book.customContextMenuRequested
+    on book.context
         g.tab_menu = g.tab_menu + 1
         g.from_menu = ui.which_tab()
         shown = ui.popup(app, "tab_actions")
     end on
 
-    on book.currentChanged
+    on book.changed
         g.changed = g.changed + 1
         g.from_changed = ui.which_tab()
     end on
@@ -98,7 +98,7 @@ window app( title: "Which", width: 700, height: 420 )
     ' chosen by the type NAME and not by the parameter count, and this handler
     ' is what exercises it: the valgrind tier is where that read would show up,
     ' since the wrong slot answers plausibly and crashes nothing.
-    on hold.toggled
+    on hold.changed
         g.toggled = g.toggled + 1
         g.tab_in_toggle = ui.which_tab()
     end on
@@ -109,12 +109,12 @@ window app( title: "Which", width: 700, height: 420 )
     ' falls off), so what is narrowed is what it RECORDS. Without that
     ' narrowing `ui.which_tab()` here would answer a check box's state -- a
     ' plausible tab index about something else entirely.
-    on hold.stateChanged
+    on hold.changed
         g.state_changed = g.state_changed + 1
         g.tab_in_state = ui.which_tab()
     end on
 
-    on files.customContextMenuRequested
+    on files.context
         g.file_menu = g.file_menu + 1
         g.row = ui.selected(app, "files")
         shown2 = ui.popup(app, "file_actions")
@@ -147,11 +147,11 @@ program main()
           is_unknown(ui.which_tab()), true)
 
     ' -------------------------------------------------- TABS AT THE BOTTOM
-    ok = ui.set(app, "book", "tabPosition", "South")
-    check("the tabs moved to the bottom", ui.read(app, "book", "tabPosition"),
-          "South")
-    sel = ui.set(app, "book", "currentIndex", 0)
-    check("the first tab is current", ui.read(app, "book", "currentIndex"), 0)
+    ok = ui.set(app, "book", "tab_side", "bottom")
+    check("the tabs moved to the bottom", ui.read(app, "book", "tab_side"),
+          "bottom")
+    sel = ui.set(app, "book", "index", 0)
+    check("the first tab is current", ui.read(app, "book", "index"), 0)
     check("and the change was reported with its own index", g.from_changed, 0)
 
     before = g.tab_menu
@@ -163,12 +163,12 @@ program main()
     ' the right-press did NOT switch to the tab it landed on, so a port reading
     ' `currentIndex` would act on tab 0.
     check("and the right-click did not switch to it",
-          ui.read(app, "book", "currentIndex"), 0)
+          ui.read(app, "book", "index"), 0)
 
     ' -------------------------------------------------- TABS AT THE TOP
     ' The same claim where the bar IS at the origin, so an unmapped `tabAt`
     ' would agree. Kept as the pair, not as the proof.
-    ok2 = ui.set(app, "book", "tabPosition", "North")
+    ok2 = ui.set(app, "book", "tab_side", "top")
     before2 = g.tab_menu
     clicked2 = ui.right_click(app, "book", 1)
     check("with the tabs on top it still answers", g.from_menu, 1)
@@ -186,16 +186,16 @@ program main()
     ' -------------------------------------------------- THE int ROUTE
     ' `tabCloseRequested(int)` carries an index a zero-argument handler cannot
     ' see, which is the other half of the same problem and what makes
-    ' `tabsClosable: true` usable. IT REACHES THE SAME SLOT BY THE SAME RULE --
+    ' `closable: true` usable. IT REACHES THE SAME SLOT BY THE SAME RULE --
     ' any single-int signal a tab widget emits -- so what is asserted here is
     ' that rule, through `currentChanged`, which a program CAN drive. Driving
     ' the close button itself would need the QTabBar's own child widget, which
     ' gBASIC cannot name; that is stated rather than implied.
-    closable = ui.set(app, "book", "tabsClosable", true)
+    closable = ui.set(app, "book", "closable", true)
     check("a tab can carry a close button",
-          ui.read(app, "book", "tabsClosable"), true)
+          ui.read(app, "book", "closable"), true)
     before4 = g.changed
-    moved = ui.set(app, "book", "currentIndex", 2)
+    moved = ui.set(app, "book", "index", 2)
     check("changing tabs reported the change", g.changed, before4 + 1)
     check("and said which tab it was about", g.from_changed, 2)
 
@@ -255,7 +255,7 @@ program main()
 
     ' -------------------------------------------------- A bool IS NOT AN INDEX
     before7 = g.toggled
-    flipped = ui.invoke(app, "hold", "toggle")
+    flipped = ui.invoke(app, "hold", "press")
     check("a bool-carrying signal still reaches its handler",
           g.toggled, before7 + 1)
     check("and no tab was recorded from it", is_unknown(g.tab_in_toggle), true)

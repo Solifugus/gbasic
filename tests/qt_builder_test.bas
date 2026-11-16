@@ -130,11 +130,11 @@ program main()
                                   options: { label: "Go" } },
                                 { kind: "part", word: "field", name: "out",
                                   options: {} } ] },
-                     { kind: "handler", target: "go", signal: "clicked",
+                     { kind: "handler", target: "go", event: "pressed",
                        handler: on_go } ] }
     check("the built handler passes ui.check", ui.check(gen), true)
     ui.open(gen)
-    ui.invoke(gen, "go", "click")
+    ui.invoke(gen, "go", "press")
     check("the generated handler ran and wrote through the window",
           ui.read(gen, "out", "text"), "fired")
     ui.stop()

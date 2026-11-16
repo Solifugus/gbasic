@@ -36,11 +36,10 @@ program main(args)
     end if
     ui.open(settings)
 
-    ' THE `tabs` IS NAMED, so its state is reachable by name like any other
-    ' property -- `currentIndex` is Qt's own, and nothing in this backend knows
-    ' about it.
+    ' THE `tabs` IS NAMED, so its state is reachable by name: `count` and
+    ' `index` are property words like any other.
     print "pages:         " + string(settings.read("pages", "count"))
-    print "showing page:  " + string(settings.read("pages", "currentIndex"))
+    print "showing page:  " + string(settings.read("pages", "index"))
 
     ' A CONTAINER CARRIES A NAME OR OPTIONS, NEVER BOTH -- `tabs pages( ... )`
     ' costs four reduce/reduce conflicts in the grammar and is refused, which is
@@ -48,8 +47,8 @@ program main(args)
     settings.set("pages", "movable", true)
     print "movable now:   " + string(settings.read("pages", "movable"))
 
-    settings.set("pages", "currentIndex", 2)
-    print "after turning: " + string(settings.read("pages", "currentIndex"))
+    settings.set("pages", "index", 2)
+    print "after turning: " + string(settings.read("pages", "index"))
 
     ' PARTS ON ANY PAGE ARE REACHABLE BY NAME, whichever page is in front:
     ' the registry is flat, and a page is not a namespace.

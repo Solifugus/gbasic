@@ -21,7 +21,7 @@ window orders( title: "Orders", width: 620, height: 360 )
         end group
     end column
 
-    on lines.itemSelectionChanged
+    on lines.chosen
         pick()
     end on
 end window

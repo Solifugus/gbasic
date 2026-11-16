@@ -41,8 +41,7 @@ window editor( title: "BAG: areas", width: 680, height: 520 )
 
     column( margin: 10, spacing: 8 )
 
-        text heading( label: "Describe a world",
-                      styleSheet: "font-size: 14pt; font-weight: bold" )
+        text heading( label: "Describe a world", font_size: 14, bold: true )
 
         row
             group "Areas"
@@ -98,7 +97,7 @@ window editor( title: "BAG: areas", width: 680, height: 520 )
     ' subject changes and the form is re-shown from it. Without the verb this
     ' handler would have to `ui.write` every part by hand, which is the whole
     ' of what binding exists to avoid.
-    on listing.itemSelectionChanged
+    on listing.chosen
         at = editor.selected("listing")
         if not is_unknown(at) then
             g.chosen = at
@@ -107,23 +106,23 @@ window editor( title: "BAG: areas", width: 680, height: 520 )
         end if
     end on
 
-    on save.clicked
+    on save.pressed
         keep()
     end on
 
-    on fresh.clicked
+    on fresh.pressed
         add_area()
     end on
 
-    on act_new.triggered
+    on act_new.pressed
         add_area()
     end on
 
-    on act_quit.triggered
+    on act_quit.pressed
         ui.stop()
     end on
 
-    on close.clicked
+    on close.pressed
         ui.stop()
     end on
 end window
@@ -293,7 +292,7 @@ program main(args)
     load_current()
 
     if contains(args, "check") then
-        print "areas:          " + string(editor.read("listing", "rowCount"))
+        print "areas:          " + string(editor.read("listing", "count"))
         print "showing:        " + editor.read("name")
         print "its north:      " + editor.read("north")
         print "exit choices:   " + string(editor.read("north", "count"))
@@ -312,7 +311,7 @@ program main(args)
         print "listing says:   " + editor.cell("listing", 2, "name")
         ' A NEW AREA, which grows the list AND every dropdown.
         add_area()
-        print "after adding:   " + string(editor.read("listing", "rowCount"))
+        print "after adding:   " + string(editor.read("listing", "count"))
         print "choices now:    " + string(editor.read("north", "count"))
         print "editing:        " + editor.read("name")
         print "saying:         " + editor.read("saying")

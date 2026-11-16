@@ -101,10 +101,10 @@ program main(args)
     print "-- the window itself is addressable, which nothing could do before"
     ' `ui.invoke`/`ui.read`/`ui.set` reached PARTS only, so there was no way to
     ' read or set a window's own title, raise it, or close it.
-    check("its own title reads back", ui.read(app, "app", "windowTitle"),
+    check("its own title reads back", ui.read(app, "app", "title"),
           "Lifecycle")
-    x = ui.set(app, "app", "windowTitle", "Renamed")
-    check("and can be set", ui.read(app, "app", "windowTitle"), "Renamed")
+    x = ui.set(app, "app", "title", "Renamed")
+    check("and can be set", ui.read(app, "app", "title"), "Renamed")
     ' THE KIND COMES FROM THE QVariant, not from the caller -- the rule the
     ' by-name reader already follows, and it matters here because the string
     ' "false" is TRUE in this language.
@@ -165,7 +165,7 @@ close_refused:
     check("the typed value did not survive", ui.read(app, "who"),
           "Ada Lovelace")
     check("the title is the declaration's again",
-          ui.read(app, "app", "windowTitle"), "Lifecycle")
+          ui.read(app, "app", "title"), "Lifecycle")
     z = ui.close(app)
 
     print "-- a window with NO `closed` handler is still forgotten"
@@ -198,7 +198,7 @@ plain_refused:
     ' THE X BUTTON CANNOT BE CLICKED HERE (offscreen has no window manager) and
     ' it reaches `QWidget::close()` through Qt's platform layer, which is the
     ' same thing an invoked `close` reaches -- so this drives the real event
-    ' rather than the verb, the argument `ui.invoke(f, "click")` already makes
+    ' rather than the verb, the argument `ui.invoke(f, "press")` already makes
     ' for a button.
     g.fired = 0
     g.saved = "nothing"

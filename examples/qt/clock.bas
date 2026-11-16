@@ -45,7 +45,7 @@ window clock( title: "Clock", width: 360, height: 240 )
         end row
     end column
 
-    on close.clicked
+    on close.pressed
         ui.stop()
     end on
 end window

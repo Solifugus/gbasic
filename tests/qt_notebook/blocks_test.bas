@@ -102,7 +102,7 @@ program main(args)
     ui.replace_text(nb, "ed", { line: 9, column: 1, line2: 10, column2: 1, text: "" })
     check("a deleted line drops its block", where("ed"), ["out@4", "doc@6", "fig@11"])
     ' empty line 11 (fig's) but keep it
-    line11 = split(ui.read(nb, "ed", "plainText"), "\n")[10]
+    line11 = split(ui.read(nb, "ed", "text"), "\n")[10]
     ui.replace_text(nb, "ed", { line: 11, column: 1, line2: 11, column2: len(line11) + 1, text: "" })
     check("an emptied line drops its block too", where("ed"), ["out@4", "doc@6"])
     ui.write(nb, "ed", lines_of(40))
@@ -143,7 +143,7 @@ program main(args)
     check("the folds Qt holds", ui.fold(nb, "ed"), [{ from: 12, to: 16 }, { from: 20, to: 22 }])
     ui.replace_text(nb, "ed", { line: 1, column: 1, line2: 1, column2: 1, text: "top\n" })
     check("a fold moves with its lines", ui.fold(nb, "ed"), [{ from: 13, to: 17 }, { from: 21, to: 23 }])
-    check("plainText still holds the folded lines", count(split(ui.read(nb, "ed", "plainText"), "\n")), 41)
+    check("plainText still holds the folded lines", count(split(ui.read(nb, "ed", "text"), "\n")), 41)
     ui.caret_to(nb, "ed", 15, 1)
     check("a caret placed inside a fold is where it was put (Studio unfolds)", ui.caret(nb, "ed").line, 15)
     ui.fold(nb, "ed", [])
@@ -183,14 +183,14 @@ program main(args)
 
     print ""
     print "-- the markdown part (B4)"
-    ui.set(nb, "preview", "markdown", "# Rates\n\nRead from [the feed](https://example.com/feed) and [notes](notes.md).\n\n| a | b |\n|---|---|\n| 1 | 2 |\n")
-    shown = ui.read(nb, "preview", "plainText")
+    ui.set(nb, "preview", "text", "# Rates\n\nRead from [the feed](https://example.com/feed) and [notes](notes.md).\n\n| a | b |\n|---|---|\n| 1 | 2 |\n")
+    shown = ui.read(nb, "preview", "shown_text")
     check("markdown is rendered, not shown as markup", contains(shown, "Read from the feed and notes.") and not contains(shown, "]("), true)
     check("a GitHub table is a table", contains(shown, "a") and not contains(shown, "|---|"), true)
     ui.link_press(nb, "preview", "notes.md")
     ui.link_press(nb, "preview", "https://example.com/feed")
     check("each link pressed is reported, with its target", g.links, ["notes.md", "https://example.com/feed"])
-    check("and none is followed: the part still shows the same prose", ui.read(nb, "preview", "plainText"), shown)
+    check("and none is followed: the part still shows the same prose", ui.read(nb, "preview", "shown_text"), shown)
     check("outside a handler there is no link", is_unknown(ui.link()), true)
 
     print ""

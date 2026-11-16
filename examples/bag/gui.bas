@@ -48,11 +48,11 @@ window game( title: "The Lantern Room", width: 620, height: 520 )
 
     column( margin: 10, spacing: 8 )
 
-        text where( label: "...", styleSheet: "font-size: 15pt; font-weight: bold" )
+        text where( label: "...", font_size: 15, bold: true )
         text blurb( label: "..." )
 
         group "What has happened"
-            memo log( readOnly: true )
+            memo log( read_only: true )
         end group
 
         group "What is here"
@@ -74,7 +74,7 @@ window game( title: "The Lantern Room", width: 620, height: 520 )
         end group
 
         row
-            field command( label: "Or type", placeholderText: "take key, examine key, look, inventory" )
+            field command( label: "Or type", hint: "take key, examine key, look, inventory" )
             button send( text: "Do it" )
         end row
 
@@ -83,38 +83,38 @@ window game( title: "The Lantern Room", width: 620, height: 520 )
 
     ' SIX HANDLERS, ONE PER DIRECTION. Each mutates `g.location` through the
     ' shared record and then redraws; nothing else is shared.
-    on north.clicked
+    on north.pressed
         travel("north")
     end on
-    on south.clicked
+    on south.pressed
         travel("south")
     end on
-    on east.clicked
+    on east.pressed
         travel("east")
     end on
-    on west.clicked
+    on west.pressed
         travel("west")
     end on
-    on up.clicked
+    on up.pressed
         travel("up")
     end on
-    on down.clicked
+    on down.pressed
         travel("down")
     end on
 
-    on send.clicked
+    on send.pressed
         obey(game.read("command"))
         game.write("command", "")
     end on
 
     ' A FIELD'S Enter KEY is an ordinary Qt signal, so typing and pressing
     ' return works without a second code path.
-    on command.returnPressed
+    on command.entered
         obey(game.read("command"))
         game.write("command", "")
     end on
 
-    on restart.triggered
+    on restart.pressed
         g.location = 1
         g.inventory = []
         g.visible = things_here_at(1)
@@ -123,11 +123,11 @@ window game( title: "The Lantern Room", width: 620, height: 520 )
         redraw()
     end on
 
-    on quit_item.triggered
+    on quit_item.pressed
         ui.stop()
     end on
 
-    on about.triggered
+    on about.pressed
         say("BAG: the Basic Adventure Generator, in a window.")
         redraw()
     end on
@@ -498,12 +498,12 @@ program main(args)
         print "east open:    " + string(game.read("east", "enabled"))
         obey("take brass key")
         print "after taking: " + game.read("carried")
-        game.invoke("north", "click")
+        game.invoke("north", "press")
         print "moved to:     " + game.read("where")
         print "gate shut:    " + string(game.read("north", "enabled"))
         obey("open brass key")
         print "gate open:    " + string(game.read("north", "enabled"))
-        game.invoke("north", "click")
+        game.invoke("north", "press")
         print "and through:  " + game.read("where")
         obey("drop brass key")
         print "after drop:   " + game.read("carried")
@@ -512,7 +512,7 @@ program main(args)
         ' THE TABLE FOLLOWED THE ROOM, which is what `ui.refresh` is for and
         ' what the first draft of this example could not do: the key was
         ' dropped in the Tunnel, so that is the one thing here.
-        print "here now:     " + string(game.read("here", "rowCount")) + " thing(s)"
+        print "here now:     " + string(game.read("here", "count")) + " thing(s)"
         print "and it is:    " + game.cell("here", 0, "name")
         ui.stop()
         return

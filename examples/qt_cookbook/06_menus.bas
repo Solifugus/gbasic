@@ -34,7 +34,7 @@ window editor( title: "Menus", width: 480, height: 300 )
 
     ' TYPING ENABLES Save, which is the ordinary reason a menu item's state
     ' changes: a fact about the program rather than about the declaration.
-    on title.textChanged
+    on title.changed
         editor.set("act_save", "enabled", len(editor.read("title")) > 0)
     end on
 end window

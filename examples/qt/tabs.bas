@@ -65,11 +65,11 @@ window prefs( title: "Preferences", width: 460, height: 360 )
     end column
 
     ' A `tabs` IS NAMED, so a handler can hear it change pages.
-    on settings.currentChanged
-        print "page is now " + string(prefs.read("settings", "currentIndex"))
+    on settings.changed
+        print "page is now " + string(prefs.read("settings", "index"))
     end on
 
-    on close.clicked
+    on close.pressed
         ui.stop()
     end on
 end window
@@ -89,11 +89,10 @@ program main(args)
     ' here -- and that is a better place for it anyway, a program being able
     ' to decide.
     prefs.set("settings", "movable", true)
-    prefs.set("settings", "documentMode", true)
 
     if contains(args, "check") then
         print "page count:        " + string(prefs.read("settings", "count"))
-        print "on page:           " + string(prefs.read("settings", "currentIndex"))
+        print "on page:           " + string(prefs.read("settings", "index"))
         print "movable:           " + string(prefs.read("settings", "movable"))
         ' A PART ON ANY PAGE IS REACHED BY NAME, with nothing saying which page
         ' it is on -- the registry is flat, which is exactly why the tab
@@ -102,8 +101,8 @@ program main(args)
         print "a part on page 4:  " + prefs.read("scratch")
         print "a cell of page 3:  " + prefs.cell("places", 1, "kind")
         ' CHANGING PAGES FROM THE PROGRAM, which fires the handler above.
-        prefs.set("settings", "currentIndex", 2)
-        print "after setting:     " + string(prefs.read("settings", "currentIndex"))
+        prefs.set("settings", "index", 2)
+        print "after setting:     " + string(prefs.read("settings", "index"))
         ui.stop()
         return
     end if

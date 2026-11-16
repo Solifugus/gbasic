@@ -56,7 +56,7 @@ window shell( title: "Shell", width: 520, height: 400 )
     ' "the obvious way to write one". It refreshes the very tree whose
     ' selection called it, reads a cell back, writes the editor and marks a
     ' line: four re-entries from inside one Qt call.
-    on files.itemSelectionChanged
+    on files.chosen
         g.tree_fired = g.tree_fired + 1
         ui.refresh(shell, "files")
         g.seen = ui.cell(shell, "files", 0, "name")
@@ -77,7 +77,7 @@ window shell( title: "Shell", width: 520, height: 400 )
     ' 131,070 times (2^17 - 2) before it unwound -- a second here, and long
     ' enough under valgrind to be killed. So the handler stops itself after 64,
     ' four times the depth the cap needs.
-    on loop.itemSelectionChanged
+    on loop.chosen
         g.loop_fired = g.loop_fired + 1
         if g.loop_fired < 64 then
             ui.select(shell, "loop", mod(g.loop_fired + 1, 2))
@@ -89,7 +89,7 @@ window shell( title: "Shell", width: 520, height: 400 )
     ' removal, the handler changed the table in the middle of it, and the
     ' program's own refresh crashed in setRowCount -- every run, on x86 too
     ' (found 2026-11-11 from the riscv64 port; nothing here shrank a table).
-    on stock.itemSelectionChanged
+    on stock.chosen
         g.stock_fired = g.stock_fired + 1
         ui.refresh(shell, "stock")
         g.stock_seen = ui.cell(shell, "stock", 0, "sku")
@@ -98,7 +98,7 @@ window shell( title: "Shell", width: 520, height: 400 )
     ' AND ONE ON THE TABLE, because the two kinds reach DIFFERENT code --
     ' a QTreeWidget's items and a QTableWidget's cells -- and the fix had to
     ' be made in both.
-    on orders.itemSelectionChanged
+    on orders.chosen
         g.table_fired = g.table_fired + 1
         ui.refresh(shell, "orders")
         ui.set(shell, "status", "text", "order " + string(g.table_fired))
@@ -120,7 +120,7 @@ window vanisher( title: "Vanisher", width: 360, height: 240 )
         end table
     end column
 
-    on orders.itemSelectionChanged
+    on orders.chosen
         g.vanish_fired = g.vanish_fired + 1
         ui.refresh(vanisher, "stack",
                    [ { kind: "part", word: "text", name: "gone",
@@ -199,7 +199,7 @@ program main()
     check("the tree still answers", ui.cell(shell, "files", 0, "name"), "src")
     check("the table still answers", ui.cell(shell, "orders", 0, "who"), "Ada")
     check("the editor still holds what a handler wrote",
-          contains(ui.read(shell, "code", "plainText"), "row"), true)
+          contains(ui.read(shell, "code", "text"), "row"), true)
     check("the margin still holds its mark",
           string(ui.marks(shell, "code", "section")), "[1]")
     check("and a part a handler set reads back",

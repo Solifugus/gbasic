@@ -70,7 +70,7 @@ window greeter( title: "Greeter", width: 360, height: 160 )
         text said( label: "" )
     end column
 
-    on hello.clicked
+    on hello.pressed
         greeter.write("said", "Hello, " + greeter.read("who") + "!")
     end on
 end window
@@ -94,12 +94,12 @@ program main(args)
     ' A real program ends with `ui.run()`, which hands Qt the thread until
     ' something calls `ui.stop()`. A recipe fires the button itself instead, so
     ' it finishes without anybody clicking.
-    greeter.invoke("hello", "click")
+    greeter.invoke("hello", "press")
     print "after the click:   " + greeter.read("said")
 
     ' ANY QT PROPERTY, BY NAME, IN THE KIND QT DECLARES IT.
     print "the button's text: " + greeter.read("hello", "text")
-    print "the field accepts:  " + string(greeter.read("who", "maxLength")) + " characters"
+    print "the field accepts:  " + string(greeter.read("who", "max_length")) + " characters"
     ui.stop()
 end program
 ```
@@ -226,11 +226,11 @@ window tally( title: "Tally", width: 280, height: 150 )
         end row
     end column
 
-    on up.clicked
+    on up.pressed
         g.count = g.count + 1
         show_count()
     end on
-    on reset.clicked
+    on reset.pressed
         g.count = 0
         show_count()
     end on
@@ -253,15 +253,15 @@ program main(args)
     end if
     ui.open(tally)
 
-    tally.invoke("up", "click")
-    tally.invoke("up", "click")
-    tally.invoke("up", "click")
+    tally.invoke("up", "press")
+    tally.invoke("up", "press")
+    tally.invoke("up", "press")
     print "after three clicks the widget says: " + tally.read("shown")
     ' AND MAIN CAN SEE IT, which is the whole point: the handler mutated the
     ' record this frame holds.
     print "and main's own record says:        " + string(g.count)
 
-    tally.invoke("reset", "click")
+    tally.invoke("reset", "press")
     print "after reset:                       " + string(g.count)
     ui.stop()
 end program
@@ -403,7 +403,7 @@ window orders( title: "Orders", width: 620, height: 360 )
         end group
     end column
 
-    on lines.itemSelectionChanged
+    on lines.chosen
         pick()
     end on
 end window
@@ -522,7 +522,7 @@ window editor( title: "Menus", width: 480, height: 300 )
 
     ' TYPING ENABLES Save, which is the ordinary reason a menu item's state
     ' changes: a fact about the program rather than about the declaration.
-    on title.textChanged
+    on title.changed
         editor.set("act_save", "enabled", len(editor.read("title")) > 0)
     end on
 end window
@@ -692,7 +692,7 @@ window board( title: "Keeping current", width: 560, height: 340 )
         end row
     end column
 
-    on add.clicked
+    on add.pressed
         ' APPEND TO THE SUBJECT ITSELF. `append` mutates IN PLACE and resolves
         ' through the frame chain, so it grows the very list `main` holds --
         ' which is what makes a handler able to change the data at all, given
@@ -703,7 +703,7 @@ window board( title: "Keeping current", width: 560, height: 340 )
         return nothing
     end on
 
-    on done.clicked
+    on done.pressed
         at = board.selected("jobs")
         if not is_unknown(at) then
             tasks[at].state = "done"
@@ -731,13 +731,13 @@ program main(args)
     ui.open(board)
 
     print "the table starts with " + string(len(tasks)) + " rows"
-    board.invoke("add", "click")
-    board.invoke("add", "click")
+    board.invoke("add", "press")
+    board.invoke("add", "press")
     print "after adding twice:   " + string(len(tasks)) + " rows"
     print "the new last row is:  " + board.cell("jobs", 3, "what")
 
     board.select("jobs", 1)
-    board.invoke("done", "click")
+    board.invoke("done", "press")
     print "row 1's state is now: " + board.cell("jobs", 1, "state")
     print "and the form says:    " + board.read("state")
     ui.stop()
@@ -758,10 +758,9 @@ and the form says:    done
 
 ## A code editor
 
-`memo` holds prose; code differs in four ways, none of which is a Qt
-property — so `source` is a word of its own. **A highlighter is not a property**
-either: it is an object attached to a document, so nothing a by-name lookup can
-reach, which is why it needed a word at all.
+`memo` holds prose; code differs in four ways, none of which is a property —
+so `source` is a word of its own. **A highlighter is not a property** either:
+it is an object attached to a document, which is why it needed a word at all.
 
 `language:` names a **definition**, never a file extension: `*.bas` is claimed
 by FreeBASIC at the same priority as gBASIC, so a lookup by extension picks
@@ -776,13 +775,11 @@ as `GBASIC_PATH=stdlib`; after `make install` it is unnecessary.
 <!--CODE:09_code_editor-->
 
 ```basic
-' A CODE EDITOR. `memo` holds prose; code is different in four ways, none of
-' which is a Qt property -- so `source` is a word of its own rather than an
-' option on `memo`.
+' A CODE EDITOR. `memo` holds prose; code is different in four ways -- so
+' `source` is a word of its own rather than an option on `memo`.
 '
 ' A HIGHLIGHTER IS NOT A PROPERTY, which is why it needed a word at all: it is
-' an object attached to a document, so nothing a by-name property lookup can
-' reach. `language:` names a DEFINITION, never a file extension -- `*.bas` is
+' an object attached to a document. `language:` names a DEFINITION, never a file extension -- `*.bas` is
 ' claimed by FreeBASIC at the same priority as gBASIC, so a lookup by extension
 ' picks FreeBASIC with no error and highlights plausibly and wrongly.
 window pad( title: "Editor", width: 640, height: 400 )
@@ -822,12 +819,12 @@ program main(args)
     ' a memo than as values.
     print "-- against a memo in the same window"
     print ("wrap:          source=" +
-           string(pad.read("code", "lineWrapMode")) + "  memo=" +
-           string(pad.read("prose", "lineWrapMode")))
-    print ("narrower tab:  " + string(pad.read("code", "tabStopDistance") <
-                                      pad.read("prose", "tabStopDistance")))
-    print ("fonts differ:  " + string(pad.read("code", "font") !=
-                                      pad.read("prose", "font")))
+           string(pad.read("code", "wrap")) + "  memo=" +
+           string(pad.read("prose", "wrap")))
+    print ("narrower tab:  " + string(pad.read("code", "tab_width") <
+                                      pad.read("prose", "tab_width")))
+    print ("one-width font: source=" + string(pad.read("code", "fixed_width")) +
+           "  memo=" + string(pad.read("prose", "fixed_width")))
     print "memo has none: " + string(is_unknown(pad.highlighting("prose")))
     print "text survives: " + string(len(pad.read("code")) = len(sample))
     ui.stop()
@@ -840,9 +837,9 @@ end program
 highlighting:  gBASIC
 this build can: true
 -- against a memo in the same window
-wrap:          source=NoWrap  memo=WidgetWidth
+wrap:          source=false  memo=true
 narrower tab:  true
-fonts differ:  true
+one-width font: source=true  memo=false
 memo has none: true
 text survives: true
 ```
@@ -1014,11 +1011,10 @@ program main(args)
     end if
     ui.open(settings)
 
-    ' THE `tabs` IS NAMED, so its state is reachable by name like any other
-    ' property -- `currentIndex` is Qt's own, and nothing in this backend knows
-    ' about it.
+    ' THE `tabs` IS NAMED, so its state is reachable by name: `count` and
+    ' `index` are property words like any other.
     print "pages:         " + string(settings.read("pages", "count"))
-    print "showing page:  " + string(settings.read("pages", "currentIndex"))
+    print "showing page:  " + string(settings.read("pages", "index"))
 
     ' A CONTAINER CARRIES A NAME OR OPTIONS, NEVER BOTH -- `tabs pages( ... )`
     ' costs four reduce/reduce conflicts in the grammar and is refused, which is
@@ -1026,8 +1022,8 @@ program main(args)
     settings.set("pages", "movable", true)
     print "movable now:   " + string(settings.read("pages", "movable"))
 
-    settings.set("pages", "currentIndex", 2)
-    print "after turning: " + string(settings.read("pages", "currentIndex"))
+    settings.set("pages", "index", 2)
+    print "after turning: " + string(settings.read("pages", "index"))
 
     ' PARTS ON ANY PAGE ARE REACHABLE BY NAME, whichever page is in front:
     ' the registry is flat, and a page is not a namespace.
@@ -1053,56 +1049,57 @@ and a grid on page 2 still has coordinates: column 3
 
 ---
 
-## Theming the application, and one widget that opts out
+## Theming the application, and one part that stands out
 
-Per-widget styling needed **nothing new**: `styleSheet` is an ordinary
-`Q_PROPERTY` of every `QWidget`, so it arrives through the same by-name route
-as `text` or `enabled`. What that route cannot reach is *one sheet for the
-application*, because that belongs to the `QApplication` rather than to any
-widget — so `ui.theme` is the verb for it.
+A theme is **a record of plain values** — background, ink, the colour of a
+text surface, of a control, of a selection — which every backend draws its own
+way. It names no toolkit, so the same program themes the same on any of them.
+The fields are `bg`, `base`, `ctl`, `hi`, `fg`, `faint`, `line`, `sel` and
+`on_sel`, and optionally `accent` (the colour `emphasis` uses) and the icon
+files `arrow`, `tick`, `dock_close` and `dock_float`.
 
-**It needs no display.** A sheet set before any window exists is remembered and
-applied when there is a `QApplication` to put it on, so a program themes first
-and opens second — which means the first half of this recipe runs on a
-text-only machine.
+**It needs no display.** A theme set before any window exists is remembered and
+applied when the first one opens, so a program themes first and opens second —
+which means the first half of this recipe runs on a text-only machine.
 
-Qt resolves the cascade, so **a widget's own sheet wins** over the
-application's, which is what makes an exception expressible. That is worth
-asserting rather than assuming: a theme applied by *writing* onto every widget
-would satisfy a check that only asked whether the app sheet was set, and would
-silently flatten the exception.
+One part can stand out with `emphasis: "outline"` (or `"strong"`), drawn in the
+accent. That the mark stays on one part is worth asserting rather than
+assuming: a theme applied by *writing* onto every part would satisfy a check
+that only asked whether the theme reached a part, and would flatten the mark.
+And `colors` reads what a part is actually drawn in, so the recipe checks that
+the theme arrived, not that it was asked for.
+
+A Qt stylesheet as text, `ui.theme("QWidget { … }")`, still works on Qt, for a
+program that is Qt's on purpose; it is refused by any other backend.
 
 <!--CODE:12_theming-->
 
 ```basic
-' ONE STYLESHEET FOR THE WHOLE APPLICATION, and a widget that overrides it.
+' A THEME FOR THE WHOLE APPLICATION, and one part that stands out.
 '
-' PER-WIDGET STYLING NEEDED NOTHING NEW: `styleSheet` is an ordinary
-' Q_PROPERTY of every QWidget, so it arrives through the same by-name route as
-' `text` or `enabled`. What that route CANNOT reach is one sheet for the
-' application, because that belongs to the QApplication rather than to any
-' widget -- so `ui.theme` is the verb for it.
+' A THEME IS A RECORD OF PLAIN VALUES -- background, ink, the colour of a text
+' surface, of a control, of a selection -- which every backend draws its own
+' way. It names no toolkit, so the same program themes the same on any.
 window panel( title: "Theming", width: 420, height: 220 )
     column( margin: 10, spacing: 8 )
         text heading( label: "Themed by the application" )
         field normal(  label: "Ordinary" )
-        ' ITS OWN SHEET, declared. Qt resolves the cascade, so a widget's own
-        ' sheet wins over the application's -- which is what makes an
-        ' exception expressible at all.
-        field special( label: "Its own colours",
-                       styleSheet: "background: #ffd; color: #600;" )
+        ' ONE PART MARKED, in the theme's accent: "outline" or "strong".
+        field special( label: "Look here", emphasis: "outline" )
         button close( text: "Close" )
     end column
 end window
 
 program main(args)
-    ' IT NEEDS NO DISPLAY. A sheet set before any window exists is REMEMBERED
-    ' and applied when there is a QApplication to put it on -- so a program
-    ' themes first and opens second, and this half of the recipe runs on a
-    ' text-only machine.
-    ui.theme("QWidget { background: #2e3440; color: #eceff4; }")
-    print ("a theme can be set before anything opens: " +
-                 string(len(ui.theme()) > 0))
+    dark = { bg: "#2e3440", base: "#242933", ctl: "#3b4252", hi: "#434c5e",
+             fg: "#eceff4", faint: "#7b8394", line: "#4c566a",
+             sel: "#5e81ac", on_sel: "#ffffff", accent: "#d08770" }
+
+    ' IT NEEDS NO DISPLAY. A theme set before any window exists is REMEMBERED
+    ' and applied when the first one opens -- so a program themes first and
+    ' opens second, and this half of the recipe runs on a text-only machine.
+    ui.theme(dark)
+    print "a theme can be set before anything opens: " + string(ui.theme().bg = "#2e3440")
 
     if not ui.can_display() then
         print "no display"
@@ -1110,22 +1107,27 @@ program main(args)
     end if
     ui.open(panel)
 
-    ' THE APPLICATION'S SHEET IS WHAT WAS ASKED FOR.
-    print ("the app sheet holds the dark background: " +
-                 string(contains(ui.theme(), "#2e3440")))
+    ' WHAT A PART IS DRAWN IN, read back from the window rather than from the
+    ' record we passed -- so this says the theme REACHED the part.
+    print ("the field is drawn on the theme's base:   " +
+           string(panel.read("normal", "colors").base = "#242933"))
 
-    ' AND THE WIDGET THAT DECLARED ITS OWN STILL HAS IT. A theme applied by
-    ' WRITING onto every widget would pass a check that only asked whether the
-    ' app sheet was set, and would silently flatten this.
-    print ("the ordinary field has no sheet of its own: " +
-                 string(len(panel.read("normal", "styleSheet")) = 0))
-    print ("the special one kept its own:               " +
-                 string(contains(panel.read("special", "styleSheet"), "#ffd")))
+    ' AND THE MARK IS ON ONE PART ONLY. A theme applied by writing onto every
+    ' part would satisfy the line above and flatten this.
+    print ("the ordinary field is not marked:         " +
+           string(panel.read("normal", "emphasis") = "none"))
+    print ("the special one is:                       " +
+           string(panel.read("special", "emphasis") = "outline"))
 
-    ' CHANGING IT AT RUN TIME is the same call. A dark and a light theme are
-    ' two strings; there is no theme registry to keep in step.
-    ui.theme("")
-    print "and clearing it leaves nothing: " + string(len(ui.theme()) = 0)
+    ' CHANGING IT AT RUN TIME is the same call: a dark and a light theme are
+    ' two records, and there is no registry to keep in step.
+    light = dark
+    light.bg = "#eceff4"
+    light.base = "#ffffff"
+    light.fg = "#2e3440"
+    ui.theme(light)
+    print ("and a second theme replaces the first:    " +
+           string(panel.read("normal", "colors").base = "#ffffff"))
     ui.stop()
 end program
 ```
@@ -1134,10 +1136,10 @@ end program
 
 ```
 a theme can be set before anything opens: true
-the app sheet holds the dark background: true
-the ordinary field has no sheet of its own: true
-the special one kept its own:               true
-and clearing it leaves nothing: true
+the field is drawn on the theme's base:   true
+the ordinary field is not marked:         true
+the special one is:                       true
+and a second theme replaces the first:    true
 ```
 
 ---
@@ -1523,8 +1525,8 @@ manager's own button, which is the case you cannot test and your users will do
 every day. A program with nothing to save needs no handler; one that has
 something has exactly one place to put it.
 
-**The window is a part of itself.** Its own name reaches it in the same by-name
-table every part lives in, so `app.read("app", "windowTitle")`,
+**The window is a part of itself.** Its own name reaches it in the same
+table every part lives in, so `app.read("app", "title")`,
 `app.set("app", ...)` and `app.invoke("app", "close")` all work with no
 extra vocabulary. The one cost is a collision: **a part may not take the
 window's name**, and is refused by name at load time, because it would
@@ -1563,8 +1565,8 @@ undo.
 ' window manager's own button, which is the case you cannot test and your users
 ' will do every day.
 '
-' THE WINDOW IS A PART OF ITSELF. Its own name reaches it in the same by-name
-' table every part lives in, so `ui.read(app, "app", "windowTitle")`,
+' THE WINDOW IS A PART OF ITSELF. Its own name reaches it in the same
+' table every part lives in, so `ui.read(app, "app", "title")`,
 ' `ui.set(app, "app", ...)` and `ui.invoke(app, "app", "close")` all work with
 ' no extra vocabulary. The one cost: a part may NOT take the window's name, and
 ' is refused by name if it tries.
@@ -1598,9 +1600,9 @@ program main(args)
     print "open:    " + string(app.is_open())
 
     ' THE WINDOW ITSELF, ADDRESSED BY ITS OWN NAME.
-    print "title:   " + app.read("app", "windowTitle")
-    x = app.set("app", "windowTitle", "Closing (edited)")
-    print "renamed: " + app.read("app", "windowTitle")
+    print "title:   " + app.read("app", "title")
+    x = app.set("app", "title", "Closing (edited)")
+    print "renamed: " + app.read("app", "title")
 
     ' Somebody types.
     y = app.write("who", "Grace Hopper")
@@ -1624,7 +1626,7 @@ program main(args)
     ' undo.
     ui.open(app)
     print "reopened who: " + app.read("who")
-    print "reopened title: " + app.read("app", "windowTitle")
+    print "reopened title: " + app.read("app", "title")
 
     ' AND `ui.stop()` IS NOT A CLOSE. It means "give me the thread back" and
     ' nothing more: the window stays open, stays readable, and no `closed`
@@ -1726,10 +1728,10 @@ window edit( title: "Customer", width: 360, height: 200 )
     ' TWO VERBS, AND THEY ARE NOT `ui.answer`. That one drives a DIALOG from
     ' the program when nobody is there -- a timeout, an unattended run. These
     ' are the person's own answer arriving through a button they pressed.
-    on save.clicked
+    on save.pressed
         x = edit.accept()
     end on
-    on cancel.clicked
+    on cancel.pressed
         x = edit.reject()
     end on
 
@@ -1761,7 +1763,7 @@ program main(args)
             g.ticks = g.ticks + 1
             if g.ticks = 2 then
                 y = edit.write("who", "Grace Hopper")
-                z = edit.invoke(g.press, "click")
+                z = edit.invoke(g.press, "press")
             end if
         end while
     end watch
@@ -1811,9 +1813,9 @@ context menu has no bar to be read on, so what it needs is a **name**, which is
 how `ui.popup` raises it at all. Both halves are refused, so a `popup` with a
 caption and a `menu` with a name each get a refusal naming the remedy.
 
-**Declaring the handler is what asks for it.** Every Qt widget starts out
-letting Qt put up its own menu, and under that setting
-`customContextMenuRequested` is **never emitted** — so without this the handler
+**Declaring the handler is what asks for it.** A part with no `context`
+handler shows the toolkit's own menu, and **no context request is reported at
+all** — so without this the handler
 would be connected to something that never happens: the right-click does
 nothing, and nothing is raised. Writing the handler is enough. The cost is
 stated rather than hidden: your menu *replaces* the one Qt would have shown, so
@@ -1881,7 +1883,7 @@ window app( title: "Files", width: 460, height: 300 )
         field kind( label: "Kind" )
     end table
 
-    on files.customContextMenuRequested
+    on files.context
         row = g.listing[app.selected("files")]
         g.asked = row.name
         ' A FOLDER CANNOT BE OPENED OR DELETED HERE, so those two go away.
@@ -1891,7 +1893,7 @@ window app( title: "Files", width: 460, height: 300 )
         g.offered = app.popup("row_actions")
     end on
 
-    on open_it.triggered
+    on open_it.pressed
         g.opened = g.asked
     end on
 end window
@@ -1922,7 +1924,7 @@ program main(args)
     print "right-clicked:  " + g.asked
     print "open offered:   " + string(app.read("open_it", "visible"))
 
-    app.invoke("open_it", "trigger")
+    app.invoke("open_it", "press")
     print "opened:         " + g.opened
 
     ' WHAT THE MENU HOLDS, in order. A separator has no caption of its own.
@@ -1955,12 +1957,10 @@ Studio uses a scroll controller for.
 *receives* one. So `on code.wheel` is handled the way `on <window>.closed` is,
 and the handler asks `ui.wheel()` for the event rather than taking arguments.
 `dy` is in **notches** — one click of the wheel — and **positive means away
-from you**. (That is Qt's sign and the opposite of GTK's, so a handler ported
-from a GTK program has its comparison the wrong way round.)
+from you**.
 
-**The zoom needs no verb.** `font` is an ordinary property that reads back as
-text — `"monospace,9,-1,5,400,..."` — so the size is just a number in a list:
-split it, change it, write it back. There is no `ui.zoom` because nothing needs
+**The zoom needs no verb.** `font_size` is a part's size in points, a number:
+read it, add to it, write it back. There is no `ui.zoom` because nothing needs
 one.
 
 **`ui.swallow()` is what stops the editor also scrolling**, and it is not
@@ -1988,9 +1988,8 @@ really stopped the view rather than merely reporting that it had.
 ' and the handler asks `ui.wheel()` for the event rather than taking arguments.
 ' `dy` is in NOTCHES (one click of the wheel) and positive means away from you.
 '
-' THE ZOOM NEEDS NO VERB. `font` is an ordinary property that reads back as
-' text -- "monospace,9,-1,5,400,..." -- so the size is just a number in a list:
-' split it, change it, write it back.
+' THE ZOOM NEEDS NO VERB. `font_size` is a part's size in points, a number:
+' read it, add to it, write it back.
 '
 ' `ui.swallow()` IS WHAT STOPS THE EDITOR ALSO SCROLLING, and it is not
 ' optional: Ctrl + wheel scrolls a text view FASTER than a plain wheel, so
@@ -2010,12 +2009,11 @@ window app( title: "Zoom", width: 520, height: 360 )
             ' NOTHING, and the event is left alone so the editor scrolls.
             return
         end if
-        f = split(app.read("code", "font"), ",")
         bigger = 1
         if ev.dy < 0 then
             bigger = 0 - 1
         end if
-        app.set("code", "font", f[0] + "," + string(number(f[1]) + bigger))
+        app.set("code", "font_size", app.read("code", "font_size") + bigger)
         g.zooms = g.zooms + 1
         ui.swallow()
     end on
@@ -2036,7 +2034,7 @@ program main(args)
     end for
     x = app.write("code", join(lines, chr(10)))
 
-    size = number(split(app.read("code", "font"), ",")[1])
+    size = app.read("code", "font_size")
     print "font at first:   " + string(size)
 
     ' A PLAIN WHEEL SCROLLS and does not zoom. `ui.scroll` drives the wheel the
@@ -2054,7 +2052,7 @@ program main(args)
     print ("ctrl+wheel:      claimed " + string(claimed) +
            ", zooms " + string(g.zooms))
     print ("                 font now " +
-           string(number(split(app.read("code", "font"), ",")[1])))
+           string(app.read("code", "font_size")))
     print "                 view stayed at " + string(app.scrolled("code") = was)
 
     app.close()
@@ -2141,7 +2139,7 @@ window app( title: "Layout", width: 900, height: 420 )
             end column
         end scroll
         split down
-            source code( plainText: "x = 1" )
+            source code( text: "x = 1" )
             table console to show rows
                 field line( label: "Line" )
             end table
@@ -2571,7 +2569,7 @@ function page_for(doc)
     return { kind: "container", word: "tab", name: "p" + doc.id,
              label: doc.title,
              items: [ { kind: "part", word: "source", name: "ed" + doc.id,
-                        options: { plainText: doc.text } } ] }
+                        options: { text: doc.text } } ] }
 end function
 
 function pages_for(docs)
@@ -2979,14 +2977,14 @@ A notebook whose right-click menu acts on the tab **under the pointer**, and a
 
 **A right-click on a tab does not make it the current tab**, and that is Qt
 behaving correctly: right-clicking a background tab to close it must not first
-switch you to it. So a handler that reads `currentIndex` acts on whichever tab
+switch you to it. So a handler that reads `index` acts on whichever tab
 was *already* active — it closes the wrong document and raises nothing.
 `ui.which_tab()` answers the one the event is about.
 
 It answers **`unknown`** when the click was not over a tab, which is ordinary
 rather than a corner: a right-click on the page emits the same signal, and the
 page is where the text is. It also answers the index `tabCloseRequested`
-carries, which is what makes `tabsClosable: true` usable — a zero-argument
+carries, which is what makes `closable: true` usable — a zero-argument
 handler cannot see that signal's argument either.
 
 **`win.right_click(part, n)` aims at a tab's own rectangle**, through the
@@ -3016,7 +3014,7 @@ doing anything else.
 ' THE TRAP THIS RECIPE IS ABOUT: a right-click on a tab does NOT make it the
 ' current tab, and that is Qt behaving correctly -- right-clicking a background
 ' tab to close it must not first switch you to it. So a handler that reads
-' `currentIndex` acts on whichever tab was ALREADY ACTIVE, which closes the
+' `index` acts on whichever tab was ALREADY ACTIVE, which closes the
 ' wrong document and raises nothing. `ui.which_tab()` answers the one the event
 ' is about.
 '
@@ -3033,22 +3031,22 @@ window app( title: "Notebook", width: 520, height: 300 )
     column
         tabs book
             tab "notes.bas"
-                memo one( plainText: "' the first file" )
+                memo one( text: "' the first file" )
             end tab
             tab "util.bas"
-                memo two( plainText: "' the second file" )
+                memo two( text: "' the second file" )
             end tab
             tab "main.bas"
-                memo three( plainText: "' the third file" )
+                memo three( text: "' the third file" )
             end tab
         end tabs
 
         text said( label: "right-click a tab" )
     end column
 
-    on book.customContextMenuRequested
+    on book.context
         ' ASK WHICH TAB, then decide what the menu may offer for it. A program
-        ' that reads `currentIndex` here is reading the wrong tab.
+        ' that reads `index` here is reading the wrong tab.
         which = ui.which_tab()
         if is_unknown(which) then
             app.set("said", "text", "that was the page, not a tab")
@@ -3060,7 +3058,7 @@ window app( title: "Notebook", width: 520, height: 300 )
         end if
     end on
 
-    on copy_path.triggered
+    on copy_path.pressed
         ' AND THE CLIPBOARD TAKES NO WINDOW: there is one per application, so
         ' there is nothing to name. It copies eagerly, so the text is on the
         ' clipboard the moment this returns.
@@ -3079,22 +3077,22 @@ program main(args)
     end if
 
     ui.open(app)
-    app.set("book", "currentIndex", 0)
-    print "the first tab is current: " + string(app.read("book", "currentIndex"))
+    app.set("book", "index", 0)
+    print "the first tab is current: " + string(app.read("book", "index"))
 
     ' A PERSON WOULD RIGHT-CLICK THE THIRD TAB. `ui.right_click`'s third
     ' argument aims at a tab's own rectangle, through the tab bar, which is
     ' where a real click lands.
     app.right_click("book", 2)
     print "the status line says:   " + app.read("said", "text")
-    print "and the current tab is still: " + string(app.read("book", "currentIndex"))
+    print "and the current tab is still: " + string(app.read("book", "index"))
 
     ' THE MENU IS STILL UP and a visible menu grabs the mouse, so a program
     ' driving itself hides it before doing anything else.
     app.invoke("tab_menu", "hide")
 
     ' NOW THE MENU ITEM, which is what a person would click next.
-    app.invoke("copy_path", "trigger")
+    app.invoke("copy_path", "press")
     print "after Copy file path:   " + app.read("said", "text")
     print "the clipboard holds:    " + ui.clipboard()
 

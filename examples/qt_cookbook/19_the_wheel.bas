@@ -6,9 +6,8 @@
 ' and the handler asks `ui.wheel()` for the event rather than taking arguments.
 ' `dy` is in NOTCHES (one click of the wheel) and positive means away from you.
 '
-' THE ZOOM NEEDS NO VERB. `font` is an ordinary property that reads back as
-' text -- "monospace,9,-1,5,400,..." -- so the size is just a number in a list:
-' split it, change it, write it back.
+' THE ZOOM NEEDS NO VERB. `font_size` is a part's size in points, a number:
+' read it, add to it, write it back.
 '
 ' `ui.swallow()` IS WHAT STOPS THE EDITOR ALSO SCROLLING, and it is not
 ' optional: Ctrl + wheel scrolls a text view FASTER than a plain wheel, so
@@ -28,12 +27,11 @@ window app( title: "Zoom", width: 520, height: 360 )
             ' NOTHING, and the event is left alone so the editor scrolls.
             return
         end if
-        f = split(app.read("code", "font"), ",")
         bigger = 1
         if ev.dy < 0 then
             bigger = 0 - 1
         end if
-        app.set("code", "font", f[0] + "," + string(number(f[1]) + bigger))
+        app.set("code", "font_size", app.read("code", "font_size") + bigger)
         g.zooms = g.zooms + 1
         ui.swallow()
     end on
@@ -54,7 +52,7 @@ program main(args)
     end for
     x = app.write("code", join(lines, chr(10)))
 
-    size = number(split(app.read("code", "font"), ",")[1])
+    size = app.read("code", "font_size")
     print "font at first:   " + string(size)
 
     ' A PLAIN WHEEL SCROLLS and does not zoom. `ui.scroll` drives the wheel the
@@ -72,7 +70,7 @@ program main(args)
     print ("ctrl+wheel:      claimed " + string(claimed) +
            ", zooms " + string(g.zooms))
     print ("                 font now " +
-           string(number(split(app.read("code", "font"), ",")[1])))
+           string(app.read("code", "font_size")))
     print "                 view stayed at " + string(app.scrolled("code") = was)
 
     app.close()

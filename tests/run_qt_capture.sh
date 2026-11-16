@@ -170,7 +170,9 @@ else
     if [ "$vg_rc" = "124" ] || [ "$vg_rc" = "137" ]; then
         fail "the fixture hung under valgrind, so memory access was NOT measured"
     elif [ "$vg_rc" = "$VG_EXIT" ]; then
-        grep -E "Invalid|uninitialised" "$work/vg.err" | head -4
+        # THE WHOLE FIRST REPORT, not its headline: an intermittent objection
+        # here (2 runs in about 20, 2026-11-16) left nothing but its first line.
+        awk '/Invalid|uninitialised/ {on = 1} on {print; n++} n >= 40 {exit}' "$work/vg.err"
         fail "valgrind objected"
     elif ! grep -q '^ok [0-9]* checks, 0 mismatches' "$work/vg.out"; then
         tail -3 "$work/vg.out"

@@ -95,6 +95,10 @@ void gb_qt_set_callbacks(GbQtInvokeFn invoke, GbQtTickFn tick,
  * READ BACK FROM QT, not from the remembered copy, so what comes back is what
  * Qt holds rather than what we asked for. */
 int gb_qt_theme_set(const char *css, char *err, size_t err_size);
+/* THE THEME RECORD (docs/ui_design.md §7) as name/value pairs, already
+ * checked by the front for which names may appear. */
+int gb_qt_theme_record(const char *const *names, const char *const *values,
+                       size_t n, char *err, size_t err_size);
 char *gb_qt_theme_get(void);
 
 /* Construct the QApplication. Separate from gb_qt_window because it must

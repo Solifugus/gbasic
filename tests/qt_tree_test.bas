@@ -128,17 +128,19 @@ program main()
     check("at the depth the record gives it",
           string(ui.depth(nav, "files", 5)), "1")
 
-    ' ---- THE CHROME WAS ALWAYS ONE `ui.set` AWAY ------------------------
-    ' The correction to the request that asked for this: these are properties,
-    ' so a tree looks right without any new vocabulary at all.
-    ui.set(nav, "files", "headerHidden", true)
-    check("the header can be hidden by name",
-          string(ui.read(nav, "files", "headerHidden")), "true")
-    ui.set(nav, "files", "alternatingRowColors", true)
+    ' ---- THE CHROME IS ONE `ui.set` AWAY --------------------------------
+    ' Properties, each a word: `headings`, `striped`, `indent`, `expanders`.
+    ui.set(nav, "files", "headings", false)
+    check("the headings can be hidden",
+          string(ui.read(nav, "files", "headings")), "false")
+    ui.set(nav, "files", "expanders", false)
+    check("and the expanders taken away, for a program drawing its own",
+          string(ui.read(nav, "files", "expanders")), "false")
+    ui.set(nav, "files", "striped", true)
     check("and the rows can alternate",
-          string(ui.read(nav, "files", "alternatingRowColors")), "true")
+          string(ui.read(nav, "files", "striped")), "true")
     check("indentation is readable too",
-          string(number(ui.read(nav, "files", "indentation")) > 0), "true")
+          string(number(ui.read(nav, "files", "indent")) > 0), "true")
 
     ' ---- THE REFUSALS --------------------------------------------------
     on error goto next

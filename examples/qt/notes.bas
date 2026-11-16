@@ -38,7 +38,7 @@ window notes( title: "Notes", width: 540, height: 360 )
         end group
     end column
 
-    on note_list.itemSelectionChanged
+    on note_list.chosen
         at = notes.selected("note_list")
         if not is_unknown(at) then
             picked = notes_held[at]
@@ -47,15 +47,15 @@ window notes( title: "Notes", width: 540, height: 360 )
         end if
     end on
 
-    on new_note.triggered
+    on new_note.pressed
         print "new note"
     end on
 
-    on show_done.toggled
+    on show_done.changed
         print "show finished is now " + string(notes.read("show_done", "checked"))
     end on
 
-    on quit_app.triggered
+    on quit_app.pressed
         ui.stop()
     end on
 end window
@@ -68,7 +68,6 @@ program main(args)
         ' ONE STYLESHEET FOR THE WHOLE APPLICATION. A theme is TEXT, so a real
         ' program loads one with `ui.theme(read({file}"dark.qss"))` -- the
         ' platform supplies the sheet and the language supplies the file.
-        ' A widget's own `styleSheet:` still wins; Qt resolves the cascade.
         ui.theme("QWidget { font-size: 11pt; }" +
                  "QHeaderView::section { background: #eceff4; padding: 4px; }" +
                  "QGroupBox { font-weight: bold; }")

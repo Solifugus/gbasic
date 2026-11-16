@@ -65,7 +65,7 @@ window app( title: "Menus", width: 520, height: 360 )
 
     column( margin: 10, spacing: 8 )
         text heading( label: "Use the menu bar, or the shortcuts" )
-        memo log( readOnly: true )
+        memo log( read_only: true )
         row
             field entry( label: "Type to enable Save" )
             stretch()
@@ -75,40 +75,40 @@ window app( title: "Menus", width: 520, height: 360 )
 
     ' TYPING ENABLES Save, which is the ordinary reason a menu item's state
     ' changes: it is a fact about the program, not about the declaration.
-    on entry.textChanged
+    on entry.changed
         app.set("act_save", "enabled", len(app.read("entry")) > 0)
     end on
 
-    on act_new.triggered
+    on act_new.pressed
         note("New")
     end on
-    on act_open.triggered
+    on act_open.pressed
         note("Open")
     end on
-    on act_save.triggered
+    on act_save.pressed
         note("Saved")
     end on
-    on view_wrap.triggered
+    on view_wrap.pressed
         ' A CHECKABLE ITEM CARRIES ITS OWN STATE, read back through the same
         ' by-name door -- so the handler asks Qt rather than keeping a copy
         ' that could disagree with what the person sees ticked.
         note("Wrap is now " + string(app.read("view_wrap", "checked")))
     end on
-    on theme_dark.triggered
+    on theme_dark.pressed
         ui.theme("QWidget { background: #2e3440; color: #eceff4; }")
         note("Dark")
     end on
-    on theme_light.triggered
+    on theme_light.pressed
         ui.theme("")
         note("Light")
     end on
-    on act_about.triggered
+    on act_about.pressed
         note("Menus cost no grammar at all.")
     end on
-    on act_quit.triggered
+    on act_quit.pressed
         ui.stop()
     end on
-    on close.clicked
+    on close.pressed
         ui.stop()
     end on
 end window
@@ -157,14 +157,14 @@ program main(args)
         print "Wrap checked:    " + string(app.read("view_wrap", "checked"))
 
         print "-- and a handler on a menu item fires like any other"
-        app.invoke("act_open", "trigger")
+        app.invoke("act_open", "press")
         ' `trigger` IS WHAT A CLICK DOES, and on a CHECKABLE action it flips
         ' the state as well as firing -- which is why the handler can read the
         ' new value back rather than keeping a copy. (`toggle` flips it and
         ' emits `toggled`, which is a DIFFERENT signal and would not reach a
         ' handler written for `triggered` -- measured, by writing it that way
         ' first and getting one log line where two were wanted.)
-        app.invoke("view_wrap", "trigger")
+        app.invoke("view_wrap", "press")
         print "wrap after a click: " + string(app.read("view_wrap", "checked"))
         print "the log says:    " + string(len(g.lines)) + " line(s)"
         print "the last one:    " + g.lines[len(g.lines) - 1]

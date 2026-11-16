@@ -26,6 +26,31 @@ reader sees.
   `qt.open` is told `the qt module is called ui since 0.12.0: write ui.open`,
   unless it loaded a library of its own called `qt`, which then owns the
   name.
+- **A window speaks gBASIC's words, not Qt's.** A part's options,
+  `ui.read`, `ui.set`, `ui.invoke` and a handler's event take one vocabulary
+  that every backend shares (the reference's *Words*): `text` for
+  `plainText`, `hint` for `placeholderText`, `press` for `click` and
+  `trigger`, `on save.pressed` for `on save.clicked`, `chosen` (the selection
+  moved) and `activated` (a row opened) for the item signals, and so on.
+  Qt's own names are refused, each naming the word to write, and a window's
+  options are now checked **at load time**, so a misspelling stops the
+  program before it runs. A built window's handler says `event:` where it
+  said `signal:`. Refusals name the part's word (`a \`button\` has no
+  \`checked\``), never a Qt class.
+- **A theme is a record.** `ui.theme({ bg, base, ctl, hi, fg, faint, line,
+  sel, on_sel })` themes the whole application on any backend, and on Qt it
+  moves the palette as well as the stylesheet, so lists and check boxes
+  follow a dark theme. `colors` reads what a part is drawn in. A per-part
+  `styleSheet` is gone: a part stands out with `emphasis: "outline"` or
+  `"strong"`, a heading takes `bold: true` and `font_size`. `ui.theme(text)`
+  still takes a Qt stylesheet, as Qt's own, and a part is `#name` in it.
+
+### What was added
+
+- New words where a program needed one: `secret` (a password field),
+  `default` (the button Enter presses), `clear`, `select_all`, `fit_columns`,
+  `focused`, `fixed_width`, `shown_text` (a markdown part as rendered) and
+  `direction` (which way a separator runs).
 
 ---
 

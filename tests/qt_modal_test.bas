@@ -42,7 +42,7 @@ end function
 ' openings are compared on what a program can actually see.
 function observe()
     return join([ ui.read(edit, "who"),
-                  ui.read(edit, "edit", "windowTitle"),
+                  ui.read(edit, "edit", "title"),
                   string(ui.read(edit, "save", "enabled")),
                   ui.heading(edit, "lines", 0),
                   ui.cell(edit, "lines", 0, "item"),
@@ -70,13 +70,13 @@ window edit( title: "Customer", width: 360, height: 260 )
         end row
     end column
 
-    on save.clicked
+    on save.pressed
         x = ui.accept(edit)
     end on
-    on cancel.clicked
+    on cancel.pressed
         x = ui.reject(edit)
     end on
-    on close_it.triggered
+    on close_it.pressed
         x = ui.close(edit)
     end on
     on edit.closed
@@ -93,7 +93,7 @@ program main(args)
     ' than one, because a button is clicked, a menu item is TRIGGERED and a
     ' window is CLOSED -- three different Qt methods, and one overloaded field
     ' would have to guess which from the name.
-    g = { typed: "nothing", closes: 0, ticks: 0, press: "save", how: "click",
+    g = { typed: "nothing", closes: 0, ticks: 0, press: "save", how: "press",
           normal: "", modal: "", served: "" }
 
     if not ui.can_display() then
@@ -164,14 +164,14 @@ program main(args)
     print "-- ended by a close from inside a handler"
     g.ticks = 0
     g.press = "close_it"
-    g.how = "trigger"
+    g.how = "press"
     check("a close ends it as a refusal", ui.open_modal(edit), false)
     check("the handler fired once, not twice", g.closes, 4)
     check("and the window is closed", ui.is_open(edit), false)
 
     print "-- ended the way the window manager ends it"
     ' `close` INVOKED BY NAME ON THE WINDOW is the X button's own Qt path, the
-    ' argument `ui.invoke(f, "click")` already makes for a button.
+    ' argument `ui.invoke(f, "press")` already makes for a button.
     g.ticks = 0
     g.press = "edit"
     g.how = "close"
@@ -180,7 +180,7 @@ program main(args)
 
     print "-- refusals"
     g.press = "save"
-    g.how = "click"
+    g.how = "press"
     on error goto accept_not_open
     bad = ui.accept(edit)
     print "MISMATCH accepting a window that is not open was allowed"

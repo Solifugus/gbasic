@@ -23,7 +23,7 @@ window board( title: "Keeping current", width: 560, height: 340 )
         end row
     end column
 
-    on add.clicked
+    on add.pressed
         ' APPEND TO THE SUBJECT ITSELF. `append` mutates IN PLACE and resolves
         ' through the frame chain, so it grows the very list `main` holds --
         ' which is what makes a handler able to change the data at all, given
@@ -34,7 +34,7 @@ window board( title: "Keeping current", width: 560, height: 340 )
         return nothing
     end on
 
-    on done.clicked
+    on done.pressed
         at = board.selected("jobs")
         if not is_unknown(at) then
             tasks[at].state = "done"
@@ -62,13 +62,13 @@ program main(args)
     ui.open(board)
 
     print "the table starts with " + string(len(tasks)) + " rows"
-    board.invoke("add", "click")
-    board.invoke("add", "click")
+    board.invoke("add", "press")
+    board.invoke("add", "press")
     print "after adding twice:   " + string(len(tasks)) + " rows"
     print "the new last row is:  " + board.cell("jobs", 3, "what")
 
     board.select("jobs", 1)
-    board.invoke("done", "click")
+    board.invoke("done", "press")
     print "row 1's state is now: " + board.cell("jobs", 1, "state")
     print "and the form says:    " + board.read("state")
     ui.stop()

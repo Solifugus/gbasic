@@ -1511,7 +1511,7 @@ window greeter( title: "Greeter", width: 360, height: 160 )
         text said( label: "" )
     end column
 
-    on hello.clicked
+    on hello.pressed
         greeter.write("said", "Hello, " + greeter.read("who") + "!")
     end on
 end window
@@ -1550,10 +1550,11 @@ and an actor mailbox all keep running.
 
 Every named part is reachable by name: `win.read("who")` gives what it
 shows, `win.write("who", value)` puts a value in it (rendered exactly as
-`print` would), and `win.read("who", "readOnly")` reads **any Qt property**
-of that widget — in the kind Qt declares it, so `readOnly` answers a boolean.
-A property the widget does not carry is refused **by name**, which matters
-because Qt's own `setProperty` succeeds on a name nothing reads.
+`print` would), and `win.read("who", "read_only")` reads a **property word**
+of that part in its own kind, so `read_only` answers a boolean. The words are
+the same on every backend (see the reference's *Words*), and one the part does
+not carry is refused **by name**, rather than answered with something that
+looks like a value.
 
 ### A form is bound to a record
 
@@ -1567,7 +1568,7 @@ window customer( title: "Customer", width: 420, height: 220 )
         field limit( label: "Credit limit", type: {USD} )
         check hold( label: "On hold" )
     end form
-    on hold.toggled
+    on hold.changed
         customer.set("limit", "enabled", not customer.read("hold"))
     end on
 end window
@@ -1594,7 +1595,7 @@ window counter( title: "Counter", width: 240, height: 120 )
         text shown( label: "0" )
         button bump( text: "Add one" )
     end column
-    on bump.clicked
+    on bump.pressed
         g.count = g.count + 1
         counter.write("shown", g.count)
     end on

@@ -97,10 +97,10 @@ program main()
     ' so is a fact about the widget, so a QLineEdit answers `readOnly` (which
     ' still allows selecting and copying, what a reader wants) and a QCheckBox,
     ' having no such property, is disabled instead.
-    check("a show form's field is read-only", ui.read(viewer, "name", "readOnly"),
+    check("a show form's field is read-only", ui.read(viewer, "name", "read_only"),
           true)
     check("CONTROL: an edit form's field is NOT",
-          ui.read(editor, "name", "readOnly"), false)
+          ui.read(editor, "name", "read_only"), false)
     check("a show form's box is disabled", ui.read(viewer, "active", "enabled"),
           false)
     check("CONTROL: an edit form's box is NOT",

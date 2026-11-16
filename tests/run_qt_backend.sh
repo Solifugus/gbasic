@@ -195,7 +195,7 @@ fi
 # fail: a handler fired at connect time raises inside `ui.read` -- the window
 # is not registered yet -- so it prints nothing and the ordering still looks
 # right. Measured, by the perturbation written for this check coming back green.
-if [ "$(grep -n 'SIGNAL save.clicked' "$work/w.out" | head -1 | cut -d: -f1)" -gt \
+if [ "$(grep -n 'SIGNAL save.pressed' "$work/w.out" | head -1 | cut -d: -f1)" -gt \
      "$(grep -n '^opened' "$work/w.out" | cut -d: -f1)" ]; then
     pass "CONTROL: it fired when the button was clicked and not when the window opened"
 else
@@ -213,10 +213,11 @@ done
 
 # ---------------------------------------------------------------- REFUSALS
 printf 'TIER refusals: by name, and only for what is really wrong\n'
-# A PROPERTY NO WIDGET CARRIES. This is the division of labour the window
-# block's own validation leaves open ON PURPOSE (run_window.sh says so): a
-# LEAF's options are widget properties and Qt exposes 75 on a button alone, so
-# that set cannot be closed without Qt in the build. Here it can be, and is.
+# A WORD NO PART CARRIES. Until 0.12.0 a leaf's options were handed to Qt by
+# name, so this could only be refused at `ui.open`; with one vocabulary
+# (docs/ui_design.md §3) an option is a gBASIC word, so a misspelling is
+# refused AT LOAD TIME, before anything runs -- the same check a written and a
+# built window share.
 cat > "$work/badprop.bas" <<'EOF'
 window w( title: "W" )
     column
@@ -224,36 +225,23 @@ window w( title: "W" )
     end column
 end window
 program main()
-    on error goto next
-    x = ui.open(w)
-    if error then
-        print "REFUSED: " + error.message
-    else
-        print "MISMATCH an unknown property was accepted"
-    end if
+    print "MISMATCH the program ran"
 end program
 EOF
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 60 ./gbasic "$work/badprop.bas" > "$work/bp.out" 2>&1
+bp_rc=$?
 set -e
-# THE WORDING IS THE ASSERTION, not merely that it refused. Qt's own
-# `setProperty` returns false for a property the metaobject does not declare,
-# so a backend WITHOUT the metaobject check still refuses -- and says "would
-# not take that value", which is FALSE: the value was fine, the name was not.
-# That is the reports-the-wrong-cause class, and it is the whole reason the
-# check exists. Measured: with the metaobject lookup removed, every other
-# check in this file stays green.
-if grep -q 'REFUSED: .*has no `texx` property' "$work/bp.out"; then
-    pass "a property the widget does not carry is refused, NAMED, and said to be absent"
+# THE WORDING IS THE ASSERTION: the NAME is wrong, so the sentence says so and
+# offers the word, rather than "would not take that value" (the value was
+# fine), which is the reports-the-wrong-cause class this tier was made for.
+if [ "$bp_rc" -ne 0 ] && grep -q 'parse error at .*`texx` is not a property ui knows -- did you mean `text`?' "$work/bp.out" \
+   && ! grep -q MISMATCH "$work/bp.out"; then
+    pass "an option that is not a word is refused at load time, named, with the word to write"
 else
-    fail "the refusal does not name texx as absent: $(tr '\n' '|' < "$work/bp.out")"
+    fail "the refusal does not name texx as unknown: $(tr '\n' '|' < "$work/bp.out")"
 fi
-# AND IT NAMES WHICH PART, not the vocabulary word. It said "on `button`" until
-# 2026-10-19, which identifies nothing a reader can go and edit in a window
-# with three of them -- found by reading warning 2116's own output rather than
-# by any check, because every assertion on these messages matches a WILDCARD
-# prefix and so could not see it.
-if grep -q 'REFUSED: window: on `go`,' "$work/bp.out"; then
+if grep -q 'window: on `go`,' "$work/bp.out"; then
     pass "and it names the part (go) rather than the word (button)"
 else
     fail "the refusal does not name the part: $(tr '\n' '|' < "$work/bp.out")"
@@ -308,22 +296,22 @@ printf 'TIER properties: read back in the KIND Qt declares, not as text\n'
 # THE KIND IS THE LOAD-BEARING PART and it is not a preference. Every non-empty
 # string is TRUE in this language, so a boolean answered as the text "false"
 # reads BACKWARDS in the one place a property is most likely to be used --
-# `if ui.read(f, "readOnly")`. The kind therefore comes from the QVariant, and
+# `if ui.read(f, "read_only")`. The kind therefore comes from the QVariant, and
 # this tier asserts `type()` and not only the value, because `string(false)` and
 # the text "false" are the same characters and a value check cannot tell them
 # apart -- the same trap the finio OFX adapter's amounts hid behind.
 cat > "$work/props.bas" <<'EOF'
 window p( title: "P" )
     column
-        field name( label: "Name", placeholderText: "type here", maxLength: 40 )
+        field name( label: "Name", hint: "type here", max_length: 40 )
         check live( label: "Live", checked: true )
     end column
 end window
 program main()
     x = ui.open(p)
-    print "text: " + ui.read(p, "name", "placeholderText")
-    print "number: " + string(ui.read(p, "name", "maxLength")) + " / " + type(ui.read(p, "name", "maxLength"))
-    print "bool: " + string(ui.read(p, "name", "readOnly")) + " / " + type(ui.read(p, "name", "readOnly"))
+    print "text: " + ui.read(p, "name", "hint")
+    print "number: " + string(ui.read(p, "name", "max_length")) + " / " + type(ui.read(p, "name", "max_length"))
+    print "bool: " + string(ui.read(p, "name", "read_only")) + " / " + type(ui.read(p, "name", "read_only"))
     print "checked: " + string(ui.read(p, "live", "checked")) + " / " + type(ui.read(p, "live", "checked"))
     on error goto next
     y = ui.read(p, "name", "texx")
@@ -334,6 +322,16 @@ program main()
     z = ui.read(p, "nope", "text")
     if error then
         print "BADPART: " + error.message
+        error.clear()
+    end if
+    q = ui.read(p, "name", "placeholderText")
+    if error then
+        print "QTNAME: " + error.message
+        error.clear()
+    end if
+    r = ui.read(p, "live", "hint")
+    if error then
+        print "NOTHERE: " + error.message
         error.clear()
     end if
 end program
@@ -364,10 +362,24 @@ fi
 # THE READ HALF MUST REFUSE WHAT THE WRITE HALF REFUSES. A reader answering
 # `unknown` for a misspelled property would report a MISTAKE as an ABSENCE, and
 # the two halves of one route would disagree about what a property name is.
-if grep -q 'BADPROP: .*has no `texx` property' "$work/pr.out"; then
-    pass "an unknown property is refused on the READ side too, named"
+if grep -q 'BADPROP: ui.read: `texx` is not a property ui knows -- did you mean `text`?' "$work/pr.out"; then
+    pass "an unknown property is refused on the READ side too, named, with the word"
 else
     fail "a misspelled property was not refused on read: $(tr '\n' '|' < "$work/pr.out")"
+fi
+# ONE VOCABULARY (docs/ui_design.md §3): Qt's own name for a word is refused,
+# and the refusal is the migration -- it says which word to write.
+if grep -q 'QTNAME: ui.read: `placeholderText` is Qt'"'"'s name, not ui'"'"'s -- write `hint`' "$work/pr.out"; then
+    pass "Qt's own name for a word is refused, naming the word"
+else
+    fail "a Qt property name was not refused with its word: $(tr '\n' '|' < "$work/pr.out")"
+fi
+# AND A REAL WORD ON A PART THAT DOES NOT CARRY IT is the backend's refusal,
+# in the part's word -- a `check` -- never Qt's class.
+if grep -q 'NOTHERE: ui.read: a `check` has no `hint`' "$work/pr.out"; then
+    pass "a word this part does not carry is refused in the part's own word"
+else
+    fail "a word on the wrong part: $(tr '\n' '|' < "$work/pr.out")"
 fi
 # AND A MISSING PART IS A DIFFERENT SENTENCE from a missing property, or the
 # message names the wrong one of two things the author can mistype.
@@ -490,7 +502,7 @@ fi
 # no-arg signal `ui.select` emits, which is why the fixture uses it rather than
 # `activated` (a double-click no fixture can produce). A handler connected and
 # never fired looks identical to one that worked.
-if grep -qx 'SIGNAL orders.itemSelectionChanged' "$work/t.out"; then
+if grep -qx 'SIGNAL orders.chosen' "$work/t.out"; then
     pass "a handler whose target is a TABLE connects and fires"
 else
     fail "the table handler never fired: $(tr '\n' '|' < "$work/t.out" | tail -c 200)"
@@ -594,7 +606,7 @@ fi
 # A NAMED CONTAINER'S OWN SIGNAL, fired by SETTING A PROPERTY -- so the handler
 # path for a container that is neither a leaf nor a table is driven with no
 # human in front of it.
-if grep -qx 'SIGNAL settings.currentChanged' "$work/tb.out"; then
+if grep -qx 'SIGNAL settings.changed' "$work/tb.out"; then
     # SINGLE-QUOTED, because a backtick inside a double-quoted bash string is
     # COMMAND SUBSTITUTION: this line read `tabs` and the shell RAN the `tabs`
     # command, printing its escape sequences into the middle of a pass message.
@@ -610,7 +622,7 @@ fi
 # setter that accepted an unknown name would store a dynamic property nothing
 # reads -- an option silently doing nothing, which is the defect the closed
 # head vocabulary exists to prevent one level up.
-if grep -q 'BADPROP: ui.set: a QPushButton has no `texx` property' "$work/tb.out"; then
+if grep -q 'BADPROP: ui.set: `texx` is not a property ui knows -- did you mean `text`?' "$work/tb.out"; then
     pass "ui.set refuses an unknown property BY NAME, as the read half does"
 else
     fail "the bad-property refusal: $(grep BADPROP "$work/tb.out" || echo 'never fired')"
@@ -757,12 +769,12 @@ fi
 # window opening: `trigger` and `toggle` are no-arg QAction slots, so choosing
 # a menu entry is driven with no human in front of it. One signal alone would
 # be satisfied by a backend where that one happened to be wired.
-if grep -qx 'SIGNAL open_file.triggered' "$work/m.out"; then
+if grep -qx 'SIGNAL open_file.pressed' "$work/m.out"; then
     pass "choosing a menu item reaches a gBASIC handler"
 else
     fail "the item handler never fired: $(grep SIGNAL "$work/m.out" || echo 'nothing')"
 fi
-if grep -qx 'SIGNAL wrap_it.toggled' "$work/m.out"; then
+if grep -qx 'SIGNAL wrap_it.changed' "$work/m.out"; then
     pass "and a checkable item's own signal is a separate connection"
 else
     fail "the toggle handler never fired: $(grep SIGNAL "$work/m.out" || echo 'nothing')"
@@ -778,27 +790,31 @@ fi
 
 # ----------------------------------------------------------------------- THEME
 
-printf 'TIER theme: one stylesheet for the application, and it needs no display\n'
-# PER-WIDGET STYLING ALREADY WORKED BEFORE THIS, and the tier says so with a
-# check rather than a comment: `styleSheet` is a Q_PROPERTY of QWidget, so
-# `field a( styleSheet: "..." )` has been reachable since the by-name property
-# route shipped -- that route (§1) paying off in a way nobody designed. What it
-# cannot reach is ONE sheet for the whole application, which is what anybody
-# means by a theme, and that is what `ui.theme` adds.
+printf 'TIER theme: a theme record for every backend, and it needs no display\n'
+# THE THEME IS A RECORD OF PLAIN VALUES (docs/ui_design.md §7) -- Studio's
+# palette record, adopted -- which each backend draws its own way. Qt draws it
+# as a stylesheet AND a palette: a stylesheet alone does not move Qt's palette,
+# and what Qt paints from the palette (an item view's rows) then stays light in
+# a dark frame (Studio, measured). `colors` reads the palette back, so that is
+# asserted, not assumed. A Qt stylesheet as TEXT is still accepted, as Qt's.
 cat > "$work/theme.bas" <<'EOF'
 window w( title: "W" )
     column
-        field a( label: "A", styleSheet: "color: red;" )
+        field a( label: "A", emphasis: "outline" )
     end column
 end window
 program main()
+    dark = { bg: "#2e3440", base: "#242933", ctl: "#3b4252", hi: "#434c5e",
+             fg: "#eceff4", faint: "#7b8394", line: "#4c566a", sel: "#5e81ac",
+             on_sel: "#ffffff" }
     print "EMPTY:[" + ui.theme() + "]"
-    print "SET:" + string(ui.theme("QLineEdit { background: #222; }"))
-    print "BEFORE:" + ui.theme()
+    print "SET:" + string(ui.theme(dark))
+    print "BEFORE:" + ui.theme().fg
     print "DISPLAY:" + string(ui.can_display())
     x = ui.open(w)
-    print "AFTER:" + ui.theme()
-    print "WIDGET:" + ui.read(w, "a", "styleSheet")
+    print "AFTER:" + ui.theme().base
+    print "PAINTED:" + ui.read(w, "a", "colors").base
+    print "WIDGET:" + ui.read(w, "a", "emphasis")
     print "CHANGED:" + string(ui.theme("QLineEdit { background: #fff; }"))
     print "NOW:" + ui.theme()
     on error goto next
@@ -807,52 +823,74 @@ program main()
         print "REFUSED:" + error.message
         error.clear()
     end if
+    y = ui.theme({ bg: "#000000" })
+    if error then
+        print "MISSING:" + error.message
+        error.clear()
+    end if
+    bad = { bg: "dark", base: "#242933", ctl: "#3b4252", hi: "#434c5e",
+            fg: "#eceff4", faint: "#7b8394", line: "#4c566a", sel: "#5e81ac",
+            on_sel: "#ffffff" }
+    y = ui.theme(bad)
+    if error then
+        print "NOTCOLOUR:" + error.message
+        error.clear()
+    end if
 end program
 EOF
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 60 ./gbasic "$work/theme.bas" > "$work/th.out" 2>&1
 set -e
-# ASSERTED AS A DIFFERENCE between before and after opening, because the whole
-# design decision is that the sheet is REMEMBERED and applied when the
-# QApplication is constructed -- so a program themes first and opens second,
-# and the first window is built already themed rather than appearing plain and
-# then changing. A check only after opening passes on an implementation that
-# refused until a window existed.
+# ASSERTED AS A DIFFERENCE between before and after opening, because the
+# theme is REMEMBERED and applied when the QApplication is constructed -- so a
+# program themes first and opens second, and the first window is built
+# already themed.
 if grep -qx 'EMPTY:\[\]' "$work/th.out"; then
     pass "with nothing set, the theme is empty rather than absent"
 else
     fail "the empty theme: $(grep EMPTY "$work/th.out" || echo 'no line')"
 fi
-if grep -qx 'BEFORE:QLineEdit { background: #222; }' "$work/th.out"; then
-    pass "a theme set BEFORE any window is remembered and readable"
+if grep -qx 'BEFORE:#eceff4' "$work/th.out"; then
+    pass "a theme record set BEFORE any window is remembered and readable"
 else
     fail "set-before-open: $(grep BEFORE "$work/th.out" || echo 'no line')"
 fi
-if grep -qx 'AFTER:QLineEdit { background: #222; }' "$work/th.out"; then
+if grep -qx 'AFTER:#242933' "$work/th.out"; then
     pass "and it survives the QApplication being constructed"
 else
     fail "survives-open: $(grep AFTER "$work/th.out" || echo 'no line')"
 fi
-# THE CASCADE IS QT'S OWN and so there is no precedence rule here to invent --
-# but a backend that applied the app sheet by WRITING it onto every widget
-# would pass the two checks above and destroy this one.
-if grep -qx 'WIDGET:color: red;' "$work/th.out"; then
-    pass "a widget keeps its OWN sheet, so the app theme did not overwrite it"
+if grep -qx 'PAINTED:#242933' "$work/th.out"; then
+    pass "and a part is DRAWN in it: the palette moved, not only the sheet"
 else
-    fail "the per-widget sheet: $(grep WIDGET "$work/th.out" || echo 'no line')"
+    fail "the palette: $(grep PAINTED "$work/th.out" || echo 'no line')"
+fi
+# A BACKEND THAT APPLIED THE THEME BY WRITING IT ONTO EVERY WIDGET would pass
+# the checks above and wipe this one.
+if grep -qx 'WIDGET:outline' "$work/th.out"; then
+    pass "a part keeps its own emphasis under the theme"
+else
+    fail "the per-part emphasis: $(grep WIDGET "$work/th.out" || echo 'no line')"
 fi
 if grep -qx 'NOW:QLineEdit { background: #fff; }' "$work/th.out"; then
-    pass "and the theme can be changed once a window is up"
+    pass "and a Qt stylesheet still replaces it, as Qt's own"
 else
     fail "changing it: $(grep NOW "$work/th.out" || echo 'no line')"
 fi
-# THE MESSAGE NAMES THE REMEDY, because a theme is almost always a FILE and the
-# platform/policy split means this verb takes TEXT -- so the error has to spell
-# the composition rather than leave the author to find it.
-if grep -q 'REFUSED:.*read({file}"dark.qss")' "$work/th.out"; then
-    pass "a theme that is not text is refused, naming how to load a file"
+if grep -q 'REFUSED:ui.theme expects a theme record, or a Qt stylesheet as text' "$work/th.out"; then
+    pass "a theme that is neither is refused, saying what it takes"
 else
     fail "the refusal: $(grep REFUSED "$work/th.out" || echo 'never fired')"
+fi
+if grep -q 'MISSING:ui.theme: the theme has no `base`' "$work/th.out"; then
+    pass "a record missing a colour is refused, naming it"
+else
+    fail "the missing field: $(grep MISSING "$work/th.out" || echo 'never fired')"
+fi
+if grep -q 'NOTCOLOUR:ui.theme: `bg` is not a colour' "$work/th.out"; then
+    pass "and one that is not a colour is refused, naming the field"
+else
+    fail "the bad colour: $(grep NOTCOLOUR "$work/th.out" || echo 'never fired')"
 fi
 # AND IT WORKS WITH NO DISPLAY AT ALL, which is the half that could not be
 # asserted offscreen: setting a theme is harmless metadata, so refusing it on a
@@ -860,8 +898,11 @@ fi
 # `ui.can_display()` fail for no reason.
 cat > "$work/themenodisp.bas" <<'EOF'
 program main()
-    print "SET:" + string(ui.theme("QWidget { color: #abc; }"))
-    print "BACK:" + ui.theme()
+    t = { bg: "#ffffff", base: "#ffffff", ctl: "#eeeeee", hi: "#dddddd",
+          fg: "#aabbcc", faint: "#888888", line: "#cccccc", sel: "#3366cc",
+          on_sel: "#ffffff" }
+    print "SET:" + string(ui.theme(t))
+    print "BACK:" + ui.theme().fg
     print "DISPLAY:" + string(ui.can_display())
 end program
 EOF
@@ -870,7 +911,7 @@ env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_RUNTIME_DIR QT_QPA_PLATFORM= \
     timeout -k 5 60 ./gbasic "$work/themenodisp.bas" > "$work/thn.out" 2>&1
 nd_rc=$?
 set -e
-if [ "$nd_rc" = "0" ] && grep -qx 'BACK:QWidget { color: #abc; }' "$work/thn.out" \
+if [ "$nd_rc" = "0" ] && grep -qx 'BACK:#aabbcc' "$work/thn.out" \
    && grep -qx 'DISPLAY:false' "$work/thn.out"; then
     pass "a theme is set and read with NO display, where every other verb refuses"
 else

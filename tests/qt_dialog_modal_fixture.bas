@@ -16,7 +16,7 @@ window app( title: "Modal extent", width: 320, height: 140 )
     column( margin: 10 )
         button ask( text: "Ask" )
     end column
-    on ask.clicked
+    on ask.pressed
         print "DIALOG UP"
         g.answered = ui.confirm(app, "Really?")
         print "DIALOG DOWN"
@@ -47,7 +47,7 @@ program main(args)
             ev = take_first(timer.ticks)
             if exists(go) then
                 timer.cancel(poll)
-                ui.invoke(app, "ask", "click")
+                ui.invoke(app, "ask", "press")
             end if
         end while
     end watch

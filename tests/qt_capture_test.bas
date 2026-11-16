@@ -57,10 +57,10 @@ window app( title: "Shot", width: 400, height: 300 )
         source ed( language: "gBASIC" )
         tabs book
             tab "One"
-                memo first( plainText: "first page" )
+                memo first( text: "first page" )
             end tab
             tab "Two"
-                memo second( plainText: "second page" )
+                memo second( text: "second page" )
             end tab
         end tabs
         button go( text: "Go" )
@@ -89,7 +89,7 @@ program main()
     watch(timer.ticks)
         while count(timer.ticks) > 0
             ev = take_first(timer.ticks)
-            if not ui.read(app, "ed", "focus") then
+            if not ui.read(app, "ed", "focused") then
                 g.unfocused = g.unfocused + 1
                 if g.unfocused >= 200 then
                     timer.cancel(beat)
@@ -109,9 +109,11 @@ program main()
     end watch
 
     ui.open(app)
-    ui.set(app, "ed", "plainText", "print 1\nprint 2\n")
-    ui.set(app, "heading", "styleSheet", "background: #ff0000")
-    ui.set(app, "note", "styleSheet", "background: #0000ff")
+    ui.set(app, "ed", "text", "print 1\nprint 2\n")
+    ' TWO PARTS IN SOLID COLOURS, for the pixel tier to find in the PNG. A Qt
+    ' stylesheet, Qt's own route (the `stylesheet` capability): this fixture
+    ' measures Qt's capture, and a part is `#name` in a sheet.
+    ui.theme("#heading { background: #ff0000; } #note { background: #0000ff; }")
 
     print "-- THE WHOLE WINDOW"
     whole = join_path(out, "whole.png")
@@ -154,10 +156,10 @@ program main()
     ui.capture(app, a, { part: "ed" })
     ui.capture(app, b, { part: "ed" })
     check("two captures of an unchanged part are byte-identical", read(a) = read(b), true)
-    ui.set(app, "ed", "plainText", "print 3\nprint 2\n")
+    ui.set(app, "ed", "text", "print 3\nprint 2\n")
     ui.capture(app, b, { part: "ed" })
     check("one character changed changes the picture", read(a) = read(b), false)
-    ui.set(app, "ed", "plainText", "print 1\nprint 2\n")
+    ui.set(app, "ed", "text", "print 1\nprint 2\n")
     ui.capture(app, b, { part: "ed" })
     check("  and changing it back gives the first picture again", read(a) = read(b), true)
     ui.set(app, "heading", "text", "A much longer heading than before")
@@ -207,7 +209,7 @@ program main()
     check("and nothing was written by any refusal", exists({file}join_path(out, "x.png")), false)
 
     print "-- A FOCUSED EDITOR WHILE QT'S LOOP RUNS"
-    ui.invoke(app, "ed", "setFocus")
+    ui.invoke(app, "ed", "focus")
     ui.run()
     check("the editor took focus within 200 ticks", g.unfocused < 200, true)
     check("twelve captures were taken", count(g.steady), 12)

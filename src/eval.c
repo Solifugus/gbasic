@@ -45095,7 +45095,7 @@ static Value window_item_value(AstWindowItem *item) {
         record_set(&out, "kind", value_string("handler"));
         record_set(&out, "target",
                    value_string(item->event_target ? item->event_target : ""));
-        record_set(&out, "signal",
+        record_set(&out, "event",
                    value_string(item->event_signal ? item->event_signal : ""));
         /* THE FUNCTION ITSELF, not its name -- the shape `web.routes` already
          * uses for a route's handler. A backend therefore needs no name

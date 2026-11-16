@@ -32,10 +32,10 @@ window edit( title: "Customer", width: 360, height: 200 )
     ' TWO VERBS, AND THEY ARE NOT `ui.answer`. That one drives a DIALOG from
     ' the program when nobody is there -- a timeout, an unattended run. These
     ' are the person's own answer arriving through a button they pressed.
-    on save.clicked
+    on save.pressed
         x = edit.accept()
     end on
-    on cancel.clicked
+    on cancel.pressed
         x = edit.reject()
     end on
 
@@ -67,7 +67,7 @@ program main(args)
             g.ticks = g.ticks + 1
             if g.ticks = 2 then
                 y = edit.write("who", "Grace Hopper")
-                z = edit.invoke(g.press, "click")
+                z = edit.invoke(g.press, "press")
             end if
         end while
     end watch

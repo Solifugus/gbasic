@@ -51,8 +51,8 @@ window prefs( title: "Preferences", width: 440, height: 320 )
         item quit_app( label: "Quit" )
     end menu
 
-    on settings.currentChanged
-        print "SIGNAL settings.currentChanged"
+    on settings.changed
+        print "SIGNAL settings.changed"
     end on
 end window
 
@@ -63,7 +63,7 @@ program main()
     ' --------------------------------------------------------------- THE BOOK
     check("one page per declared tab", ui.read(prefs, "settings", "count"), 2)
     check("and the first is showing",
-          ui.read(prefs, "settings", "currentIndex"), 0)
+          ui.read(prefs, "settings", "index"), 0)
 
     ' A PAGE IS A COLUMN, so everything works inside one. Asserted through
     ' parts on BOTH pages, since a book that built only its first page would
@@ -107,9 +107,9 @@ program main()
     ' SWITCHING PAGE IS A PROPERTY, which is also what fires the book's own
     ' signal -- so the handler is driven with no human in front of it.
     check("the page can be changed",
-          ui.set(prefs, "settings", "currentIndex", 1), true)
+          ui.set(prefs, "settings", "index", 1), true)
     check("and the book says so",
-          ui.read(prefs, "settings", "currentIndex"), 1)
+          ui.read(prefs, "settings", "index"), 1)
 
     ' ------------------------------------------------------------- REFUSALS
     ' THE TWO HALVES OF ONE ROUTE MUST AGREE ABOUT WHAT A PROPERTY NAME IS,

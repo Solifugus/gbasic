@@ -9,7 +9,7 @@
 ' every example happened to need only an entry, a box and a button.
 '
 ' THE NEAREST SUBSTITUTE WAS MEASURED AND REFUSED: a read-only frameless
-' QLineEdit looks like a label (`readOnly: true, frame: false` both take), and
+' QLineEdit looks like a label (`read_only: true` takes), and
 ' it CANNOT WRAP and is still a text entry -- focusable, single-line,
 ' selectable as an input. A paragraph was not expressible, so this is a gap
 ' rather than a convenience.
@@ -78,28 +78,28 @@ program main()
     ' WRAPPING IS THE WHOLE REASON THIS IS NOT A read-only FIELD. Asserted as
     ' a property rather than by looking at pixels, and paired with the field
     ' below so it is a DIFFERENCE and not just a true.
-    check("it wraps by default", ui.read(page, "blurb", "wordWrap"), true)
+    check("it wraps by default", ui.read(page, "blurb", "wrap"), true)
     check("and a long description is held whole, not truncated",
           len(ui.read(page, "blurb")) > 80, true)
     ' A LABEL IS NOT AN ENTRY, which is the half a value check cannot see: a
     ' read-only `field` passes every check above. The discriminator is that a
-    ' QLabel has no `readOnly` AT ALL, and an absent property is REFUSED BY
-    ' NAME rather than answered `unknown` -- which is this backend's contract
-    ' and the reason the refusal is the assertion here.
-    check("a text has no `readOnly`, being no kind of entry",
-          refused_read("heading", "readOnly"),
-          "ui.read: a QLabel has no `readOnly` property")
-    check("CONTROL: a field DOES have one", ui.read(page, "entry", "readOnly"),
+    ' `text` has no `read_only` AT ALL, and a word a part does not carry is
+    ' REFUSED BY NAME rather than answered `unknown` -- which is the backend's
+    ' contract and the reason the refusal is the assertion here.
+    check("a text has no `read_only`, being no kind of entry",
+          refused_read("heading", "read_only"),
+          "ui.read: a `text` has no `read_only`")
+    check("CONTROL: a field DOES have one", ui.read(page, "entry", "read_only"),
           false)
 
     print "-- `text` is written like anything else"
     ui.write(page, "heading", "The Garden")
     check("ui.write reaches it", ui.read(page, "heading"), "The Garden")
-    ui.set(page, "heading", "styleSheet", "font-weight: bold")
-    check("and so does the by-name property route",
-          ui.read(page, "heading", "styleSheet"), "font-weight: bold")
+    ui.set(page, "heading", "bold", true)
+    check("and so does a property word",
+          ui.read(page, "heading", "bold"), true)
 
-    print "-- `memo`: many lines, through `plainText` and not `text`"
+    print "-- `memo`: many lines, through the same `text`"
     ' A QPlainTextEdit HAS NO `text` PROPERTY. The reader's fallthrough asked
     ' for one, which answers an INVALID QVariant, which this backend reports
     ' as an ABSENT PART -- so `ui.read` on a perfectly real memo said the
@@ -119,17 +119,17 @@ program main()
     ui.write(page, "entry", three)
     check("a field given three lines stores three (Qt strips only typed input)",
           contains(ui.read(page, "entry"), chr(10)), true)
-    ' SO THE DISCRIMINATOR IS THE CLASS, asked through the same by-name door:
-    ' `plainText` is a QPlainTextEdit property and a QLineEdit has none.
-    check("only a memo carries `plainText`",
-          type(ui.read(page, "log", "plainText")), "string")
+    ' SO THE DISCRIMINATOR IS A WORD ONLY ONE OF THEM CARRIES: a memo wraps
+    ' its lines and a field, being one line, has no `wrap`.
+    check("only a memo carries `wrap`",
+          type(ui.read(page, "log", "wrap")), "boolean")
     check("CONTROL: a field does not, and says so by name",
-          refused_read("entry", "plainText"),
-          "ui.read: a QLineEdit has no `plainText` property")
+          refused_read("entry", "wrap"),
+          "ui.read: a `field` has no `wrap`")
     check("a memo is editable by default, being an entry",
-          ui.read(page, "log", "readOnly"), false)
-    ui.set(page, "log", "readOnly", true)
-    check("and can be made a transcript", ui.read(page, "log", "readOnly"), true)
+          ui.read(page, "log", "read_only"), false)
+    ui.set(page, "log", "read_only", true)
+    check("and can be made a transcript", ui.read(page, "log", "read_only"), true)
 
     print "-- both are ordinary parts, with nothing special-cased"
     ' THEY ARE NAMED LEAVES, so they place in a grid and answer `ui.at` like

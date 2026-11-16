@@ -73,17 +73,17 @@ window app( title: "Find", width: 640, height: 640 )
         end table
     end column
 
-    on grid.cellClicked
+    on grid.activated
         g.cell_clicked = g.cell_clicked + 1
         g.cell_row = ui.selected(app, "grid")
     end on
 
-    on files.itemClicked
+    on files.activated
         g.item_clicked = g.item_clicked + 1
         g.clicked_row = ui.selected(app, "files")
     end on
 
-    on go.clicked
+    on go.pressed
         g.go = g.go + 1
     end on
 end window

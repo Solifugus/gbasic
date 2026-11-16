@@ -30,7 +30,7 @@ window app( title: "Layout", width: 900, height: 420 )
             end column
         end scroll
         split down
-            source code( plainText: "x = 1" )
+            source code( text: "x = 1" )
             table console to show rows
                 field line( label: "Line" )
             end table

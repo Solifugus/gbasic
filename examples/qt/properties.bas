@@ -1,30 +1,26 @@
-' PROPERTIES BY NAME -- the route that makes this backend small.
+' PROPERTIES BY WORD -- one vocabulary on every backend.
 '
 ' Run it:
 '     ./gbasic examples/qt/properties.bas
 '     QT_QPA_PLATFORM=offscreen ./gbasic examples/qt/properties.bas check
 '
-' QPushButton ALONE EXPOSES 75 PROPERTIES. A table of bindings for them would
-' be bindings forever and would always be missing the one you want, so an
-' option this backend does not own is handed to the widget's own QMetaObject BY
-' NAME -- which is why `maxLength`, `placeholderText`, `toolTip`, `styleSheet`
-' and `echoMode` all work without a line of code naming them.
+' A PART'S OPTIONS AND PROPERTIES ARE gBASIC WORDS: `hint`, `max_length`,
+' `secret`, `tip`, `read_only`. Each backend turns a word into its own means --
+' on Qt, `hint` is a QLineEdit's placeholderText -- so the same program runs on
+' whichever backend draws it (docs/ui_design.md §3). A toolkit's own name is
+' refused, and the refusal names the word to write instead.
 '
-' THERE ARE THREE DOORS AND THEY MUST AGREE ABOUT WHAT A NAME IS:
-'   the DECLARATION     `field pin( maxLength: 4 )`     -- before anything runs
+' THERE ARE THREE DOORS AND THEY AGREE ABOUT WHAT A WORD IS:
+'   the DECLARATION     `field pin( max_length: 4 )`    -- checked at load time
 '   `ui.read`           what it is now
 '   `ui.set`            change it, which the declaration cannot: it is written
 '                       before anything has happened
 '
-' A MISSPELLING IS REFUSED BY NAME AT ALL THREE. That matters more than it
-' looks: `setProperty` on a name a widget does not carry SUCCEEDS in Qt, storing
-' a dynamic property nothing reads -- so an option would silently do nothing,
-' which is exactly the class the closed head vocabulary exists to prevent one
-' level up.
+' A MISSPELLING IS REFUSED BY NAME AT ALL THREE, with the nearest word.
 '
-' AND THE KIND COMES FROM Qt, NOT FROM THE CALLER. `readOnly` answers a
-' BOOLEAN; a backend that answered the text "false" would read BACKWARDS in
-' `if ui.read(...)`, every non-empty string being true in gBASIC.
+' AND THE KIND IS THE WORD'S. `read_only` answers a BOOLEAN; a backend that
+' answered the text "false" would read BACKWARDS in `if ui.read(...)`, every
+' non-empty string being true in gBASIC.
 
 window form( title: "Properties", width: 440, height: 340 )
     column( margin: 10, spacing: 8 )
@@ -32,13 +28,12 @@ window form( title: "Properties", width: 440, height: 340 )
         text heading( label: "Set in the declaration" )
 
         form to edit account
-            ' EVERY ONE OF THESE IS A Qt PROPERTY and none is known to this
-            ' backend. They reach QLineEdit's QMetaObject by name.
-            field name(  label: "Name", placeholderText: "as on the card" )
-            field pin(   label: "PIN", maxLength: 4, echoMode: 2 )
-            field note(  label: "Reference", toolTip: "shows on the statement" )
-            field locked( label: "Account", readOnly: true,
-                          styleSheet: "background: #eceff4" )
+            ' EVERY ONE OF THESE IS A WORD; the backend says what it means
+            ' on a field.
+            field name(  label: "Name", hint: "as on the card" )
+            field pin(   label: "PIN", max_length: 4, secret: true )
+            field note(  label: "Reference", tip: "shows on the statement" )
+            field locked( label: "Account", read_only: true )
         end form
 
         row
@@ -51,11 +46,11 @@ window form( title: "Properties", width: 440, height: 340 )
     ' A HANDLER THAT CHANGES A PROPERTY, which is what `ui.set` is for: the
     ' declaration is written before anybody has typed anything, so "enable Save
     ' once there is a name" has nowhere else to live.
-    on name.textChanged
+    on name.changed
         form.set("save", "enabled", len(form.read("name")) > 0)
     end on
 
-    on close.clicked
+    on close.pressed
         ui.stop()
     end on
 end window
@@ -71,19 +66,15 @@ program main(args)
 
     if contains(args, "check") then
         print "-- read back what the DECLARATION set"
-        print "pin maxLength:     " + string(form.read("pin", "maxLength"))
-        print "pin echoMode:      " + string(form.read("pin", "echoMode"))
-        print "name placeholder:  " + form.read("name", "placeholderText")
-        print "note toolTip:      " + form.read("note", "toolTip")
-        print "locked readOnly:   " + string(form.read("locked", "readOnly"))
+        print "pin max_length:    " + string(form.read("pin", "max_length"))
+        print "pin secret:        " + string(form.read("pin", "secret"))
+        print "name hint:         " + form.read("name", "hint")
+        print "note tip:          " + form.read("note", "tip")
+        print "locked read_only:  " + string(form.read("locked", "read_only"))
 
-        ' AND AN ENUM ANSWERS ITS NAME: `echoMode: 2` goes in as a number and
-        ' comes back as "Password", because the QVariant Qt hands over carries
-        ' the enumerator. Worth knowing before comparing one to the number you
-        ' set.
-        print "-- the KIND is Qt's, not the caller's"
-        print "maxLength is a:    " + type(form.read("pin", "maxLength"))
-        print "readOnly is a:     " + type(form.read("locked", "readOnly"))
+        print "-- the KIND is the word's"
+        print "max_length is a:   " + type(form.read("pin", "max_length"))
+        print "read_only is a:    " + type(form.read("locked", "read_only"))
 
         print "-- `ui.set`: what the declaration could not know"
         print "save enabled:      " + string(form.read("save", "enabled"))
@@ -91,11 +82,13 @@ program main(args)
         print "after typing:      " + string(form.read("save", "enabled"))
 
         print "-- a misspelling is refused BY NAME, at both doors"
-        print "reading `maxLenght`: " + probe_read("pin", "maxLenght")
-        print "setting `maxLenght`: " + probe_set("pin", "maxLenght")
+        print "reading `max_lenght`: " + probe_read("pin", "max_lenght")
+        print "setting `max_lenght`: " + probe_set("pin", "max_lenght")
+        print "-- and so is Qt's own name for it"
+        print "reading `maxLength`: " + probe_read("pin", "maxLength")
         ' AND THE CONTROL, or "it refuses" is satisfied by refusing everything.
-        form.set("pin", "maxLength", 6)
-        print "a REAL property set:  " + string(form.read("pin", "maxLength"))
+        form.set("pin", "max_length", 6)
+        print "a REAL property set:  " + string(form.read("pin", "max_length"))
         ui.stop()
         return
     end if

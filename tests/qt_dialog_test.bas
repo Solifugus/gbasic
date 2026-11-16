@@ -41,7 +41,7 @@ window app( title: "Dialogs", width: 340, height: 160 )
 
     ' A DIALOG FROM A HANDLER, which is the real-world shape: the person
     ' clicked something, and the program asks before doing it.
-    on ask.clicked
+    on ask.pressed
         g.from_handler = ui.confirm(app, "Really?")
         return nothing
     end on

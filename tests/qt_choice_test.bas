@@ -93,7 +93,7 @@ program main()
     ' not item 0, which is what an unbound choice would show and which looks
     ' perfectly ordinary.
     check("and the subject chose one of them", ui.read(ed, "facing"), "south")
-    check("by index", ui.read(ed, "facing", "currentIndex"), 1)
+    check("by index", ui.read(ed, "facing", "index"), 1)
 
     print "-- the DATA list, filled after open"
     check("it starts empty", ui.read(ed, "leads_to", "count"), 0)
@@ -146,10 +146,10 @@ program main()
     ' which is right, a disabled box being unchangeable. A QPlainTextEdit does
     ' have one, so a memo keeps its scrollbar and loses its typing.
     check("a shown choice is disabled", ui.read(ed, "frozen", "enabled"), false)
-    check("a shown memo is readOnly", ui.read(ed, "prose", "readOnly"), true)
+    check("a shown memo is readOnly", ui.read(ed, "prose", "read_only"), true)
     check("CONTROL: the edit form's are neither",
           ui.read(ed, "leads_to", "enabled"), true)
-    check("CONTROL: nor its memo", ui.read(ed, "description", "readOnly"), false)
+    check("CONTROL: nor its memo", ui.read(ed, "description", "read_only"), false)
     ' AND THE SHOWN RECORD DOES NOT FOLLOW, which is the whole difference
     ' between the two words.
     kept = ui.subject(ed, "seen")

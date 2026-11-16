@@ -23,7 +23,7 @@
 # THE TABS ARE AT THE BOTTOM ON PURPOSE AND IT IS THE LOAD-BEARING DETAIL. The
 # point a context-menu signal carries is in the EMITTING WIDGET'S coordinates
 # and the bar is not at its origin, so `tabAt` must be asked of a MAPPED point.
-# Measured with `tabPosition: South`, an unmapped `tabAt` answers **-1** -- "no
+# Measured with the tabs at the bottom (`tab_side: "bottom"`), an unmapped `tabAt` answers **-1** -- "no
 # tab" for a click squarely on one -- while with tabs at the TOP the bar IS at
 # the origin and the two agree. Comfortable test data would have hidden the
 # mapping entirely, so both positions are exercised and the bottom one is the
@@ -31,7 +31,7 @@
 #
 # THE int ROUTE IS ASSERTED THROUGH `currentChanged`, AND WHY IS SAID RATHER
 # THAN IMPLIED. `tabCloseRequested(int)` carries the index that makes
-# `tabsClosable: true` usable, and it reaches the same slot by the same rule --
+# `closable: true` usable, and it reaches the same slot by the same rule --
 # any single-int signal a tab widget emits -- but driving the close button needs
 # the QTabBar's own child widget, which gBASIC cannot name. So what is exercised
 # is the RULE, through a signal a program can drive; the close button itself is

@@ -5,7 +5,7 @@
 ' THE TRAP THIS RECIPE IS ABOUT: a right-click on a tab does NOT make it the
 ' current tab, and that is Qt behaving correctly -- right-clicking a background
 ' tab to close it must not first switch you to it. So a handler that reads
-' `currentIndex` acts on whichever tab was ALREADY ACTIVE, which closes the
+' `index` acts on whichever tab was ALREADY ACTIVE, which closes the
 ' wrong document and raises nothing. `ui.which_tab()` answers the one the event
 ' is about.
 '
@@ -22,22 +22,22 @@ window app( title: "Notebook", width: 520, height: 300 )
     column
         tabs book
             tab "notes.bas"
-                memo one( plainText: "' the first file" )
+                memo one( text: "' the first file" )
             end tab
             tab "util.bas"
-                memo two( plainText: "' the second file" )
+                memo two( text: "' the second file" )
             end tab
             tab "main.bas"
-                memo three( plainText: "' the third file" )
+                memo three( text: "' the third file" )
             end tab
         end tabs
 
         text said( label: "right-click a tab" )
     end column
 
-    on book.customContextMenuRequested
+    on book.context
         ' ASK WHICH TAB, then decide what the menu may offer for it. A program
-        ' that reads `currentIndex` here is reading the wrong tab.
+        ' that reads `index` here is reading the wrong tab.
         which = ui.which_tab()
         if is_unknown(which) then
             app.set("said", "text", "that was the page, not a tab")
@@ -49,7 +49,7 @@ window app( title: "Notebook", width: 520, height: 300 )
         end if
     end on
 
-    on copy_path.triggered
+    on copy_path.pressed
         ' AND THE CLIPBOARD TAKES NO WINDOW: there is one per application, so
         ' there is nothing to name. It copies eagerly, so the text is on the
         ' clipboard the moment this returns.
@@ -68,22 +68,22 @@ program main(args)
     end if
 
     ui.open(app)
-    app.set("book", "currentIndex", 0)
-    print "the first tab is current: " + string(app.read("book", "currentIndex"))
+    app.set("book", "index", 0)
+    print "the first tab is current: " + string(app.read("book", "index"))
 
     ' A PERSON WOULD RIGHT-CLICK THE THIRD TAB. `ui.right_click`'s third
     ' argument aims at a tab's own rectangle, through the tab bar, which is
     ' where a real click lands.
     app.right_click("book", 2)
     print "the status line says:   " + app.read("said", "text")
-    print "and the current tab is still: " + string(app.read("book", "currentIndex"))
+    print "and the current tab is still: " + string(app.read("book", "index"))
 
     ' THE MENU IS STILL UP and a visible menu grabs the mouse, so a program
     ' driving itself hides it before doing anything else.
     app.invoke("tab_menu", "hide")
 
     ' NOW THE MENU ITEM, which is what a person would click next.
-    app.invoke("copy_path", "trigger")
+    app.invoke("copy_path", "press")
     print "after Copy file path:   " + app.read("said", "text")
     print "the clipboard holds:    " + ui.clipboard()
 

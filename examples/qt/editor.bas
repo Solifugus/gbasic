@@ -68,19 +68,19 @@ window app( title: "gBASIC editor", width: 760, height: 520 )
         end row
     end column
 
-    on act_open.triggered
+    on act_open.pressed
         load_self()
     end on
-    on act_dark.triggered
+    on act_dark.pressed
         ui.theme("QWidget { background: #2e3440; color: #eceff4; }")
     end on
-    on act_light.triggered
+    on act_light.pressed
         ui.theme("")
     end on
-    on act_quit.triggered
+    on act_quit.pressed
         ui.stop()
     end on
-    on close.clicked
+    on close.pressed
         ui.stop()
     end on
 end window
@@ -126,18 +126,18 @@ program main(args)
         print "-- a source is a memo with four differences"
         ' BRACKETED: a line break continues a statement only inside brackets.
         print ("wrap:           source=" +
-               string(app.read("code", "lineWrapMode")) + "  memo=" +
-               string(app.read("plain", "lineWrapMode")))
+               string(app.read("code", "wrap")) + "  memo=" +
+               string(app.read("plain", "wrap")))
         print ("tab narrower:   " +
-               string(app.read("code", "tabStopDistance") <
-                      app.read("plain", "tabStopDistance")))
-        print ("fonts differ:   " + string(app.read("code", "font") !=
-                                           app.read("plain", "font")))
+               string(app.read("code", "tab_width") <
+                      app.read("plain", "tab_width")))
+        print ("one-width font: source=" + string(app.read("code", "fixed_width")) +
+               "  memo=" + string(app.read("plain", "fixed_width")))
         print "memo has none:  " + string(is_unknown(app.highlighting("plain")))
 
         print "-- and it is an editor, not a view"
         print "read back:      " + string(len(app.read("code"))) + " bytes"
-        print "editable:       " + string(not app.read("code", "readOnly"))
+        print "editable:       " + string(not app.read("code", "read_only"))
 
         ' THE HONEST LIMITS, printed rather than left in a comment, because
         ' somebody evaluating this for an editor needs to know what is missing

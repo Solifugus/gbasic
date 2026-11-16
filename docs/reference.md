@@ -5233,7 +5233,7 @@ window customer( title: "Customer", width: 480 )
         end row
     end column
 
-    on save.clicked
+    on save.pressed
         print "saving " + customer.read("name")
     end on
 end window
@@ -5261,7 +5261,7 @@ end program
 | `win.is_open()` (`ui.is_open`) | whether it is still there. **Answers rather than raising**, like `ui.can_display`, because a window can close *without the program asking* — once the person can dismiss one, every other verb starts refusing for a reason that is nobody's mistake |
 | `ui.check(win)` | the declaration's own load-time rules, over a window record — **answers on a build with no Qt and needs no display**, because it is a check on a declaration. Answers `true` or refuses with the first problem and a count of the rest |
 | `win.read(name)` (`ui.read`) | the text a part is showing (`"true"`/`"false"`for a check box) |
-| `win.read(name, property)` (`ui.read`) | one named Qt property of that part, **in the kind Qt declares it** — `readOnly` answers a boolean, `maxLength` a number. A property the widget does not carry is refused by name, as it is when set |
+| `win.read(name, property)` (`ui.read`) | one **property word** of that part (see *Words*), in the word's own kind — `read_only` answers a boolean, `max_length` a number. A word the part does not carry is refused naming the part ("a `check` has no `hint`"); a name that is not a word is refused with the nearest one, and Qt's own name for a word (`placeholderText`) is refused naming the word to write |
 | `win.write(name, value)` (`ui.write`) | show a value, rendered exactly as `print` would render it |
 | `win.selected(table)` (`ui.selected`) | which row a person has chosen, as an **index** so it composes with the list the program holds; `unknown` when none is — not `-1` and not `0`, both of which are valid-looking indices |
 | `win.select(table, row)` (`ui.select`) | choose a row from the program, for a window that opens with one highlighted; `unknown` chooses nothing |
@@ -5282,9 +5282,9 @@ end program
 | `win.menus()` (`ui.menus`) / `win.menus(n)` (`ui.menus`) / `win.menus("name")` (`ui.menus`) | the menu bar's top-level captions, the entries of the menu at position `n`, or the entries of the **`popup`** of that name. A number is a position on the bar and text is a popup's name — a popup is not on the bar, so it *has* no position. A separator's entry is `unknown` — it *has* no caption, where an item with `label: ""` has an empty one |
 | `win.popup(name [, under])` (`ui.popup`) | raise a `popup`, answering **whether anything was shown**. With a third argument it pops **under that part** rather than at the pointer, which is what a menu *button* wants — its menu belongs under the button, not wherever the mouse happens to be. A name that is not there is refused, since popping at the pointer instead would look like a bug in the program rather than a name that was wrong. **The menu stays up until something dismisses it** — a person clicks an item or presses Escape, and a program driving itself calls `win.invoke(menu, "hide")` (`ui.invoke`), because a menu left up goes on grabbing the mouse. `false` when every item is hidden — a row that offers nothing rather than an error, since Qt declines to show such a menu and an empty context menu reads as a control that failed. The count **recurses**, so a lone empty submenu is not something to show |
 | `win.right_click(part [, row])` (`ui.right_click`) | right-click a part the way a mouse does, for a program driving itself. It sends a **press, a release and then the context event**, so the selection moves as it would for a person — without which a handler would read a stale row. A third argument aims at a **table row, a tree row or a tab** by its own rectangle; for a tab it aims through the tab *bar*, which is where a real right-click lands. Routed through the widget's **viewport** where there is one, which is what a `table`, `memo` and `source` answer to and nothing else can reach |
-| `win.click(part [, row])` (`ui.click`) | a **left** click, aimed exactly as `ui.right_click` aims: a press and a release where a mouse would land, so Qt itself emits `clicked`, `itemClicked`, `cellClicked` and the selection change. It calls no handler directly, which is what makes a single-click-opens path testable *(after 0.10.0)* |
+| `win.click(part [, row])` (`ui.click`) | a **left** click, aimed exactly as `ui.right_click` aims: a press and a release where a mouse would land, so the toolkit itself reports `pressed`, `activated` and `chosen`. It calls no handler directly, which is what makes a single-click-opens path testable *(after 0.10.0)* |
 | `win.label(part)` (`ui.label`) | the caption shown **beside** a part, read from Qt (the label whose buddy is the part), or **`unknown`** when it has none. A `field` and a `choice` carry their `label:` as a caption in a `form` row, a `cells` grid, a `column` or a `row`; in a `form` a `memo` and a `source` do too. A `button`, a `check` and a `text` show their `label:` as their own text, so they have no caption *(after 0.10.0)* |
-| `ui.which_tab()` | which tab the event **being handled** is about — a number, or **`unknown`** both outside a handler and when the click was not over a tab, which is an ordinary case since a right-click on a tab widget's *page* emits the same signal. It exists because a tab is the one case Qt does not answer by itself: a right-press **moves** a table's or a tree's current row, so `ui.selected` already says which was clicked, and a right-press on a tab bar correctly does **not** move the current index — so `currentIndex` answers the tab that was already active, and a menu acting on it closes the wrong document. It also answers the index `tabCloseRequested` carries, which is what makes `tabsClosable: true` usable at all |
+| `ui.which_tab()` | which tab the event **being handled** is about — a number, or **`unknown`** both outside a handler and when the click was not over a tab, which is an ordinary case since a right-click on a tab widget's *page* emits the same signal. It exists because a tab is the one case Qt does not answer by itself: a right-press **moves** a table's or a tree's current row, so `ui.selected` already says which was clicked, and a right-press on a tab bar correctly does **not** move the current index — so `index` answers the tab that was already active, and a menu acting on it closes the wrong document. It also answers the index `tabCloseRequested` carries, which is what makes `tabsClosable: true` usable at all |
 | `win.scroll(part, notches [, modifier])` (`ui.scroll`) | turn the wheel on a part, for a program driving itself, answering **whether anything claimed the event**. `notches` may be **fractional** — a trackpad sends less than one, and that is the case the direction rounding exists for. The modifier is `"ctrl"`, `"shift"` or `"alt"`, refused by name, because one silently ignored sends a plain wheel while the author believes they sent a modified one |
 | `win.key(part, keys)` (`ui.key`) | press one key combination on a part, for a program driving itself: a real key press and release, sent with the part focused and its window active, so **Qt's shortcut map sees it** and a bound item fires, while an unmodified key types into the widget. Answers **whether anything took the key**. One combination per call; a chord is refused. **The limit:** this is the key Qt *delivers*, not the physical keys, so it cannot reproduce a keyboard layout. On a real US keyboard Ctrl+Shift+= reaches a `Ctrl++` shortcut through the platform's key mapper; here that route is pressed as `"Ctrl++"` |
 | `win.shortcuts(part)` (`ui.shortcuts`) | **every** shortcut a menu or toolbar item answers to, as a list of texts (a button's single one, too). `ui.read(..., "shortcut")` reports only the first, so this is how both of `["Ctrl++", "Ctrl+="]` are checked |
@@ -5308,12 +5308,12 @@ end program
 | `win.marks(part, category)` (`ui.marks`) | that category's lines, as a list. **What was set, never what is currently drawable**: a program may mark line 40 and then shorten the document, and a read filtered to the lines still in the file would disagree with the write for a reason the caller cannot see. The drawing is the widget's business; the list is the program's |
 | `win.gutter(part)` (`ui.gutter`) | what that `source`'s margin is — `{ line_numbers, marks, width }` — or **`unknown`** for one that has none, since `width: 0` would say a margin exists and is empty. The `width` follows the **digit count**, so a thousand-line document reserves more than a nine-line one |
 | `win.gutter_press(part, line)` (`ui.gutter_press`) | press the margin beside a line, which is what makes a `gutter` handler drivable without a person — `ui.right_click`'s and `ui.scroll`'s shape. A line that is **not on screen** is refused, because a mouse cannot land there |
-| `win.blocks(part, items)` (`ui.blocks`) | show content **between a `source`'s lines** without it being text: each item `{ id, line, kind, content, title, max_height, collapsed, covers }` is drawn under its 1-based line (or, with `covers: true`, over it), and **replaces the whole set**, reconciled by `id` so an unchanged block keeps its widget. Kinds: `text` (monospace, whitespace kept), `table` (`{ columns, rows }`, at most 1,000 rows shown, then a line saying how many more), `image` (a path, a `{file}`, or `{ bytes, format: "png" \| "svg" }`) and `markdown` (CommonMark and GitHub's tables and lists; a link raises the `block` event and never navigates). `max_height` (20-2000, default 240) caps it, past which it scrolls inside or, an image, is scaled down; `collapsed` (Studio's to set) shows only its header. **None of it is document text**: plainText, the caret, the undo stack, the modified flag and the line numbers do not move (tests/qt/blocks_probe.cpp, linking the real backend). A block **follows its line through edits**: typed lines above move it, a line split in two keeps it under the second half, a line joined onto the one above takes it along, and a line **deleted or emptied drops it**. Replacing the whole text drops them all. An unknown field or kind is refused with its near miss; a line past the end names how many lines there are. *After 0.10.0* (§0.38 A) |
+| `win.blocks(part, items)` (`ui.blocks`) | show content **between a `source`'s lines** without it being text: each item `{ id, line, kind, content, title, max_height, collapsed, covers }` is drawn under its 1-based line (or, with `covers: true`, over it), and **replaces the whole set**, reconciled by `id` so an unchanged block keeps its widget. Kinds: `text` (monospace, whitespace kept), `table` (`{ columns, rows }`, at most 1,000 rows shown, then a line saying how many more), `image` (a path, a `{file}`, or `{ bytes, format: "png" \| "svg" }`) and `markdown` (CommonMark and GitHub's tables and lists; a link raises the `block` event and never navigates). `max_height` (20-2000, default 240) caps it, past which it scrolls inside or, an image, is scaled down; `collapsed` (Studio's to set) shows only its header. **None of it is document text**: the text, the caret, the undo stack, the modified flag and the line numbers do not move (tests/qt/blocks_probe.cpp, linking the real backend). A block **follows its line through edits**: typed lines above move it, a line split in two keeps it under the second half, a line joined onto the one above takes it along, and a line **deleted or emptied drops it**. Replacing the whole text drops them all. An unknown field or kind is refused with its near miss; a line past the end names how many lines there are. *After 0.10.0* (§0.38 A) |
 | `win.blocks(part)` (`ui.blocks`) | what Qt holds now: `[{ id, kind, line, height, visible, collapsed, covers }]`, the line its anchor is on **after any edits** and `visible` whether it is on screen, so a fixture proves anchoring from Qt rather than from what it sent |
-| `win.fold(part, ranges)` (`ui.fold`) | fold lines: `ranges` is `[{ from, to }]`, **replacing** every fold; each **keeps its first line** and hides the rest, as an editor's folding does, and moves with its lines through edits. Hiding is layout, not text: plainText and the undo stack do not move, and copying a selection across a fold copies the folded lines. A fold that hides the caret's line moves the caret to the fold's first line. `win.fold(part)` reads back the ranges Qt holds now. Prose in place of a comment is a fold over the comment with a `markdown` block on its first line that `covers` it. *After 0.10.0* (§0.38 B2) |
+| `win.fold(part, ranges)` (`ui.fold`) | fold lines: `ranges` is `[{ from, to }]`, **replacing** every fold; each **keeps its first line** and hides the rest, as an editor's folding does, and moves with its lines through edits. Hiding is layout, not text: the text and the undo stack do not move, and copying a selection across a fold copies the folded lines. A fold that hides the caret's line moves the caret to the fold's first line. `win.fold(part)` reads back the ranges Qt holds now. Prose in place of a comment is a fold over the comment with a `markdown` block on its first line that `covers` it. *After 0.10.0* (§0.38 B2) |
 | `ui.block_event()` | inside an `on <part>.block` handler, the event being handled: `{ id, action, target }`, `action` being `"click"` (the block's body), `"collapse"` (its collapse control, which changes nothing by itself: the program re-sends the block collapsed) or `"link"` (a link in a markdown block, `target` its address). `unknown` outside a handler |
 | `win.block_press(part, id, action [, target])` (`ui.block_press`) | a real press on a block's body, its collapse control or a markdown link's text, which is how a fixture drives the `block` handler as a person would. A block or link that is not there is refused |
-| `markdown name()` (a window word), `win.set(part, "markdown", text)` | a **read-only rendered-prose part**, for a preview pane: a QTextBrowser showing CommonMark and GitHub's tables, lists and task lists, set through Qt's own `markdown` property. A link **does not navigate**: pressing it is the part's `link` event, and `ui.link()` in an `on <part>.link` handler answers its target (`unknown` outside one). `win.link_press(part, target)` (`ui.link_press`) presses a link's own text for a fixture; a link that is not there is refused. *After 0.10.0* (§0.38 B4) |
+| `markdown name()` (a window word), `win.set(part, "text", text)` | a **read-only rendered-prose part**, for a preview pane: a QTextBrowser showing CommonMark and GitHub's tables, lists and task lists, set through Qt's own `markdown` property. A link **does not navigate**: pressing it is the part's `link` event, and `ui.link()` in an `on <part>.link` handler answers its target (`unknown` outside one). `win.link_press(part, target)` (`ui.link_press`) presses a link's own text for a fixture; a link that is not there is refused. *After 0.10.0* (§0.38 B4) |
 | `ui.gutter_click()` | which line the margin click being handled was on: `{ line }`, or **`unknown`** outside a handler — a different claim from *line 0*. Takes no arguments, because a handler here takes none and the event is asked for instead, the rule `ui.wheel()` and `principal()` already follow |
 | `win.dock(name)` (`ui.dock`) | what that dock pane is doing — `{ area, floating, visible, tabbed_with }` — or **`unknown`** for a name that is not a pane. The `area` is asked of the **window**, not of anything remembered when it was built, because a remembered position agrees with a placement that was wrong; `tabbed_with` counts the panes sharing its tab group, which only the window can answer |
 | `win.layout()` (`ui.layout`) | the window's whole dock and toolbar arrangement as **text** to keep — which area each pane is in, their order, which tab is raised, what is floating and how big. **Base64**, because Qt's own blob is not valid UTF-8 and the obvious thing to do with it is store it, through `encode` or `persist`, both of which write JSON. It is Qt's format, not ours: keep it, do not read it — `ui.dock` is what answers questions |
@@ -5327,9 +5327,9 @@ end program
 | `win.choose_save([opts])` (`ui.choose_save`) | *what shall I call it?* — a name to write to, which need not exist yet |
 | `win.choose_folder([opts])` (`ui.choose_folder`) | *which folder?* |
 | `ui.dialog()` | the innermost open dialog as a record — `kind` (`"message"` or `"chooser"`), `title`, and `text` or `folder`/`filter` — or **`unknown`** when none is open, which is a different claim from a dialog carrying no fields |
-| `ui.theme(css)` / `ui.theme()` | set or read **one stylesheet for the whole application**. Needs no display, and is remembered until there is a `QApplication` to put it on, so a program themes first and opens second |
+| `ui.theme(record)` / `ui.theme()` | set or read the **theme** for the whole application: a record of plain colours `{ bg, base, ctl, hi, fg, faint, line, sel, on_sel }`, optionally `accent` and the icon files `arrow`, `tick`, `dock_close`, `dock_float`. Every backend draws it its own way. Needs no display, and is remembered until the first window opens, so a program themes first and opens second. `ui.theme(text)` takes a **Qt stylesheet** instead, Qt's alone (a part is `#name` in it) |
 | `win.subject(name)` (`ui.subject`) | the record a form is working on. For `form to edit` the widgets are read **at the moment you ask** and folded into the record the form captured when the window opened; for `form to show` the captured record comes back untouched |
-| `win.invoke(name, method)` (`ui.invoke`) | call a widget method by name — `click`, `clear`, `setFocus`, or `close`/`showMaximized` on the **window itself** |
+| `win.invoke(name, method)` (`ui.invoke`) | do one **method word** to a part — `press`, `clear`, `focus`, `select_all`, or `close` on the **window itself** |
 | `ui.run()` | hand the thread to Qt's event loop. gBASIC's own sources (a webserver, transfers, timers, the actor inbox) keep being serviced |
 | `ui.stop()` | end that loop; ordinarily called from a handler. It means *give me the thread back* and **nothing more** — the windows stay open and readable, and no `closed` handler fires. (Qt's own `quit()` closes every top-level window; this does not use it.) |
 
@@ -5338,7 +5338,7 @@ and `customer.read("name")` both take the record the `window` block bound,
 the same way `web.routes(app)` takes a server record.
 
 **And the window is a part of itself.** Its own name reaches it in the same
-by-name table every part lives in, so `win.read("customer", "windowTitle")`,
+table every part lives in, so `win.read("customer", "title")`,
 `ui.set`, `win.invoke("customer", "close")` and a handler on the window all
 work with no extra vocabulary. One consequence: **a part may not take the
 window's name**, refused by name at load time, because the part would otherwise
@@ -5473,11 +5473,10 @@ that stays meaningful however the tree is expanded. `win.depth(name, row)`
 answers how deep a row sits, asked of the widget rather than of the record, and
 `win.refresh(name)` re-reads the subject when a directory expands.
 
-Everything about how it **looks** is an ordinary property: `headerHidden`,
-`rootIsDecorated`, `itemsExpandable`, `indentation`, `animated`,
-`alternatingRowColors`, `uniformRowHeights`, `allColumnsShowFocus`,
-`expandsOnDoubleClick` and `sortingEnabled` all read and write through
-`ui.read`/`ui.set`, and a tree has no grid lines to turn off.
+How it **looks** is a handful of property words: `headings` (show the column
+headings), `expanders` (the branch arrows; off for a program drawing its own),
+`indent`, `striped` (alternating rows) and `sortable`, all read and written
+through `ui.read`/`ui.set`; a tree has no grid lines to turn off.
 
 **A table shows a list.** `table orders to show lines` takes an array of
 records; each `field` is a *column* read from every element, captioned by its
@@ -5521,10 +5520,9 @@ end menu
 ```
 
 A menu's **caption** is what a person reads and its **items** are what a handler
-addresses — so a menu takes no name, and `on open_file.triggered` names the
-item. An item is a `QAction`, so `shortcut:`, `enabled:`, `checkable:` and
-`checked:` reach it through the same by-name property route every widget option
-uses.
+addresses — so a menu takes no name, and `on open_file.pressed` names the
+item. `shortcut:`, `enabled:`, `checkable:` and `checked:` are property words
+on an item as on any part.
 
 **An item may answer to several shortcuts.** `shortcut:` takes one text or a
 **list of alternatives**: `item bigger( label: "Bigger", shortcut: ["Ctrl++",
@@ -5584,15 +5582,14 @@ end column
 ```
 
 A rule in a layout **may be named**, where a menu's separator may not: it is a
-real widget, so a name is how it is themed (`ui.set(win, "rule", "styleSheet",
-...)`) and how its orientation is read back (`ui.read(win, "rule",
-"frameShape")` answers `HLine` or `VLine`). It is refused where there is
+real part, so a name is how it is marked (`ui.set(win, "rule", "emphasis",
+"outline")`) and how its direction is read back (`ui.read(win, "rule",
+"direction")` answers `"across"` in a column or `"down"` in a row). It is refused where there is
 nothing to divide — a splitter pane already has a draggable handle between its
 panes, and a `cells` grid has no direction to take.
 
-**`icon:` is the one option that is not an ordinary property.** Qt will not turn
-a string into an icon, so this is the single name with a conversion behind it —
-and it is the same conversion in the declaration and in `ui.set`, so the two
+**`icon:` takes a string with three meanings.** The backend turns it into an
+icon, and it is the same conversion in the declaration and in `ui.set`, so the two
 cannot disagree. There are three sources and they are told apart by facts:
 
 <!--fragment: the inside of a `window` block, not a program on its own-->
@@ -5637,27 +5634,26 @@ remedy. A `popup` holds the same three things a `menu` does, nested `menu`
 included, and it belongs to the **window** — a `QMenu` is placed by nothing, so
 one written inside a `row` is a declaration the layout would silently ignore.
 
-**Declaring the handler is what asks for the custom menu.** Every Qt widget
-starts at `DefaultContextMenu`, and under that policy
-`customContextMenuRequested` is never emitted — so writing
+**Declaring the handler is what asks for the custom menu.** A part with no
+`context` handler shows the toolkit's own menu (a field's cut/copy/paste), and
+the toolkit reports no context request at all — so writing
 
 <!--fragment: the inside of a `window` block, not a program on its own-->
 ```basic
-on files.customContextMenuRequested
+on files.context
     app.set("delete_it", "visible", true)
     shown = app.popup("row_actions")
 end on
 ```
 
-is enough: the policy is set because the handler exists. The cost is that this
-*replaces* the menu Qt would have put up itself, so a `memo` or `field` with a
+is enough: the request is asked for because the handler exists. The cost is
+that this *replaces* the toolkit's own menu, so a `memo` or `field` with a
 context handler loses its own cut/copy/paste — which is why a part with no
-handler keeps Qt's.
+handler keeps it.
 
-**A wheel is an event, not a signal.** A Qt widget has no wheel signal — it
-*receives* one — so `on <part>.wheel` is handled the way `on <window>.closed`
-is, and the handler asks `ui.wheel()` for the event rather than taking
-arguments:
+**A wheel event carries its detail.** `on <part>.wheel` is handled the way
+`on <window>.closed` is, and the handler asks `ui.wheel()` for the event
+rather than taking arguments:
 
 <!--fragment: the inside of a `window` block, not a program on its own-->
 ```basic
@@ -5703,18 +5699,17 @@ shown = editor.options("leads_to", ["(nowhere)", "The Cellar", "The Garden"])
 editor.write("leads_to", "The Garden")
 ```
 
-`win.read(part)` answers the **chosen text**; `currentIndex` through the
-by-name route answers its position. `ui.write` chooses an item by its text and
-**refuses one that is not in the list** — Qt's own `setCurrentText` silently
-does nothing on an uneditable box, so a program setting an absent value would
-read back the old one with nothing said.
+`win.read(part)` answers the **chosen text**; the `index` word answers its
+position. `ui.write` chooses an item by its text and **refuses one that is not
+in the list**, where a toolkit commonly does nothing on an uneditable box, so a
+program setting an absent value would read back the old one with nothing said.
 
 A `choice` and a `memo` are both **bound** by a form, the rule being *it holds a
 value a person can change*: a description and a chosen value are data. A `text`
 is not bound — it carries no such value, so folding it would be meaningless. A
-form wanting wrapped prose from its subject uses a `memo` with `readOnly: true`.
-Under `to show` a memo becomes read-only and a choice is **disabled**, a
-`QComboBox` having no `readOnly`.
+form wanting wrapped prose from its subject uses a `memo` with `read_only: true`.
+Under `to show` a memo becomes read-only and a choice is **disabled**, a choice
+having no `read_only`.
 
 There is deliberately **no `list` word**: a one-column `table` is a picker,
 `ui.selected` addresses it, and `ui.refresh` keeps it current.
@@ -5748,7 +5743,7 @@ widget is built and only the declaration names it. Only the rows follow.
 until these existed a heading, an instruction or a description had nowhere to
 go — the leaf vocabulary reached a line edit, a button and a check box and no
 further. A `text` **wraps by default**, because a label that does not wrap
-silently drops the thing it exists to show; `wordWrap: false` asks for one line.
+silently drops the thing it exists to show; `wrap: false` asks for one line.
 A `memo` is editable, scrolls, and holds plain text rather than markup, so what
 goes in is what `ui.read` gives back.
 
@@ -5764,14 +5759,13 @@ end column
 
 Both are ordinary named parts: `ui.write` reaches them, `ui.set` reaches their
 properties, and they place in a `cells` grid like anything else. A `text`
-carries no `readOnly`, being no kind of entry, so asking for one is refused by
-name — which is how a program tells the two apart, since Qt strips newlines only
-from **typed** input and a `field` set programmatically stores them just as a
-`memo` does.
+carries no `read_only`, being no kind of entry, so asking for one is refused by
+name; and a `field`, being one line, carries no `wrap` where a `memo` does —
+which is how a program tells those two apart, since a `field` set
+programmatically stores newlines just as a `memo` does.
 
 **`source` is a code editor.** A `memo` holds prose; code is different in four
-ways, none of which is a Qt property and so none of which a `memo` could be
-talked into: it **does not wrap** (a wrapped line makes a line number stop
+ways, none of which a `memo` could be talked into: it **does not wrap** (a wrapped line makes a line number stop
 matching the file — the opposite default from `text`, where wrapping is what
 stops a paragraph truncating), its **tab is four columns** rather than eight,
 its **font is the system's monospaced one** (asked for, never named — a
@@ -5974,8 +5968,8 @@ tabs settings
 end tabs
 ```
 
-A `tabs` may carry a **name** (`tabs settings`) so `on settings.currentChanged`
-and `win.read("settings", "currentIndex")` can find it. **A container takes a
+A `tabs` may carry a **name** (`tabs settings`) so `on settings.changed`
+and `win.read("settings", "index")` can find it. **A container takes a
 name or options, not both** — `tabs settings( movable: true )` with a body costs
 four grammar conflicts, measured — so a named container's properties are set
 with `ui.set` instead.
@@ -6005,8 +5999,7 @@ end split
 **A split's direction is a word, not a name.** It is `across` or `down`,
 refused by name with a near-miss hint if it is anything else — the one free
 slot carries the direction, so a `split` **cannot be named** and `ui.pane` is
-how you observe one. A `scroll` needs no direction, so it *may* be named, which
-is what makes `widgetResizable` and the scrollbar policies readable by name.
+how you observe one. A `scroll` needs no direction, so it *may* be named.
 
 **A split needs at least two panes.** With one there is no handle to drag
 (n panes give n−1), so that is a `row` or a `column` and it is refused as one.
@@ -6070,10 +6063,9 @@ ordinary widget whose `text` property `ui.set` reaches, which is why a status
 bar needs no verb of its own. `stretch()` pushes what follows to the right.
 
 **The caret needs a verb, and that is measured rather than assumed.**
-`textCursor` is neither a property nor invokable by name — it answers a
-`QTextCursor`, where the by-name route moves QVariants — so it is one of the
-genuinely unreachable things, like the highlighter and the margin, rather than
-something `ui.read` already does.
+A caret is a position, not a property a part holds — so it has verbs of its
+own, like the highlighter and the margin, rather than being something
+`ui.read` already does.
 
 <!--fragment: inside a handler or a program that has opened the window-->
 ```basic
@@ -6122,21 +6114,29 @@ A `field`'s label takes a cell of its own, which is how a labelled grid lines
 up; a `check` carries its own caption and takes none. A part written directly
 inside `cells` is refused — it has no row to go in.
 
-**Theming is Qt's stylesheet language, and most of it was already there.**
-`styleSheet` is an ordinary Qt property, so any widget takes one through the
-same by-name route as every other option:
+**A theme is a record of plain colours**, which every backend draws its own way:
 
-<!--fragment: the inside of a `window` block, not a program on its own-->
+<!--fragment: a statement inside a program-->
 ```basic
-button go( text: "Go",
-           styleSheet: "QPushButton { background: #2d6cdf; color: white; }" )
+ui.theme({ bg: "#2e3440", base: "#242933", ctl: "#3b4252", hi: "#434c5e",
+           fg: "#eceff4", faint: "#7b8394", line: "#4c566a",
+           sel: "#5e81ac", on_sel: "#ffffff", accent: "#d08770" })
 ```
 
-`ui.theme` is the part that route cannot reach: **one sheet for the whole
-application**. Qt resolves the cascade between the two, so a widget's own sheet
-still wins. It takes *text* rather than a filename — `ui.theme(read({file}
-"dark.qss"))` composes out of what the language already has — and it needs no
-display, so a program sets its theme before asking `ui.can_display()`.
+`bg` is the window, `base` a text surface, `ctl` a control, `hi` one under the
+pointer, `fg` the ink, `faint` secondary ink, `line` borders and dividers, and
+`sel`/`on_sel` a selection and the ink on it. `accent` (optional) is the colour
+`emphasis` uses; `arrow`, `tick`, `dock_close` and `dock_float` (optional) are
+icon files for a choice's arrow, a check box's tick and a dock's buttons. A
+missing colour, an unknown field or a value that is not a colour is refused by
+name. It needs no display, so a program sets its theme before asking
+`ui.can_display()`; `ui.theme()` reads it back, and `win.read(part, "colors")`
+answers what a part is **actually drawn in**, in the same field names.
+
+One part can stand out with `emphasis: "outline"` or `"strong"`, in the accent,
+and a heading with `bold: true` or a `font_size`. `ui.theme(text)` takes a **Qt
+stylesheet** instead — Qt's own, refused by any other backend — where a part is
+`#name`.
 
 **No `load` is needed.** A `window` block implies no import, so neither does
 rendering one.
@@ -6148,11 +6148,66 @@ still parses, is validated and can be read back as a record with no Qt present.
 Setting `QT_QPA_PLATFORM=offscreen` renders without a display, which is how a
 GUI program can run on a headless server.
 
-An option on a part that is not one of the layout words (`label`, `margin`,
-`spacing`, `grow`) is set as a **Qt property by name**, so `text:` and
-`enabled:` work on any widget that has them and a misspelling is refused naming
-the widget's class. `type:`, `show:` and `edit:` are carried by the declaration
-and not yet acted on; see `docs/qt_gui_design.md` §0.4.
+### Words
+
+**A part's options, `ui.read`, `ui.set`, `ui.invoke` and a handler's event all
+use one vocabulary**, the same on every backend (docs/ui_design.md §3). Each
+backend turns a word into its own means; a toolkit's own name for the same
+thing is refused, naming the word to write (`placeholderText` → `hint`). A
+declaration's options are checked **at load time**, so a misspelling stops the
+program before it runs; a word a part does not carry is refused naming the part
+(`a \`check\` has no \`hint\``).
+
+| property word | meaning |
+|---|---|
+| `text` | what a part shows or holds (a `markdown` part: the markdown written) |
+| `shown_text` | a `markdown` part's text as rendered (read only) |
+| `visible`, `enabled` | shown; usable |
+| `checked`, `checkable` | a check's or an item's state; whether an item toggles |
+| `default` | the button Enter presses |
+| `index`, `count`, `columns` | a choice's or tabs' position; how many items or rows; a table's columns |
+| `title` | a window's, dock's or group's caption |
+| `read_only` | a field, memo, source or table that cannot be edited |
+| `hint`, `max_length`, `secret` | a field's placeholder, length limit, and masked entry |
+| `wrap`, `tab_width`, `whitespace` | long lines wrap; a tab's width; spaces and tabs shown |
+| `font_size`, `bold`, `fixed_width` | size in points (fractional); bold; one-width font (read only) |
+| `tip` | the hint shown under the pointer |
+| `x`, `y`, `width`, `height` | where a part is and its size (read only) |
+| `min_width`, `max_width`, `min_height`, `max_height` | size limits |
+| `headings`, `striped`, `sortable`, `indent`, `expanders` | a table's or tree's column headings, alternate rows, sorting, indent and branch arrows |
+| `tab_side`, `movable`, `closable` | tabs at `"top"`, `"bottom"`, `"left"` or `"right"`; dragged; closed |
+| `toolbar_shows` | `"icons"`, `"text"`, `"both"` or `"under"` |
+| `floating` | a dock out of its window |
+| `icon`, `shortcut` | as above |
+| `direction` | which way a separator or split runs, `"across"` or `"down"` (read only) |
+| `focused` | whether the part has the keyboard (read only) |
+| `colors` | what the part is drawn in, as a theme record (read only) |
+| `emphasis` | `"none"`, `"outline"` or `"strong"`, in the theme's accent |
+
+| method word (`ui.invoke`) | does |
+|---|---|
+| `press` | a button's click, an item's trigger |
+| `focus` | gives the part the keyboard |
+| `select_all`, `clear` | selects all a field's text; empties a field, memo or table |
+| `fit_columns` | sizes a table's columns to their contents |
+| `undo`, `redo` | in a field, memo or source |
+| `hide`, `raise`, `close` | a window or popup |
+
+| event word (`on x.<event>`) | fires when |
+|---|---|
+| `pressed` | a button or item is pressed |
+| `changed` | a field's or memo's text, a choice, a check or the current tab changes |
+| `chosen` | a table's, tree's or list's selection moves, by click or by key |
+| `activated` | a row is clicked (opened), or a choice picked — kept apart from `chosen`, so arrowing through a list opens nothing |
+| `entered` | Enter is pressed in a field |
+| `context` | a part is right-clicked (it then has no toolkit menu of its own) |
+| `closed`, `wheel`, `gutter`, `block`, `link` | as described above |
+
+The options that place or build rather than set a property — `label`,
+`margin`, `spacing`, `grow`, `across`, `down`, `options`, `language`, `theme`,
+`line_numbers`, `marks` — are not words; `type:`, `show:` and `edit:` are
+carried by the declaration and not yet acted on; see `docs/qt_gui_design.md`
+§0.4.
 
 ## PDF documents (`gpdf`)
 

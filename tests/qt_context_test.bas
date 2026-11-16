@@ -90,15 +90,15 @@ window app( title: "Context", width: 620, height: 400 )
                 field name( label: "File" )
                 field kind( label: "Kind" )
             end table
-            source code( plainText: "x = 1" )
+            source code( text: "x = 1" )
         end split
     end column
 
-    on proj.clicked
+    on proj.pressed
         g.under = ui.popup(app, "editor_actions", "proj")
     end on
 
-    on files.customContextMenuRequested
+    on files.context
         g.asked = g.asked + 1
         picked = ui.selected(app, "files")
         r = g.rows[picked]
@@ -117,11 +117,11 @@ window app( title: "Context", width: 620, height: 400 )
         g.shown = ui.popup(app, "row_actions")
     end on
 
-    on code.customContextMenuRequested
+    on code.context
         g.editor_asked = g.editor_asked + 1
     end on
 
-    on open_it.triggered
+    on open_it.pressed
         g.opened = g.opened + 1
     end on
 end window
@@ -132,7 +132,7 @@ end window
 ' menu away from every `memo` and `field` in the language.
 window plain( title: "Plain", width: 300, height: 160 )
     column
-        memo notes( plainText: "hello" )
+        memo notes( text: "hello" )
         field who()
     end column
 end window
@@ -149,28 +149,28 @@ window kinds( title: "Kinds", width: 420, height: 420 )
         table grid to show rows
             field name( label: "Name" )
         end table
-        memo note( plainText: "note" )
-        source src( plainText: "y = 2" )
+        memo note( text: "note" )
+        source src( text: "y = 2" )
         field one()
         button press( label: "Press" )
     end column
-    on grid.customContextMenuRequested
+    on grid.context
         g.hits = g.hits + 1
         g.where = append(g.where, "table")
     end on
-    on note.customContextMenuRequested
+    on note.context
         g.hits = g.hits + 1
         g.where = append(g.where, "memo")
     end on
-    on src.customContextMenuRequested
+    on src.context
         g.hits = g.hits + 1
         g.where = append(g.where, "source")
     end on
-    on one.customContextMenuRequested
+    on one.context
         g.hits = g.hits + 1
         g.where = append(g.where, "field")
     end on
-    on press.customContextMenuRequested
+    on press.context
         g.hits = g.hits + 1
         g.where = append(g.where, "button")
     end on
@@ -215,14 +215,11 @@ program main()
     check("the bar holds only the declared menu", ui.menus(app), ["File"])
 
     ' ---- the policy a declared handler asks for ---------------------------
-    ' THE LOAD-BEARING HALF. Every widget kind starts at `DefaultContextMenu`,
-    ' and under that policy `customContextMenuRequested` is NEVER EMITTED -- so
-    ' without this the handler below is connected to a signal nothing emits and
-    ' the right-click does nothing, silently.
-    check("a part with a handler got the policy",
-          ui.read(app, "files", "contextMenuPolicy"), "CustomContextMenu")
-    check("so did the editor", ui.read(app, "code", "contextMenuPolicy"),
-          "CustomContextMenu")
+    ' THE LOAD-BEARING HALF: Qt emits no context request for a part until it
+    ' is asked for a custom menu, so a handler alone would never fire. That it
+    ' DOES fire, below, is the check; that a part with no handler keeps the
+    ' toolkit's own menu is Qt's state, held by run_qt_context.sh's `policy`
+    ' tripwire on the backend's source.
 
     ' ---- the right-click, and the row it lands on -------------------------
     ui.right_click(app, "files", 1)
@@ -245,7 +242,7 @@ program main()
 
     ' AND THE ITEMS STILL WORK, which is what says the popup's actions are
     ' connected like a bar menu's rather than merely built.
-    ui.invoke(app, "open_it", "trigger")
+    ui.invoke(app, "open_it", "press")
     check("the popup's item fired its handler", g.opened, 1)
 
     ' ---- nothing to show is `false`, not a refusal ------------------------
@@ -285,7 +282,7 @@ program main()
     ' at the pointer only and recorded that as open; Studio's toolbar menu
     ' button is the caller that closes it. Measured: popping at a widget's
     ' bottom-left lands exactly there.
-    ui.invoke(app, "proj", "click")
+    ui.invoke(app, "proj", "press")
     check("a menu popped under a button appeared", g.under, true)
     ' WHERE IT APPEARED, asserted as a DIFFERENCE. A perturbation that ignored
     ' the third argument and popped at the pointer left the boolean TRUE and
@@ -306,8 +303,8 @@ program main()
     ' ---- a rule in a layout, beside the menu separator above --------------
     ' THE SAME WORD, two widgets, one meaning. A row is divided by a VERTICAL
     ' line, which is the half a menu's separator cannot show.
-    check("a toolbar divider is vertical",
-          ui.read(app, "toolbar_rule", "frameShape"), "VLine")
+    check("a toolbar divider runs down",
+          ui.read(app, "toolbar_rule", "direction"), "down")
 
     ' ---- the editor answers too -------------------------------------------
     ui.right_click(app, "code")
@@ -360,17 +357,6 @@ program main()
     on error stop
 
     ui.close(app)
-
-    ' ---- the control: no handler, no policy change ------------------------
-    ' Without this, "the policy is set" is satisfied by setting it on every
-    ' widget, which takes Qt's own cut/copy/paste menu away from every `memo`
-    ' and `field` in the language and says nothing.
-    ui.open(plain)
-    check("a memo with no handler keeps Qt's own menu",
-          ui.read(plain, "notes", "contextMenuPolicy"), "DefaultContextMenu")
-    check("and so does a field",
-          ui.read(plain, "who", "contextMenuPolicy"), "DefaultContextMenu")
-    ui.close(plain)
 
     ' ---- TIER VIEWPORT: every kind a right-click can land on -------------
     ui.open(kinds)

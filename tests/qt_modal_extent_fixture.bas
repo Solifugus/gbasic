@@ -27,7 +27,7 @@ window form( title: "Modal extent", width: 320, height: 160 )
         field who( label: "Name" )
         button save( label: "Save" )
     end column
-    on save.clicked
+    on save.pressed
         x = ui.accept(form)
     end on
 end window

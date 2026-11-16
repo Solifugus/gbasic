@@ -23,8 +23,7 @@
 ' got. `ui.pane` is how you see one: it walks up from a part you CAN name and
 ' asks the LAYOUT, which is the rule `ui.at` already follows for a grid.
 '
-' A SCROLL NEEDS NO DIRECTION, so its slot is free and it MAY be named -- which
-' is what makes `widgetResizable` and the scrollbar policies readable by name.
+' A SCROLL NEEDS NO DIRECTION, so its slot is free and it MAY be named.
 '
 ' THE MENU ITEMS CARRY ICONS, and they are `SP_` names on purpose: those are
 ' Qt's own eighty-one standard icons, which work with NO desktop icon theme
@@ -100,24 +99,24 @@ window shell( title: "Shell", width: 820, height: 520 )
     end split
     end column
 
-    on act_open.triggered
+    on act_open.pressed
         g.log = g.log + "opened" + chr(10)
         x = shell.write("code", ("' " + shell.read("f1") + chr(10) +
                      "print hello" + chr(10)))
     end on
 
-    on act_quit.triggered
+    on act_quit.pressed
         ui.stop()
     end on
 
-    on out.itemSelectionChanged
+    on out.chosen
         at = shell.selected("out")
         if not is_unknown(at) then
             g.log = g.log + "picked row " + string(at) + chr(10)
         end if
     end on
 
-    on proj_btn.clicked
+    on proj_btn.pressed
         g.menu_shown = shell.popup("proj_menu", "proj_btn")
     end on
 
@@ -127,12 +126,11 @@ window shell( title: "Shell", width: 820, height: 520 )
             ' DECLINED, so the editor scrolls as it always did.
             return
         end if
-        f = split(shell.read("code", "font"), ",")
         bigger = 1
         if ev.dy < 0 then
             bigger = 0 - 1
         end if
-        shell.set("code", "font", f[0] + "," + string(number(f[1]) + bigger))
+        shell.set("code", "font_size", shell.read("code", "font_size") + bigger)
         g.zooms = g.zooms + 1
         ui.swallow()
     end on
@@ -169,13 +167,13 @@ program main(args)
         print "the table is pane  " + string(tb.index)
 
         print "-- the toolbar"
-        shell.invoke("proj_btn", "click")
+        shell.invoke("proj_btn", "press")
         print("the Project menu dropped under its button: " +
               string(g.menu_shown))
-        print("the group divider is " +
-              string(shell.read("group_bar", "frameShape")) +
-              ", the header rule is " +
-              string(shell.read("header_rule", "frameShape")))
+        print("the group divider runs " +
+              string(shell.read("group_bar", "direction")) +
+              ", the header rule runs " +
+              string(shell.read("header_rule", "direction")))
         ' AND PUT IT AWAY. A popped menu STAYS UP until something dismisses it
         ' -- a person clicks an item or presses Escape, and a program that
         ' pops one in `check` mode has to close it, or it goes on grabbing
@@ -187,10 +185,10 @@ program main(args)
         print("Quit has an icon:   " + string(shell.has_icon("act_quit")))
 
         print "-- ctrl + wheel over the editor"
-        was = number(split(shell.read("code", "font"), ",")[1])
+        was = shell.read("code", "font_size")
         claimed = shell.scroll("code", 2, "ctrl")
         print("claimed " + string(claimed) + ", font " + string(was) + " -> " +
-              string(number(split(shell.read("code", "font"), ",")[1])))
+              string(shell.read("code", "font_size")))
         ' A PLAIN WHEEL IS LEFT ALONE, which is what keeps the editor usable.
         print("a plain wheel claims nothing: " +
               string(shell.scroll("code", -1)))
@@ -199,17 +197,16 @@ program main(args)
         deep = shell.pane("f1")
         print("a file label reports the " + deep.kind +
               ", resizable " + string(deep.resizable))
-        ' QT DEFAULTS `widgetResizable` TO FALSE, and left alone the inner
-        ' widget keeps its original size for ever -- so content never reflows
-        ' and a resized window shows a stripe of widgets beside a grey
-        ' expanse, with nothing raised.
-        print("and by name:           " +
-              string(shell.read("files", "widgetResizable")))
+        ' QT DEFAULTS A SCROLL'S CONTENT TO A FIXED SIZE, and left alone it
+        ' keeps its original size for ever -- so content never reflows and a
+        ' resized window shows a stripe of widgets beside a grey expanse, with
+        ' nothing raised. `resizable` above is read back from Qt's own scroll
+        ' area, so it says the backend set it.
 
         print "-- and it all works"
         e = shell.refresh("out")
         print "the table drew " + string(e) + " rows"
-        shell.invoke("act_open", "trigger")
+        shell.invoke("act_open", "press")
         shell.select("out", 1)
         print "the log says: " + replace(g.log, chr(10), " / ")
         print "the editor now starts: " + left(shell.read("code"), 12)

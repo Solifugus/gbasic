@@ -1,8 +1,8 @@
 highlighting:  gBASIC
 this build can: true
 -- against a memo in the same window
-wrap:          source=NoWrap  memo=WidgetWidth
+wrap:          source=false  memo=true
 narrower tab:  true
-fonts differ:  true
+one-width font: source=true  memo=false
 memo has none: true
 text survives: true

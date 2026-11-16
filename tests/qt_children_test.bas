@@ -24,10 +24,8 @@
 ' leave the window showing a widget the record no longer mentions, with
 ' nothing raised. §0.17's rule for a dismissed window, one level in.
 
-' NOTE `plainText` AND NOT `text`: a QPlainTextEdit has no `text` property,
-' which §0.14 already records, and the by-name route refuses an unknown
-' property rather than storing it -- so the wrong spelling fails loudly here
-' rather than leaving an editor mysteriously empty.
+' `text` IS AN EDITOR'S TEXT as it is a field's: the backend knows a source
+' holds its text differently, so the program does not have to.
 function doc_tab(id, caption, body)
     ' A TAB CARRIES A NAME HERE, which the declaration's grammar cannot spell
     ' (its one slot is the caption, §0.8) and the RECORD can. That is what a
@@ -37,7 +35,7 @@ function doc_tab(id, caption, body)
     ' remove.
     return { kind: "container", word: "tab", name: "t" + id, label: caption,
              items: [ { kind: "part", word: "source", name: "ed" + id,
-                        options: { plainText: body } } ] }
+                        options: { text: body } } ] }
 end function
 
 function notebook(tabs)
@@ -183,41 +181,41 @@ program main()
              items: [ { kind: "container", word: "tabs", name: "leaves",
                         items: [ button_page("p0", "w", nothing),
                                  button_page("p1", "b1", on_one) ] },
-                      { kind: "handler", target: "w", signal: "clicked",
+                      { kind: "handler", target: "w", event: "pressed",
                         handler: on_w } ] }
     check("the deck passes ui.check", string(ui.check(deck)), "true")
     ui.open(deck)
-    ui.invoke(deck, "b1", "click")
+    ui.invoke(deck, "b1", "press")
     check("a handler connected by ui.open fires (the control)",
           string(g.one), "1")
 
     n = ui.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
                                      button_page("p1", "b1", on_one),
                                      button_page("p2", "b2", on_two) ])
-    ui.invoke(deck, "b2", "click")
+    ui.invoke(deck, "b2", "press")
     check("a handler inside a page BUILT by ui.refresh fires", string(g.two), "1")
-    ui.invoke(deck, "b1", "click")
+    ui.invoke(deck, "b1", "press")
     check("a KEPT page's handler still fires exactly once per click",
           string(g.one), "2")
 
     n = ui.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
                                      button_page("p1", "b1", on_one),
                                      button_page("p2", "b2", on_two) ])
-    ui.invoke(deck, "b2", "click")
+    ui.invoke(deck, "b2", "press")
     check("refreshing again does not connect a kept handler twice",
           string(g.two), "2")
 
     ' THE WINDOW'S OWN HANDLER, when its target is rebuilt: drop the page that
     ' holds `w`, then bring it back. The handler lives in the window record,
     ' not in the refresh items, and must follow the new widget.
-    ui.invoke(deck, "w", "click")
+    ui.invoke(deck, "w", "press")
     check("the window-declared handler fires before any rebuild", string(g.w), "1")
     n = ui.refresh(deck, "leaves", [ button_page("p1", "b1", on_one),
                                      button_page("p2", "b2", on_two) ])
     n = ui.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
                                      button_page("p1", "b1", on_one),
                                      button_page("p2", "b2", on_two) ])
-    ui.invoke(deck, "w", "click")
+    ui.invoke(deck, "w", "press")
     check("a window-declared handler follows its rebuilt target, once",
           string(g.w), "2")
 
@@ -230,7 +228,7 @@ program main()
                                      button_page("p1", "b1", on_one),
                                      button_page("p2", "b2", on_two) ])
     before = g.one
-    ui.invoke(deck, "b1", "click")
+    ui.invoke(deck, "b1", "press")
     check("a handler listed in the window AND the refresh connects once",
           string(g.one - before), "1")
 
@@ -240,8 +238,8 @@ program main()
                                      button_page("p2", "b2", on_two),
                                      button_page("p3", "b3", nothing),
                                      { kind: "handler", target: "b3",
-                                       signal: "clicked", handler: on_three } ])
-    ui.invoke(deck, "b3", "click")
+                                       event: "pressed", handler: on_three } ])
+    ui.invoke(deck, "b3", "press")
     check("a handler beside the children reaches a part built with it",
           string(g.three), "1")
     ui.close(deck)
@@ -312,7 +310,7 @@ function button_page(id, button, fn)
     kids = [ { kind: "part", word: "button", name: button,
                options: { text: button } } ]
     if not is_nothing(fn) then
-        append(kids, { kind: "handler", target: button, signal: "clicked",
+        append(kids, { kind: "handler", target: button, event: "pressed",
                        handler: fn })
     end if
     return { kind: "container", word: "tab", name: id, label: id, items: kids }

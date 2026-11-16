@@ -50,19 +50,19 @@ window app( title: "Dialogs", width: 560, height: 420 )
             end row
         end group
 
-        memo log( label: "Log", readOnly: true )
+        memo log( label: "Log", read_only: true )
         row
             stretch()
             button quit( label: "Quit" )
         end row
     end column
 
-    on say.clicked
+    on say.pressed
         told = app.inform("Saved three records.")
         note("inform returned " + string(told))
     end on
 
-    on ask.clicked
+    on ask.pressed
         ' NO IS THE DEFAULT BUTTON, so a question answered by pressing Return
         ' without reading is never the destructive one.
         if app.confirm("Delete the selected record?") then
@@ -72,7 +72,7 @@ window app( title: "Dialogs", width: 560, height: 420 )
         end if
     end on
 
-    on pick.clicked
+    on pick.pressed
         p = app.choose_file({ title: "Open a report", folder: g.work,
                                   filter: ["Text (*.txt)", "All files (*)"] })
         if is_unknown(p) then
@@ -82,7 +82,7 @@ window app( title: "Dialogs", width: 560, height: 420 )
         end if
     end on
 
-    on save_as.clicked
+    on save_as.pressed
         p = app.choose_save({ title: "Save the summary", folder: g.work,
                                   name: "summary.txt" })
         if is_unknown(p) then
@@ -95,7 +95,7 @@ window app( title: "Dialogs", width: 560, height: 420 )
         end if
     end on
 
-    on folder.clicked
+    on folder.pressed
         p = app.choose_folder({ title: "Pick a folder", folder: g.work })
         if is_unknown(p) then
             note("folder: cancelled")
@@ -104,7 +104,7 @@ window app( title: "Dialogs", width: 560, height: 420 )
         end if
     end on
 
-    on edit_it.clicked
+    on edit_it.pressed
         ' THE SAME WINDOW AS ANY OTHER, shown a different way. `ui.open_modal`
         ' blocks until the form is answered and closes it on the way out, so
         ' `on edit.closed` is where its values are read.
@@ -115,7 +115,7 @@ window app( title: "Dialogs", width: 560, height: 420 )
         end if
     end on
 
-    on quit.clicked
+    on quit.pressed
         ui.stop()
     end on
 
@@ -138,10 +138,10 @@ window edit( title: "Customer", width: 340, height: 170 )
         end row
     end column
 
-    on ok.clicked
+    on ok.pressed
         x = edit.accept()
     end on
-    on nothanks.clicked
+    on nothanks.pressed
         x = edit.reject()
     end on
     on edit.closed

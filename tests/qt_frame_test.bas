@@ -110,7 +110,7 @@ program main()
     ' make, so anything works inside one with no further vocabulary.
     check("a part inside a pane reads back", ui.read(ide, "b", "text"), "main")
     ui.write(ide, "out", "a line")
-    check("and so does a memo", ui.read(ide, "out", "plainText"), "a line")
+    check("and so does a memo", ui.read(ide, "out", "text"), "a line")
 
     ' ---- THE STATUS BAR, AND WHY IT NEEDS NO VERB ----------------------
     ' MEASURED: a QStatusBar has NO property for its text -- `message` and
@@ -127,7 +127,7 @@ program main()
     ' Which is why a toolbar needed no new part kind: an `item` means the same
     ' thing in a toolbar as in a menu, by construction -- one walk serves both.
     check("a toolbar is addressed by its name",
-          ui.read(ide, "main", "windowTitle"), "main")
+          ui.read(ide, "main", "title"), "main")
     check("an item in it carries its label", ui.read(ide, "open", "text"),
           "Open")
     check("and can be set checkable like a menu's",

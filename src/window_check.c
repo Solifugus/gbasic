@@ -194,6 +194,120 @@ const char *gb_window_word_nearest(const char *word) {
     return gb_nearest_word(word, all);
 }
 
+/* ONE VOCABULARY (docs/ui_design.md §3, Matthew 2026-11-16: "I don't want to
+ * end up with two vocabularies"). These are the only words `ui.read`,
+ * `ui.set`, `ui.invoke`, a declaration's options and a handler's event may
+ * use, on every backend. A backend maps each to its own means -- Qt's map is
+ * in qt_backend.cpp -- and a toolkit's own name for the same thing is refused,
+ * so a program cannot drift into writing Qt with a gBASIC accent.
+ *
+ * A word a backend cannot apply to a given part (`checked` on a button) is the
+ * BACKEND's refusal, naming the part; a word that is not here at all is
+ * refused before any backend is asked. */
+static const char *ui_property_words[] = {
+    "text", "visible", "enabled", "checked", "checkable", "icon", "shortcut",
+    "whitespace", "index", "count", "columns", "title", "read_only", "hint",
+    "max_length", "secret", "wrap", "tab_width", "font_size", "bold", "x", "y",
+    "width", "height", "min_width", "max_width", "min_height", "max_height",
+    "tip", "headings", "striped", "sortable", "indent", "expanders",
+    "tab_side", "movable", "closable", "toolbar_shows", "floating", "colors",
+    "emphasis", "default", "direction", "focused", "fixed_width", "shown_text", NULL};
+static const char *ui_method_words[] = {
+    "press", "focus", "undo", "redo", "hide", "raise", "close", "select_all",
+    "fit_columns", "clear", NULL};
+static const char *ui_event_words[] = {
+    "pressed", "changed", "chosen", "activated", "entered", "context",
+    "closed", "wheel", "gutter", "block", "link", NULL};
+
+/* Options that are not properties: they build or place something, so no
+ * backend sets them on a widget. Was `qt_structural_option` in qt.c. */
+static const char *ui_structural_options[] = {
+    "label", "margin", "spacing", "grow", "show", "edit", "type", "across",
+    "down", "options", "language", "theme", "line_numbers", "marks", NULL};
+
+/* WHAT A PROGRAM WROTE BEFORE 0.12.0, when these were Qt's own names passed
+ * through by name. Kept only to answer "did you mean" with the right word --
+ * never accepted. A name with no gBASIC word (`frameShape`) is not here; its
+ * refusal is the plain one. */
+static const char *const ui_former_names[][2] = {
+    {"plainText", "text"}, {"markdown", "text"}, {"currentText", "text"},
+    {"currentIndex", "index"}, {"rowCount", "count"},
+    {"columnCount", "columns"}, {"windowTitle", "title"},
+    {"readOnly", "read_only"}, {"editTriggers", "read_only"},
+    {"placeholderText", "hint"}, {"maxLength", "max_length"},
+    {"echoMode", "secret"}, {"lineWrapMode", "wrap"}, {"wordWrap", "wrap"},
+    {"tabStopDistance", "tab_width"}, {"font", "font_size"},
+    {"minimumWidth", "min_width"}, {"maximumWidth", "max_width"},
+    {"minimumHeight", "min_height"}, {"maximumHeight", "max_height"},
+    {"toolTip", "tip"}, {"headerHidden", "headings"},
+    {"alternatingRowColors", "striped"}, {"sortingEnabled", "sortable"},
+    {"indentation", "indent"}, {"rootIsDecorated", "expanders"},
+    {"itemsExpandable", "expanders"}, {"tabPosition", "tab_side"},
+    {"tabsClosable", "closable"}, {"toolButtonStyle", "toolbar_shows"},
+    {"palette", "colors"}, {"styleSheet", "emphasis"},
+    {"click", "press"}, {"trigger", "press"}, {"toggle", "press"},
+    {"animateClick", "press"}, {"setFocus", "focus"},
+    {"selectAll", "select_all"}, {"resizeColumnsToContents", "fit_columns"},
+    {"clearContents", "clear"},
+    {"clicked", "pressed"}, {"triggered", "pressed"},
+    {"textChanged", "changed"}, {"currentIndexChanged", "changed"},
+    {"currentChanged", "changed"}, {"toggled", "changed"},
+    {"stateChanged", "changed"}, {"itemSelectionChanged", "chosen"},
+    {"itemClicked", "activated"}, {"cellClicked", "activated"},
+    {"itemActivated", "activated"}, {"returnPressed", "entered"},
+    {"customContextMenuRequested", "context"}, {NULL, NULL}};
+
+static const char *const *ui_words_of(GbUiWordKind kind) {
+    return kind == GB_UI_METHOD ? ui_method_words
+         : kind == GB_UI_EVENT  ? ui_event_words
+                                : ui_property_words;
+}
+
+static const char *ui_kind_noun(GbUiWordKind kind) {
+    return kind == GB_UI_METHOD ? "something to invoke"
+         : kind == GB_UI_EVENT  ? "an event"
+                                : "a property";
+}
+
+int gb_ui_word_known(const char *word, GbUiWordKind kind) {
+    return word ? win_in(ui_words_of(kind), word) : 0;
+}
+
+int gb_ui_option_structural(const char *name) {
+    return name ? win_in(ui_structural_options, name) : 0;
+}
+
+const char *const *gb_ui_words(GbUiWordKind kind) {
+    return ui_words_of(kind);
+}
+
+const char *gb_ui_former_word(const char *name) {
+    for (size_t i = 0; name && ui_former_names[i][0]; i++) {
+        if (strcmp(ui_former_names[i][0], name) == 0) {
+            return ui_former_names[i][1];
+        }
+    }
+    return NULL;
+}
+
+void gb_ui_word_refusal(const char *word, GbUiWordKind kind, char *out,
+                        size_t cap) {
+    const char *w = word ? word : "?";
+    const char *former = gb_ui_former_word(w);
+    if (former) {
+        snprintf(out, cap,
+                 "`%s` is Qt's name, not ui's -- write `%s`", w, former);
+        return;
+    }
+    const char *near = gb_nearest_word(w, ui_words_of(kind));
+    if (near) {
+        snprintf(out, cap, "`%s` is not %s ui knows -- did you mean `%s`?", w,
+                 ui_kind_noun(kind), near);
+    } else {
+        snprintf(out, cap, "`%s` is not %s ui knows", w, ui_kind_noun(kind));
+    }
+}
+
 /* A WINDOW AND AN ITEM BOTH HOLD CHILDREN and the model asks for them
  * differently, the window's items not being an item's entries. One pair of
  * helpers rather than two walks, so a rule cannot hold at one level and not
@@ -256,6 +370,18 @@ static void win_check_item(WinRun *run, const void *item,
                       M->target(item) ? M->target(item) : "?",
                       M->signal(item) ? M->signal(item) : "?");
         }
+        const char *ev = M->signal(item);
+        if (!ev) {
+            win_error(run, item,
+                      "window: the handler on `%s` names no event -- a "
+                      "handler record says `event:` (it was `signal:` before "
+                      "0.12.0)", M->target(item) ? M->target(item) : "?");
+        } else if (!gb_ui_word_known(ev, GB_UI_EVENT)) {
+            char why[200];
+            gb_ui_word_refusal(ev, GB_UI_EVENT, why, sizeof(why));
+            win_error(run, item, "window: `on %s.%s`: %s",
+                      M->target(item) ? M->target(item) : "?", ev, why);
+        }
         return;
     }
     const char *word = M->word(item) ? M->word(item) : "";
@@ -285,6 +411,27 @@ static void win_check_item(WinRun *run, const void *item,
                       "the parts are %s", word, containers, parts);
         }
         return;
+    }
+
+    /* A PART'S OPTIONS ARE NOW A CLOSED SET too (docs/ui_design.md §3). They
+     * used to be handed to the widget by name, which made every Qt property an
+     * option and a program written in Qt's words. A column's options are
+     * checked by its table, below. */
+    int is_column = parent_word && (strcmp(parent_word, "table") == 0 ||
+                                    strcmp(parent_word, "tree") == 0);
+    if (!is_column && M->option_count && M->option_name) {
+        size_t oc = M->option_count(item);
+        for (size_t o = 0; o < oc; o++) {
+            const char *on = M->option_name(item, o);
+            if (!on || gb_ui_option_structural(on) ||
+                gb_ui_word_known(on, GB_UI_PROPERTY)) {
+                continue;
+            }
+            char why[200];
+            gb_ui_word_refusal(on, GB_UI_PROPERTY, why, sizeof(why));
+            win_error(run, item, "window: on `%s`, %s",
+                      iname ? iname : word, why);
+        }
     }
 
     /* THE WORD AND THE SHAPE MUST AGREE. The grammar decides shape from the
@@ -872,7 +1019,7 @@ static void win_check_item(WinRun *run, const void *item,
                 if (strcmp(names[i], iname) == 0) {
                     win_error(run, item,
                               "window: '%s' is declared twice, so `on "
-                              "%s.<signal>` could not say which", iname, iname);
+                              "%s.<event>` could not say which", iname, iname);
                     break;
                 }
             }
@@ -1118,7 +1265,7 @@ static void win_check_item(WinRun *run, const void *item,
                     if (strcmp(names[i], iname) == 0) {
                         win_error(run, item,
                                   "window: '%s' is declared twice, so `on "
-                                  "%s.<signal>` could not say which", iname,
+                                  "%s.<event>` could not say which", iname,
                                   iname);
                         break;
                     }
@@ -1169,7 +1316,7 @@ static void win_check_item(WinRun *run, const void *item,
     for (size_t i = 0; i < *name_count; i++) {
         if (strcmp(names[i], iname) == 0) {
             win_error(run, item,
-                      "window: '%s' is declared twice, so `on %s.<signal>` could "
+                      "window: '%s' is declared twice, so `on %s.<event>` could "
                       "not say which", iname, iname);
             return;
         }

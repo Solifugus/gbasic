@@ -12,10 +12,8 @@
 ' which is the ordinary order to write it in. Refusing until a window existed
 ' would make the first window appear unthemed and then change.
 '
-' MOST OF THEMING ALREADY WORKED and that is worth saying: `styleSheet` is a
-' Q_PROPERTY of QWidget, so per-widget styling has been reachable through the
-' by-name route since it shipped. What that route CANNOT reach is one sheet for
-' the whole application, which is what `ui.theme` is.
+' ONE PART CAN STILL STAND OUT: `emphasis: "outline"` (or "strong") marks it
+' in the theme's accent, on every backend.
 '
 ' A THEME IS TEXT, so a real program loads one from a file --
 ' `ui.theme(read({file}"dark.qss"))` -- and the language supplies the file
@@ -27,12 +25,9 @@ window styled( title: "Theme", width: 440, height: 320 )
         text heading( label: "Themed by the application" )
         text ordinary( label: "This label takes the application sheet." )
 
-        ' A WIDGET'S OWN SHEET WINS. Qt resolves the cascade, so this is not
-        ' something the backend arranges -- which is also why a backend that
-        ' applied the app sheet by WRITING it onto every widget would pass
-        ' every other check here and get this one wrong.
-        text special( label: "This one overrides it.",
-                      styleSheet: "color: #bf616a; font-style: italic" )
+        ' ONE PART MARKED, in the accent. It must not leak onto its
+        ' neighbours, which is the check below.
+        text special( label: "This one stands out.", emphasis: "outline" )
 
         group "Entries"
             form to edit it
@@ -47,7 +42,7 @@ window styled( title: "Theme", width: 440, height: 320 )
         end row
     end column
 
-    on close.clicked
+    on close.pressed
         ui.stop()
     end on
 end window
@@ -80,10 +75,10 @@ program main(args)
 
     if contains(args, "check") then
         print "still the same after open:  " + string(ui.theme() = sheet)
-        ' A WIDGET KEEPS ITS OWN, which is the check that separates a real
-        ' cascade from a backend that stamped the sheet onto everything.
-        print "a plain label's own sheet:  [" + styled.read("ordinary", "styleSheet") + "]"
-        print "the special one's:          " + styled.read("special", "styleSheet")
+        ' THE MARK IS ON ONE PART, which is the check that separates it from
+        ' a backend that stamped it onto everything.
+        print "a plain label's emphasis:   " + styled.read("ordinary", "emphasis")
+        print "the special one's:          " + styled.read("special", "emphasis")
         ' AND A THEME CAN CHANGE WHILE THE WINDOW IS UP.
         ui.theme(sheet + "QPushButton { padding: 6px 14px; }")
         print "changed while open:         " + string(ui.theme() != sheet)

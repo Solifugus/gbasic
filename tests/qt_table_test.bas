@@ -45,8 +45,8 @@ window ledger( title: "Ledger", width: 520, height: 300 )
     ' CONTAINER, connected by name, re-entering the evaluator) is driven
     ' without a human. A handler that was connected and never fired would
     ' otherwise look identical to one that worked.
-    on orders.itemSelectionChanged
-        print "SIGNAL orders.itemSelectionChanged"
+    on orders.chosen
+        print "SIGNAL orders.chosen"
     end on
 end window
 
@@ -98,11 +98,11 @@ program main()
 
     ' ------------------------------------------------- SHAPE, FROM THE DECLARATION
     check("one column per declared field",
-          ui.read(ledger, "orders", "columnCount"), 3)
+          ui.read(ledger, "orders", "columns"), 3)
     check("one row per element of the subject",
-          ui.read(ledger, "orders", "rowCount"), 3)
+          ui.read(ledger, "orders", "count"), 3)
     check("and a different table gets its own shape",
-          ui.read(sheet, "stock", "columnCount"), 2)
+          ui.read(sheet, "stock", "columns"), 2)
 
     ' ------------------------------------------------------------- POPULATION
     ' ASSERTED CELL BY CELL AND ADDRESSED BY THE COLUMN'S OWN NAME, because a
@@ -171,13 +171,13 @@ program main()
 
     ' --------------------------------------------------------- DIRECTION
     ' A `show` TABLE IS NOT EDITABLE AND IS STILL SELECTABLE, which is why it
-    ' gets a third answer rather than the form's: a QTableWidget has no
-    ' `readOnly`, and DISABLING it would stop a person choosing a row -- and
-    ' choosing a row is reading, not editing.
+    ' gets a third answer rather than the form's: `read_only` on a table is
+    ' its edit triggers, and DISABLING it would stop a person choosing a row --
+    ' and choosing a row is reading, not editing.
     check("a show table takes no editing",
-          ui.read(ledger, "orders", "editTriggers"), "NoEditTriggers")
+          ui.read(ledger, "orders", "read_only"), true)
     check("CONTROL: an edit table does",
-          ui.read(sheet, "stock", "editTriggers") = "NoEditTriggers", false)
+          ui.read(sheet, "stock", "read_only"), false)
     check("and a show table is still enabled, so a row can be chosen",
           ui.read(ledger, "orders", "enabled"), true)
 
@@ -239,7 +239,7 @@ program main()
     kept = ui.subject(notes_sheet, "memos")
     check("CONTROL: its fold agrees with the capture to begin with",
           kept[1].body, "second")
-    x = ui.invoke(notes_sheet, "notes", "clearContents")
+    x = ui.invoke(notes_sheet, "notes", "clear")
     emptied = ui.subject(notes_sheet, "memos")
     check("the fold reports the emptied cell, not the captured value",
           emptied[1].body, "")
@@ -248,7 +248,7 @@ program main()
     ' zero would be an ordinary-looking quantity nobody entered. The sentence
     ' is the MODIFIER'S own, which is the cause; what it cannot say is which
     ' row, the same stated gap the form's `type:` refusal has.
-    x = ui.invoke(sheet, "stock", "clearContents")
+    x = ui.invoke(sheet, "stock", "clear")
     on error goto next
     y = ui.subject(sheet, "items")
     if error then
@@ -282,9 +282,9 @@ program main()
     none_at_all = []
     check("an empty list opens", ui.open(empty_table), true)
     check("and the table has no rows",
-          ui.read(empty_table, "nothing_yet", "rowCount"), 0)
+          ui.read(empty_table, "nothing_yet", "count"), 0)
     check("while still having its column",
-          ui.read(empty_table, "nothing_yet", "columnCount"), 1)
+          ui.read(empty_table, "nothing_yet", "columns"), 1)
 
     x = ui.cell(ledger, "orders", 0, "nosuch")
     if error then

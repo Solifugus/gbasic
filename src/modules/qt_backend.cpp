@@ -1321,12 +1321,185 @@ bool GbQtCloser::eventFilter(QObject *obj, QEvent *event) {
  * no QApplication -- so holding it here is what lets the first window appear
  * already themed instead of appearing plain and then changing. */
 static QString g_theme;
+static QPalette g_theme_palette;
+static QString g_accent = QStringLiteral("#d08770");
+static bool g_theme_palette_set = false;
 
 extern "C" int gb_qt_theme_set(const char *css, char *err, size_t err_size) {
     (void)err;
     (void)err_size;
     g_theme = QString::fromUtf8(css ? css : "");
     if (g_app) {
+        if (g_theme_palette_set) {
+            /* A STYLESHEET REPLACES A THEME RECORD, palette and all. */
+            g_app->setPalette(g_app->style()->standardPalette());
+        }
+        g_app->setStyleSheet(g_theme);
+    }
+    g_theme_palette_set = false;
+    return 1;
+}
+
+/* THE THEME RECORD (docs/ui_design.md §7): every backend's way to theme, as
+ * plain values -- Studio's palette record, adopted. Qt draws it TWO ways at
+ * once, and both are needed: the rules below are Studio's stylesheet, each one
+ * found by a capture, and the PALETTE is set too, because a stylesheet does not
+ * move Qt's palette and the content Qt paints from the palette (an item view's
+ * rows, a check box's box) otherwise stays light inside a dark frame. */
+
+static QPalette palette_from(const QHash<QString, QString> &t) {
+    QPalette p;
+    auto c = [&](const char *k) { return QColor(t.value(QString::fromUtf8(k))); };
+    for (QPalette::ColorGroup g : {QPalette::Active, QPalette::Inactive}) {
+        p.setColor(g, QPalette::Window, c("bg"));
+        p.setColor(g, QPalette::WindowText, c("fg"));
+        p.setColor(g, QPalette::Base, c("base"));
+        p.setColor(g, QPalette::AlternateBase, c("ctl"));
+        p.setColor(g, QPalette::Text, c("fg"));
+        p.setColor(g, QPalette::Button, c("ctl"));
+        p.setColor(g, QPalette::ButtonText, c("fg"));
+        p.setColor(g, QPalette::Midlight, c("hi"));
+        p.setColor(g, QPalette::Mid, c("line"));
+        p.setColor(g, QPalette::PlaceholderText, c("faint"));
+        p.setColor(g, QPalette::Highlight, c("sel"));
+        p.setColor(g, QPalette::HighlightedText, c("on_sel"));
+        p.setColor(g, QPalette::ToolTipBase, c("ctl"));
+        p.setColor(g, QPalette::ToolTipText, c("fg"));
+    }
+    p.setColor(QPalette::Disabled, QPalette::Text, c("faint"));
+    p.setColor(QPalette::Disabled, QPalette::WindowText, c("faint"));
+    p.setColor(QPalette::Disabled, QPalette::ButtonText, c("faint"));
+    return p;
+}
+
+static QString sheet_from(const QHash<QString, QString> &t) {
+    QString bg = t["bg"], base = t["base"], ctl = t["ctl"], hi = t["hi"],
+            fg = t["fg"], faint = t["faint"], line = t["line"], sel = t["sel"],
+            onsel = t["on_sel"];
+    QStringList l;
+    /* NO BARE `QWidget` RULE: it darkened surfaces whose content Qt paints
+     * from the palette, which then vanished (Studio, measured). */
+    l << "QMainWindow { background: " + bg + "; }"
+      << "QMainWindow::separator { background: " + line + "; width: 4px; height: 4px; }"
+      << "QFrame[frameShape=\"4\"] { border: none; background: " + line + "; max-height: 1px; min-height: 1px; }"
+      << "QFrame[frameShape=\"5\"] { border: none; background: " + line + "; max-width: 1px; min-width: 1px; }"
+      << "QDialog { background: " + bg + "; }"
+      << ".QWidget { background: " + bg + "; }"
+      << "QAbstractScrollArea > .QWidget { background: transparent; }"
+      << "QLabel { color: " + fg + "; background: transparent; }"
+      << "QPlainTextEdit, QTextEdit, QLineEdit { background: " + base + "; color: " + fg +
+             "; border: 1px solid " + line + "; selection-background-color: " + sel +
+             "; selection-color: " + onsel + "; }"
+      << "QTreeView, QTableView, QListView { background: " + base + "; color: " + fg +
+             "; border: 1px solid " + line + "; outline: 0; gridline-color: " + line +
+             "; selection-background-color: " + sel + "; selection-color: " + onsel + "; }"
+      << "QTreeView::item, QTableView::item, QListView::item { color: " + fg +
+             "; background: transparent; padding: 2px; }"
+      << "QTreeView::item:selected, QTableView::item:selected, QListView::item:selected { background: " +
+             sel + "; color: " + onsel + "; }"
+      << "QTreeView::item:hover, QTableView::item:hover, QListView::item:hover { background: " +
+             hi + "; color: " + fg + "; }"
+      << "QHeaderView { background: " + ctl + "; }"
+      << "QHeaderView::section { background: " + ctl + "; color: " + fg +
+             "; padding: 4px; border: 0px; border-bottom: 1px solid " + line + "; }"
+      << "QTableCornerButton::section { background: " + ctl + "; border: 0px; border-bottom: 1px solid " + line + "; }"
+      << "QMenuBar { background: " + bg + "; color: " + fg + "; border-bottom: 1px solid " + line + "; }"
+      << "QMenuBar::item { background: transparent; color: " + fg + "; padding: 4px 8px; }"
+      << "QMenuBar::item:selected { background: " + hi + "; }"
+      << "QMenu { background: " + ctl + "; color: " + fg + "; border: 1px solid " + line + "; }"
+      << "QMenu::item { color: " + fg + "; padding: 4px 24px 4px 24px; }"
+      << "QMenu::item:selected { background: " + sel + "; color: " + onsel + "; }"
+      << "QMenu::item:disabled { color: " + faint + "; }"
+      << "QMenu::separator { height: 1px; background: " + line + "; margin: 4px 8px; }"
+      << "QToolBar { background: " + bg + "; border: 0px; spacing: 2px; padding: 2px; }"
+      << "QToolBar::separator { background: " + line + "; width: 1px; margin: 4px 4px; }"
+      << "QToolButton { background: transparent; color: " + fg +
+             "; border: 1px solid transparent; padding: 4px 8px; border-radius: 3px; }"
+      << "QToolButton:hover { background: " + hi + "; border: 1px solid " + line + "; }"
+      << "QToolButton:pressed { background: " + sel + "; color: " + onsel + "; }"
+      << "QToolButton:checked { background: " + hi + "; border: 1px solid " + faint + "; }"
+      << "QToolButton:disabled { color: " + faint + "; }"
+      << "QStatusBar { background: " + bg + "; color: " + faint + "; border-top: 1px solid " + line + "; }"
+      << "QStatusBar QLabel { color: " + fg + "; }"
+      << "QDockWidget { color: " + fg + "; }";
+    if (!t.value("dock_close").isEmpty() && !t.value("dock_float").isEmpty()) {
+        l << "QDockWidget { titlebar-close-icon: url(" + t["dock_close"] +
+                 "); titlebar-normal-icon: url(" + t["dock_float"] + "); }";
+    }
+    l << "QDockWidget::title { background: " + ctl + "; color: " + fg +
+             "; padding: 4px 6px; border-bottom: 1px solid " + line + "; }"
+      << "QTabWidget::pane { border: 1px solid " + line + "; background: " + bg + "; }"
+      << "QTabBar { background: " + bg + "; }"
+      << "QTabBar::tab { background: " + ctl + "; color: " + faint +
+             "; padding: 5px 10px; border: 1px solid " + line + "; border-bottom: 0px; }"
+      << "QTabBar::tab:selected { background: " + base + "; color: " + fg + "; }"
+      << "QTabBar::tab:hover { background: " + hi + "; color: " + fg + "; }"
+      << "QPushButton { background: " + ctl + "; color: " + fg + "; border: 1px solid " +
+             line + "; padding: 4px 12px; border-radius: 3px; }"
+      << "QPushButton:hover { background: " + hi + "; }"
+      << "QPushButton:pressed { background: " + sel + "; color: " + onsel + "; }"
+      << "QPushButton:disabled { color: " + faint + "; }"
+      << "QCheckBox, QRadioButton { color: " + fg + "; background: transparent; }"
+      << "QGroupBox { color: " + fg + "; border: 1px solid " + line +
+             "; margin-top: 8px; padding-top: 6px; }"
+      << "QGroupBox::title { color: " + fg +
+             "; subcontrol-origin: margin; left: 8px; padding: 0px 4px; }"
+      << "QSplitter::handle { background: " + line + "; }"
+      << "QToolTip { background: " + ctl + "; color: " + fg + "; border: 1px solid " + line + "; }"
+      << "QScrollArea { background: " + bg + "; border: 0px; }";
+    if (!t.value("arrow").isEmpty()) {
+        l << "QComboBox { background: " + ctl + "; color: " + fg + "; border: 1px solid " +
+                 line + "; border-radius: 3px; padding: 3px 8px; }"
+          << "QComboBox:hover { background: " + hi + "; }"
+          << "QComboBox::drop-down { border: 0px; width: 22px; }"
+          << "QComboBox::down-arrow { image: url(" + t["arrow"] + "); width: 12px; height: 12px; }";
+    }
+    if (!t.value("tick").isEmpty()) {
+        l << "QCheckBox::indicator { width: 13px; height: 13px; background: " + base +
+                 "; border: 1px solid " + faint + "; border-radius: 2px; }"
+          << "QCheckBox::indicator:hover { border: 1px solid " + fg + "; }"
+          << "QCheckBox::indicator:checked { image: url(" + t["tick"] + "); }";
+    }
+    l << "QComboBox QAbstractItemView { background: " + ctl + "; color: " + fg +
+             "; selection-background-color: " + sel + "; selection-color: " + onsel + "; }"
+      << "QScrollBar:vertical { background: " + bg + "; width: 12px; margin: 0px; }"
+      << "QScrollBar:horizontal { background: " + bg + "; height: 12px; margin: 0px; }"
+      << "QScrollBar::handle { background: " + hi +
+             "; border-radius: 4px; min-height: 24px; min-width: 24px; }"
+      << "QScrollBar::handle:hover { background: " + faint + "; }"
+      << "QScrollBar::add-line, QScrollBar::sub-line { height: 0px; width: 0px; }"
+      << "QScrollBar::add-page, QScrollBar::sub-page { background: transparent; }";
+    return l.join(QChar('\n'));
+}
+
+/* `names`/`values` are the record's fields; the front has already checked
+ * which names may appear and that the nine colours are there. A colour Qt
+ * cannot read is refused by name here. */
+extern "C" int gb_qt_theme_record(const char *const *names,
+                                  const char *const *values, size_t n,
+                                  char *err, size_t err_size) {
+    QHash<QString, QString> t;
+    static const char *colours[] = {"bg", "base", "ctl", "hi", "fg", "faint",
+                                    "line", "sel", "on_sel", "accent", nullptr};
+    for (size_t i = 0; i < n; i++) {
+        QString k = QString::fromUtf8(names[i]);
+        QString v = QString::fromUtf8(values[i]);
+        for (size_t c = 0; colours[c]; c++) {
+            if (k == colours[c] && !QColor::isValidColorName(v)) {
+                say(err, err_size,
+                    QByteArray("`") + names[i] + "` is not a colour: write it "
+                    "like \"#2e3440\"");
+                return 0;
+            }
+        }
+        t.insert(k, v);
+    }
+    g_accent = t.value("accent", QStringLiteral("#d08770"));
+    g_theme = sheet_from(t);
+    g_theme_palette = palette_from(t);
+    g_theme_palette_set = true;
+    if (g_app) {
+        g_app->setPalette(g_theme_palette);
         g_app->setStyleSheet(g_theme);
     }
     return 1;
@@ -1364,6 +1537,9 @@ extern "C" int gb_qt_begin(char *err, size_t err_size) {
     /* THE REMEMBERED THEME, APPLIED BEFORE ANY WINDOW EXISTS, which is the
      * whole point of remembering it: the first window is then built already
      * themed rather than appearing plain and changing. */
+    if (g_theme_palette_set) {
+        g_app->setPalette(g_theme_palette);
+    }
     if (!g_theme.isEmpty()) {
         g_app->setStyleSheet(g_theme);
     }
@@ -1454,6 +1630,22 @@ extern "C" int gb_qt_clipboard(char **text, long *len, char *err,
     return 1;
 }
 
+/* A PART IS REGISTERED BY ITS NAME, and Qt is told the same name as the
+ * object's own -- so a Qt stylesheet (the `stylesheet` capability, Qt's
+ * alone) can select one part as `#name`, and a program never needs a per-part
+ * stylesheet property to do it. One door, so a part added later cannot be
+ * registered without its name. A name Qt already holds (a dock's, a
+ * toolbar's, which saveState keys on) is left as it is. */
+static void register_part(GbQtNode *root, const char *name, QObject *o) {
+    if (!root || !o) {
+        return;
+    }
+    if (o->objectName().isEmpty()) {
+        o->setObjectName(QString::fromUtf8(name));
+    }
+    root->parts.insert(QString::fromUtf8(name), o);
+}
+
 extern "C" void *gb_qt_window(const char *name, const char *title, int width,
                               int height, int kind) {
     /* A WINDOW CLOSED EARLIER IS DELETED HERE -- see `retired_drain`. Done
@@ -1535,7 +1727,7 @@ extern "C" void *gb_qt_window(const char *name, const char *title, int width,
      * all reach it, none of them knowing anything new. The load-time pass
      * refuses a part that shares the name, so this cannot shadow one. */
     if (name && *name) {
-        n->parts.insert(QString::fromUtf8(name), w);
+        register_part(n, name, w);
     }
     GbQtCloser *closer = new GbQtCloser();
     closer->node = n;
@@ -1706,7 +1898,7 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
          * defect the verb exists to prevent, arriving from the one door that
          * returns before the common path. */
         if (name && *name && n->root) {
-            n->root->parts.insert(QString::fromUtf8(name), page);
+            register_part(n->root, name, page);
         }
         return n;
     } else if (strcmp(word, "docks") == 0) {
@@ -1781,7 +1973,7 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
         n->layout = inner;
         n->host = body;
         if (name && *name && n->root) {
-            n->root->parts.insert(QString::fromUtf8(name), dw);
+            register_part(n->root, name, dw);
         }
         return n;
     } else if (strcmp(word, "toolbar") == 0) {
@@ -1810,7 +2002,7 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
         frame->addToolBar(tb);
         n->widget = tb;
         if (name && *name && n->root) {
-            n->root->parts.insert(QString::fromUtf8(name), tb);
+            register_part(n->root, name, tb);
         }
         return n;
     } else if (strcmp(word, "status") == 0) {
@@ -1923,7 +2115,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
             sn->word = word;
             sn->widget = l;
             if (name && *name && sn->root) {
-                sn->root->parts.insert(QString::fromUtf8(name), l);
+                register_part(sn->root, name, l);
             }
             return sn;
         }
@@ -2012,7 +2204,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
          * a name: it is how Studio themes its own and the only way to observe
          * the orientation, which is the one thing that can be built wrong. */
         if (name && *name && n->root) {
-            n->root->parts.insert(QString::fromUtf8(name), rule);
+            register_part(n->root, name, rule);
         }
         /* NAMED NOTHING, like a menu's separator and for the same reason: it
          * is a line. The validator refuses a name on it either way, and this
@@ -2189,7 +2381,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
     }
 
     if (name && *name && n->root) {
-        n->root->parts.insert(QString::fromUtf8(name), w);
+        register_part(n->root, name, w);
     }
     return n;
 }
@@ -2323,6 +2515,39 @@ static int parse_shortcut(const QString &text, QKeySequence *out, char *err,
     return 1;
 }
 
+/* THE PART'S gBASIC WORD, for a refusal (docs/ui_design.md Q4): a program
+ * wrote `button`, so it is told about a `button`, never a QPushButton. Read
+ * from the class because a part is reached as a QObject; most specific first,
+ * since a `source` is a QPlainTextEdit and a `memo` is one too. */
+static const char *word_of(const QObject *o) {
+    if (!o) {
+        return "part";
+    }
+    if (dynamic_cast<const GbQtSourceEdit *>(o)) { return "source"; }
+    if (o->inherits("QTextBrowser"))   { return "markdown"; }
+    if (o->inherits("QPlainTextEdit")) { return "memo"; }
+    if (o->inherits("QLineEdit"))      { return "field"; }
+    if (o->inherits("QCheckBox"))      { return "check"; }
+    if (o->inherits("QPushButton"))    { return "button"; }
+    if (o->inherits("QComboBox"))      { return "choice"; }
+    if (o->inherits("QLabel"))         { return "text"; }
+    if (o->inherits("QTreeWidget"))    { return "tree"; }
+    if (o->inherits("QTableWidget"))   { return "table"; }
+    if (o->inherits("QTabWidget"))     { return "tabs"; }
+    if (o->inherits("QAction"))        { return "item"; }
+    if (o->inherits("QDockWidget"))    { return "dock"; }
+    if (o->inherits("QToolBar"))       { return "toolbar"; }
+    if (o->inherits("QGroupBox"))      { return "group"; }
+    if (o->inherits("QScrollArea"))    { return "scroll"; }
+    if (o->inherits("QFrame") && !o->inherits("QAbstractScrollArea")) {
+        return "separator";
+    }
+    if (o->isWidgetType() && static_cast<const QWidget *>(o)->isWindow()) {
+        return "window";
+    }
+    return "part";
+}
+
 /* SHORTCUTS, ONE OR SEVERAL (asked for by gBASIC Studio). The `shortcut`
  * property holds ONE sequence and refuses a list, measured, while a QAction
  * takes several through setShortcuts -- which is how an editor binds zoom-in
@@ -2364,7 +2589,7 @@ static int set_shortcuts(QObject *o, const QStringList &texts, char *err,
     return 1;
 }
 
-static int set_property(QObject *widget, const char *prop, const QVariant &v,
+static int set_qt_property(QObject *widget, const char *prop, const QVariant &v,
                         char *err, size_t err_size) {
     if (!widget) {
         say(err, err_size, "there is no widget to set that on");
@@ -2415,6 +2640,355 @@ static int set_property(QObject *widget, const char *prop, const QVariant &v,
     return 1;
 }
 
+/* ===== THE WORD LAYER (docs/ui_design.md §3) ============================
+ *
+ * A program says gBASIC's words -- `text`, `press`, `pressed` -- and THIS is
+ * where each becomes Qt's: by the part's class, because one word means
+ * `plainText` on a memo and `text` on a field. The by-name route is still how
+ * a word is implemented here; it is no longer what a program says. The front
+ * (window_check.c) has already refused any name that is not a word, so what
+ * arrives is a word, and the only refusal left is a word this part does not
+ * carry -- named in the part's word, never its class.
+ *
+ * A plain rename is one table row; a word whose value Qt holds in another
+ * shape (`wrap` is an enum, `font_size` a field of a QFont) is a converter
+ * below the table. */
+struct UiName { const char *word; const char *cls; const char *qt; };
+
+static const UiName ui_property_names[] = {
+    {"text", "QTextBrowser", "markdown"},
+    {"text", "QPlainTextEdit", "plainText"},
+    {"text", "QComboBox", "currentText"},
+    {"text", "*", "text"},
+    {"title", "QGroupBox", "title"},
+    {"title", "*", "windowTitle"},
+    {"index", "*", "currentIndex"},
+    {"count", "QTableWidget", "rowCount"},
+    {"count", "QTreeWidget", "topLevelItemCount"},
+    {"count", "*", "count"},
+    {"columns", "*", "columnCount"},
+    {"read_only", "*", "readOnly"},
+    {"hint", "*", "placeholderText"},
+    {"max_length", "*", "maxLength"},
+    {"tab_width", "*", "tabStopDistance"},
+    {"min_width", "*", "minimumWidth"},
+    {"max_width", "*", "maximumWidth"},
+    {"min_height", "*", "minimumHeight"},
+    {"max_height", "*", "maximumHeight"},
+    {"tip", "*", "toolTip"},
+    {"striped", "*", "alternatingRowColors"},
+    {"sortable", "*", "sortingEnabled"},
+    {"indent", "*", "indentation"},
+    {"movable", "*", "movable"},
+    {"closable", "*", "tabsClosable"},
+    {"floating", "*", "floating"},
+    {"visible", "*", "visible"},
+    {"enabled", "*", "enabled"},
+    {"checked", "*", "checked"},
+    {"checkable", "*", "checkable"},
+    {"icon", "*", "icon"},
+    {"shortcut", "*", "shortcut"},
+    {"default", "*", "default"},
+    {"focused", "*", "focus"},
+    /* WHAT A `markdown` PART SHOWS once rendered, where `text` is what was
+     * written. Read only: Qt's plainText of the document. */
+    {"shown_text", "QTextBrowser", "plainText"},
+    {"x", "*", "x"},
+    {"y", "*", "y"},
+    {"width", "*", "width"},
+    {"height", "*", "height"},
+    {nullptr, nullptr, nullptr}};
+
+static const UiName ui_method_names[] = {
+    {"press", "QAction", "trigger"},
+    {"press", "*", "click"},
+    {"focus", "*", "setFocus"},
+    {"select_all", "*", "selectAll"},
+    {"fit_columns", "*", "resizeColumnsToContents"},
+    {"clear", "QTableWidget", "clearContents"},
+    {"clear", "*", "clear"},
+    {"undo", "*", "undo"},
+    {"redo", "*", "redo"},
+    {"hide", "*", "hide"},
+    {"raise", "*", "raise"},
+    {"close", "*", "close"},
+    {nullptr, nullptr, nullptr}};
+
+/* `closed`, `wheel`, `gutter`, `block` and `link` are events gBASIC made and
+ * gb_qt_connect answers them itself; they map to themselves. */
+static const UiName ui_event_names[] = {
+    {"pressed", "QAction", "triggered"},
+    {"pressed", "*", "clicked"},
+    {"changed", "QLineEdit", "textChanged"},
+    {"changed", "QPlainTextEdit", "textChanged"},
+    {"changed", "QComboBox", "currentIndexChanged"},
+    {"changed", "QTabWidget", "currentChanged"},
+    {"changed", "*", "toggled"},
+    {"chosen", "*", "itemSelectionChanged"},
+    {"activated", "QTreeWidget", "itemClicked"},
+    {"activated", "QTableWidget", "cellClicked"},
+    {"activated", "QListWidget", "itemClicked"},
+    {"activated", "QComboBox", "activated"},
+    {"entered", "*", "returnPressed"},
+    {"context", "*", "customContextMenuRequested"},
+    {"closed", "*", "closed"},
+    {"wheel", "*", "wheel"},
+    {"gutter", "*", "gutter"},
+    {"block", "*", "block"},
+    {"link", "*", "link"},
+    {nullptr, nullptr, nullptr}};
+
+/* The Qt name a word has ON THIS PART, or empty when the part has no such
+ * thing. The first row whose class the part inherits wins, so a specific row
+ * sits above the `*` row it refines. A `*` row still has to be real on this
+ * class -- `checked` names a property a button lacks -- which the caller's
+ * own lookup (property, method or signal) then decides. */
+static QByteArray qt_name_of(const UiName *table, const QObject *o,
+                             const char *word) {
+    for (size_t i = 0; table[i].word; i++) {
+        if (strcmp(table[i].word, word) != 0) {
+            continue;
+        }
+        if (strcmp(table[i].cls, "*") == 0 || o->inherits(table[i].cls)) {
+            return QByteArray(table[i].qt);
+        }
+    }
+    return QByteArray();
+}
+
+static void say_no_word(char *err, size_t err_size, const QObject *o,
+                        const char *word, const char *what) {
+    say(err, err_size,
+        QByteArray("a `") + word_of(o) + "` has no `" + word + "`" + what);
+}
+
+/* THE WORDS A QT PROPERTY CANNOT HOLD AS ONE VALUE, as converters: each takes
+ * the gBASIC value and answers 1 set, 0 refused, -1 not mine. One function for
+ * setting and one for reading, so the two halves of a word cannot disagree. */
+static const char *tab_side_word(QTabWidget::TabPosition p) {
+    switch (p) {
+    case QTabWidget::South: return "bottom";
+    case QTabWidget::West:  return "left";
+    case QTabWidget::East:  return "right";
+    default:                return "top";
+    }
+}
+
+static const char *toolbar_shows_word(Qt::ToolButtonStyle s) {
+    switch (s) {
+    case Qt::ToolButtonIconOnly:       return "icons";
+    case Qt::ToolButtonTextOnly:       return "text";
+    case Qt::ToolButtonTextUnderIcon:  return "under";
+    default:                           return "both";
+    }
+}
+
+static void apply_emphasis(QWidget *w, const QString &how) {
+    /* THE CUE IS DRAWN ON THIS ONE WIDGET, selected by its own object name,
+     * so it cascades into nothing else. */
+    if (w->objectName().isEmpty()) {
+        w->setObjectName(QStringLiteral("gb_emph_%1").arg((quintptr)w, 0, 16));
+    }
+    QString sel = "#" + w->objectName();
+    if (how == "outline") {
+        w->setStyleSheet(sel + " { border: 2px solid " + g_accent + "; }");
+    } else if (how == "strong") {
+        QColor c(g_accent);
+        c.setAlpha(38);
+        w->setStyleSheet(sel + " { border: 3px solid " + g_accent +
+                         "; background-color: " +
+                         c.name(QColor::HexArgb) + "; }");
+    } else {
+        w->setStyleSheet(QString());
+    }
+    w->setProperty("gb_emphasis", how);
+}
+
+static int set_whitespace(QObject *o, const char *name, bool on, char *err,
+                          size_t err_size);
+static int whitespace_of(QObject *o, const char *name, int *on, char *err,
+                         size_t err_size);
+
+static int set_converted(QObject *o, const char *word, const QVariant &v,
+                         char *err, size_t err_size) {
+    QWidget *w = qobject_cast<QWidget *>(o);
+    if (strcmp(word, "whitespace") == 0) {
+        return set_whitespace(o, word_of(o), v.toBool(), err, err_size);
+    }
+    if (strcmp(word, "font_size") == 0 || strcmp(word, "bold") == 0) {
+        if (!w) { say_no_word(err, err_size, o, word, ""); return 0; }
+        QFont f = w->font();
+        if (word[0] == 'f') {
+            double pts = v.toDouble();
+            if (!(pts > 0)) {
+                say(err, err_size, "`font_size` is a number of points above 0");
+                return 0;
+            }
+            f.setPointSizeF(pts);
+        } else {
+            f.setBold(v.toBool());
+        }
+        w->setFont(f);
+        return 1;
+    }
+    if (strcmp(word, "wrap") == 0) {
+        if (QPlainTextEdit *e = qobject_cast<QPlainTextEdit *>(o)) {
+            e->setLineWrapMode(v.toBool() ? QPlainTextEdit::WidgetWidth
+                                          : QPlainTextEdit::NoWrap);
+            return 1;
+        }
+        if (QLabel *l = qobject_cast<QLabel *>(o)) {
+            l->setWordWrap(v.toBool());
+            return 1;
+        }
+        say_no_word(err, err_size, o, word, "");
+        return 0;
+    }
+    if (strcmp(word, "secret") == 0) {
+        QLineEdit *e = qobject_cast<QLineEdit *>(o);
+        if (!e) { say_no_word(err, err_size, o, word, ""); return 0; }
+        e->setEchoMode(v.toBool() ? QLineEdit::Password : QLineEdit::Normal);
+        return 1;
+    }
+    if (strcmp(word, "headings") == 0) {
+        if (QTreeView *t = qobject_cast<QTreeView *>(o)) {
+            t->setHeaderHidden(!v.toBool());
+            return 1;
+        }
+        if (QTableView *t = qobject_cast<QTableView *>(o)) {
+            t->horizontalHeader()->setVisible(v.toBool());
+            return 1;
+        }
+        say_no_word(err, err_size, o, word, "");
+        return 0;
+    }
+    if (strcmp(word, "read_only") == 0) {
+        if (QAbstractItemView *t = qobject_cast<QAbstractItemView *>(o)) {
+            t->setEditTriggers(v.toBool()
+                                   ? QAbstractItemView::NoEditTriggers
+                                   : (QAbstractItemView::DoubleClicked |
+                                      QAbstractItemView::EditKeyPressed |
+                                      QAbstractItemView::AnyKeyPressed));
+            return 1;
+        }
+        return -1;   /* a field, memo or source: the table's `readOnly` */
+    }
+    if (strcmp(word, "expanders") == 0) {
+        QTreeView *t = qobject_cast<QTreeView *>(o);
+        if (!t) { say_no_word(err, err_size, o, word, ""); return 0; }
+        bool on = v.toBool();
+        t->setRootIsDecorated(on);
+        t->setItemsExpandable(on);
+        /* WITH NONE, NO BRANCH GLYPHS EITHER -- the rule Studio set as its own
+         * stylesheet, because a program drawing its own expanders gets Qt's
+         * arrows beside them otherwise. */
+        t->setStyleSheet(on ? QString()
+                            : QStringLiteral("QTreeView::branch { image: none;"
+                                             " border-image: none; }"));
+        return 1;
+    }
+    if (strcmp(word, "tab_side") == 0) {
+        QTabWidget *t = qobject_cast<QTabWidget *>(o);
+        if (!t) { say_no_word(err, err_size, o, word, ""); return 0; }
+        QString s = v.toString();
+        if (s == "top")         { t->setTabPosition(QTabWidget::North); }
+        else if (s == "bottom") { t->setTabPosition(QTabWidget::South); }
+        else if (s == "left")   { t->setTabPosition(QTabWidget::West); }
+        else if (s == "right")  { t->setTabPosition(QTabWidget::East); }
+        else {
+            say(err, err_size,
+                "`tab_side` is \"top\", \"bottom\", \"left\" or \"right\"");
+            return 0;
+        }
+        return 1;
+    }
+    if (strcmp(word, "toolbar_shows") == 0) {
+        QToolBar *t = qobject_cast<QToolBar *>(o);
+        QMainWindow *m = qobject_cast<QMainWindow *>(o);
+        if (!t && !m) { say_no_word(err, err_size, o, word, ""); return 0; }
+        QString s = v.toString();
+        Qt::ToolButtonStyle st;
+        if (s == "icons")      { st = Qt::ToolButtonIconOnly; }
+        else if (s == "text")  { st = Qt::ToolButtonTextOnly; }
+        else if (s == "both")  { st = Qt::ToolButtonTextBesideIcon; }
+        else if (s == "under") { st = Qt::ToolButtonTextUnderIcon; }
+        else {
+            say(err, err_size,
+                "`toolbar_shows` is \"icons\", \"text\", \"both\" or \"under\"");
+            return 0;
+        }
+        if (t) { t->setToolButtonStyle(st); } else { m->setToolButtonStyle(st); }
+        return 1;
+    }
+    if (strcmp(word, "emphasis") == 0) {
+        if (!w) { say_no_word(err, err_size, o, word, ""); return 0; }
+        QString s = v.toString();
+        if (s != "none" && s != "outline" && s != "strong") {
+            say(err, err_size,
+                "`emphasis` is \"none\", \"outline\" or \"strong\"");
+            return 0;
+        }
+        apply_emphasis(w, s);
+        return 1;
+    }
+    if (strcmp(word, "colors") == 0) {
+        say(err, err_size, "`colors` is read only: it says what a part is "
+                           "drawn in; ui.theme sets it");
+        return 0;
+    }
+    if (strcmp(word, "fixed_width") == 0) {
+        say(err, err_size, "`fixed_width` is read only: it says whether the "
+                           "font a part is drawn in has one width");
+        return 0;
+    }
+    if (strcmp(word, "direction") == 0) {
+        say(err, err_size, "`direction` is read only: a separator's comes "
+                           "from where it sits");
+        return 0;
+    }
+    if (strcmp(word, "text") == 0) {
+        if (QComboBox *box = qobject_cast<QComboBox *>(o)) {
+            int at = box->findText(v.toString());
+            if (at < 0) {
+                say(err, err_size,
+                    QByteArray("that `choice` has no `") +
+                        v.toString().toUtf8() + "` -- fill its list with "
+                        "ui.options first");
+                return 0;
+            }
+            box->setCurrentIndex(at);
+            return 1;
+        }
+    }
+    return -1;
+}
+
+/* SET A WORD ON A PART: the one door every declaration option and `ui.set`
+ * go through. */
+static int set_word(QObject *o, const char *word, const QVariant &v, char *err,
+                    size_t err_size) {
+    if (!o) {
+        say(err, err_size, "there is no part to set that on");
+        return 0;
+    }
+    int done = set_converted(o, word, v, err, err_size);
+    if (done >= 0) {
+        return done;
+    }
+    QByteArray qt = qt_name_of(ui_property_names, o, word);
+    if (qt.isEmpty() || o->metaObject()->indexOfProperty(qt.constData()) < 0) {
+        say_no_word(err, err_size, o, word, "");
+        return 0;
+    }
+    int ok = set_qt_property(o, qt.constData(), v, err, err_size);
+    if (!ok && err && strstr(err, "would not take")) {
+        say(err, err_size,
+            QByteArray("a `") + word_of(o) + "` would not take that value "
+            "for `" + word + "`");
+    }
+    return ok;
+}
+
 /* THE THING AN OPTION IS SET ON: the widget where there is one, the QObject
  * where there is not. A menu `item` is a QAction, so `shortcut:`, `enabled:`
  * and `checkable:` reach it through exactly the same by-name door every widget
@@ -2429,20 +3003,20 @@ static QObject *settable(GbQtNode *n) {
 
 extern "C" int gb_qt_set_text(void *widget, const char *prop,
                               const char *value, char *err, size_t err_size) {
-    return set_property(settable((GbQtNode *)widget), prop,
-                        QVariant(QString::fromUtf8(value)), err, err_size);
+    return set_word(settable((GbQtNode *)widget), prop,
+                    QVariant(QString::fromUtf8(value)), err, err_size);
 }
 
 extern "C" int gb_qt_set_number(void *widget, const char *prop, double value,
                                 char *err, size_t err_size) {
-    return set_property(settable((GbQtNode *)widget), prop, QVariant(value),
-                        err, err_size);
+    return set_word(settable((GbQtNode *)widget), prop, QVariant(value), err,
+                    err_size);
 }
 
 extern "C" int gb_qt_set_bool(void *widget, const char *prop, int value,
                               char *err, size_t err_size) {
-    return set_property(settable((GbQtNode *)widget), prop,
-                        QVariant(value != 0), err, err_size);
+    return set_word(settable((GbQtNode *)widget), prop, QVariant(value != 0),
+                    err, err_size);
 }
 
 extern "C" int gb_qt_layout_number(void *container, const char *prop,
@@ -2630,6 +3204,13 @@ extern "C" int gb_qt_connect(void *window, const char *target,
             QByteArray("this window has no `") + target + "` to connect to");
         return 0;
     }
+    const char *word = signal;
+    QByteArray qtsignal = qt_name_of(ui_event_names, w, word);
+    if (qtsignal.isEmpty()) {
+        say_no_word(err, err_size, w, word, " event");
+        return 0;
+    }
+    signal = qtsignal.constData();
     /* `closed` IS AN EVENT, NOT A SIGNAL, and that is a fact about Qt rather
      * than a choice here: a QWidget emits nothing when it closes, it RECEIVES
      * a QCloseEvent -- so the by-name signal route below has nothing to find
@@ -2743,9 +3324,7 @@ extern "C" int gb_qt_connect(void *window, const char *target,
         }
     }
     if (si < 0) {
-        say(err, err_size,
-            QByteArray("a ") + mo->className() + " emits no `" + signal +
-                "` signal");
+        say_no_word(err, err_size, w, word, " event");
         return 0;
     }
     /* DECLARING THE HANDLER IS WHAT ASKS FOR A CUSTOM CONTEXT MENU. Measured,
@@ -2794,7 +3373,7 @@ extern "C" int gb_qt_connect(void *window, const char *target,
     int ri = relay->metaObject()->indexOfSlot(slot);
     if (ri < 0 || !QMetaObject::connect(w, si, relay, ri)) {
         say(err, err_size,
-            QByteArray("Qt would not connect `") + target + "." + signal + "`");
+            QByteArray("Qt would not connect `") + target + "." + word + "`");
         return 0;
     }
     return 1;
@@ -2811,6 +3390,13 @@ extern "C" int gb_qt_invoke(void *window, const char *target,
         return 0;
     }
     const QMetaObject *mo = w->metaObject();
+    const char *word = method;
+    QByteArray qtmethod = qt_name_of(ui_method_names, w, word);
+    if (qtmethod.isEmpty()) {
+        say_no_word(err, err_size, w, word, " to invoke");
+        return 0;
+    }
+    method = qtmethod.constData();
     /* BY NAME, not by signature, for the reason gb_qt_connect gives: a Qt
      * method commonly carries defaulted arguments, so a signature-exact
      * lookup answers "no such method" about a method that is there. Only the
@@ -2831,12 +3417,10 @@ extern "C" int gb_qt_invoke(void *window, const char *target,
             return 1;
         }
         say(err, err_size,
-            QByteArray("Qt would not invoke `") + target + "." + method + "`");
+            QByteArray("Qt would not invoke `") + target + "." + word + "`");
         return 0;
     }
-    say(err, err_size,
-        QByteArray("a ") + mo->className() + " has no `" + method +
-            "` method that takes no arguments");
+    say_no_word(err, err_size, w, word, " to invoke");
     return 0;
 }
 
@@ -2904,7 +3488,7 @@ extern "C" int gb_qt_write(void *window, const char *name, const char *text,
     }
     if (qobject_cast<QCheckBox *>(w)) {
         QString s = QString::fromUtf8(text);
-        return set_property(w, "checked",
+        return set_qt_property(w, "checked",
                             QVariant(s == "true" || s == "1"), err, err_size);
     }
     if (QComboBox *box = qobject_cast<QComboBox *>(w)) {
@@ -2924,13 +3508,13 @@ extern "C" int gb_qt_write(void *window, const char *name, const char *text,
         return 1;
     }
     if (qobject_cast<QPlainTextEdit *>(w)) {
-        /* THE WRITE HALF OF THE SAME FACT. `set_property(w, "text", ...)` is
+        /* THE WRITE HALF OF THE SAME FACT. `set_qt_property(w, "text", ...)` is
          * refused by the QMetaObject door, so a `ui.write` to a memo would
          * have reported an unknown property for the one thing a memo is for. */
-        return set_property(w, "plainText",
+        return set_qt_property(w, "plainText",
                             QVariant(QString::fromUtf8(text)), err, err_size);
     }
-    return set_property(w, "text", QVariant(QString::fromUtf8(text)), err,
+    return set_qt_property(w, "text", QVariant(QString::fromUtf8(text)), err,
                         err_size);
 }
 
@@ -2951,8 +3535,8 @@ extern "C" int gb_qt_set_part_text(void *window, const char *name,
                                    const char *prop, const char *value,
                                    char *err, size_t err_size) {
     QObject *o = part_named(window, name, err, err_size);
-    return o ? set_property(o, prop, QVariant(QString::fromUtf8(value)), err,
-                            err_size)
+    return o ? set_word(o, prop, QVariant(QString::fromUtf8(value)), err,
+                        err_size)
              : 0;
 }
 
@@ -2967,8 +3551,8 @@ static QStringList text_list(const char *const *values, size_t count) {
 extern "C" int gb_qt_set_text_list(void *widget, const char *prop,
                                    const char *const *values, size_t count,
                                    char *err, size_t err_size) {
-    return set_property(settable((GbQtNode *)widget), prop,
-                        QVariant(text_list(values, count)), err, err_size);
+    return set_word(settable((GbQtNode *)widget), prop,
+                    QVariant(text_list(values, count)), err, err_size);
 }
 
 extern "C" int gb_qt_set_part_text_list(void *window, const char *name,
@@ -2976,8 +3560,8 @@ extern "C" int gb_qt_set_part_text_list(void *window, const char *name,
                                         const char *const *values, size_t count,
                                         char *err, size_t err_size) {
     QObject *o = part_named(window, name, err, err_size);
-    return o ? set_property(o, prop, QVariant(text_list(values, count)), err,
-                            err_size)
+    return o ? set_word(o, prop, QVariant(text_list(values, count)), err,
+                        err_size)
              : 0;
 }
 
@@ -3098,7 +3682,7 @@ extern "C" int gb_qt_set_part_number(void *window, const char *name,
                                      const char *prop, double value,
                                      char *err, size_t err_size) {
     QObject *o = part_named(window, name, err, err_size);
-    return o ? set_property(o, prop, QVariant(value), err, err_size) : 0;
+    return o ? set_word(o, prop, QVariant(value), err, err_size) : 0;
 }
 
 /* SHOWING WHITESPACE (§0.36): a flag on the document's default text option,
@@ -3149,7 +3733,7 @@ extern "C" int gb_qt_set_part_bool(void *window, const char *name,
     if (o && strcmp(prop, "whitespace") == 0) {
         return set_whitespace(o, name, value != 0, err, err_size);
     }
-    return o ? set_property(o, prop, QVariant(value != 0), err, err_size) : 0;
+    return o ? set_word(o, prop, QVariant(value != 0), err, err_size) : 0;
 }
 
 /* READ A PROPERTY BY NAME. The same QMetaObject door `set_property` goes
@@ -3181,17 +3765,133 @@ extern "C" int gb_qt_get(void *window, const char *name, const char *prop,
         *num = on ? 1.0 : 0.0;
         return 1;
     }
+    /* THE CONVERTED WORDS, read back in the shape they are set in. */
+    {
+        QWidget *ww = qobject_cast<QWidget *>(w);
+        auto yes = [&](bool b) { *kind = 'b'; *num = b ? 1.0 : 0.0; return 1; };
+        auto says = [&](const QString &t) {
+            *kind = 't';
+            *text = strdup(t.toUtf8().constData());
+            return *text ? 1 : 0;
+        };
+        if (strcmp(prop, "font_size") == 0 && ww) {
+            *kind = 'n';
+            *num = ww->font().pointSizeF();
+            return 1;
+        }
+        if (strcmp(prop, "bold") == 0 && ww) {
+            return yes(ww->font().bold());
+        }
+        /* WHETHER EVERY CHARACTER IS ONE WIDTH, asked of the font Qt
+         * resolved -- not of the family asked for, which may be substituted. */
+        if (strcmp(prop, "fixed_width") == 0 && ww) {
+            return yes(QFontInfo(ww->font()).fixedPitch());
+        }
+        if (strcmp(prop, "wrap") == 0) {
+            if (QPlainTextEdit *e = qobject_cast<QPlainTextEdit *>(w)) {
+                return yes(e->lineWrapMode() != QPlainTextEdit::NoWrap);
+            }
+            if (QLabel *l = qobject_cast<QLabel *>(w)) {
+                return yes(l->wordWrap());
+            }
+        }
+        if (strcmp(prop, "secret") == 0) {
+            if (QLineEdit *e = qobject_cast<QLineEdit *>(w)) {
+                return yes(e->echoMode() == QLineEdit::Password);
+            }
+        }
+        if (strcmp(prop, "headings") == 0) {
+            if (QTreeView *t = qobject_cast<QTreeView *>(w)) {
+                return yes(!t->isHeaderHidden());
+            }
+            if (QTableView *t = qobject_cast<QTableView *>(w)) {
+                return yes(!t->horizontalHeader()->isHidden());
+            }
+        }
+        if (strcmp(prop, "read_only") == 0) {
+            if (QAbstractItemView *t = qobject_cast<QAbstractItemView *>(w)) {
+                return yes(t->editTriggers() == QAbstractItemView::NoEditTriggers);
+            }
+        }
+        if (strcmp(prop, "expanders") == 0) {
+            if (QTreeView *t = qobject_cast<QTreeView *>(w)) {
+                return yes(t->rootIsDecorated() && t->itemsExpandable());
+            }
+        }
+        if (strcmp(prop, "tab_side") == 0) {
+            if (QTabWidget *t = qobject_cast<QTabWidget *>(w)) {
+                return says(QString::fromUtf8(tab_side_word(t->tabPosition())));
+            }
+        }
+        if (strcmp(prop, "toolbar_shows") == 0) {
+            if (QToolBar *t = qobject_cast<QToolBar *>(w)) {
+                return says(QString::fromUtf8(
+                    toolbar_shows_word(t->toolButtonStyle())));
+            }
+            if (QMainWindow *m = qobject_cast<QMainWindow *>(w)) {
+                return says(QString::fromUtf8(
+                    toolbar_shows_word(m->toolButtonStyle())));
+            }
+        }
+        /* WHICH WAY A SEPARATOR OR A SPLIT RUNS, in the words a `split` is
+         * declared with: a line across the window, or one down it. */
+        if (strcmp(prop, "direction") == 0) {
+            if (QSplitter *sp = qobject_cast<QSplitter *>(w)) {
+                return says(sp->orientation() == Qt::Horizontal
+                                ? QStringLiteral("across")
+                                : QStringLiteral("down"));
+            }
+            QFrame *f = qobject_cast<QFrame *>(w);
+            if (f && (f->frameShape() == QFrame::HLine ||
+                      f->frameShape() == QFrame::VLine)) {
+                return says(f->frameShape() == QFrame::HLine
+                                ? QStringLiteral("across")
+                                : QStringLiteral("down"));
+            }
+        }
+        if (strcmp(prop, "emphasis") == 0 && ww) {
+            QString how = ww->property("gb_emphasis").toString();
+            return says(how.isEmpty() ? QStringLiteral("none") : how);
+        }
+        /* WHAT THE PART IS DRAWN IN, in the theme record's own field names,
+         * as `name=#rrggbb;...` -- the front makes it a record. Read from the
+         * palette Qt paints with, never from the theme that was asked for. */
+        if (strcmp(prop, "colors") == 0 && ww) {
+            QPalette p = ww->palette();
+            QString t = "bg=" + p.color(QPalette::Window).name() +
+                        ";base=" + p.color(QPalette::Base).name() +
+                        ";ctl=" + p.color(QPalette::Button).name() +
+                        ";fg=" + p.color(QPalette::Text).name() +
+                        ";faint=" + p.color(QPalette::PlaceholderText).name() +
+                        ";line=" + p.color(QPalette::Mid).name() +
+                        ";sel=" + p.color(QPalette::Highlight).name() +
+                        ";on_sel=" + p.color(QPalette::HighlightedText).name();
+            *kind = 'c';
+            *text = strdup(t.toUtf8().constData());
+            return *text ? 1 : 0;
+        }
+        if (strcmp(prop, "font_size") == 0 || strcmp(prop, "bold") == 0 ||
+            strcmp(prop, "wrap") == 0 || strcmp(prop, "secret") == 0 ||
+            strcmp(prop, "headings") == 0 || strcmp(prop, "expanders") == 0 ||
+            strcmp(prop, "tab_side") == 0 || strcmp(prop, "toolbar_shows") == 0 ||
+            strcmp(prop, "emphasis") == 0 || strcmp(prop, "colors") == 0 ||
+            strcmp(prop, "direction") == 0 || strcmp(prop, "fixed_width") == 0) {
+            say_no_word(err, err_size, w, prop, "");
+            return 0;
+        }
+    }
+    QByteArray qtname = qt_name_of(ui_property_names, w, prop);
     const QMetaObject *mo = w->metaObject();
-    if (mo->indexOfProperty(prop) < 0) {
-        say(err, err_size,
-            QByteArray("a ") + mo->className() + " has no `" + prop +
-                "` property");
+    if (qtname.isEmpty() || mo->indexOfProperty(qtname.constData()) < 0) {
+        say_no_word(err, err_size, w, prop, "");
         return 0;
     }
+    const char *word = prop;
+    prop = qtname.constData();
     QVariant v = w->property(prop);
     if (!v.isValid()) {
         say(err, err_size,
-            QByteArray("a ") + mo->className() + " gave no value for `" + prop +
+            QByteArray("a `") + word_of(w) + "` gave no value for `" + word +
                 "`");
         return 0;
     }
@@ -3206,18 +3906,6 @@ extern "C" int gb_qt_get(void *window, const char *name, const char *prop,
             "an icon has no text form; ask `ui.has_icon(win, part)` whether "
             "there is one");
         return 0;
-    }
-    /* A PALETTE'S TEXT FORM IS EMPTY TOO, measured, so it is rendered here as
-     * the two colours a reader means by "the editor's colours": the text on
-     * the background, `#rrggbb on #rrggbb`. Without it a theme that changed
-     * nothing would read back exactly like one that worked. */
-    if (v.typeId() == QMetaType::QPalette) {
-        QPalette pal = v.value<QPalette>();
-        QByteArray bytes = (pal.color(QPalette::Text).name() + " on " +
-                            pal.color(QPalette::Base).name()).toUtf8();
-        *kind = 't';
-        *text = strdup(bytes.constData());
-        return *text ? 1 : 0;
     }
     switch (v.typeId()) {
     case QMetaType::Bool:
@@ -3238,9 +3926,8 @@ extern "C" int gb_qt_get(void *window, const char *name, const char *prop,
     }
     /* EVERYTHING ELSE AS TEXT, deliberately rather than a kind per Qt type: a
      * QFont, a QSize and an enum all render through QVariant::toString, and
-     * growing a case per Qt type is the table the by-name design exists to
-     * avoid. A caller wanting more than the text of a QFont is asking for a
-     * widget vocabulary this module does not have. */
+     * growing a case per Qt type would be a second vocabulary; a word whose
+     * Qt value has another shape is converted above, by name. */
     {
         QByteArray bytes = v.toString().toUtf8();
         char *out = (char *)malloc((size_t)bytes.size() + 1);
@@ -3375,7 +4062,7 @@ extern "C" void *gb_qt_menu_item(void *window, void *menu, const char *name,
      * in, which is the rule `stretch` already follows for the same reason. */
     n->object = act;
     if (name && *name && root) {
-        root->parts.insert(QString::fromUtf8(name), act);
+        register_part(root, name, act);
     }
     return n;
 }
@@ -3409,7 +4096,7 @@ extern "C" void *gb_qt_popup_menu(void *window, const char *name, char *err,
     n->root = root;
     n->widget = made;
     if (name && *name) {
-        root->parts.insert(QString::fromUtf8(name), made);
+        register_part(root, name, made);
     }
     return n;
 }
@@ -4246,7 +4933,7 @@ extern "C" void *gb_qt_table(void *parent, const char *name,
         pb->addWidget(t);
     }
     if (name && *name && n->root) {
-        n->root->parts.insert(QString::fromUtf8(name), t);
+        register_part(n->root, name, t);
     }
     return n;
 }
@@ -6033,7 +6720,7 @@ extern "C" void *gb_qt_virtual_table(void *parent, const char *name,
     n->word = "table";
     n->widget = v;
     if (name && *name && n->root) {
-        n->root->parts.insert(QString::fromUtf8(name), v);
+        register_part(n->root, name, v);
     }
     return n;
 }
@@ -6549,9 +7236,9 @@ extern "C" int gb_qt_set_display_only(void *window, const char *name, int on,
      * than of the declaration's word, so a widget kind added later gets the
      * better of the two without a second table. */
     if (w->metaObject()->indexOfProperty("readOnly") >= 0) {
-        return set_property(w, "readOnly", QVariant(on != 0), err, err_size);
+        return set_qt_property(w, "readOnly", QVariant(on != 0), err, err_size);
     }
-    return set_property(w, "enabled", QVariant(on == 0), err, err_size);
+    return set_qt_property(w, "enabled", QVariant(on == 0), err, err_size);
 }
 
 /* ---- DIALOGS ---------------------------------------------------------------
@@ -7591,7 +8278,7 @@ extern "C" void *gb_qt_tree(void *parent, const char *name,
     n->word = "tree";
     n->widget = t;
     if (name && *name && n->root) {
-        n->root->parts.insert(QString::fromUtf8(name), t);
+        register_part(n->root, name, t);
     }
     return n;
 }

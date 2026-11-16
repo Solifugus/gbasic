@@ -44,11 +44,11 @@ window app( title: "App", width: 480, height: 300 )
         button save( text: "Save" )
     end column
 
-    on open_file.triggered
-        print "SIGNAL open_file.triggered"
+    on open_file.pressed
+        print "SIGNAL open_file.pressed"
     end on
-    on wrap_it.toggled
-        print "SIGNAL wrap_it.toggled"
+    on wrap_it.changed
+        print "SIGNAL wrap_it.changed"
     end on
 end window
 
@@ -147,12 +147,12 @@ program main()
     ' slot, so choosing a menu entry is driven with no human in front of it.
     ' Every check above passes on a backend that connected nothing.
     check("invoking an item by name answers",
-          ui.invoke(app, "open_file", "trigger"), true)
+          ui.invoke(app, "open_file", "press"), true)
     ' AND A CHECKABLE ITEM'S OWN SIGNAL, which is a different signal on the
     ' same class -- so "a handler on an item works" is not satisfied by one
     ' signal happening to be wired.
     check("toggling a checkable item answers",
-          ui.invoke(app, "wrap_it", "toggle"), true)
+          ui.invoke(app, "wrap_it", "press"), true)
     check("and toggling really changed its state",
           ui.read(app, "wrap_it", "checked"), false)
 

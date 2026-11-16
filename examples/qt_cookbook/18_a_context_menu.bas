@@ -32,7 +32,7 @@ window app( title: "Files", width: 460, height: 300 )
         field kind( label: "Kind" )
     end table
 
-    on files.customContextMenuRequested
+    on files.context
         row = g.listing[app.selected("files")]
         g.asked = row.name
         ' A FOLDER CANNOT BE OPENED OR DELETED HERE, so those two go away.
@@ -42,7 +42,7 @@ window app( title: "Files", width: 460, height: 300 )
         g.offered = app.popup("row_actions")
     end on
 
-    on open_it.triggered
+    on open_it.pressed
         g.opened = g.asked
     end on
 end window
@@ -73,7 +73,7 @@ program main(args)
     print "right-clicked:  " + g.asked
     print "open offered:   " + string(app.read("open_it", "visible"))
 
-    app.invoke("open_it", "trigger")
+    app.invoke("open_it", "press")
     print "opened:         " + g.opened
 
     ' WHAT THE MENU HOLDS, in order. A separator has no caption of its own.

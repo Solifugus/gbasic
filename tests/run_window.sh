@@ -93,7 +93,7 @@ window customer( title: "Customer", width: 480 )
         end row
     end column
 
-    on save.clicked
+    on save.pressed
         print "saved"
     end on
 end window
@@ -103,14 +103,14 @@ tree=$(./gbasic --ast "$written" 2>&1)
 set -e
 for want in 'Window "customer"' 'Container column' 'Container form to edit cust' \
             'Leaf field id' 'Container group "Credit"' 'Leaf check hold' \
-            'Container row' 'Leaf stretch' 'Leaf button save' 'Handler save.clicked'; do
+            'Container row' 'Leaf stretch' 'Leaf button save' 'Handler save.pressed'; do
     if ! printf '%s\n' "$tree" | grep -qF "$want"; then
         printf '%s\n' "$tree"
         fail "the tree is missing: $want"
         break
     fi
 done
-printf '%s\n' "$tree" | grep -qF 'Handler save.clicked' && pass "the whole example parses into the tree the document draws"
+printf '%s\n' "$tree" | grep -qF 'Handler save.pressed' && pass "the whole example parses into the tree the document draws"
 
 # AND IT BINDS ITS NAME, which is the whole introspection surface and needs no
 # new builtin: a `server` block does the same and `web.routes` reads the record
@@ -127,7 +127,7 @@ window customer( title: "Customer", width: 480 ) to edit cust
             field limit( label: "Limit", type: {USD} )
         end group
     end column
-    on id.clicked
+    on id.pressed
         print "x"
     end on
 end window
@@ -141,12 +141,12 @@ program main()
     print col.items[1].label
     print col.items[0].items[0].word + "/" + col.items[0].items[0].name
     print col.items[0].items[0].options.label
-    print customer.items[1].kind + "/" + customer.items[1].target + "." + customer.items[1].signal
+    print customer.items[1].kind + "/" + customer.items[1].target + "." + customer.items[1].event
 end program
 EOF
 got=$(out_of "$written" | tr '
 ' '|')
-want='window/customer/cust|Customer/480|container/column/2|cust/edit|Credit|field/id|Account|handler/id.clicked|'
+want='window/customer/cust|Customer/480|container/column/2|cust/edit|Credit|field/id|Account|handler/id.pressed|'
 if [ "$got" = "$want" ]; then
     pass "the declaration reads back as ordinary data, nested, with no new builtin"
 else
@@ -488,7 +488,7 @@ window w( title: "x" )
             end tab
         end tabs
     end column
-    on settings.currentChanged
+    on settings.changed
         print "changed"
     end on
 end window
@@ -590,7 +590,7 @@ window w( title: "x" )
             field total( label: "Total" )
         end form
     end column
-    on lines_view.itemSelectionChanged
+    on lines_view.chosen
         print "chosen"
     end on
 end window
@@ -615,7 +615,7 @@ window w( title: "x" )
     table lines_view to show lines
         field who( label: "Customer" )
     end table
-    on who.itemSelectionChanged
+    on who.chosen
         print "no"
     end on
 end window
@@ -653,7 +653,7 @@ window w( title: "x" )
     column
         field note( label: "Note" )
     end column
-    on open_file.triggered
+    on open_file.pressed
         print "chosen"
     end on
 end window
@@ -805,7 +805,7 @@ window w( title: "x" )
     menu "File"
         item a( label: "A" )
     end menu
-    on File.triggered
+    on File.pressed
         print "x"
     end on
 end window
@@ -951,7 +951,7 @@ refuse "a name declared twice is refused, naming the consequence" "could not say
 src dangling_handler <<'EOF'
 window w( title: "x" )
     button save( text: "Save" )
-    on cancel.clicked
+    on cancel.pressed
         print "x"
     end on
 end window
@@ -1013,13 +1013,13 @@ window customer( title: "C", width: 300, height: 200 ) to show cust
             button save( text: "Save" )
         end row
     end column
-    on save.clicked
+    on save.pressed
         print "ok"
     end on
     on orders.activated
         print "chosen"
     end on
-    on open_it.triggered
+    on open_it.pressed
         print "opened"
     end on
 end window
