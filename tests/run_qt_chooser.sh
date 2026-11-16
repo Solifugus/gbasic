@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# A FILE CHOOSER (docs/qt_gui_design.md §0.16) -- `qt.choose_file`,
-# `qt.choose_save`, `qt.choose_folder`, and `qt.dialog()`.
+# A FILE CHOOSER (docs/qt_gui_design.md §0.16) -- `ui.choose_file`,
+# `ui.choose_save`, `ui.choose_folder`, and `ui.dialog()`.
 #
 # THREE VERBS RATHER THAN ONE WITH A MODE, because they ask three different
 # questions -- "which existing file?", "what shall I call it?", "which folder?"
@@ -20,7 +20,7 @@
 #      XDG portal, which is what Qt reaches for on Wayland), `selectFile` does
 #      NOTHING -- the selection is empty before exec -- and accepting does
 #      nothing either: 41 pump ticks, rc=0, no file. So `DontUseNativeDialog`
-#      is FORCED rather than offered, or `qt.answer` would be a silent no-op.
+#      is FORCED rather than offered, or `ui.answer` would be a silent no-op.
 #   2. AND OFFSCREEN CANNOT TELL THE TWO APART, because with no portal to reach
 #      Qt falls back to its own widget dialog -- so the native path measures as
 #      drivable under the one platform every suite here runs on. That is
@@ -28,7 +28,7 @@
 #      SOURCE TRIPWIRE below rather than by a tier that would pass either way.
 #   3. `selectFile` IS IGNORED WHILE THE DIALOG IS VISIBLE and its name field
 #      has focus -- deliberately, so Qt never overwrites what somebody is
-#      typing. The obvious implementation of `qt.answer(path)` therefore left
+#      typing. The obvious implementation of `ui.answer(path)` therefore left
 #      the selection EMPTY and the accept silently refused. What works is what
 #      a person does: type into the name field, press the button.
 #   4. A REJECTED QFileDialog STILL REPORTS ITS SELECTION, so reading the file
@@ -72,7 +72,7 @@ if grep -q 'setOption(QFileDialog::DontUseNativeDialog, true)' \
         src/modules/qt_backend.cpp; then
     pass "DontUseNativeDialog is set unconditionally"
 else
-    fail "the chooser no longer forces Qt's own dialog -- the native one cannot be preselected or answered (measured), so qt.answer becomes a silent no-op"
+    fail "the chooser no longer forces Qt's own dialog -- the native one cannot be preselected or answered (measured), so ui.answer becomes a silent no-op"
 fi
 # THE VACUITY CONTROL: "it is present" is equally satisfied by a grep that
 # cannot match, so the same pattern must FAIL against a copy with it removed.
@@ -133,20 +133,20 @@ window app( title: "R", width: 200, height: 100 )
     end column
 end window
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NO DISPLAY"
         return
     end if
-    qt.open(app)
+    ui.open(app)
     on error goto refused
 $2
     print "ACCEPTED"
-    qt.stop()
+    ui.stop()
     return
 refused:
     print "REFUSED " + error.message
     error.clear()
-    qt.stop()
+    ui.stop()
 end program
 BAS
     set +e
@@ -163,28 +163,28 @@ BAS
 }
 
 refuse 'a misspelled option is refused BY NAME, with the near miss' \
-    '    p = qt.choose_file(app, { fodler: "/tmp" })' \
+    '    p = ui.choose_file(app, { fodler: "/tmp" })' \
     'did you mean `folder`?'
 refuse "and one nothing is close to gets the whole vocabulary" \
-    '    p = qt.choose_file(app, { wibble: "/tmp" })' \
+    '    p = ui.choose_file(app, { wibble: "/tmp" })' \
     'takes title, folder, name and filter'
 refuse 'a folder chooser has no name filter' \
-    '    p = qt.choose_folder(app, { filter: "Text (*.txt)" })' \
+    '    p = ui.choose_folder(app, { filter: "Text (*.txt)" })' \
     'has no use for `filter`'
 refuse 'nor a suggested name, `folder:` being where it starts' \
-    '    p = qt.choose_folder(app, { name: "x" })' \
+    '    p = ui.choose_folder(app, { name: "x" })' \
     'has no use for `name`'
 refuse 'a path option that is neither text nor a path reference' \
-    '    p = qt.choose_file(app, { folder: 7 })' \
+    '    p = ui.choose_file(app, { folder: 7 })' \
     'as text, a {file} or a {dir}'
 refuse 'and a title, which is prose, must be text' \
-    '    p = qt.choose_file(app, { title: {dir}"/tmp" })' \
+    '    p = ui.choose_file(app, { title: {dir}"/tmp" })' \
     'expects `title` as text'
 refuse "options that are not a record" \
-    '    p = qt.choose_file(app, "/tmp")' \
+    '    p = ui.choose_file(app, "/tmp")' \
     'options as a record'
 refuse "a filter list holding something that is not text" \
-    '    p = qt.choose_file(app, { filter: ["ok (*)", 7] })' \
+    '    p = ui.choose_file(app, { filter: ["ok (*)", 7] })' \
     'every filter to be text'
 refuse "a path answers a chooser, so a message box refuses one" \
     '    beat = timer.after(0.05)
@@ -192,16 +192,16 @@ refuse "a path answers a chooser, so a message box refuses one" \
         while count(timer.ticks) > 0
             ev = take_first(timer.ticks)
             on error goto inner
-            z = qt.answer("/tmp/x")
+            z = ui.answer("/tmp/x")
             return nothing
 inner:
             print "REFUSED " + error.message
             error.clear()
-            z = qt.answer(true)
+            z = ui.answer(true)
             return nothing
         end while
     end watch
-    y = qt.confirm(app, "?")' \
+    y = ui.confirm(app, "?")' \
     'answered with true or false rather than with a path'
 
 # ----------------------------------------------------------------- NO DISPLAY
@@ -217,7 +217,7 @@ window app( title: "ND", width: 200, height: 100 )
 end window
 program main(args)
     on error goto refused
-    p = qt.choose_file(app)
+    p = ui.choose_file(app)
     print "ACCEPTED"
     return
 refused:

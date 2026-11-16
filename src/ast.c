@@ -555,7 +555,7 @@ AstWindowItem *ast_window_form(char *word, char *verb, char *direction, char *su
  * bison conflicts before the word existed.
  *
  * A DOCK NEEDS BOTH FOR DIFFERENT REASONS. The caption is what a person reads
- * on the pane's title bar; the NAME is what `qt.set` and `qt.dock` address and
+ * on the pane's title bar; the NAME is what `ui.set` and `ui.dock` address and
  * what Qt's own `saveState` keys a stored layout by -- measured, a dock with
  * no `objectName` makes saveState WARN and omit it, so "restore my layout"
  * would come back silently partial. */

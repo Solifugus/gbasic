@@ -6,12 +6,12 @@
 '     ./gbasic examples/qt/invoice.bas
 '     QT_QPA_PLATFORM=offscreen ./gbasic examples/qt/invoice.bas   (no display)
 '
-' THERE IS NO SECOND API. The `window` block binds a RECORD, and `qt.open` asks
+' THERE IS NO SECOND API. The `window` block binds a RECORD, and `ui.open` asks
 ' only that a record carry `kind: "window"` -- so building that record is the
 ' other door, exactly as `server` and `web.routes` are two doors on one thing.
 ' `print invoice_window(lines)` shows you what a declaration would have bound.
 '
-' AND IT MEETS THE SAME RULES, through `qt.check`: the closed vocabulary with
+' AND IT MEETS THE SAME RULES, through `ui.check`: the closed vocabulary with
 ' its near-miss hint, the placement rules, names unique within the window, a
 ' handler whose target exists, and the record's own field names. Which matters
 ' most where it is least visible -- a part built with no `name` would open
@@ -61,7 +61,7 @@ function invoice_window(lines, total)
         ] }
 end function
 function on_close()
-    qt.stop()
+    ui.stop()
 end function
 program main(args)
     lines = [ { code: "a1", what: "Consulting, March", qty: 12,
@@ -76,18 +76,18 @@ program main(args)
     end for
     win = invoice_window(lines, total)
     ' CHECKED BEFORE ANYTHING IS OPENED, which is what a build-time mistake
-    ' wants: `qt.check` needs no display and no Qt at all, so this runs on a
-    ' text-only machine and in a test. `qt.open` runs it too -- a validator
+    ' wants: `ui.check` needs no display and no Qt at all, so this runs on a
+    ' text-only machine and in a test. `ui.open` runs it too -- a validator
     ' nobody is obliged to call is necessary and not sufficient.
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display, so the window is not opened -- but it still checks:"
-        print "  qt.check: " + string(qt.check(win))
+        print "  ui.check: " + string(ui.check(win))
         print("  " + string(len(lines)) + " generated lines, total " +
               money.text(total, 2))
         return
     end if
-    print "qt.check: " + string(qt.check(win))
-    qt.open(win)
+    print "ui.check: " + string(ui.check(win))
+    ui.open(win)
     ' READ BACK BY NAME, generated or not: nothing distinguishes a built part
     ' from a declared one.
     print "the second line reads: " + win.read("a_b2", "text")
@@ -96,9 +96,9 @@ program main(args)
     if contains(args, "check") then
         print "generated lines: " + string(len(lines))
         print "the total shows: " + win.read("sum")
-        qt.stop()
+        ui.stop()
         return
     end if
-    qt.run()
+    ui.run()
     print "closed"
 end program

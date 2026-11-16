@@ -8,7 +8,7 @@
 '
 ' `table x to ask <function>` KEEPS NONE OF IT. The subject is a FUNCTION NAME,
 ' not a list -- it is called with a row and a column and answers that one cell,
-' as it becomes visible. Tell the table how many rows there are with `qt.rows`,
+' as it becomes visible. Tell the table how many rows there are with `ui.rows`,
 ' and tell it again whenever the data changes.
 '
 ' THE COST IS THE VIEWPORT, NOT THE TABLE. Measured: Qt asks for about 27 cells
@@ -51,13 +51,13 @@ function cell_of(row, column)
 end function
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display, so no window -- the declaration is still checked"
         return
     end if
 
     g = { asked: 0, ticks: 0 }
-    qt.open(app)
+    ui.open(app)
 
     ' HOW MANY ROWS THERE ARE. This is a verb and not part of the declaration
     ' because it changes: a results grid is refilled by every query.
@@ -80,11 +80,11 @@ program main(args)
             ev = take_first(timer.ticks)
             g.ticks = g.ticks + 1
             if g.ticks >= 2 then
-                qt.stop()
+                ui.stop()
             end if
         end while
     end watch
-    qt.run()
+    ui.run()
     cancelled = timer.cancel(beat)
 
     print "cells asked for to draw a MILLION rows: " + string(g.asked)

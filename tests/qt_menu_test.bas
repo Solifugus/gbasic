@@ -53,18 +53,18 @@ window app( title: "App", width: 480, height: 300 )
 end window
 
 program main()
-    check("a window with menus opens", qt.open(app), true)
+    check("a window with menus opens", ui.open(app), true)
 
     ' ------------------------------------------------------------ THE ITEMS
     ' AN ITEM IS ADDRESSED BY NAME like any other part, which is what the
     ' registry holding QObject rather than QWidget bought -- a QAction cannot
     ' be a QWidget and had to be reachable by the same door.
-    check("an item's label is its text", qt.read(app, "open_file", "text"),
+    check("an item's label is its text", ui.read(app, "open_file", "text"),
           "Open...")
     check("and a second item has its own",
-          qt.read(app, "quit_app", "text"), "Quit")
+          ui.read(app, "quit_app", "text"), "Quit")
     check("an item inside a SUBMENU is reachable too",
-          qt.read(app, "recent_one", "text"), "ledger.bas")
+          ui.read(app, "recent_one", "text"), "ledger.bas")
 
     ' ------------------------------------------------- PROPERTIES ON A QAction
     ' NONE OF THESE WAS ANTICIPATED ANYWHERE. A shortcut is a QKeySequence, set
@@ -72,20 +72,20 @@ program main()
     ' `enabled` are QAction properties that no table in this backend lists.
     ' That is the by-name route (§1) reaching a class it was never told about.
     check("a shortcut set from text reaches the action",
-          qt.read(app, "open_file", "shortcut"), "Ctrl+O")
+          ui.read(app, "open_file", "shortcut"), "Ctrl+O")
     check("and a different item has a different one",
-          qt.read(app, "quit_app", "shortcut"), "Ctrl+Q")
-    check("`enabled: false` reaches it", qt.read(app, "undo_it", "enabled"),
+          ui.read(app, "quit_app", "shortcut"), "Ctrl+Q")
+    check("`enabled: false` reaches it", ui.read(app, "undo_it", "enabled"),
           false)
     check("CONTROL: an item nobody disabled is enabled",
-          qt.read(app, "open_file", "enabled"), true)
-    check("`checkable: true` reaches it", qt.read(app, "wrap_it", "checkable"),
+          ui.read(app, "open_file", "enabled"), true)
+    check("`checkable: true` reaches it", ui.read(app, "wrap_it", "checkable"),
           true)
-    check("and so does its state", qt.read(app, "wrap_it", "checked"), true)
-    ' IN THE KIND QT DECLARES, not as text: `if qt.read(i, "enabled")` on the
+    check("and so does its state", ui.read(app, "wrap_it", "checked"), true)
+    ' IN THE KIND QT DECLARES, not as text: `if ui.read(i, "enabled")` on the
     ' string "false" would be TRUE, every non-empty string being true here.
     check("a boolean reads back AS a boolean",
-          type(qt.read(app, "wrap_it", "checked")), "boolean")
+          type(ui.read(app, "wrap_it", "checked")), "boolean")
 
     ' ------------------------------------------------- THE NESTING ORACLE
     ' AN ITEM KEEPS ITS NAME WHEREVER ITS MENU ENDS UP, so every check above
@@ -96,7 +96,7 @@ program main()
     '
     ' AS A LIST, so it pins the COUNT and the ORDER too: a submenu that escaped
     ' appears as a third entry, and two menus that swapped appear reordered.
-    bar = qt.menus(app)
+    bar = ui.menus(app)
     check("the bar holds exactly the two menus declared at the top level",
           len(bar), 2)
     check("in declaration order", bar[0], "File")
@@ -109,7 +109,7 @@ program main()
     ' nothing else in this file could see it. The entries pin the count, the
     ' order, and that `Recent` is an entry OF File rather than a menu beside
     ' it.
-    file_menu = qt.menus(app, 0)
+    file_menu = ui.menus(app, 0)
     check("File holds four entries: two items, a submenu and a line",
           len(file_menu), 4)
     check("the first is the first item declared", file_menu[0], "Open...")
@@ -128,8 +128,8 @@ program main()
     check("and the last item follows it", file_menu[3], "Quit")
     ' THE OTHER MENU IS SEPARATE, or "File has four entries" is satisfied by a
     ' backend that put every item in the first menu it made.
-    check("the second menu holds only its own", len(qt.menus(app, 1)), 2)
-    check("and they are its own", qt.menus(app, 1)[0], "Undo")
+    check("the second menu holds only its own", len(ui.menus(app, 1)), 2)
+    check("and they are its own", ui.menus(app, 1)[0], "Undo")
 
     ' -------------------------------------------------------- THE MENU BAR
     ' A MENU IS NOT LAID OUT, so a window holding only menus and a column must
@@ -138,27 +138,27 @@ program main()
     ' Asserted through a widget that IS laid out, since nothing else here would
     ' notice a bar that had swallowed the layout.
     check("the laid-out parts still exist beside the bar",
-          qt.read(app, "save", "text"), "Save")
-    check("and a field beside them", qt.write(app, "note", "typed"), true)
-    check("which reads back", qt.read(app, "note"), "typed")
+          ui.read(app, "save", "text"), "Save")
+    check("and a field beside them", ui.write(app, "note", "typed"), true)
+    check("which reads back", ui.read(app, "note"), "typed")
 
     ' --------------------------------------------------------- THE HANDLERS
     ' PROVEN BY FIRING, not by the window opening: `trigger` is a no-arg QAction
     ' slot, so choosing a menu entry is driven with no human in front of it.
     ' Every check above passes on a backend that connected nothing.
     check("invoking an item by name answers",
-          qt.invoke(app, "open_file", "trigger"), true)
+          ui.invoke(app, "open_file", "trigger"), true)
     ' AND A CHECKABLE ITEM'S OWN SIGNAL, which is a different signal on the
     ' same class -- so "a handler on an item works" is not satisfied by one
     ' signal happening to be wired.
     check("toggling a checkable item answers",
-          qt.invoke(app, "wrap_it", "toggle"), true)
+          ui.invoke(app, "wrap_it", "toggle"), true)
     check("and toggling really changed its state",
-          qt.read(app, "wrap_it", "checked"), false)
+          ui.read(app, "wrap_it", "checked"), false)
 
     ' ------------------------------------------------------------- REFUSALS
     on error goto next
-    x = qt.read(app, "Recent", "text")
+    x = ui.read(app, "Recent", "text")
     if error then
         print "NOTADDRESSABLE: " + error.message
         error.clear()

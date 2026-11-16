@@ -9679,7 +9679,7 @@ static size_t library_name_count = 0;
 static int library_is_native_qualifier(const char *name) {
     static const char *native[] = {
         "csv", "gsql", "http", "ldap", "money", "net", "odbc", "pg", "process",
-        "qt", "reflect", "smtp", "sqlite", "this", "timer",
+        "reflect", "smtp", "sqlite", "this", "timer", "ui",
         "webclient", "webserver", "xlsx", "xml", "zip", NULL
     };
     for (size_t i = 0; native[i]; i++) {
@@ -9742,12 +9742,12 @@ static const GbCapability gb_capability_table[] = {
     { "odbc",      "db" },
     { "pg",        "db" },
     { "process",   "process" },
-    { "qt",        "display" },
     { "reflect",   "" },
     { "smtp",      "net" },
     { "sqlite",    "db fs:write" },
     { "this",      "" },
     { "timer",     "" },
+    { "ui",        "display" },
     { "webclient", "net" },
     { "webserver", "net:listen" },
     { "xlsx",      "fs:read fs:write" },
@@ -21481,7 +21481,7 @@ static int inbox_loop_service(void) {
 /* --- standard input in the event loop (Qt design §0.38 D3) ----------------
  *
  * `input()` BLOCKS, and so does anything else that reads a line: under
- * `qt.run()` a program reading its stdin that way stops Qt's loop, and a
+ * `ui.run()` a program reading its stdin that way stops Qt's loop, and a
  * visible window stops painting while it waits. Studio's `./studio mcp` reads
  * an MCP client's requests from stdin, so it could only run offscreen; with
  * this a person can watch an AI drive the window.
@@ -31908,7 +31908,7 @@ static const char *handle_method_module(const Value *v) {
         RecordField *kind = record_find((Value *)v, "kind");
         if (kind && kind->value->kind == VALUE_STRING &&
             strcmp(kind->value->as.string, "window") == 0) {
-            return "qt";
+            return "ui";
         }
     }
     return NULL;
@@ -34088,14 +34088,14 @@ static Value eval_call(AstExpr *expr) {
             return timer_eval_call(expr);
         }
 
-        if (strcmp(expr->as.call.library, "qt") == 0) {
+        if (strcmp(expr->as.call.library, "ui") == 0) {
             /* No `load` EVEN THOUGH QT IS OPTIONAL, which is the one place
              * this module departs from the convention and it is deliberate: a
              * `window` block implies no import (window_register says why), and
              * `load qt` on a build without Qt would raise at the IMPORT and
              * take the whole program with it -- the shrink run_discovery.sh's
              * note argues against. The refusal belongs at the call, where the
-             * program can ask first with `qt.can_display()`. */
+             * program can ask first with `ui.can_display()`. */
             return qt_eval_call(expr);
         }
 
@@ -34234,6 +34234,24 @@ static Value eval_call(AstExpr *expr) {
         call_label(expr, label, sizeof(label));
         if (!library_alias_hint(expr->as.call.library, hint, sizeof(hint))) {
             hint[0] = '\0';
+            /* THE GUI MODULE WAS `qt` UNTIL 0.12.0 (docs/ui_design.md). Not an
+             * alias -- Matthew ruled none -- but a program written against the
+             * old name is told the new one, unless a library it loaded is
+             * itself called `qt`, which then owns the name. */
+            int qt_loaded = 0;
+            for (size_t i = 0; i < library_name_count; i++) {
+                if (strcmp(library_names[i].written, "qt") == 0) {
+                    qt_loaded = 1;
+                }
+            }
+            if (!qt_loaded && strcmp(expr->as.call.library, "qt") == 0) {
+                snprintf(message, sizeof(message),
+                         "undefined function: %s -- the `qt` module is called "
+                         "`ui` since 0.12.0: write `ui.%s`",
+                         label, expr->as.call.name);
+                runtime_error_raise(message, 1003, "invalid function call");
+                return value_null();
+            }
             /* The qualified half of the same change: with no alias hint to
              * offer, this is simply a name the named library or module does
              * not define. */
@@ -46660,7 +46678,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         }
         break;
     /* A `window` DECLARATION BINDS AN INTROSPECTABLE RECORD AND REGISTERS ITS
-     * HANDLERS, and that is all it does -- opening a window is `qt.open`,
+     * HANDLERS, and that is all it does -- opening a window is `ui.open`,
      * which is a separate act for the same reason `web.serve` is. The two
      * earlier states of this comment are worth keeping in mind by anyone
      * editing it: it first said the block was not executable and REFUSED, then
@@ -47375,7 +47393,7 @@ static void runtime_teardown(void) {
     net_shutdown();
     timer_shutdown();
     /* A live QApplication and an open window would otherwise outlive the
-     * program that asked for them -- and at a prompt, meet the next `qt.open`
+     * program that asked for them -- and at a prompt, meet the next `ui.open`
      * in the same process as a SECOND QApplication, which Qt does not allow.
      * run_repl.sh's note is the general form: a module forgotten here does not
      * leak, it leaves something BOUND after the session ended. */

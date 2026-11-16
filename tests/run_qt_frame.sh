@@ -4,7 +4,7 @@
 # THE FINDING THAT MADE THIS ONE INCREMENT RATHER THAN THREE: after §0.28's
 # `tree` and §0.29's margin closed the two BLOCKING asks,
 # docs/qt_studio_requests.md had three left -- dock panes (§3), a status bar and
-# a toolbar (§4), and `qt.theme` (§5, which already exists and is recorded there
+# a toolbar (§4), and `ui.theme` (§5, which already exists and is recorded there
 # as a prediction rather than an ask). Every one of the first two is a
 # QMainWindow feature, so the question to ask was §0.18's, of a different root:
 # DOES EVERYTHING THIS BACKEND BUILDS WORK INSIDE ONE? Measured yes -- a form, a
@@ -25,7 +25,7 @@
 # end in `NEWLINE` (`IDENT IDENT NEWLINE` against `IDENT IDENT LPAREN ... RPAREN
 # NEWLINE`), where this one has a STRING where the choice would be. A dock needs
 # both for different reasons: the caption is what a person reads on its title
-# bar, and the NAME is what `qt.set` addresses and what Qt keys a saved layout
+# bar, and the NAME is what `ui.set` addresses and what Qt keys a saved layout
 # by -- measured, a dock with no `objectName` makes `saveState` WARN and omit
 # it, so "restore my layout" would come back silently partial.
 #
@@ -35,9 +35,9 @@
 # THREE MEASUREMENTS DECIDED THE DESIGN RATHER THAN CONFIRMING IT.
 #
 #   A QStatusBar HAS NO PROPERTY FOR ITS TEXT -- `message` and `currentMessage`
-#   are both absent and `showMessage(QString)` takes an argument `qt.invoke`
+#   are both absent and `showMessage(QString)` takes an argument `ui.invoke`
 #   cannot pass -- while a QLabel INSIDE it carries `text` as an ordinary
-#   Q_PROPERTY. So a status bar holds named `text` parts and `qt.set(win,
+#   Q_PROPERTY. So a status bar holds named `text` parts and `ui.set(win,
 #   "msg", "text", ...)` reaches them through the route that already exists:
 #   §1's by-name argument paying off instead of a verb of its own.
 #
@@ -59,14 +59,14 @@
 # thing a program does with it is STORE it -- through `encode` or `persist`,
 # both of which write JSON, whose strings must be valid UTF-8. gBASIC strings
 # are binary-safe (PLAT-NUL), so handing back the raw bytes would be defensible
-# and useless. `qt.layout` answers BASE64, which round-trips exactly.
+# and useless. `ui.layout` answers BASE64, which round-trips exactly.
 #
 # THE TIER TO READ FIRST IS THE AREA, because a pane in the WRONG ONE is
 # invisible from the language: every part inside it reads back by name whichever
-# edge it ended up on, and `visible` is true either way. `qt.dock` is the oracle,
+# edge it ended up on, and `visible` is true either way. `ui.dock` is the oracle,
 # built before the fixture (§0.8's lesson), and it asks THE WINDOW
-# (`dockWidgetArea`) rather than anything we remembered -- `qt.at`'s and
-# `qt.pane`'s own justification, since a remembered position agrees with a
+# (`dockWidgetArea`) rather than anything we remembered -- `ui.at`'s and
+# `ui.pane`'s own justification, since a remembered position agrees with a
 # placement that was wrong. The SECOND `docks` block is what separates "the area
 # was read" from "everything went to one edge".
 . "$(dirname "$0")/portable.sh"
@@ -298,7 +298,7 @@ window dlg( title: "M", width: 300, height: 200 )
 end window
 program main(args)
     on error goto next
-    qt.open_modal(dlg)
+    ui.open_modal(dlg)
     if error then print "REFUSED " + error.message
 end program
 BAS

@@ -20,8 +20,8 @@
 '
 ' WHICH MEANS A SPLIT CANNOT BE NAMED, so nothing addresses it and nothing
 ' could say whether it was built, which way round it is, or how many panes it
-' got. `qt.pane` is how you see one: it walks up from a part you CAN name and
-' asks the LAYOUT, which is the rule `qt.at` already follows for a grid.
+' got. `ui.pane` is how you see one: it walks up from a part you CAN name and
+' asks the LAYOUT, which is the rule `ui.at` already follows for a grid.
 '
 ' A SCROLL NEEDS NO DIRECTION, so its slot is free and it MAY be named -- which
 ' is what makes `widgetResizable` and the scrollbar policies readable by name.
@@ -29,15 +29,15 @@
 ' THE MENU ITEMS CARRY ICONS, and they are `SP_` names on purpose: those are
 ' Qt's own eighty-one standard icons, which work with NO desktop icon theme
 ' installed -- measured, a headless machine has none at all, so a freedesktop
-' name like "document-open" would warn here and show nothing. `qt.has_icon`
+' name like "document-open" would warn here and show nothing. `ui.has_icon`
 ' is how a program asks whether one arrived, a QIcon having no text form.
 '
 ' AND CTRL + WHEEL ZOOMS THE EDITOR, because a shell without that is not one.
 ' A wheel is an EVENT and not a signal -- a Qt widget receives one rather than
 ' emitting it -- so `on code.wheel` is handled the way `on <window>.closed` is
-' and the handler asks `qt.wheel()` for the event. The zoom itself needs no
+' and the handler asks `ui.wheel()` for the event. The zoom itself needs no
 ' verb: `font` reads back as text, so the size is a number in a list. And
-' `qt.swallow()` is what stops the editor ALSO scrolling, which is not optional
+' `ui.swallow()` is what stops the editor ALSO scrolling, which is not optional
 ' -- Ctrl + wheel scrolls a text view FASTER than a plain wheel, so the view
 ' would jump about while the text resized.
 window shell( title: "Shell", width: 820, height: 520 )
@@ -51,7 +51,7 @@ window shell( title: "Shell", width: 820, height: 520 )
 
     ' THE TOOLBAR MENU, which is Studio's own header shape: a button that drops
     ' a menu UNDER ITSELF rather than at the pointer, which is what
-    ' `qt.popup`'s third argument is for. The arrow glyph is in the LABEL on
+    ' `ui.popup`'s third argument is for. The arrow glyph is in the LABEL on
     ' purpose -- Studio's comment records that GTK's own `always-show-arrow`
     ' drew nothing on 4.22, and Geometric Shapes is in every mainstream UI font.
     popup proj_menu
@@ -107,7 +107,7 @@ window shell( title: "Shell", width: 820, height: 520 )
     end on
 
     on act_quit.triggered
-        qt.stop()
+        ui.stop()
     end on
 
     on out.itemSelectionChanged
@@ -122,7 +122,7 @@ window shell( title: "Shell", width: 820, height: 520 )
     end on
 
     on code.wheel
-        ev = qt.wheel()
+        ev = ui.wheel()
         if not ev.ctrl then
             ' DECLINED, so the editor scrolls as it always did.
             return
@@ -134,14 +134,14 @@ window shell( title: "Shell", width: 820, height: 520 )
         end if
         shell.set("code", "font", f[0] + "," + string(number(f[1]) + bigger))
         g.zooms = g.zooms + 1
-        qt.swallow()
+        ui.swallow()
     end on
 end window
 
 program main(args)
     g = { log: "", zooms: 0, menu_shown: false }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so there is no window to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
         return
@@ -150,7 +150,7 @@ program main(args)
     lines = [ { at: "1", says: "ready" },
               { at: "2", says: "no errors" } ]
 
-    qt.open(shell)
+    ui.open(shell)
     x = shell.write("code", "x = 1" + chr(10) + "print x" + chr(10))
 
     if contains(args, "check") then
@@ -213,10 +213,10 @@ program main(args)
         shell.select("out", 1)
         print "the log says: " + replace(g.log, chr(10), " / ")
         print "the editor now starts: " + left(shell.read("code"), 12)
-        qt.stop()
+        ui.stop()
         return
     end if
 
     print "Drag the boundaries. File > Open loads the first name; Ctrl+Q quits."
-    qt.run()
+    ui.run()
 end program

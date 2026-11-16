@@ -10,8 +10,8 @@
 #   §0.27's reconcile never connecting a BUILT child's handlers, invisible
 #     because no perturbation put a handler on a new child;
 #   and §0.31's, reported from the gBASIC Studio bench with valgrind naming
-#     both ends -- `qt.select` on a tree enters the selection handler, the
-#     handler calls `qt.refresh`, a tree refresh DELETES EVERY ITEM, and
+#     both ends -- `ui.select` on a tree enters the selection handler, the
+#     handler calls `ui.refresh`, a tree refresh DELETES EVERY ITEM, and
 #     `QTreeWidgetItem::setSelected` runs on with `this` freed. It segfaulted
 #     about three runs in five and otherwise answered `unknown` for a row that
 #     had just been selected -- the failure class this backend is tested

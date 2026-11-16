@@ -2,7 +2,7 @@
 ' windows, a real QCloseEvent, no display.
 '
 ' SELF-CHECKING NOT GOLDEN AND FORCED. Every defect here is an ORDINARY-LOOKING
-' RUN: a window the person dismissed that goes on answering `qt.read` is a
+' RUN: a window the person dismissed that goes on answering `ui.read` is a
 ' program reading values off a screen nobody is looking at, and it raises
 ' NOTHING -- so a golden would record the stale answer as expected and defend
 ' it. That is not a hypothetical: Qt does not set `WA_DeleteOnClose`, so the
@@ -53,12 +53,12 @@ window app( title: "Lifecycle", width: 320, height: 160 )
         ' STILL READABLE, STILL OPEN. The next thing that happens is the
         ' registry forgetting this window, so this is the last moment either
         ' is true.
-        g.saved = qt.read(app, "who")
-        g.still_open = qt.is_open(app)
-        g.subject = qt.subject(app, "cust").who
+        g.saved = ui.read(app, "who")
+        g.still_open = ui.is_open(app)
+        g.subject = ui.subject(app, "cust").who
         if g.mode = "reenter" then
             on error goto reentered
-            again = qt.close(app)
+            again = ui.close(app)
             g.reentry = "ACCEPTED"
             return nothing
 reentered:
@@ -86,7 +86,7 @@ program main(args)
     g = { fired: 0, saved: "nothing", still_open: false, subject: "nothing",
           mode: "plain", reentry: "nothing" }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "SKIP no display"
         return
     end if
@@ -94,41 +94,41 @@ program main(args)
     cust = { who: "Ada Lovelace" }
 
     print "-- a window is not open until it is"
-    check("is_open before any open", qt.is_open(app), false)
-    check("open answers true", qt.open(app), true)
-    check("is_open after open", qt.is_open(app), true)
+    check("is_open before any open", ui.is_open(app), false)
+    check("open answers true", ui.open(app), true)
+    check("is_open after open", ui.is_open(app), true)
 
     print "-- the window itself is addressable, which nothing could do before"
-    ' `qt.invoke`/`qt.read`/`qt.set` reached PARTS only, so there was no way to
+    ' `ui.invoke`/`ui.read`/`ui.set` reached PARTS only, so there was no way to
     ' read or set a window's own title, raise it, or close it.
-    check("its own title reads back", qt.read(app, "app", "windowTitle"),
+    check("its own title reads back", ui.read(app, "app", "windowTitle"),
           "Lifecycle")
-    x = qt.set(app, "app", "windowTitle", "Renamed")
-    check("and can be set", qt.read(app, "app", "windowTitle"), "Renamed")
+    x = ui.set(app, "app", "windowTitle", "Renamed")
+    check("and can be set", ui.read(app, "app", "windowTitle"), "Renamed")
     ' THE KIND COMES FROM THE QVariant, not from the caller -- the rule the
     ' by-name reader already follows, and it matters here because the string
     ' "false" is TRUE in this language.
     check("a boolean property arrives as a boolean",
-          type(qt.read(app, "app", "visible")), "boolean")
-    check("and the window is visible", qt.read(app, "app", "visible"), true)
+          type(ui.read(app, "app", "visible")), "boolean")
+    check("and the window is visible", ui.read(app, "app", "visible"), true)
 
     print "-- somebody types, then the window closes"
-    y = qt.write(app, "who", "Grace Hopper")
+    y = ui.write(app, "who", "Grace Hopper")
     check("nothing has fired yet", g.fired, 0)
-    check("close answers true", qt.close(app), true)
+    check("close answers true", ui.close(app), true)
 
     print "-- the handler ran once, before the registry forgot"
     check("fired exactly once", g.fired, 1)
     check("it read the LIVE widget", g.saved, "Grace Hopper")
-    check("qt.subject in the handler folds the typed value", g.subject,
+    check("ui.subject in the handler folds the typed value", g.subject,
           "Grace Hopper")
     check("and the window still reported open inside it", g.still_open, true)
 
     print "-- and afterwards the window is gone, not merely hidden"
-    check("is_open after close", qt.is_open(app), false)
+    check("is_open after close", ui.is_open(app), false)
     on error goto read_refused
-    stale = qt.read(app, "who")
-    print "MISMATCH a closed window answered qt.read: " + string(stale)
+    stale = ui.read(app, "who")
+    print "MISMATCH a closed window answered ui.read: " + string(stale)
     return
 read_refused:
     check("reading a part refuses, naming the window",
@@ -136,19 +136,19 @@ read_refused:
     error.clear()
 
     on error goto subject_refused
-    s = qt.subject(app, "cust")
-    print "MISMATCH a closed window answered qt.subject"
+    s = ui.subject(app, "cust")
+    print "MISMATCH a closed window answered ui.subject"
     return
 subject_refused:
     ' THE REFUSAL IS THE DESIGN, not a gap: the capture would be the
     ' pre-close values, so answering would be a wrong answer rather than a
     ' stale one. `on app.closed` is where a program reads the form.
-    check("qt.subject refuses too", contains(error.message, "is not open"),
+    check("ui.subject refuses too", contains(error.message, "is not open"),
           true)
     error.clear()
 
     on error goto close_refused
-    again = qt.close(app)
+    again = ui.close(app)
     print "MISMATCH closing a closed window was accepted"
     return
 close_refused:
@@ -157,27 +157,27 @@ close_refused:
     error.clear()
 
     print "-- reopening builds a FRESH window, not the old one back"
-    check("reopen answers true", qt.open(app), true)
-    check("is_open again", qt.is_open(app), true)
+    check("reopen answers true", ui.open(app), true)
+    check("is_open again", ui.is_open(app), true)
     ' THE SHARP ONE: what was typed before the close is gone and the form has
     ' re-read its subject. A close that merely hid the window would answer
     ' "Grace Hopper" here, and every check above would still pass.
-    check("the typed value did not survive", qt.read(app, "who"),
+    check("the typed value did not survive", ui.read(app, "who"),
           "Ada Lovelace")
     check("the title is the declaration's again",
-          qt.read(app, "app", "windowTitle"), "Lifecycle")
-    z = qt.close(app)
+          ui.read(app, "app", "windowTitle"), "Lifecycle")
+    z = ui.close(app)
 
     print "-- a window with NO `closed` handler is still forgotten"
     ' THE LOAD-BEARING TIER. The bookkeeping is unconditional; the handler is
     ' the optional part. Nothing else in this file can see the difference.
-    check("plain opens", qt.open(plain), true)
-    check("plain is open", qt.is_open(plain), true)
-    check("plain closes", qt.close(plain), true)
-    check("plain is NOT open", qt.is_open(plain), false)
+    check("plain opens", ui.open(plain), true)
+    check("plain is open", ui.is_open(plain), true)
+    check("plain closes", ui.close(plain), true)
+    check("plain is NOT open", ui.is_open(plain), false)
     on error goto plain_refused
-    p = qt.read(plain, "note")
-    print "MISMATCH a handler-less closed window answered qt.read"
+    p = ui.read(plain, "note")
+    print "MISMATCH a handler-less closed window answered ui.read"
     return
 plain_refused:
     check("and reading it refuses",
@@ -185,29 +185,29 @@ plain_refused:
     error.clear()
 
     print "-- two windows are independent"
-    a1 = qt.open(app)
-    s1 = qt.open(second)
-    check("both open", string(qt.is_open(app)) + " " + string(qt.is_open(second)),
+    a1 = ui.open(app)
+    s1 = ui.open(second)
+    check("both open", string(ui.is_open(app)) + " " + string(ui.is_open(second)),
           "true true")
-    c1 = qt.close(second)
+    c1 = ui.close(second)
     check("closing one leaves the other",
-          string(qt.is_open(app)) + " " + string(qt.is_open(second)),
+          string(ui.is_open(app)) + " " + string(ui.is_open(second)),
           "true false")
 
     print "-- the window manager's own path, driven"
     ' THE X BUTTON CANNOT BE CLICKED HERE (offscreen has no window manager) and
     ' it reaches `QWidget::close()` through Qt's platform layer, which is the
     ' same thing an invoked `close` reaches -- so this drives the real event
-    ' rather than the verb, the argument `qt.invoke(f, "click")` already makes
+    ' rather than the verb, the argument `ui.invoke(f, "click")` already makes
     ' for a button.
     g.fired = 0
     g.saved = "nothing"
-    w2 = qt.write(app, "who", "Katherine Johnson")
+    w2 = ui.write(app, "who", "Katherine Johnson")
     check("invoking `close` by name is accepted",
-          qt.invoke(app, "app", "close"), true)
+          ui.invoke(app, "app", "close"), true)
     check("it fired the handler too", g.fired, 1)
     check("with the live value", g.saved, "Katherine Johnson")
-    check("and the window was forgotten", qt.is_open(app), false)
+    check("and the window was forgotten", ui.is_open(app), false)
 
     print "-- a handler that closes its own window again"
     ' THE HANDLER RUNS WHILE THE WINDOW IS STILL REGISTERED, which is what
@@ -216,29 +216,29 @@ plain_refused:
     ' free.
     g.mode = "reenter"
     g.fired = 0
-    r1 = qt.open(app)
-    r2 = qt.close(app)
+    r1 = ui.open(app)
+    r2 = ui.close(app)
     check("the re-entrant close refuses",
           contains(g.reentry, "already closing"), true)
     check("the handler still fired exactly once", g.fired, 1)
-    check("and the window is closed", qt.is_open(app), false)
+    check("and the window is closed", ui.is_open(app), false)
 
     ' AND THE SAME THING ON THE OTHER PATH, which is the REALISTIC one: the
     ' person clicks X and the handler tries to tidy up by closing the window.
     ' A perturbation is what put this here -- with the backend's guard removed
-    ' the case above stayed GREEN, because `qt.close` nulls the widget before
+    ' the case above stayed GREEN, because `ui.close` nulls the widget before
     ' closing and that alone stops a second entry. Only a close that did NOT
-    ' come from `qt.close` reaches the guard, and without it the recursion
+    ' come from `ui.close` reaches the guard, and without it the recursion
     ' deletes the window's nodes underneath the outer call.
     g.fired = 0
     g.reentry = "nothing"
-    r3 = qt.open(app)
-    r4 = qt.invoke(app, "app", "close")
+    r3 = ui.open(app)
+    r4 = ui.invoke(app, "app", "close")
     check("re-entry from an event-driven close refuses too",
           contains(g.reentry, "already closing"), true)
     check("and fired exactly once there as well", g.fired, 1)
-    check("and that window is closed too", qt.is_open(app), false)
+    check("and that window is closed too", ui.is_open(app), false)
     g.mode = "plain"
 
-    qt.stop()
+    ui.stop()
 end program

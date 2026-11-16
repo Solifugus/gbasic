@@ -17,7 +17,7 @@
 ' the menu per right-click would reconnect every handler every time. `visible`
 ' is an ordinary property of a menu item, so this needed no new verb.
 '
-' AND `qt.popup` ANSWERS WHETHER ANYTHING SHOWED. A row that offers nothing
+' AND `ui.popup` ANSWERS WHETHER ANYTHING SHOWED. A row that offers nothing
 ' leaves every item hidden, and an empty menu reads as a control that failed --
 ' so the answer is `false` and the program simply does not raise one, which is
 ' the project row below.
@@ -113,7 +113,7 @@ window app( title: "Browser", width: 620, height: 420 )
 end window
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so there is no window to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
         return
@@ -126,10 +126,10 @@ program main(args)
     ' ONE RECORD, because a handler cannot rebind a plain variable in `main`.
     g = { listing: listing, lines: [], clicked: "", offered: false }
 
-    qt.open(app)
+    ui.open(app)
 
     if contains(args, "check") then
-        ' WHAT A PERSON WOULD DO, driven. `qt.right_click` sends a press, a
+        ' WHAT A PERSON WOULD DO, driven. `ui.right_click` sends a press, a
         ' release and the context event in the order a mouse produces them --
         ' which is also the only way to reach a table at all, since a table
         ' answers a right-click on its scrolling area rather than on the
@@ -163,5 +163,5 @@ program main(args)
     end if
 
     print "Right-click a row. Close the window to finish."
-    qt.run()
+    ui.run()
 end program

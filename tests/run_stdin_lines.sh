@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # `watch w(stdin.lines)` (Qt design §0.38 D3): lines from standard input
 # delivered by the event loop, one per delivery, so a program waiting for its
-# input keeps serving everything else -- under `qt.run()`, a window that keeps
+# input keeps serving everything else -- under `ui.run()`, a window that keeps
 # painting. Asked for by gBASIC Studio, whose `./studio mcp` could only run
 # offscreen while it blocked on input().
 #
@@ -15,7 +15,7 @@
 #         line per delivery; exit 0, stderr empty.
 #   SLOW  a line every 0.4 s: each echo returns before the next is written,
 #         under a second, while the input is still open (not all at the end).
-#   QT    a window under qt.run(): a line sets a label and the program prints
+#   QT    a window under ui.run(): a line sets a label and the program prints
 #         what Qt then holds; a 0.1-second timer kept firing while a line was
 #         awaited (at least 8 in 1.5 s); "quit" stops Qt's loop.
 #   VALGRIND over the pipe fixture.

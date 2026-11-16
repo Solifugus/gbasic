@@ -1,5 +1,5 @@
-' ICONS (§0.23) -- `icon:` on a leaf or a menu item, `qt.set(... "icon" ...)`,
-' and `qt.has_icon`. Under QT_QPA_PLATFORM=offscreen, real QIcons, no display.
+' ICONS (§0.23) -- `icon:` on a leaf or a menu item, `ui.set(... "icon" ...)`,
+' and `ui.has_icon`. Under QT_QPA_PLATFORM=offscreen, real QIcons, no display.
 '
 ' Takes the path of a real PNG as its one argument, made by the runner, because
 ' gBASIC can write the bytes but a committed binary fixture nothing can
@@ -9,7 +9,7 @@
 ' rather than assumed: `setProperty("icon", QString(...))` returns FALSE for
 ' both a theme name and a file path, and the icon stays null -- QVariant will
 ' not convert a string to a QIcon. So `icon` has a branch of its own, in the
-' ONE door the declaration's options and `qt.set` both go through, which is
+' ONE door the declaration's options and `ui.set` both go through, which is
 ' what makes them unable to disagree about what an icon source is.
 '
 ' THREE SOURCES, TOLD APART BY FACTS AND NOT BY GUESSES. A `SP_` name is one of
@@ -29,11 +29,11 @@
 ' is otherwise INVISIBLE, a button with no icon looking exactly like one that
 ' was never meant to have one.
 '
-' `qt.has_icon` IS THE ORACLE AND IT WAS NOT FORESEEN. It came from asking what
+' `ui.has_icon` IS THE ORACLE AND IT WAS NOT FORESEEN. It came from asking what
 ' a check could observe: a QIcon has NO TEXT FORM, and measured, a button
 ' carrying a real PNG and one carrying nothing BOTH answered "" through
-' `qt.read` -- so without it every check here would pass on a backend that
-' resolved nothing, and `qt.read` on an icon would be answering a wrong answer
+' `ui.read` -- so without it every check here would pass on a backend that
+' resolved nothing, and `ui.read` on an icon would be answering a wrong answer
 ' rather than no answer. It refuses now and names this instead.
 
 function check(what, got, want)
@@ -67,33 +67,33 @@ program main(args)
     rows = [{ name: "a" }]
     png = args[0]
 
-    qt.open(app)
+    ui.open(app)
 
     ' ---- a standard name, which needs no theme at all --------------------
     check("a declared SP_ name gave a button an icon",
-          qt.has_icon(app, "standard"), true)
-    check("and a menu item one too", qt.has_icon(app, "save_it"), true)
+          ui.has_icon(app, "standard"), true)
+    check("and a menu item one too", ui.has_icon(app, "save_it"), true)
     ' THE CONTROL: without it, "it has an icon" is satisfied by a backend that
     ' reports true for everything.
-    check("a part that declared none has none", qt.has_icon(app, "bare"), false)
+    check("a part that declared none has none", ui.has_icon(app, "bare"), false)
     check("and nor does a menu item that declared none",
-          qt.has_icon(app, "plain_it"), false)
+          ui.has_icon(app, "plain_it"), false)
 
     ' ---- a real file ------------------------------------------------------
-    qt.set(app, "bare", "icon", png)
-    check("a file path gave it one", qt.has_icon(app, "bare"), true)
+    ui.set(app, "bare", "icon", png)
+    check("a file path gave it one", ui.has_icon(app, "bare"), true)
 
     ' ---- clearing is legal and silent ------------------------------------
     ' A program swapping a play icon for a pause one has to be able to take one
     ' away, and falling through would ask the theme for an icon called "".
-    qt.set(app, "bare", "icon", "")
-    check("an empty source clears it", qt.has_icon(app, "bare"), false)
-    qt.set(app, "bare", "icon", "SP_DialogCancelButton")
-    check("and it can be set again", qt.has_icon(app, "bare"), true)
+    ui.set(app, "bare", "icon", "")
+    check("an empty source clears it", ui.has_icon(app, "bare"), false)
+    ui.set(app, "bare", "icon", "SP_DialogCancelButton")
+    check("and it can be set again", ui.has_icon(app, "bare"), true)
 
     ' ---- a check box carries one too, since it is a QAbstractButton ------
-    qt.set(app, "tick", "icon", png)
-    check("a check box can carry an icon", qt.has_icon(app, "tick"), true)
+    ui.set(app, "tick", "icon", png)
+    check("a check box can carry an icon", ui.has_icon(app, "tick"), true)
 
     ' ---- refusals, each beside its nearest legal neighbour ---------------
     on error goto next
@@ -101,45 +101,45 @@ program main(args)
     ' theme -- Qt's own namespace -- so this one is refused where a theme name
     ' warns. Both halves of that distinction are asserted, here and in the
     ' runner's warning tier.
-    qt.set(app, "bare", "icon", "SP_NoSuchThing")
+    ui.set(app, "bare", "icon", "SP_NoSuchThing")
     check("an unknown SP_ name is refused", error.message,
-          "qt.set: `SP_NoSuchThing` is not one of Qt's standard icon names")
+          "ui.set: `SP_NoSuchThing` is not one of Qt's standard icon names")
     error.clear()
 
-    qt.set(app, "bare", "icon", "/no/such/dir/missing.png")
+    ui.set(app, "bare", "icon", "/no/such/dir/missing.png")
     check("a path that is not there is refused, naming it", error.message,
-          "qt.set: there is no icon file at `/no/such/dir/missing.png`")
+          "ui.set: there is no icon file at `/no/such/dir/missing.png`")
     error.clear()
 
-    qt.set(app, "bare", "icon", args[1])
+    ui.set(app, "bare", "icon", args[1])
     check("a file that is not an image is refused", error.message,
-          "qt.set: `" + args[1] + "` is not an image Qt can read")
+          "ui.set: `" + args[1] + "` is not an image Qt can read")
     error.clear()
 
     ' A PART THAT CANNOT CARRY ONE names its kind, because "no icon" would read
     ' as an answer rather than as a category mistake.
-    qt.has_icon(app, "words")
+    ui.has_icon(app, "words")
     check("a text cannot carry an icon", error.message,
-          "qt.has_icon: a QLabel cannot carry an icon")
+          "ui.has_icon: a QLabel cannot carry an icon")
     error.clear()
 
-    qt.has_icon(app, "grid")
+    ui.has_icon(app, "grid")
     check("and nor can a table", error.message,
-          "qt.has_icon: a QTableWidget cannot carry an icon")
+          "ui.has_icon: a QTableWidget cannot carry an icon")
     error.clear()
 
-    qt.has_icon(app, "nope")
+    ui.has_icon(app, "nope")
     check("an unknown part is refused", error.message,
-          "qt.has_icon: this window has no `nope`")
+          "ui.has_icon: this window has no `nope`")
     error.clear()
 
-    ' ---- `qt.read` ON AN ICON REFUSES AND NAMES THE REMEDY ---------------
+    ' ---- `ui.read` ON AN ICON REFUSES AND NAMES THE REMEDY ---------------
     ' Measured, a QIcon's text form is EMPTY whether or not an icon is set, so
     ' answering "" would be a WRONG answer rather than no answer -- which is
     ' worse, and is what this refusal exists for.
-    qt.read(app, "standard", "icon")
+    ui.read(app, "standard", "icon")
     check("reading an icon as text is refused", error.message,
-          "qt.read: an icon has no text form; ask `qt.has_icon(win, part)` " +
+          "ui.read: an icon has no text form; ask `ui.has_icon(win, part)` " +
           "whether there is one")
     error.clear()
     on error stop
@@ -148,9 +148,9 @@ program main(args)
     ' The control that says the icon branch did not capture every property: a
     ' button's own text still reads back as text.
     check("a button's text still reads normally",
-          qt.read(app, "standard", "text"), "Standard")
+          ui.read(app, "standard", "text"), "Standard")
     check("and a check box's checked state as a boolean",
-          type(qt.read(app, "tick", "checked")), "boolean")
+          type(ui.read(app, "tick", "checked")), "boolean")
 
-    qt.close(app)
+    ui.close(app)
 end program

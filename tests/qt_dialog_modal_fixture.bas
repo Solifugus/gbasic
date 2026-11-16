@@ -18,7 +18,7 @@ window app( title: "Modal extent", width: 320, height: 140 )
     end column
     on ask.clicked
         print "DIALOG UP"
-        g.answered = qt.confirm(app, "Really?")
+        g.answered = ui.confirm(app, "Really?")
         print "DIALOG DOWN"
         return nothing
     end on
@@ -26,15 +26,15 @@ end window
 
 program main(args)
     g = { answered: false }
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NO DISPLAY"
         return
     end if
     sv = web.serve(probe)
     print "PORT " + string(sv.port)
-    qt.open(app)
+    ui.open(app)
 
-    ' CLICKED FROM A TIMER so the dialog goes up while `qt.run()` holds the
+    ' CLICKED FROM A TIMER so the dialog goes up while `ui.run()` holds the
     ' thread -- the real arrangement, not a program calling confirm from main.
     ' It clicks only once the suite has written args[0], the go file, after
     ' its control request: a fixed delay raced that request on a slow machine
@@ -47,10 +47,10 @@ program main(args)
             ev = take_first(timer.ticks)
             if exists(go) then
                 timer.cancel(poll)
-                qt.invoke(app, "ask", "click")
+                ui.invoke(app, "ask", "click")
             end if
         end while
     end watch
 
-    rc = qt.run()
+    rc = ui.run()
 end program

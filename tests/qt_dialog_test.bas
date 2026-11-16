@@ -16,7 +16,7 @@
 ' reads: gBASIC cannot re-enter while the interpreter is SUSPENDED INSIDE ITS
 ' OWN HANDLER. A dialog raised outside a handler leaves the sources running; a
 ' dialog raised FROM a handler -- the normal case, since somebody clicked --
-' suspends them until it is answered, so `qt.answer` cannot reach it and a
+' suspends them until it is answered, so `ui.answer` cannot reach it and a
 ' person is the only answer. run_qt_dialog.sh asserts that with a real server
 ' on a real port, because a limitation nobody can observe is a limitation
 ' nobody will believe.
@@ -42,7 +42,7 @@ window app( title: "Dialogs", width: 340, height: 160 )
     ' A DIALOG FROM A HANDLER, which is the real-world shape: the person
     ' clicked something, and the program asks before doing it.
     on ask.clicked
-        g.from_handler = qt.confirm(app, "Really?")
+        g.from_handler = ui.confirm(app, "Really?")
         return nothing
     end on
 end window
@@ -50,18 +50,18 @@ end window
 program main(args)
     g = { want: true, ticks: 0, from_handler: false }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "SKIP no display"
         return
     end if
-    qt.open(app)
+    ui.open(app)
 
     print "-- answering with nothing open is refused, not ignored"
     ' A SILENT NO-OP WOULD BE THE WORSE FAILURE: a program would wait for a
     ' person who is not there, and a hang is not a failure.
     on error goto nothing_open
-    x = qt.answer(true)
-    print "MISMATCH qt.answer was accepted with no dialog open"
+    x = ui.answer(true)
+    print "MISMATCH ui.answer was accepted with no dialog open"
     return
 nothing_open:
     check("refused, naming the state", contains(error.message, "no dialog is open"), true)
@@ -69,14 +69,14 @@ nothing_open:
 
     ' THE TIMER THAT ANSWERS. It only fires because the pump is armed for the
     ' dialog's duration -- which it was NOT when these verbs were first
-    ' written, and the first `qt.confirm` outside `qt.run()` hung until a
+    ' written, and the first `ui.confirm` outside `ui.run()` hung until a
     ' 30-second timeout.
     beat = timer.every(0.05)
     watch(timer.ticks)
         while count(timer.ticks) > 0
             ev = take_first(timer.ticks)
             g.ticks = g.ticks + 1
-            ok = qt.answer(g.want)
+            ok = ui.answer(g.want)
         end while
     end watch
 
@@ -85,15 +85,15 @@ nothing_open:
     ' always says the same thing, and `false` is the DEFAULT button, so a
     ' broken one most likely always says no.
     g.want = true
-    check("yes is yes", qt.confirm(app, "Delete this?"), true)
+    check("yes is yes", ui.confirm(app, "Delete this?"), true)
     g.want = false
-    check("and no is no", qt.confirm(app, "Delete this?"), false)
+    check("and no is no", ui.confirm(app, "Delete this?"), false)
 
     print "-- a statement has one button, so it is answerable either way"
     g.want = false
-    check("an inform returns", qt.inform(app, "Saved."), true)
+    check("an inform returns", ui.inform(app, "Saved."), true)
     g.want = true
-    check("whichever way it is answered", qt.inform(app, "Saved again."), true)
+    check("whichever way it is answered", ui.inform(app, "Saved again."), true)
 
     print "-- gBASIC was serviced while the boxes were up"
     ' THE ARCHITECTURAL CLAIM, through the interpreter. Without it none of the
@@ -106,5 +106,5 @@ nothing_open:
     ' The suite asserts that limitation from outside, with a server.
 
     cancelled = timer.cancel(beat)
-    qt.stop()
+    ui.stop()
 end program

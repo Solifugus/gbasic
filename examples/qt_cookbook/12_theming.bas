@@ -4,7 +4,7 @@
 ' Q_PROPERTY of every QWidget, so it arrives through the same by-name route as
 ' `text` or `enabled`. What that route CANNOT reach is one sheet for the
 ' application, because that belongs to the QApplication rather than to any
-' widget -- so `qt.theme` is the verb for it.
+' widget -- so `ui.theme` is the verb for it.
 window panel( title: "Theming", width: 420, height: 220 )
     column( margin: 10, spacing: 8 )
         text heading( label: "Themed by the application" )
@@ -23,19 +23,19 @@ program main(args)
     ' and applied when there is a QApplication to put it on -- so a program
     ' themes first and opens second, and this half of the recipe runs on a
     ' text-only machine.
-    qt.theme("QWidget { background: #2e3440; color: #eceff4; }")
+    ui.theme("QWidget { background: #2e3440; color: #eceff4; }")
     print ("a theme can be set before anything opens: " +
-                 string(len(qt.theme()) > 0))
+                 string(len(ui.theme()) > 0))
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display"
         return
     end if
-    qt.open(panel)
+    ui.open(panel)
 
     ' THE APPLICATION'S SHEET IS WHAT WAS ASKED FOR.
     print ("the app sheet holds the dark background: " +
-                 string(contains(qt.theme(), "#2e3440")))
+                 string(contains(ui.theme(), "#2e3440")))
 
     ' AND THE WIDGET THAT DECLARED ITS OWN STILL HAS IT. A theme applied by
     ' WRITING onto every widget would pass a check that only asked whether the
@@ -47,7 +47,7 @@ program main(args)
 
     ' CHANGING IT AT RUN TIME is the same call. A dark and a light theme are
     ' two strings; there is no theme registry to keep in step.
-    qt.theme("")
-    print "and clearing it leaves nothing: " + string(len(qt.theme()) = 0)
-    qt.stop()
+    ui.theme("")
+    print "and clearing it leaves nothing: " + string(len(ui.theme()) = 0)
+    ui.stop()
 end program

@@ -74,7 +74,7 @@ else
     grep -Fq "gate open:    true" "$GUI_OUT"
     grep -Fq "and through:  The Tunnel" "$GUI_OUT"
     grep -Fq "after drop:   You are carrying nothing." "$GUI_OUT"
-    # AND THE TABLE FOLLOWED THE ROOM, which needed `qt.refresh` and which the
+    # AND THE TABLE FOLLOWED THE ROOM, which needed `ui.refresh` and which the
     # first draft of the example could not do: the key is in the Tunnel now.
     grep -Fq "here now:     1 thing(s)" "$GUI_OUT"
     grep -Fq "and it is:    brass key" "$GUI_OUT"
@@ -86,7 +86,7 @@ rm -f "$GUI_OUT"
 # this one DESCRIBES one. It is the program that decided three additions to the
 # Qt surface rather than illustrating them -- a description is a paragraph
 # (`memo`), an exit NAMES ANOTHER AREA six times per area (`choice`), and
-# choosing a row must SHOW THAT AREA (`qt.refresh` on a form, and on a table so
+# choosing a row must SHOW THAT AREA (`ui.refresh` on a form, and on a table so
 # the list follows).
 #
 # THE ASSERTIONS ARE THE ROUND TRIP, not the rendering: edit a name and a

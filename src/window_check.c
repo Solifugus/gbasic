@@ -213,7 +213,7 @@ static void win_check_items(WinRun *run, const void *owner, int is_window,
                             size_t name_cap);
 
 /* A PART MAY NOT TAKE THE WINDOW'S OWN NAME. The window is addressable by it
- * -- `qt.read(win, "app", "windowTitle")`, `qt.invoke(win, "app", "close")`,
+ * -- `ui.read(win, "app", "windowTitle")`, `ui.invoke(win, "app", "close")`,
  * `on app.closed` -- because the backend registers the root widget in the one
  * by-name table every part uses, which is what makes the window reachable for
  * no new machinery at all. The cost of that is this collision, and the part
@@ -230,7 +230,7 @@ static int win_shadows_window(WinRun *run, const void *item,
     }
     win_error(run, item,
               "window: the window itself is called '%s', so a part cannot be "
-              "-- `on %s.closed` and `qt.read(win, \"%s\", ...)` address the "
+              "-- `on %s.closed` and `ui.read(win, \"%s\", ...)` address the "
               "window", iname, iname, iname);
     return 1;
 }
@@ -511,8 +511,8 @@ static void win_check_item(WinRun *run, const void *item,
             }
             /* IT NEEDS BOTH, which is the one thing in this vocabulary that
              * does -- and it is affordable because `dock branches "Branches"`
-             * MEASURED AT ZERO CONFLICTS. The NAME is what `qt.set` and
-             * `qt.dock` address and what Qt's own `saveState` keys the layout
+             * MEASURED AT ZERO CONFLICTS. The NAME is what `ui.set` and
+             * `ui.dock` address and what Qt's own `saveState` keys the layout
              * by (a dock with no `objectName` makes saveState WARN and drop
              * it, measured); the CAPTION is what a person reads on the pane's
              * title bar. */
@@ -567,10 +567,10 @@ static void win_check_item(WinRun *run, const void *item,
          *
          * WHAT IT HOLDS WAS DECIDED BY A MEASUREMENT: a QStatusBar has NO
          * property for its text -- `message` and `currentMessage` are both
-         * absent and `showMessage(QString)` takes an argument `qt.invoke`
+         * absent and `showMessage(QString)` takes an argument `ui.invoke`
          * cannot pass -- but a permanent QLabel inside it carries `text` as an
          * ordinary Q_PROPERTY. So a status bar holds NAMED `text` parts and
-         * `qt.set(win, "msg", "text", ...)` reaches them through the by-name
+         * `ui.set(win, "msg", "text", ...)` reaches them through the by-name
          * route that already exists, which is §1's argument paying off again
          * rather than a verb of its own. */
         if (strcmp(word, "status") == 0) {
@@ -613,7 +613,7 @@ static void win_check_item(WinRun *run, const void *item,
             if (!iname) {
                 win_error(run, item,
                           "window: a popup menu needs a name -- `popup "
-                          "row_actions` -- because `qt.popup` is the only way "
+                          "row_actions` -- because `ui.popup` is the only way "
                           "to raise one");
             }
             if (M->label(item)) {
@@ -641,20 +641,20 @@ static void win_check_item(WinRun *run, const void *item,
         /* A TABLE IS NAMED AND A FORM IS NOT, which is a real difference and
          * not a spelling: a form's parts are addressed by their own names,
          * where a table shows MANY rows, so the table itself is what a handler
-         * and `qt.selected` address. Refused both ways, so neither shape can
+         * and `ui.selected` address. Refused both ways, so neither shape can
          * be written the other's way and quietly mean something else. */
         if (strcmp(word, "table") == 0 && !iname) {
             win_error(run, item,
                       "window: a table needs a name -- `table orders to show "
                       "<list>` -- because that is what a handler and "
-                      "`qt.selected` address");
+                      "`ui.selected` address");
         }
         /* AND SO DOES A TREE, for the identical reason. */
         if (strcmp(word, "tree") == 0 && !iname) {
             win_error(run, item,
                       "window: a tree needs a name -- `tree files to show "
                       "<rows>` -- because that is what a handler and "
-                      "`qt.selected` address");
+                      "`ui.selected` address");
         }
         /* A `split` IS A ROW OR COLUMN YOU CAN DRAG, and its one free slot
          * carries the DIRECTION rather than a name. That is forced rather than
@@ -665,9 +665,9 @@ static void win_check_item(WinRun *run, const void *item,
          * splitters would ever want.
          *
          * THE COST IS STATED: a `split` cannot be named, so `on x.splitterMoved`
-         * and `qt.set` cannot reach it. `qt.pane` is what makes it observable
+         * and `ui.set` cannot reach it. `ui.pane` is what makes it observable
          * anyway, asked of the layout by walking up from a part that CAN be
-         * named -- the rule `qt.at` already follows for a grid. */
+         * named -- the rule `ui.at` already follows for a grid. */
         if (strcmp(word, "split") == 0) {
             static const char *dirs[] = {"across", "down", NULL};
             if (M->label(item)) {
@@ -718,7 +718,7 @@ static void win_check_item(WinRun *run, const void *item,
          *
          * §0.27 WIDENED IT BY ITS OWN JUSTIFICATION RATHER THAN BY ANALOGY. A
          * `column`, a `row` and a `group` were refused on the grounds that a
-         * box has no state worth asking about -- and `qt.refresh(win, name,
+         * box has no state worth asking about -- and `ui.refresh(win, name,
          * items)` gives every one of them some: THE SET OF CHILDREN. The verb
          * cannot address what cannot be named, so refusing the name refuses
          * the feature, which is the same argument that named a `scroll`.
@@ -739,13 +739,13 @@ static void win_check_item(WinRun *run, const void *item,
                              * is the one slot spent differently from `menu`:
                              * a context menu is never read on a bar, so a
                              * caption would name nothing, and
-                             * `qt.popup(win, "row_actions")` is how it is
+                             * `ui.popup(win, "row_actions")` is how it is
                              * raised at all. Required, not merely allowed --
                              * checked below. */
                             strcmp(word, "popup") == 0 ||
                             /* A `tab` IS NAMED SO A RECONCILE HAS AN IDENTITY
                              * (§0.27), and the reason is sharper than symmetry
-                             * with its siblings: `qt.refresh(win, name, items)`
+                             * with its siblings: `ui.refresh(win, name, items)`
                              * keeps a child whose name is unchanged, and THE
                              * CAPTION IS THE THING THAT CHANGES -- a notebook
                              * tab carries a `* ` unsaved marker -- so keying on
@@ -800,7 +800,7 @@ static void win_check_item(WinRun *run, const void *item,
                       "window: '%s' takes no name; a container is named "
                       "when something addresses it -- a table, a `tabs`, a "
                       "`scroll`, a `popup`, a `tab`, and a `column`, `row` or "
-                      "`group` whose children `qt.refresh` reconciles", word);
+                      "`group` whose children `ui.refresh` reconciles", word);
         }
 
         /* A `tab` BELONGS TO A `tabs` and needs a caption; a `tabs` holds
@@ -897,7 +897,7 @@ static void win_check_item(WinRun *run, const void *item,
          *
          * So the columns are checked HERE (named, unique within their own
          * table) and the recursion that would register them window-wide is
-         * skipped. `qt.cell(win, "orders", r, "who")` addresses one, which is
+         * skipped. `ui.cell(win, "orders", r, "who")` addresses one, which is
          * a column of a named table rather than a thing in the window. */
         if (strcmp(word, "table") == 0 || strcmp(word, "tree") == 0) {
             const char *seen[64];
@@ -1099,7 +1099,7 @@ static void win_check_item(WinRun *run, const void *item,
          * symmetry: it is a real widget with real properties, and STUDIO
          * STYLES ITS OWN (`studio_style.apply(sep, "rule")`), so a rule that
          * could not be addressed could not be themed. It is also the only way
-         * to observe one -- `qt.read(win, name, "frameShape")` answers HLine
+         * to observe one -- `ui.read(win, name, "frameShape")` answers HLine
          * or VLine, and the orientation is the one thing that can be built
          * wrong: measured, the wrong way round renders as a stub taking a
          * share of the width rather than as a line. */

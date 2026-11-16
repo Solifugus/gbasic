@@ -269,7 +269,7 @@ fi
 echo "TIER a suite's own messages do not run the shell"
 # A BACKTICK INSIDE A DOUBLE-QUOTED STRING IS COMMAND SUBSTITUTION, and this
 # tree has produced ELEVEN instances -- a message quoting a name the way this
-# project quotes names (`load`, `qt.confirm`, `unreachable`) and the shell
+# project quotes names (`load`, `ui.confirm`, `unreachable`) and the shell
 # running it. IT IS INVISIBLE WHERE IT IS WRITTEN: the substitution usually
 # fails quietly, so the line prints with the quoted word MISSING and reads as an
 # ordinary sentence, and in a `fail` message it only surfaces on the day a tier

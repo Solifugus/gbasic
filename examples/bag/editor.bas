@@ -16,7 +16,7 @@
 '
 '   `memo`         a description is a paragraph, and nothing could show one
 '   `choice`       an exit NAMES ANOTHER AREA, six times per area
-'   `qt.refresh`   choosing a row must SHOW THAT AREA, and a form populated
+'   `ui.refresh`   choosing a row must SHOW THAT AREA, and a form populated
 '                  once at open -- so did a table, so neither the list nor the
 '                  editor followed the data
 '
@@ -26,7 +26,7 @@
 ' docs/qt_gui_design.md.
 '
 ' AND THE SAME STATE RULE AS `gui.bas`: gBASIC has no closures and a handler
-' sees the frame that called `qt.run`, so a handler CANNOT REBIND A SCALAR
+' sees the frame that called `ui.run`, so a handler CANNOT REBIND A SCALAR
 ' there -- warning 2104 names the remedy, "mutate a field of a shared record
 ' instead". So everything lives in one record `g` and every handler writes
 ' `g.something`.
@@ -62,7 +62,7 @@ window editor( title: "BAG: areas", width: 680, height: 520 )
 
                     ' SIX EXITS, EACH NAMING ANOTHER AREA -- the shape that
                     ' needed `choice`. Their lists are DATA (the areas that
-                    ' exist), so they are filled with `qt.options` and not
+                    ' exist), so they are filled with `ui.options` and not
                     ' declared.
                     group "Exits lead to"
                         cells
@@ -94,9 +94,9 @@ window editor( title: "BAG: areas", width: 680, height: 520 )
         end row
     end column
 
-    ' CHOOSING A ROW SHOWS THAT AREA, which is `qt.refresh` on a FORM: the
+    ' CHOOSING A ROW SHOWS THAT AREA, which is `ui.refresh` on a FORM: the
     ' subject changes and the form is re-shown from it. Without the verb this
-    ' handler would have to `qt.write` every part by hand, which is the whole
+    ' handler would have to `ui.write` every part by hand, which is the whole
     ' of what binding exists to avoid.
     on listing.itemSelectionChanged
         at = editor.selected("listing")
@@ -120,11 +120,11 @@ window editor( title: "BAG: areas", width: 680, height: 520 )
     end on
 
     on act_quit.triggered
-        qt.stop()
+        ui.stop()
     end on
 
     on close.clicked
-        qt.stop()
+        ui.stop()
     end on
 end window
 
@@ -192,7 +192,7 @@ function load_current()
     drew = editor.refresh("current")
 
     ' AND THE SIX DROPDOWNS, whose lists are the areas that exist. Filled
-    ' before being set, because `qt.write` REFUSES a choice that is not in the
+    ' before being set, because `ui.write` REFUSES a choice that is not in the
     ' list -- which is what stops a stale exit being shown as if it were real.
     names = exit_names()
     for each d in ["north", "south", "east", "west", "up", "down"]
@@ -217,7 +217,7 @@ end function
 ' ------------------------------------------------------------------ the verbs
 
 function keep()
-    ' THE FORM BACK INTO THE RECORD. `qt.subject` reads the widgets AT THE
+    ' THE FORM BACK INTO THE RECORD. `ui.subject` reads the widgets AT THE
     ' MOMENT ASKED, so there is nothing to have kept in step.
     typed = editor.subject("current")
     kept = g.current
@@ -281,15 +281,15 @@ program main(args)
     area_rows = rows_of_areas()
     current = g.current
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so the editor cannot be shown."
         print "Set QT_QPA_PLATFORM=offscreen to render without one, or use"
         print "the text version: ./gbasic examples/bag/bag.bas"
         return
     end if
 
-    qt.theme("QGroupBox { font-weight: bold; }")
-    qt.open(editor)
+    ui.theme("QGroupBox { font-weight: bold; }")
+    ui.open(editor)
     load_current()
 
     if contains(args, "check") then
@@ -316,8 +316,8 @@ program main(args)
         print "choices now:    " + string(editor.read("north", "count"))
         print "editing:        " + editor.read("name")
         print "saying:         " + editor.read("saying")
-        qt.stop()
+        ui.stop()
         return
     end if
-    qt.run()
+    ui.run()
 end program

@@ -13,7 +13,7 @@ window customer( title: "Customer", width: 420, height: 240 )
 end window
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display"
         return
     end if
@@ -21,7 +21,7 @@ program main(args)
     ' THE SUBJECT LIVES IN THIS FRAME. The form reads it at open.
     cust = { name: "Ada Lovelace", limit: {USD}2500.00, hold: false,
              notes: "Pays on time." }
-    qt.open(customer)
+    ui.open(customer)
 
     print "the form filled itself:"
     print "  name:    " + customer.read("name")
@@ -43,5 +43,5 @@ program main(args)
     print "  notes:   " + back.notes
     ' THE CALLER'S OWN RECORD IS UNTOUCHED, because a gBASIC record is a VALUE.
     print "  and `cust` itself still says " + string(cust.limit)
-    qt.stop()
+    ui.stop()
 end program

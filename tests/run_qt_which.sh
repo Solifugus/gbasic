@@ -1,18 +1,18 @@
 #!/bin/bash
-# WHICH THING WAS THIS EVENT ABOUT? (§0.33) -- `qt.which_tab`, and
-# `qt.right_click` aimed at a tree row and at a tab.
+# WHICH THING WAS THIS EVENT ABOUT? (§0.33) -- `ui.which_tab`, and
+# `ui.right_click` aimed at a tree row and at a tab.
 #
 # THE SHAPE IS WHAT THE gBASIC STUDIO BENCH ASKED TO HAVE NAMED, and it named
 # it rather than this backend: a handler here takes no arguments, so every
-# event that is ABOUT something needs a verb to ask which. `qt.selected`
-# answers which table or tree row, `qt.gutter_click` which line, `qt.wheel`
+# event that is ABOUT something needs a verb to ask which. `ui.selected`
+# answers which table or tree row, `ui.gutter_click` which line, `ui.wheel`
 # which way, and this adds which tab. Their words: *"a reader coming to this
 # backend fresh would find that rule easier to apply than to rediscover per
 # widget."*
 #
 # A TAB IS THE ONE CASE Qt DOES NOT ANSWER BY ITSELF, which is why it needs a
 # verb where a row does not. MEASURED: a right-press MOVES a table's or a
-# tree's current row, so `qt.selected` already says which was clicked -- and a
+# tree's current row, so `ui.selected` already says which was clicked -- and a
 # right-press on a QTabBar correctly does NOT move the current index, so
 # `currentIndex` answers the tab that was ALREADY ACTIVE. STU-21's rule is the
 # opposite (*"right-clicking a background tab to close it must not first switch

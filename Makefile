@@ -342,7 +342,7 @@ else
 QT_CXXFLAGS += -DHAVE_KSYNTAX=0
 endif
 
-# QTSVG -- `qt.render_svg` and `image` blocks drawn from SVG (docs/qt_gui_design.md
+# QTSVG -- `ui.render_svg` and `image` blocks drawn from SVG (docs/qt_gui_design.md
 # §0.38 C). A separate Qt module with a .pc of its own, so a Qt build without it
 # still builds; the verb then refuses, naming the module.
 QT_SVG_AVAILABLE := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --exists Qt6Svg && printf 1 || printf 0)

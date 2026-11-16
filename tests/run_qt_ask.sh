@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # A TABLE THAT ASKS FOR ITS CELLS (docs/qt_gui_design.md §0.25) -- `table x to
-# ask fn`, `qt.rows`, and a model behind a QTableView.
+# ask fn`, `ui.rows`, and a model behind a QTableView.
 #
 # `set +e` BELOW WITHOUT A MATCHING `set -e`, DELIBERATELY: this file's mode is
 # `set -uo pipefail` -- no `-e` -- so `set +e` is a no-op and a `set -e` after
@@ -138,7 +138,7 @@ QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic \
     --line-buffered tests/qt_ask_test.bas > "$work/sem.out" 2> "$work/sem.err"
 rc=$?
 # A HANG IS NOT A FAILURE, and this fixture is the one most able to hang: it
-# hands the thread to `qt.run()` twice and takes it back with a timer, so a
+# hands the thread to `ui.run()` twice and takes it back with a timer, so a
 # tick that never arrives waits for ever. `timeout -k` above is the bound, and
 # 124 is named rather than reported as an ordinary failure.
 if [ "$rc" = "124" ] || [ "$rc" = "137" ]; then

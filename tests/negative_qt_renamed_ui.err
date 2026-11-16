@@ -1,0 +1,1 @@
+runtime error at tests/negative_qt_renamed_ui.bas:2:1: undefined function: qt.can_display -- the `qt` module is called `ui` since 0.12.0: write `ui.can_display`

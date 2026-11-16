@@ -12,8 +12,8 @@
 '
 ' THERE ARE THREE DOORS AND THEY MUST AGREE ABOUT WHAT A NAME IS:
 '   the DECLARATION     `field pin( maxLength: 4 )`     -- before anything runs
-'   `qt.read`           what it is now
-'   `qt.set`            change it, which the declaration cannot: it is written
+'   `ui.read`           what it is now
+'   `ui.set`            change it, which the declaration cannot: it is written
 '                       before anything has happened
 '
 ' A MISSPELLING IS REFUSED BY NAME AT ALL THREE. That matters more than it
@@ -24,7 +24,7 @@
 '
 ' AND THE KIND COMES FROM Qt, NOT FROM THE CALLER. `readOnly` answers a
 ' BOOLEAN; a backend that answered the text "false" would read BACKWARDS in
-' `if qt.read(...)`, every non-empty string being true in gBASIC.
+' `if ui.read(...)`, every non-empty string being true in gBASIC.
 
 window form( title: "Properties", width: 440, height: 340 )
     column( margin: 10, spacing: 8 )
@@ -48,7 +48,7 @@ window form( title: "Properties", width: 440, height: 340 )
         end row
     end column
 
-    ' A HANDLER THAT CHANGES A PROPERTY, which is what `qt.set` is for: the
+    ' A HANDLER THAT CHANGES A PROPERTY, which is what `ui.set` is for: the
     ' declaration is written before anybody has typed anything, so "enable Save
     ' once there is a name" has nowhere else to live.
     on name.textChanged
@@ -56,18 +56,18 @@ window form( title: "Properties", width: 440, height: 340 )
     end on
 
     on close.clicked
-        qt.stop()
+        ui.stop()
     end on
 end window
 
 program main(args)
     account = { name: "", pin: "", note: "", locked: "A-1041" }
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so there is no window to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
         return
     end if
-    qt.open(form)
+    ui.open(form)
 
     if contains(args, "check") then
         print "-- read back what the DECLARATION set"
@@ -85,7 +85,7 @@ program main(args)
         print "maxLength is a:    " + type(form.read("pin", "maxLength"))
         print "readOnly is a:     " + type(form.read("locked", "readOnly"))
 
-        print "-- `qt.set`: what the declaration could not know"
+        print "-- `ui.set`: what the declaration could not know"
         print "save enabled:      " + string(form.read("save", "enabled"))
         form.write("name", "Ada Lovelace")
         print "after typing:      " + string(form.read("save", "enabled"))
@@ -96,10 +96,10 @@ program main(args)
         ' AND THE CONTROL, or "it refuses" is satisfied by refusing everything.
         form.set("pin", "maxLength", 6)
         print "a REAL property set:  " + string(form.read("pin", "maxLength"))
-        qt.stop()
+        ui.stop()
         return
     end if
-    qt.run()
+    ui.run()
 end program
 
 function probe_read(part, prop)

@@ -19,7 +19,7 @@
 #
 # EVERY EXAMPLE TAKES `check`, which is not a test seam bolted on: it is how a
 # person verifies a Qt install without looking at a screen, and it is the only
-# way a program that hands the thread to `qt.run()` can be gated at all.
+# way a program that hands the thread to `ui.run()` can be gated at all.
 #
 # Tiers:
 #   ARGS      every example accepts `check`, asserted STRUCTURALLY -- because
@@ -70,7 +70,7 @@ fi
 
 printf 'TIER args: every example accepts `check`\n'
 # STRUCTURAL, because the consequence of getting this wrong is a HANG: an
-# example with no check mode reaches `qt.run()` and waits for a person who is
+# example with no check mode reaches `ui.run()` and waits for a person who is
 # not there, and the RUN tier below would sit on its timeout rather than
 # reporting anything useful.
 missing=""
@@ -103,7 +103,7 @@ for f in $examples; do
     grep -v -e 'This plugin does not support' -e 'built without KSyntaxHighlighting, so it will work as a plain editor' "$work/$b.err" > "$work/$b.err2" || true
     lines=$(grep -c . "$work/$b.out" || true)
     if [ "$rc" = "124" ] || [ "$rc" = "137" ]; then
-        fail "$b HUNG -- it reached qt.run() with nobody to close it"
+        fail "$b HUNG -- it reached ui.run() with nobody to close it"
     elif [ "$rc" != "0" ]; then
         printf '    %s\n' "$(tail -3 "$work/$b.err2")"
         fail "$b exited $rc"
@@ -124,7 +124,7 @@ printf 'TIER degrade: each one with no display at all\n'
 # SIGABRT, exit 134, core dumped, uncatchable -- and a crash takes
 # block-buffered stdout with it, so a program printing its progress prints
 # NOTHING and the failure reads as line 1. An example that asks
-# `qt.can_display()` first says a sentence instead.
+# `ui.can_display()` first says a sentence instead.
 for f in $examples; do
     b=$(basename "$f")
     set +e

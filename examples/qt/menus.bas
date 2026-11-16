@@ -35,7 +35,7 @@ window app( title: "Menus", width: 520, height: 360 )
         ' for being pure space.
         separator()
         ' DISABLED IN THE DECLARATION, because there is nothing to save yet.
-        ' Enabled below by `qt.set` once there is -- which is the whole reason
+        ' Enabled below by `ui.set` once there is -- which is the whole reason
         ' the run-time property door exists: the declaration is written before
         ' anything has happened.
         item act_save( label: "Save", shortcut: "Ctrl+S", enabled: false )
@@ -51,7 +51,7 @@ window app( title: "Menus", width: 520, height: 360 )
         ' A SUBMENU -- the same production recursively, which is why it cost
         ' nothing. It is also the shape that caught a defect: a by-name
         ' registry is FLAT, so a submenu hung off the BAR instead of inside
-        ' `View` produced ZERO mismatches until `qt.menus` could be asked for
+        ' `View` produced ZERO mismatches until `ui.menus` could be asked for
         ' the structure.
         menu "Theme"
             item theme_light( label: "Light", checkable: true, checked: true )
@@ -95,21 +95,21 @@ window app( title: "Menus", width: 520, height: 360 )
         note("Wrap is now " + string(app.read("view_wrap", "checked")))
     end on
     on theme_dark.triggered
-        qt.theme("QWidget { background: #2e3440; color: #eceff4; }")
+        ui.theme("QWidget { background: #2e3440; color: #eceff4; }")
         note("Dark")
     end on
     on theme_light.triggered
-        qt.theme("")
+        ui.theme("")
         note("Light")
     end on
     on act_about.triggered
         note("Menus cost no grammar at all.")
     end on
     on act_quit.triggered
-        qt.stop()
+        ui.stop()
     end on
     on close.clicked
-        qt.stop()
+        ui.stop()
     end on
 end window
 
@@ -121,20 +121,20 @@ end function
 
 program main(args)
     ' ONE RECORD FOR THE STATE, the rule every stateful gBASIC GUI follows: a
-    ' handler sees the frame that called `qt.run` and CANNOT rebind a scalar
+    ' handler sees the frame that called `ui.run` and CANNOT rebind a scalar
     ' there, so warning 2104's own remedy is to mutate a field of a shared
     ' record.
     g = { lines: [] }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so there is no window to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
         return
     end if
-    qt.open(app)
+    ui.open(app)
 
     if contains(args, "check") then
-        ' THE BAR IS A TREE AND THE REGISTRY IS FLAT, so `qt.menus` is the only
+        ' THE BAR IS A TREE AND THE REGISTRY IS FLAT, so `ui.menus` is the only
         ' thing that can witness the STRUCTURE: an item in the wrong menu, a
         ' submenu hung off the bar, a missing separator -- each is invisible to
         ' a by-name check and each produced zero mismatches before this existed.
@@ -168,8 +168,8 @@ program main(args)
         print "wrap after a click: " + string(app.read("view_wrap", "checked"))
         print "the log says:    " + string(len(g.lines)) + " line(s)"
         print "the last one:    " + g.lines[len(g.lines) - 1]
-        qt.stop()
+        ui.stop()
         return
     end if
-    qt.run()
+    ui.run()
 end program

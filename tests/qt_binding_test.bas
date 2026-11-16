@@ -70,54 +70,54 @@ end window
 program main()
     person = { name: "Ada Lovelace", age: 36, owed: {USD}"500.00", active: true }
 
-    check("the edit form opens", qt.open(editor), true)
-    check("the show form opens", qt.open(viewer), true)
+    check("the edit form opens", ui.open(editor), true)
+    check("the show form opens", ui.open(viewer), true)
 
     ' ---------------------------------------------------- POPULATION, BOTH WAYS
     ' THE BINDING IS THE NAME (§2.2), so there is nothing to look up -- and the
     ' two directions must populate the SAME, or a later difference could be a
     ' difference in populating rather than in direction.
-    check("a bound field is filled from the record", qt.read(editor, "name"),
+    check("a bound field is filled from the record", ui.read(editor, "name"),
           "Ada Lovelace")
-    check("a number arrives in gBASIC's own words", qt.read(editor, "age"), "36")
-    check("so does money", qt.read(editor, "owed"), "500.00")
-    check("and a boolean reaches the box", qt.read(editor, "active"), "true")
-    check("a SHOW form populates identically", qt.read(viewer, "name"),
+    check("a number arrives in gBASIC's own words", ui.read(editor, "age"), "36")
+    check("so does money", ui.read(editor, "owed"), "500.00")
+    check("and a boolean reaches the box", ui.read(editor, "active"), "true")
+    check("a SHOW form populates identically", ui.read(viewer, "name"),
           "Ada Lovelace")
-    check("including its box", qt.read(viewer, "active"), "true")
+    check("including its box", ui.read(viewer, "active"), "true")
     ' THE FIELDS MUST DIFFER FROM EACH OTHER, or every check above is satisfied
     ' by a backend writing one value into every part it can find.
     check("and the parts hold DIFFERENT values",
-          qt.read(editor, "name") = qt.read(editor, "age"), false)
+          ui.read(editor, "name") = ui.read(editor, "age"), false)
 
     ' ------------------------------------------------- DIRECTION, DIFFERENCE 1
     ' A ONE-WAY FORM TAKES NO TYPING, and the reason is not neatness: the
     ' alternative is a SILENT DISCARD -- somebody types into a display form,
-    ' nothing complains, and `qt.subject` never reports it. Which property says
+    ' nothing complains, and `ui.subject` never reports it. Which property says
     ' so is a fact about the widget, so a QLineEdit answers `readOnly` (which
     ' still allows selecting and copying, what a reader wants) and a QCheckBox,
     ' having no such property, is disabled instead.
-    check("a show form's field is read-only", qt.read(viewer, "name", "readOnly"),
+    check("a show form's field is read-only", ui.read(viewer, "name", "readOnly"),
           true)
     check("CONTROL: an edit form's field is NOT",
-          qt.read(editor, "name", "readOnly"), false)
-    check("a show form's box is disabled", qt.read(viewer, "active", "enabled"),
+          ui.read(editor, "name", "readOnly"), false)
+    check("a show form's box is disabled", ui.read(viewer, "active", "enabled"),
           false)
     check("CONTROL: an edit form's box is NOT",
-          qt.read(editor, "active", "enabled"), true)
+          ui.read(editor, "active", "enabled"), true)
 
     ' ------------------------------------------------- DIRECTION, DIFFERENCE 2
     ' THE RECORD FOLLOWS THE WIDGETS, read AT THE MOMENT IT IS ASKED. §2.2
     ' proposed a watcher per field in each direction; the second direction
     ' cannot work that way, because a widget's signal fires inside
-    ' QApplication::exec() beneath `qt.run()` and the frame current then is
-    ' whichever one called `qt.run` -- there is no frame to write back into. A
+    ' QApplication::exec() beneath `ui.run()` and the frame current then is
+    ' whichever one called `ui.run` -- there is no frame to write back into. A
     ' record being a VALUE is what makes reading on demand enough.
-    w = qt.write(editor, "name", "Ada L")
-    w = qt.write(editor, "age", "37")
-    w = qt.write(editor, "owed", "612.50")
-    w = qt.write(editor, "active", false)
-    after = qt.subject(editor, "person")
+    w = ui.write(editor, "name", "Ada L")
+    w = ui.write(editor, "age", "37")
+    w = ui.write(editor, "owed", "612.50")
+    w = ui.write(editor, "active", false)
+    after = ui.subject(editor, "person")
     check("the edited field follows", after.name, "Ada L")
     check("an edited box follows", after.active, false)
 
@@ -139,8 +139,8 @@ program main()
     ' record must NOT follow its widgets. Without this check, `to show` and
     ' `to edit` differ only in whether typing is possible, and a backend that
     ' folded both back would pass everything above.
-    w = qt.write(viewer, "name", "typed over")
-    held = qt.subject(viewer, "person")
+    w = ui.write(viewer, "name", "typed over")
+    held = ui.subject(viewer, "person")
     check("a SHOW form's record does not follow its widgets", held.name,
           "Ada Lovelace")
 
@@ -155,10 +155,10 @@ program main()
     ' does not answer `unknown` -- which is also why the gather checks in
     ' qt_window_test.bas are guarded with `has`.
     blank = {}
-    check("a form over an empty record opens", qt.open(fresh_form), true)
-    check("and its parts are empty", qt.read(fresh_form, "name"), "")
-    w = qt.write(fresh_form, "name", "Grace")
-    made = qt.subject(fresh_form, "blank")
+    check("a form over an empty record opens", ui.open(fresh_form), true)
+    check("and its parts are empty", ui.read(fresh_form, "name"), "")
+    w = ui.write(fresh_form, "name", "Grace")
+    made = ui.subject(fresh_form, "blank")
     check("a field absent at open is present after an edit", made.name, "Grace")
     check("one nobody typed in is present and empty", made.town, "")
     check("so the record gained both parts", len(keys(made)), 2)
@@ -176,11 +176,11 @@ program main()
     ' above, so what it wants is an opt-in from the author -- a form declaring
     ' its subject's fields fixed -- and not a rule.
     who = { email: "ada@example.org" }
-    check("a form with a misspelled part still opens", qt.open(typo), true)
+    check("a form with a misspelled part still opens", ui.open(typo), true)
     check("and the part is empty, having matched no field",
-          qt.read(typo, "emial"), "")
-    w = qt.write(typo, "emial", "typed into the wrong name")
-    slip = qt.subject(typo, "who")
+          ui.read(typo, "emial"), "")
+    w = ui.write(typo, "emial", "typed into the wrong name")
+    slip = ui.subject(typo, "who")
     check("COST: the intended field keeps its captured value", slip.email,
           "ada@example.org")
     check("COST: and the record gained a field named after the typo",
@@ -188,7 +188,7 @@ program main()
 
     ' ------------------------------------------------------------- REFUSALS
     on error goto next
-    x = qt.open(orphan)
+    x = ui.open(orphan)
     if error then
         print "NOSUBJECT: " + error.message
         error.clear()
@@ -197,7 +197,7 @@ program main()
     end if
 
     astring = "not a record"
-    x = qt.open(wrongkind)
+    x = ui.open(wrongkind)
     if error then
         print "NOTARECORD: " + error.message
         error.clear()
@@ -205,7 +205,7 @@ program main()
         print "MISMATCH a form bound to a string opened quietly"
     end if
 
-    x = qt.subject(editor, "nosuchsubject")
+    x = ui.subject(editor, "nosuchsubject")
     if error then
         print "NOSUCHFORM: " + error.message
         error.clear()
@@ -215,8 +215,8 @@ program main()
 
     ' A `type:` CAN REFUSE WHAT WAS TYPED, and it must refuse rather than fold
     ' back something that is not money.
-    w = qt.write(editor, "owed", "not money at all")
-    x = qt.subject(editor, "person")
+    w = ui.write(editor, "owed", "not money at all")
+    x = ui.subject(editor, "person")
     if error then
         print "BADVALUE: " + error.message
         error.clear()

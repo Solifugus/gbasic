@@ -18,7 +18,7 @@
 '
 ' AND A CONTAINER CARRIES A NAME OR OPTIONS, NOT BOTH -- `tabs settings(
 ' movable: true )` with a body costs four grammar conflicts, measured -- so a
-' named container's properties are set at run time with `qt.set`, which this
+' named container's properties are set at run time with `ui.set`, which this
 ' example does below.
 
 window prefs( title: "Preferences", width: 460, height: 360 )
@@ -70,19 +70,19 @@ window prefs( title: "Preferences", width: 460, height: 360 )
     end on
 
     on close.clicked
-        qt.stop()
+        ui.stop()
     end on
 end window
 
 program main(args)
     folders = [ { kind: "Documents", path: "~/Documents" },
                 { kind: "Pictures",  path: "~/Pictures" } ]
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so there is no window to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
         return
     end if
-    qt.open(prefs)
+    ui.open(prefs)
 
     ' PROPERTIES AT RUN TIME, which is the other half of name-or-options: the
     ' declaration could not carry `movable:` beside the name, so it is set
@@ -104,13 +104,13 @@ program main(args)
         ' CHANGING PAGES FROM THE PROGRAM, which fires the handler above.
         prefs.set("settings", "currentIndex", 2)
         print "after setting:     " + string(prefs.read("settings", "currentIndex"))
-        qt.stop()
+        ui.stop()
         return
     end if
-    qt.run()
+    ui.run()
 end program
 
-' A NOTE ON WHAT IS NOT READABLE. `qt.menus` answers the MENU bar's captions
+' A NOTE ON WHAT IS NOT READABLE. `ui.menus` answers the MENU bar's captions
 ' because a menu bar is a TREE the flat by-name registry cannot witness. A tab
 ' bar has the same shape of problem and no verb for it: `tabText` is a METHOD
 ' taking an index rather than a property, so it is not reachable by name. The

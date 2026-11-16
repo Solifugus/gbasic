@@ -90,7 +90,7 @@ def qt(gb):
         print("SKIP no display")
         p.kill()
         return
-    check("a line sets the label while qt.run holds the thread", first == "shown hello", first)
+    check("a line sets the label while ui.run holds the thread", first == "shown hello", first)
     time.sleep(1.5)
     say("ticks")
     ticks = p.stdout.readline().decode().strip()
@@ -99,7 +99,7 @@ def qt(gb):
     say("set Łódź")
     check("a second line, later", p.stdout.readline().decode().strip() == "shown Łódź")
     say("quit")
-    check("quit stops Qt's loop and qt.run returns", p.stdout.readline().decode().strip() == "run returned")
+    check("quit stops Qt's loop and ui.run returns", p.stdout.readline().decode().strip() == "run returned")
     p.stdin.close()
     check("the program ends", p.wait(timeout=10) == 0)
     err = b"\n".join(l for l in p.stderr.read().splitlines() if b"propagateSizeHints" not in l)

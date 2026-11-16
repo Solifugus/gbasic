@@ -1,7 +1,7 @@
 ' ASKING BEFORE ACTING. A statement and a question, which is most of what a
 ' real application needs from a dialog.
 '
-' `qt.confirm` ANSWERS A BOOLEAN rather than a button code: two buttons is the
+' `ui.confirm` ANSWERS A BOOLEAN rather than a button code: two buttons is the
 ' whole of what it offers, and anything richer is a window shown modally, which
 ' is a different thing with a layout of its own. NO IS THE DEFAULT BUTTON,
 ' because a question answered by pressing Return without reading should not be
@@ -24,22 +24,22 @@ end window
 program main(args)
     g = { want: true, asked: 0 }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display"
         return
     end if
-    qt.open(app)
+    ui.open(app)
     app.write("who", "Ada Lovelace")
 
     ' A RECIPE HAS NOBODY TO CLICK, so a timer answers for one. In a real
-    ' program this is how a dialog TIMES OUT -- and `qt.answer` refuses when
+    ' program this is how a dialog TIMES OUT -- and `ui.answer` refuses when
     ' nothing is open rather than doing nothing, because a program left
     ' waiting for somebody who is not there is a hang and not a failure.
     beat = timer.every(0.05)
     watch(timer.ticks)
         while count(timer.ticks) > 0
             ev = take_first(timer.ticks)
-            ok = qt.answer(g.want)
+            ok = ui.answer(g.want)
         end while
     end watch
 
@@ -65,5 +65,5 @@ program main(args)
     print "inform returned " + string(told)
 
     cancelled = timer.cancel(beat)
-    qt.stop()
+    ui.stop()
 end program

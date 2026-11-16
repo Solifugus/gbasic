@@ -60,12 +60,12 @@ window customer( title: "Customer", width: 480, height: 320 )
     ' handler having run, so a handler fired during CONSTRUCTION is visible in
     ' the ordering; the second reads the live widget, which is what says the
     ' signal arrived with the window actually built. With one line doing both,
-    ' a connect-time fire raises inside `qt.read` and prints NOTHING -- so the
+    ' a connect-time fire raises inside `ui.read` and prints NOTHING -- so the
     ' ordering control could not see it, which is how the perturbation written
     ' for that control came back green.
     on save.clicked
         print "SIGNAL save.clicked"
-        print "SIGNAL read -> " + qt.read(customer, "name")
+        print "SIGNAL read -> " + ui.read(customer, "name")
     end on
 end window
 
@@ -82,22 +82,22 @@ program main()
     ' THE SUBJECT MUST EXIST, and that is new: `form to edit cust` has named a
     ' subject since the declaration shipped and nothing required one to be
     ' there, so a form bound to nothing opened quietly and could never
-    ' populate. It is read from the frame that calls `qt.open` -- "a place to
+    ' populate. It is read from the frame that calls `ui.open` -- "a place to
     ' read in the frame where the subject lives" (§0.2), that frame being
     ' exactly the one asking.
     cust = { id: "A-1000" }
 
-    check("qt.open answers", qt.open(customer), true)
+    check("ui.open answers", ui.open(customer), true)
     print "opened"
 
     ' POPULATION, which is the binding's first direction: a field named `id`
     ' takes `cust.id` because THE BINDING IS THE NAME (§2.2).
-    check("a field bound by name is filled in", qt.read(customer, "id"), "A-1000")
+    check("a field bound by name is filled in", ui.read(customer, "id"), "A-1000")
 
     ' A PROPERTY SET AT CONSTRUCTION, read back THROUGH QT rather than from our
     ' own record -- which is the only thing that distinguishes a property that
     ' reached the widget from one we merely remembered.
-    check("a button's text reached the widget", qt.read(customer, "save"), "Save")
+    check("a button's text reached the widget", ui.read(customer, "save"), "Save")
 
     ' `label:` REACHES THE WIDGET, which it did NOT for the first four
     ' increments of this backend: the option lives in `options` and
@@ -113,32 +113,32 @@ program main()
     ' here rather than left as a silent gap, and the `cells` tier asserts the
     ' field case through GEOMETRY instead, a label taking a column of its own.
     check("a check box's `label:` reached it as its text",
-          qt.read(customer, "hold", "text"), "On hold")
+          ui.read(customer, "hold", "text"), "On hold")
 
     ' AN ABSENT FIELD LEAVES THE PART EMPTY and does not raise -- the same
     ' answer `r.missing` gives on a record, and what a form filling in a NEW
     ' record needs, every field there being absent until somebody types.
     check("a field whose name the record lacks starts empty",
-          qt.read(customer, "name"), "")
-    check("writing reaches it", qt.write(customer, "name", "Ada Lovelace"), true)
-    check("and reads back", qt.read(customer, "name"), "Ada Lovelace")
+          ui.read(customer, "name"), "")
+    check("writing reaches it", ui.write(customer, "name", "Ada Lovelace"), true)
+    check("and reads back", ui.read(customer, "name"), "Ada Lovelace")
 
     ' MONEY THROUGH THE ONE RENDERER (PLAT-RENDER), so a typed value reaches a
     ' widget in the words the language itself uses.
     m {USD}= "1250.50"
-    check("money is written in gBASIC's own words", qt.write(customer, "limit", m), true)
-    check("and reads back as that text", qt.read(customer, "limit"), "1250.50")
+    check("money is written in gBASIC's own words", ui.write(customer, "limit", m), true)
+    check("and reads back as that text", ui.read(customer, "limit"), "1250.50")
 
-    check("a check box starts clear", qt.read(customer, "hold"), "false")
-    check("and can be set", qt.write(customer, "hold", true), true)
-    check("reading a box answers its state", qt.read(customer, "hold"), "true")
+    check("a check box starts clear", ui.read(customer, "hold"), "false")
+    check("and can be set", ui.write(customer, "hold", true), true)
+    check("reading a box answers its state", ui.read(customer, "hold"), "true")
 
     ' THE RECORD FOLLOWS THE WIDGETS, GATHERED FROM BOTH FORMS. `cust` is
     ' edited by two forms here -- one in the column, one inside the `group` --
     ' which is how a long form is laid out, and the fold must therefore visit
     ' every form carrying that subject rather than the first. Nothing above
     ' this point would notice if it visited only one.
-    back = qt.subject(customer, "cust")
+    back = ui.subject(customer, "cust")
     check("a field untouched by the fold keeps its captured value", back.id, "A-1000")
     check("the first form's field follows the widget", back.name, "Ada Lovelace")
     ' GUARDED WITH `has`, because a fold that visited only the FIRST form
@@ -161,12 +161,12 @@ program main()
     ' THE SIGNAL. `click` is invoked BY NAME through QMetaObject, which emits
     ' the real `clicked` signal through the real connection -- so what is being
     ' tested is the whole path and not a short cut around it.
-    check("invoking a method by name", qt.invoke(customer, "save", "click"), true)
+    check("invoking a method by name", ui.invoke(customer, "save", "click"), true)
     print "after click"
 
     ' REFUSALS, each beside a legal neighbour above it.
     on error goto next
-    x = qt.read(customer, "nosuchpart")
+    x = ui.read(customer, "nosuchpart")
     if error then
         print "refused a part that does not exist: " + error.message
     else
@@ -174,7 +174,7 @@ program main()
     end if
 
     on error goto next
-    x = qt.invoke(customer, "save", "nosuchmethod")
+    x = ui.invoke(customer, "save", "nosuchmethod")
     if error then
         print "refused a method that does not exist: " + error.message
     else
@@ -182,7 +182,7 @@ program main()
     end if
 
     on error goto next
-    x = qt.open(customer)
+    x = ui.open(customer)
     if error then
         print "refused opening the same window twice: " + error.message
     else
@@ -198,14 +198,14 @@ program main()
     ' what the direction's name suggests until you picture it. Either reading
     ' alone passes on a backend that hardcodes one shape.
     check("a column's rule is horizontal",
-          qt.read(customer, "rule", "frameShape"), "HLine")
+          ui.read(customer, "rule", "frameShape"), "HLine")
     check("and a row's divider is vertical",
-          qt.read(customer, "bar", "frameShape"), "VLine")
+          ui.read(customer, "bar", "frameShape"), "VLine")
     ' AND IT IS A REAL WIDGET, which is why it may be named at all: Studio
     ' styles its own rule, so one that could not be addressed could not be
     ' themed.
-    qt.set(customer, "rule", "styleSheet", "color: #808080")
+    ui.set(customer, "rule", "styleSheet", "color: #808080")
     check("a rule can be themed like anything else",
-          qt.read(customer, "rule", "styleSheet"), "color: #808080")
+          ui.read(customer, "rule", "styleSheet"), "color: #808080")
 
 end program

@@ -16,7 +16,16 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
-Nothing yet.
+### What a program written for 0.11.0 sees differently
+
+- **The GUI module is called `ui`, not `qt`.** Every `qt.` verb is now
+  `ui.` (`ui.open`, `ui.read`, `ui.run`, …), `--capabilities` lists `ui`,
+  and a window handle's methods are `ui`'s. The name says what the module is
+  for, not which toolkit draws it, so a second backend can serve the same
+  programs (docs/ui_design.md). There is no alias. A program still calling
+  `qt.open` is told `the qt module is called ui since 0.12.0: write ui.open`,
+  unless it loaded a library of its own called `qt`, which then owns the
+  name.
 
 ---
 

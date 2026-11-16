@@ -1,12 +1,12 @@
-' A CONTAINER WHOSE CHILDREN CHANGE (§0.27) -- `qt.refresh(win, name, items)`,
+' A CONTAINER WHOSE CHILDREN CHANGE (§0.27) -- `ui.refresh(win, name, items)`,
 ' the third form of a verb that already means "re-read what this shows".
 ' Under QT_QPA_PLATFORM=offscreen.
 '
 ' WHY IT EXISTS, and it was asked for by the consumer with measurements:
-' `qt.refresh` answered this for a `table` (§0.11, written for gBASIC Studio's
+' `ui.refresh` answered this for a `table` (§0.11, written for gBASIC Studio's
 ' file tree by name) and for a form's subject, and for no other container --
 ' so Studio's notebook, which is one tab per open document, could not gain or
-' lose a tab while the window was up. The record `qt.open` reads can hold any
+' lose a tab while the window was up. The record `ui.open` reads can hold any
 ' number of anything (§0.9), and every one of them was frozen the moment the
 ' window opened.
 '
@@ -50,79 +50,79 @@ end function
 program main()
     g = { checks: 0, bad: 0 }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NODISPLAY"
         return
     end if
 
     win = notebook([ doc_tab("1", "one.bas", "x = 1"),
                      doc_tab("2", "two.bas", "y = 2") ])
-    check("the built notebook passes qt.check", string(qt.check(win)), "true")
+    check("the built notebook passes ui.check", string(ui.check(win)), "true")
 
-    qt.open(win)
-    check("it opens with two tabs", string(qt.read(win, "pages", "count")), "2")
+    ui.open(win)
+    check("it opens with two tabs", string(ui.read(win, "pages", "count")), "2")
     check("and the captions are the record's",
-          join(qt.tabs(win, "pages"), "|"), "one.bas|two.bas")
+          join(ui.tabs(win, "pages"), "|"), "one.bas|two.bas")
 
     ' ---- TYPE INTO THE FIRST ONE, which is what must survive -------------
-    typed = qt.write(win, "ed1", "x = 1" + chr(10) + "print x")
+    typed = ui.write(win, "ed1", "x = 1" + chr(10) + "print x")
     check("text written into the first editor",
-          left(qt.read(win, "ed1"), 5), "x = 1")
+          left(ui.read(win, "ed1"), 5), "x = 1")
 
     ' ---- GROW: a third document opens -----------------------------------
-    n = qt.refresh(win, "pages", [ doc_tab("1", "one.bas", "IGNORED"),
+    n = ui.refresh(win, "pages", [ doc_tab("1", "one.bas", "IGNORED"),
                                   doc_tab("2", "two.bas", "y = 2"),
                                   doc_tab("3", "three.bas", "z = 3") ])
     check("the reconcile reports three children", string(n), "3")
-    check("and the widget agrees", string(qt.read(win, "pages", "count")), "3")
+    check("and the widget agrees", string(ui.read(win, "pages", "count")), "3")
     ' THE CHECK THE WHOLE VERB IS FOR. A rebuild would answer the record's
     ' "IGNORED" -- which is deliberately NOT what the editor holds -- and a
     ' reconcile answers what the person typed.
     check("a KEPT editor still holds what was typed, not the record",
-          replace(qt.read(win, "ed1"), chr(10), "/"), "x = 1/print x")
+          replace(ui.read(win, "ed1"), chr(10), "/"), "x = 1/print x")
     check("and the new one was built from the record",
-          qt.read(win, "ed3"), "z = 3")
+          ui.read(win, "ed3"), "z = 3")
 
     ' ---- A CAPTION FOLLOWS ITS DATA, without rebuilding the page --------
-    n = qt.refresh(win, "pages", [ doc_tab("1", "* one.bas", "IGNORED"),
+    n = ui.refresh(win, "pages", [ doc_tab("1", "* one.bas", "IGNORED"),
                                   doc_tab("2", "two.bas", "y = 2"),
                                   doc_tab("3", "three.bas", "z = 3") ])
     check("the caption follows the record",
-          join(qt.tabs(win, "pages"), "|"), "* one.bas|two.bas|three.bas")
+          join(ui.tabs(win, "pages"), "|"), "* one.bas|two.bas|three.bas")
     check("and the editor under it is STILL the same widget",
-          replace(qt.read(win, "ed1"), chr(10), "/"), "x = 1/print x")
+          replace(ui.read(win, "ed1"), chr(10), "/"), "x = 1/print x")
 
     ' ---- REORDER: the record's order is the tab order -------------------
-    n = qt.refresh(win, "pages", [ doc_tab("3", "three.bas", "z = 3"),
+    n = ui.refresh(win, "pages", [ doc_tab("3", "three.bas", "z = 3"),
                                   doc_tab("1", "* one.bas", "IGNORED"),
                                   doc_tab("2", "two.bas", "y = 2") ])
     check("the order follows the record",
-          join(qt.tabs(win, "pages"), "|"), "three.bas|* one.bas|two.bas")
+          join(ui.tabs(win, "pages"), "|"), "three.bas|* one.bas|two.bas")
     check("and a moved child is still the same widget",
-          replace(qt.read(win, "ed1"), chr(10), "/"), "x = 1/print x")
+          replace(ui.read(win, "ed1"), chr(10), "/"), "x = 1/print x")
 
     ' ---- SHRINK: a document closes --------------------------------------
     ' THE TIER A GROW-ONLY SUITE WOULD MISS: a reconcile that appends rather
     ' than rewrites passes every check above.
-    n = qt.refresh(win, "pages", [ doc_tab("1", "* one.bas", "IGNORED"),
+    n = ui.refresh(win, "pages", [ doc_tab("1", "* one.bas", "IGNORED"),
                                   doc_tab("3", "three.bas", "z = 3") ])
     check("the reconcile reports two children", string(n), "2")
-    check("and the widget agrees", string(qt.read(win, "pages", "count")), "2")
+    check("and the widget agrees", string(ui.read(win, "pages", "count")), "2")
     check("the captions are the two that remain",
-          join(qt.tabs(win, "pages"), "|"), "* one.bas|three.bas")
+          join(ui.tabs(win, "pages"), "|"), "* one.bas|three.bas")
     check("the survivor still holds its text",
-          replace(qt.read(win, "ed1"), chr(10), "/"), "x = 1/print x")
+          replace(ui.read(win, "ed1"), chr(10), "/"), "x = 1/print x")
 
     ' AND THE ABSENT ONE IS GONE RATHER THAN HIDDEN, which is the measured
     ' trap: a widget merely unhooked from a layout stays visible.
     on error goto next
-    x = qt.read(win, "ed2")
+    x = ui.read(win, "ed2")
     check("a dropped child's name is gone from the window",
           error.message, "this window has no part named `ed2`")
     error.clear()
     on error stop
 
-    qt.close(win)
+    ui.close(win)
 
     ' ---- A BOX, NOT A TAB SET -------------------------------------------
     ' THE OTHER HALF OF THE ADMITTED SET, and it was missing until a
@@ -137,38 +137,38 @@ program main()
                                   options: { text: "first" } },
                                 { kind: "part", word: "field", name: "b",
                                   options: { text: "second" } } ] } ] }
-    qt.open(box)
-    typed2 = qt.write(box, "a", "TYPED")
-    n = qt.refresh(box, "stack", [ { kind: "part", word: "field", name: "b",
+    ui.open(box)
+    typed2 = ui.write(box, "a", "TYPED")
+    n = ui.refresh(box, "stack", [ { kind: "part", word: "field", name: "b",
                                      options: { text: "second" } },
                                    { kind: "part", word: "field", name: "a",
                                      options: { text: "IGNORED" } },
                                    { kind: "part", word: "field", name: "c",
                                      options: { text: "third" } } ])
     check("a column reconciles too", string(n), "3")
-    check("and a kept field keeps what was typed", qt.read(box, "a"), "TYPED")
-    check("and the new one came from the record", qt.read(box, "c"), "third")
+    check("and a kept field keeps what was typed", ui.read(box, "a"), "TYPED")
+    check("and the new one came from the record", ui.read(box, "c"), "third")
     ' THE ORDER IS THE RECORD'S, asked of the CONTAINER rather than of any
-    ' record of where things were put. `qt.at` cannot answer this -- it reads
-    ' coordinates in a `cells` grid only -- which is why `qt.children` exists:
+    ' record of where things were put. `ui.at` cannot answer this -- it reads
+    ' coordinates in a `cells` grid only -- which is why `ui.children` exists:
     ' a box's order was observable through nothing at all.
     check("the box's order is the record's",
-          join(qt.children(box, "stack"), "|"), "b|a|c")
+          join(ui.children(box, "stack"), "|"), "b|a|c")
 
     ' ---- THE SAME NAME FOR A DIFFERENT WORD IS NOT THE SAME CHILD --------
     ' Without this the WORD half of the key is unasserted, which a
     ' perturbation proved: ignoring the word left every check above green,
     ' because nothing here had ever changed one.
-    n = qt.refresh(box, "stack", [ { kind: "part", word: "check", name: "a",
+    n = ui.refresh(box, "stack", [ { kind: "part", word: "check", name: "a",
                                      options: { label: "now a box" } } ])
     check("a name whose word changed is rebuilt", string(n), "1")
     check("and it is the widget the record now says",
-          string(qt.read(box, "a", "checkable")), "true")
-    qt.close(box)
+          string(ui.read(box, "a", "checkable")), "true")
+    ui.close(box)
 
     ' ---- A BUILT CHILD'S HANDLERS ARE CONNECTED (DOGFOOD 2026-10-19) ------
-    ' Reported from gBASIC Studio: a page built by `qt.refresh` rendered and
-    ' read back correctly and its button did NOTHING, because only `qt.open`
+    ' Reported from gBASIC Studio: a page built by `ui.refresh` rendered and
+    ' read back correctly and its button did NOTHING, because only `ui.open`
     ' ran the connect pass. Nothing else in this file could see it: no check
     ' above pressed anything. The rule is that a handler is connected exactly
     ' when its TARGET was built in this refresh, so the checks come in pairs:
@@ -185,104 +185,104 @@ program main()
                                  button_page("p1", "b1", on_one) ] },
                       { kind: "handler", target: "w", signal: "clicked",
                         handler: on_w } ] }
-    check("the deck passes qt.check", string(qt.check(deck)), "true")
-    qt.open(deck)
-    qt.invoke(deck, "b1", "click")
-    check("a handler connected by qt.open fires (the control)",
+    check("the deck passes ui.check", string(ui.check(deck)), "true")
+    ui.open(deck)
+    ui.invoke(deck, "b1", "click")
+    check("a handler connected by ui.open fires (the control)",
           string(g.one), "1")
 
-    n = qt.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
+    n = ui.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
                                      button_page("p1", "b1", on_one),
                                      button_page("p2", "b2", on_two) ])
-    qt.invoke(deck, "b2", "click")
-    check("a handler inside a page BUILT by qt.refresh fires", string(g.two), "1")
-    qt.invoke(deck, "b1", "click")
+    ui.invoke(deck, "b2", "click")
+    check("a handler inside a page BUILT by ui.refresh fires", string(g.two), "1")
+    ui.invoke(deck, "b1", "click")
     check("a KEPT page's handler still fires exactly once per click",
           string(g.one), "2")
 
-    n = qt.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
+    n = ui.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
                                      button_page("p1", "b1", on_one),
                                      button_page("p2", "b2", on_two) ])
-    qt.invoke(deck, "b2", "click")
+    ui.invoke(deck, "b2", "click")
     check("refreshing again does not connect a kept handler twice",
           string(g.two), "2")
 
     ' THE WINDOW'S OWN HANDLER, when its target is rebuilt: drop the page that
     ' holds `w`, then bring it back. The handler lives in the window record,
     ' not in the refresh items, and must follow the new widget.
-    qt.invoke(deck, "w", "click")
+    ui.invoke(deck, "w", "click")
     check("the window-declared handler fires before any rebuild", string(g.w), "1")
-    n = qt.refresh(deck, "leaves", [ button_page("p1", "b1", on_one),
+    n = ui.refresh(deck, "leaves", [ button_page("p1", "b1", on_one),
                                      button_page("p2", "b2", on_two) ])
-    n = qt.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
+    n = ui.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
                                      button_page("p1", "b1", on_one),
                                      button_page("p2", "b2", on_two) ])
-    qt.invoke(deck, "w", "click")
+    ui.invoke(deck, "w", "click")
     check("a window-declared handler follows its rebuilt target, once",
           string(g.w), "2")
 
     ' THE SAME HANDLER IN BOTH PLACES. `deck`'s own record still lists p1 with
     ' its handler, and so does the refresh, so rebuilding p1 meets one handler
     ' twice. It must be connected once.
-    n = qt.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
+    n = ui.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
                                      button_page("p2", "b2", on_two) ])
-    n = qt.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
+    n = ui.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
                                      button_page("p1", "b1", on_one),
                                      button_page("p2", "b2", on_two) ])
     before = g.one
-    qt.invoke(deck, "b1", "click")
+    ui.invoke(deck, "b1", "click")
     check("a handler listed in the window AND the refresh connects once",
           string(g.one - before), "1")
 
     ' A HANDLER BESIDE THE CHILDREN, naming a part built in the same refresh.
-    n = qt.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
+    n = ui.refresh(deck, "leaves", [ button_page("p0", "w", nothing),
                                      button_page("p1", "b1", on_one),
                                      button_page("p2", "b2", on_two),
                                      button_page("p3", "b3", nothing),
                                      { kind: "handler", target: "b3",
                                        signal: "clicked", handler: on_three } ])
-    qt.invoke(deck, "b3", "click")
+    ui.invoke(deck, "b3", "click")
     check("a handler beside the children reaches a part built with it",
           string(g.three), "1")
-    qt.close(deck)
+    ui.close(deck)
 
     ' ---- A CAPTIONED PART IN A BOX MOVES AND GOES WITH ITS CAPTION ----------
     ' A `field` in a column carries its caption as a separate QLabel before it
     ' in the layout. Until 2026-11-03 a reorder moved the part and left every
     ' caption piled at the end, a drop left the caption on screen, and
-    ' qt.children listed each caption as a nameless child. THE ORACLE IS A
+    ' ui.children listed each caption as a nameless child. THE ORACLE IS A
     ' FRESH WINDOW built in the final order: the reconciled box must lay out
     ' exactly as that one does. Asserting the parts' order alone passed on the
     ' broken version, since the parts WERE in order -- their captions were not.
     moved = caption_box("moved", [ captioned("fa", "Alpha"), captioned("fb", "Beta"),
                                    captioned("fc", "Gamma") ])
-    qt.open(moved)
-    check("qt.children lists the parts, not their captions",
-          join(qt.children(moved, "col"), "|"), "fa|fb|fc")
-    n = qt.refresh(moved, "col", [ captioned("fc", "Gamma"), captioned("fa", "Alpha"),
+    ui.open(moved)
+    check("ui.children lists the parts, not their captions",
+          join(ui.children(moved, "col"), "|"), "fa|fb|fc")
+    n = ui.refresh(moved, "col", [ captioned("fc", "Gamma"), captioned("fa", "Alpha"),
                                    captioned("fb", "Beta") ])
     check("a reorder puts the parts in the record's order",
-          join(qt.children(moved, "col"), "|"), "fc|fa|fb")
+          join(ui.children(moved, "col"), "|"), "fc|fa|fb")
     fresh = caption_box("fresh", [ captioned("fc", "Gamma"), captioned("fa", "Alpha"),
                                    captioned("fb", "Beta") ])
-    qt.open(fresh)
+    ui.open(fresh)
     check("and each part sits where a fresh build puts it, caption above",
           box_ys(moved, ["fc", "fa", "fb"]), box_ys(fresh, ["fc", "fa", "fb"]))
     check("each caption still names its own part",
-          qt.label(moved, "fa") + "|" + qt.label(moved, "fc"), "Alpha|Gamma")
-    qt.close(fresh)
+          ui.label(moved, "fa") + "|" + ui.label(moved, "fc"), "Alpha|Gamma")
+    ui.close(fresh)
 
     ' DROPPING THE MIDDLE PART: a caption left behind sits between the other
     ' two and pushes the last one down, which the fresh build shows.
-    n = qt.refresh(moved, "col", [ captioned("fc", "Gamma"), captioned("fb", "Beta") ])
+    n = ui.refresh(moved, "col", [ captioned("fc", "Gamma"), captioned("fb", "Beta") ])
     check("a dropped part takes its caption with it",
-          join(qt.children(moved, "col"), "|"), "fc|fb")
+          join(ui.children(moved, "col"), "|"), "fc|fb")
     pair = caption_box("pair", [ captioned("fc", "Gamma"), captioned("fb", "Beta") ])
-    qt.open(pair)
+    ui.open(pair)
     check("  and the box lays out as a fresh one with those two",
           box_ys(moved, ["fc", "fb"]), box_ys(pair, ["fc", "fb"]))
-    qt.close(pair)
-    qt.close(moved)
+    ui.close(pair)
+    ui.close(moved)
 
     print "ok   " + string(g.checks) + " checks, " + string(g.bad) + " mismatches"
 end program
@@ -301,7 +301,7 @@ end function
 function box_ys(win, parts)
     out = []
     for each p in parts
-        append(out, string(qt.read(win, p, "y")))
+        append(out, string(ui.read(win, p, "y")))
     end for
     return join(out, "|")
 end function

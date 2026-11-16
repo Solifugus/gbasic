@@ -164,7 +164,7 @@ else
 fi
 
 printf 'TIER qt: a window takes qt verbs as methods\n'
-printf 'print qt.can_display()\n' > "$work/qtprobe.bas"
+printf 'print ui.can_display()\n' > "$work/qtprobe.bas"
 probe=$(QT_QPA_PLATFORM=offscreen ./gbasic "$work/qtprobe.bas" 2>/dev/null)
 if [ "$probe" != true ]; then
     printf '  SKIP qt (no Qt in this build, or no display: Qt methods were NOT measured)\n'

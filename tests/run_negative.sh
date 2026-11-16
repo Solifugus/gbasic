@@ -397,6 +397,7 @@ cases=(
     negative_alias_shadowed_by_library
     negative_alias_same_declared_name
     negative_alias_declared_name_gone
+    negative_qt_renamed_ui
 )
 
 for name in "${cases[@]}"; do

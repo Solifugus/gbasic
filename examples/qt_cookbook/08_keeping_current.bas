@@ -1,6 +1,6 @@
 ' KEEPING THE SCREEN CURRENT. A declaration is read ONCE, when the window
 ' opens -- so a table built from a list that later grows would show the old
-' list for ever. `qt.refresh` re-reads a subject and redraws from it.
+' list for ever. `ui.refresh` re-reads a subject and redraws from it.
 '
 ' IT ADDRESSES A TABLE BY ITS NAME AND A FORM BY ITS SUBJECT, because a form
 ' has no name; a word that meant both would be refused rather than resolved by
@@ -54,12 +54,12 @@ program main(args)
     tasks = [ { what: "Write the page", state: "open" },
               { what: "Run the gate",   state: "open" } ]
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display"
         return
     end if
     current = tasks[0]
-    qt.open(board)
+    ui.open(board)
 
     print "the table starts with " + string(len(tasks)) + " rows"
     board.invoke("add", "click")
@@ -71,5 +71,5 @@ program main(args)
     board.invoke("done", "click")
     print "row 1's state is now: " + board.cell("jobs", 1, "state")
     print "and the form says:    " + board.read("state")
-    qt.stop()
+    ui.stop()
 end program

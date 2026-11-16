@@ -30,11 +30,11 @@ window settings( title: "Settings", width: 520, height: 300 )
 end window
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display"
         return
     end if
-    qt.open(settings)
+    ui.open(settings)
 
     ' THE `tabs` IS NAMED, so its state is reachable by name like any other
     ' property -- `currentIndex` is Qt's own, and nothing in this backend knows
@@ -58,5 +58,5 @@ program main(args)
     at = settings.at("hard")
     print ("and a grid on page 2 still has coordinates: column " +
            string(at.column))
-    qt.stop()
+    ui.stop()
 end program

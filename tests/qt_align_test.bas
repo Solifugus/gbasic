@@ -1,5 +1,5 @@
 ' A COLUMN'S ALIGNMENT -- `align:` on a table's or tree's `field`, and
-' `qt.alignment`. Under QT_QPA_PLATFORM=offscreen.
+' `ui.alignment`. Under QT_QPA_PLATFORM=offscreen.
 '
 ' ASKED FOR BY gBASIC STUDIO: Matthew wants numbers right-aligned in its grid,
 ' an asking table, and Studio could not do it, because the model answered only
@@ -7,7 +7,7 @@
 ' nothing set Qt::TextAlignmentRole. Studio already knows which columns are
 ' numeric (it sorts them numerically), so it says so per column.
 '
-' THE ORACLE ASKS QT, not the declaration: `qt.alignment` reads the asking
+' THE ORACLE ASKS QT, not the declaration: `ui.alignment` reads the asking
 ' model's TextAlignmentRole and a held table's or tree's item alignment, so a
 ' backend that stored `align:` and never applied it is caught. The control is
 ' a column declaring nothing, which must stay left, or "right" would be
@@ -40,51 +40,51 @@ end function
 
 program main()
     g = { checks: 0, bad: 0 }
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NODISPLAY"
         return
     end if
     rows = [ { who: "Ada", total: "12.50" }, { who: "Lin", total: "7.00" } ]
     nodes = [ { text: "src", size: "", depth: 0 },
               { text: "a.bas", size: "120", depth: 1 } ]
-    qt.open(app)
-    qt.rows(app, "asked", 3)
+    ui.open(app)
+    ui.rows(app, "asked", 3)
 
     ' ---- THE ASKING TABLE, which is Studio's case ------------------------
     check("an asking table's undeclared column stays left",
-          qt.alignment(app, "asked", 0, "label"), "left")
+          ui.alignment(app, "asked", 0, "label"), "left")
     check("its `align: \"right\"` column is right-aligned",
-          qt.alignment(app, "asked", 2, "amount"), "right")
+          ui.alignment(app, "asked", 2, "amount"), "right")
     check("and `align: \"center\"` centres",
-          qt.alignment(app, "asked", 1, "note"), "center")
-    check("while the cell's text is unchanged", qt.cell(app, "asked", 2, "amount"), "20")
+          ui.alignment(app, "asked", 1, "note"), "center")
+    check("while the cell's text is unchanged", ui.cell(app, "asked", 2, "amount"), "20")
 
     ' ---- A HELD TABLE, and a refresh keeps it ----------------------------
     check("a held table's undeclared column stays left",
-          qt.alignment(app, "held", 0, "who"), "left")
-    check("its right-aligned column", qt.alignment(app, "held", 1, "total"), "right")
+          ui.alignment(app, "held", 0, "who"), "left")
+    check("its right-aligned column", ui.alignment(app, "held", 1, "total"), "right")
     append(rows, { who: "Kim", total: "3.25" })
-    x = qt.refresh(app, "held")
-    check("a row added by qt.refresh is aligned too",
-          qt.alignment(app, "held", 2, "total"), "right")
+    x = ui.refresh(app, "held")
+    check("a row added by ui.refresh is aligned too",
+          ui.alignment(app, "held", 2, "total"), "right")
 
     ' ---- A TREE ----------------------------------------------------------
     check("a tree's undeclared column stays left",
-          qt.alignment(app, "files", 1, "text"), "left")
-    check("its right-aligned column", qt.alignment(app, "files", 1, "size"), "right")
+          ui.alignment(app, "files", 1, "text"), "left")
+    check("its right-aligned column", ui.alignment(app, "files", 1, "size"), "right")
 
     ' ---- REFUSALS ----------------------------------------------------------
     refused("a column that is not there",
-            "qt.alignment: table `held` has no `nope` column", 1)
+            "ui.alignment: table `held` has no `nope` column", 1)
     refused("a row that is not there",
-            "qt.alignment: table `held` has no row 99", 2)
+            "ui.alignment: table `held` has no row 99", 2)
     refused("a built window with a misspelled column option",
             "window: a table's column takes `label`, `type`, `depth` and `align`, and 'alignn' is none of them -- did you mean 'align'? (at column[0] > table t > field n)",
             3)
     refused("an `align:` that is not left, right or center",
             "window: `align:` on column 'n' is \"left\", \"right\" or \"center\" (at column[0] > table t > field n)",
             4)
-    qt.close(app)
+    ui.close(app)
     print "ok   " + string(g.checks) + " checks, " + string(g.bad) + " mismatches"
 end program
 
@@ -99,10 +99,10 @@ end function
 
 function refused(what, want, which)
     on error goto next
-    if which = 1 then x = qt.alignment(app, "held", 0, "nope")
-    if which = 2 then x = qt.alignment(app, "held", 99, "total")
-    if which = 3 then x = qt.check(built({ alignn: "right" }))
-    if which = 4 then x = qt.check(built({ align: "middle" }))
+    if which = 1 then x = ui.alignment(app, "held", 0, "nope")
+    if which = 2 then x = ui.alignment(app, "held", 99, "total")
+    if which = 3 then x = ui.check(built({ alignn: "right" }))
+    if which = 4 then x = ui.check(built({ align: "middle" }))
     if error then
         check(what, error.message, want)
     else if which >= 3 then

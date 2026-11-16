@@ -1,5 +1,5 @@
-' THE CLIPBOARD (docs/qt_gui_design.md §0.33) -- `qt.copy(text)` and
-' `qt.clipboard()`. Under QT_QPA_PLATFORM=offscreen: a real QClipboard, no
+' THE CLIPBOARD (docs/qt_gui_design.md §0.33) -- `ui.copy(text)` and
+' `ui.clipboard()`. Under QT_QPA_PLATFORM=offscreen: a real QClipboard, no
 ' display.
 '
 ' REPORTED FROM THE gBASIC STUDIO BENCH as one of two gaps that stopped STU-21
@@ -45,7 +45,7 @@ end function
 ' exactly the shape that fails under GTK.
 function copy_from_a_frame()
     buffer = "hello from a dead frame"
-    ok = qt.copy(buffer)
+    ok = ui.copy(buffer)
     return ok
 end function
 
@@ -58,35 +58,35 @@ end window
 program main()
     g = { checks: 0, bad: 0 }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NODISPLAY"
         return
     end if
 
     ' WITH NO WINDOW OPEN AT ALL, which is the structural claim: this and every
-    ' check before the last tier runs before `qt.open` is ever called.
+    ' check before the last tier runs before `ui.open` is ever called.
     check("nothing has been copied, so there is nothing to read",
-          is_unknown(qt.clipboard()), true)
+          is_unknown(ui.clipboard()), true)
 
-    check("a copy reports it happened", qt.copy("plain text"), true)
-    check("and reads back", qt.clipboard(), "plain text")
+    check("a copy reports it happened", ui.copy("plain text"), true)
+    check("and reads back", ui.clipboard(), "plain text")
 
     ' THE DEAD-FRAME TIER. If Qt copied lazily the clipboard would hold a
     ' reference to a buffer that no longer exists and this would read back
     ' empty, with the copy still having reported success.
     check("the copy reported success", copy_from_a_frame(), true)
     check("a copy survives the frame that made it",
-          qt.clipboard(), "hello from a dead frame")
+          ui.clipboard(), "hello from a dead frame")
 
     ' NOTHING AND EMPTY ARE DIFFERENT ANSWERS, which Qt distinguishes rather
     ' than this backend guessing: a fresh clipboard has no text, and a
     ' deliberately copied empty string has text of length 0. Without this the
     ' first check in the file is satisfied by a reader that answers `unknown`
     ' for everything it cannot be bothered with.
-    nothing_copied = qt.copy("")
+    nothing_copied = ui.copy("")
     check("an empty string copies", nothing_copied, true)
-    check("and is TEXT, not absence", is_unknown(qt.clipboard()), false)
-    check("and is empty", qt.clipboard(), "")
+    check("and is TEXT, not absence", is_unknown(ui.clipboard()), false)
+    check("and is empty", ui.clipboard(), "")
 
     ' A NUL IS CONTENT (PLAT-NUL). The naive implementation measures the text
     ' with strlen, puts one byte on the clipboard and reports success -- a
@@ -94,8 +94,8 @@ program main()
     ' LENGTH and a byte rather than the string's rendering.
     three = "a" + chr(0) + "b"
     check("the subject really is three bytes", len(three), 3)
-    ok3 = qt.copy(three)
-    back = qt.clipboard()
+    ok3 = ui.copy(three)
+    back = ui.clipboard()
     check("a copy carrying a NUL is not shortened", len(back), 3)
     ' AS HEX RATHER THAN BYTE BY BYTE, which is PLAT-NUL's own convention and
     ' is also what keeps the tier reporting: `byte_at(back, 1)` on a shortened
@@ -106,66 +106,66 @@ program main()
     ' MULTI-LINE AND NON-ASCII, because a file path is not the only thing
     ' anybody copies and an editor's selection is both.
     sample = "first line" + chr(10) + "héllo ☃"
-    ok4 = qt.copy(sample)
-    check("multi-line and non-ASCII text round-trips", qt.clipboard(), sample)
+    ok4 = ui.copy(sample)
+    check("multi-line and non-ASCII text round-trips", ui.clipboard(), sample)
 
     ' A PATH MAY ARRIVE AS A REFERENCE, for the reason §0.16's chooser options
     ' do: copying the path of a file is the use this verb was asked for, and
     ' what a program holds after choosing one is a `{file}`.
     f {file}= "/etc/hostname"
-    ok5 = qt.copy(f)
-    check("a file reference copies as its path", qt.clipboard(), "/etc/hostname")
+    ok5 = ui.copy(f)
+    check("a file reference copies as its path", ui.clipboard(), "/etc/hostname")
     d {dir}= "/tmp"
-    ok6 = qt.copy(d)
-    check("and so does a folder reference", qt.clipboard(), "/tmp")
+    ok6 = ui.copy(d)
+    check("and so does a folder reference", ui.clipboard(), "/tmp")
 
     ' REFUSALS, each beside its nearest legal neighbour.
     on error goto next
-    bad1 = qt.copy()
+    bad1 = ui.copy()
     if error then
-        check("qt.copy with nothing to copy is refused", error.message,
-              "qt.copy expects the text to copy")
+        check("ui.copy with nothing to copy is refused", error.message,
+              "ui.copy expects the text to copy")
     else
-        print "MISMATCH qt.copy() was accepted"
+        print "MISMATCH ui.copy() was accepted"
     end if
 
     on error goto next
-    bad2 = qt.copy(42)
+    bad2 = ui.copy(42)
     if error then
         check("a number is refused by name", error.message,
-              "qt.copy expects text, or a file or folder reference")
+              "ui.copy expects text, or a file or folder reference")
     else
-        print "MISMATCH qt.copy(42) was accepted"
+        print "MISMATCH ui.copy(42) was accepted"
     end if
 
     on error goto next
-    bad3 = qt.clipboard("put this")
+    bad3 = ui.clipboard("put this")
     if error then
-        check("qt.clipboard takes no arguments", error.message,
-              "qt.clipboard takes no arguments -- it answers what is on the " +
-              "clipboard, and qt.copy(text) puts something there")
+        check("ui.clipboard takes no arguments", error.message,
+              "ui.clipboard takes no arguments -- it answers what is on the " +
+              "clipboard, and ui.copy(text) puts something there")
     else
-        print "MISMATCH qt.clipboard(text) was accepted"
+        print "MISMATCH ui.clipboard(text) was accepted"
     end if
 
     ' AND THE CONTROL FOR ALL THREE: the clipboard still works afterwards, or
     ' "it refuses" would be satisfied by a verb that refuses everything.
-    ok7 = qt.copy("after the refusals")
-    check("a refusal does not break the clipboard", qt.clipboard(),
+    ok7 = ui.copy("after the refusals")
+    check("a refusal does not break the clipboard", ui.clipboard(),
           "after the refusals")
 
     ' WITH A WINDOW OPEN IT IS THE SAME CLIPBOARD, which is the other half of
     ' "no window argument": the verb must not quietly mean something different
     ' once a window exists, and `gb_qt_begin` being idempotent is what that
     ' rests on.
-    opened = qt.open(app)
+    opened = ui.open(app)
     check("a window opened", opened, true)
     check("the clipboard still holds what was copied before it",
-          qt.clipboard(), "after the refusals")
-    ok8 = qt.copy("copied with a window up")
-    check("and copying still works", qt.clipboard(), "copied with a window up")
-    shut = qt.close(app)
-    check("the clipboard outlives the window", qt.clipboard(),
+          ui.clipboard(), "after the refusals")
+    ok8 = ui.copy("copied with a window up")
+    check("and copying still works", ui.clipboard(), "copied with a window up")
+    shut = ui.close(app)
+    check("the clipboard outlives the window", ui.clipboard(),
           "copied with a window up")
 
     print "ok   " + string(g.checks) + " checks, " + string(g.bad) + " mismatches"

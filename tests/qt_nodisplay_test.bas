@@ -17,7 +17,7 @@ program main()
     print "progress line two"
 
     on error goto next
-    ok = qt.open(tiny)
+    ok = ui.open(tiny)
     if error then
         print "REFUSED: " + error.message
     else

@@ -28,13 +28,13 @@ window form( title: "Modal extent", width: 320, height: 160 )
         button save( label: "Save" )
     end column
     on save.clicked
-        x = qt.accept(form)
+        x = ui.accept(form)
     end on
 end window
 
 program main(args)
     g = { ticks: 0 }
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NO DISPLAY"
         return
     end if
@@ -56,19 +56,19 @@ program main(args)
             ' run_process_lifetime.sh and run_web_pool.sh already use.
             if exists({file}args[0]) then
                 print "ANSWERING"
-                x = qt.accept(form)
+                x = ui.accept(form)
             end if
             if g.ticks >= 150 then
                 ' AND A BOUND BEHIND IT, because an unanswered modal window is
                 ' a HANG and a hang is not a failure.
                 print "GIVING UP"
-                x = qt.accept(form)
+                x = ui.accept(form)
             end if
         end while
     end watch
 
     print "MODAL UP"
-    accepted = qt.open_modal(form)
+    accepted = ui.open_modal(form)
     print "MODAL DOWN " + string(accepted)
     print "TICKS " + string(g.ticks)
     ' IT ENDS ITSELF. Both sources have to go or gBASIC's post-main loop keeps

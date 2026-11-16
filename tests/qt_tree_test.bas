@@ -15,7 +15,7 @@
 ' animated, alternatingRowColors, uniformRowHeights, expandsOnDoubleClick,
 ' allColumnsShowFocus, sortingEnabled -- and `showGrid` does not exist on a
 ' tree at all, so there are no grid lines to turn off. So what `tree` adds is
-' THE WIDGET AND THE DEPTH, not the look; the look was always one `qt.set`
+' THE WIDGET AND THE DEPTH, not the look; the look was always one `ui.set`
 ' away and this fixture asserts that rather than assuming it.
 '
 ' THE SUBJECT IS A FLAT LIST WITH A DEPTH, which is what a program producing a
@@ -29,8 +29,8 @@
 ' collapsed child is NOT `isHidden()`, so Qt's own NotHidden iterator still
 ' counts every row and there is no free "visible index". An index into the
 ' rows the program handed over is the one number that stays meaningful however
-' the tree is expanded, so that is what `qt.selected` answers and what
-' `qt.cell` and `qt.depth` take.
+' the tree is expanded, so that is what `ui.selected` answers and what
+' `ui.cell` and `ui.depth` take.
 
 function rows_now(extra)
     out = [ { name: "src",      depth: 0 },
@@ -72,29 +72,29 @@ end window
 program main()
     g = { checks: 0, bad: 0 }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NODISPLAY"
         return
     end if
 
     rows = rows_now(false)
-    qt.open(nav)
+    ui.open(nav)
 
     ' ---- THE ROWS ARE THE SUBJECT'S, INDEXED AS DECLARED ----------------
-    check("the first row reads back", qt.cell(nav, "files", 0, "name"), "src")
-    check("and so does a nested one", qt.cell(nav, "files", 3, "name"),
+    check("the first row reads back", ui.cell(nav, "files", 0, "name"), "src")
+    check("and so does a nested one", ui.cell(nav, "files", 3, "name"),
           "util.bas")
 
     ' ---- THE DEPTH REACHED THE WIDGET, which is the oracle: a populate that
     ' ignored it would answer 0 for every row and every check above would
     ' still pass, the names being right either way.
-    check("a top-level row is at depth 0", string(qt.depth(nav, "files", 0)),
+    check("a top-level row is at depth 0", string(ui.depth(nav, "files", 0)),
           "0")
-    check("its child is at depth 1", string(qt.depth(nav, "files", 1)), "1")
-    check("and the grandchild at depth 2", string(qt.depth(nav, "files", 3)),
+    check("its child is at depth 1", string(ui.depth(nav, "files", 1)), "1")
+    check("and the grandchild at depth 2", string(ui.depth(nav, "files", 3)),
           "2")
     check("the second top-level row is back at 0",
-          string(qt.depth(nav, "files", 4)), "0")
+          string(ui.depth(nav, "files", 4)), "0")
 
     ' ---- THE DEPTH COLUMN IS DECLARED AND NOT DRAWN --------------------
     ' A perturbation that DREW it changed nothing else: cells are read by field
@@ -102,79 +102,79 @@ program main()
     ' difference is that a second column exists. Asking for one is therefore
     ' the check -- and it has to be a REFUSAL, which is the honest answer for a
     ' column that is not there.
-    check("the drawn column is the first", qt.heading(nav, "files", 0), "File")
+    check("the drawn column is the first", ui.heading(nav, "files", 0), "File")
     on error goto next
-    qt.heading(nav, "files", 1)
+    ui.heading(nav, "files", 1)
     check("and there is no second column, the depth not being drawn",
-          error.message, "qt.heading: `files` has no column 1")
+          error.message, "ui.heading: `files` has no column 1")
     error.clear()
     on error stop
 
     ' ---- SELECTION IS AN INDEX INTO THE DECLARED ROWS -------------------
     check("nothing is chosen to begin with",
-          string(is_unknown(qt.selected(nav, "files"))), "true")
-    qt.select(nav, "files", 3)
+          string(is_unknown(ui.selected(nav, "files"))), "true")
+    ui.select(nav, "files", 3)
     check("choosing a nested row answers its row index",
-          string(qt.selected(nav, "files")), "3")
+          string(ui.selected(nav, "files")), "3")
 
     ' ---- A DIRECTORY EXPANDS: the count changes and the tree follows ----
-    ' `qt.refresh` re-reads the subject, the same verb a table uses -- which is
+    ' `ui.refresh` re-reads the subject, the same verb a table uses -- which is
     ' the whole reason Studio's browser had to be a table in the first place.
     rows = rows_now(true)
-    drew = qt.refresh(nav, "files")
+    drew = ui.refresh(nav, "files")
     check("the refresh drew every row", string(drew), "6")
-    check("the new row is there", qt.cell(nav, "files", 5, "name"),
+    check("the new row is there", ui.cell(nav, "files", 5, "name"),
           "README.md")
     check("at the depth the record gives it",
-          string(qt.depth(nav, "files", 5)), "1")
+          string(ui.depth(nav, "files", 5)), "1")
 
-    ' ---- THE CHROME WAS ALWAYS ONE `qt.set` AWAY ------------------------
+    ' ---- THE CHROME WAS ALWAYS ONE `ui.set` AWAY ------------------------
     ' The correction to the request that asked for this: these are properties,
     ' so a tree looks right without any new vocabulary at all.
-    qt.set(nav, "files", "headerHidden", true)
+    ui.set(nav, "files", "headerHidden", true)
     check("the header can be hidden by name",
-          string(qt.read(nav, "files", "headerHidden")), "true")
-    qt.set(nav, "files", "alternatingRowColors", true)
+          string(ui.read(nav, "files", "headerHidden")), "true")
+    ui.set(nav, "files", "alternatingRowColors", true)
     check("and the rows can alternate",
-          string(qt.read(nav, "files", "alternatingRowColors")), "true")
+          string(ui.read(nav, "files", "alternatingRowColors")), "true")
     check("indentation is readable too",
-          string(number(qt.read(nav, "files", "indentation")) > 0), "true")
+          string(number(ui.read(nav, "files", "indentation")) > 0), "true")
 
     ' ---- THE REFUSALS --------------------------------------------------
     on error goto next
-    qt.depth(nav, "files", 99)
+    ui.depth(nav, "files", 99)
     check("a row that is not there is refused by number",
-          error.message, "qt.depth: `files` has no row 99")
+          error.message, "ui.depth: `files` has no row 99")
     error.clear()
-    qt.depth(nav, "name", 0)
+    ui.depth(nav, "name", 0)
     check("and a part that is not a tree says so",
-          error.message, "qt.depth: `name` is not a tree")
+          error.message, "ui.depth: `name` is not a tree")
     error.clear()
     on error stop
 
-    qt.close(nav)
+    ui.close(nav)
 
     ' ---- THE DEPTH DECLARED FIRST (§0.33) -------------------------------
     rows2 = [ { depth: 0, name: "src" }, { depth: 1, name: "eval.c" } ]
-    qt.open(nav2)
+    ui.open(nav2)
     ' READ THROUGH A CAUGHT RAISE, because the defect this tier exists for
     ' RAISES rather than answering wrongly -- `name` resolved to a column the
-    ' widget does not have, so `qt.cell` reported "has no row 0" and killed
+    ' widget does not have, so `ui.cell` reported "has no row 0" and killed
     ' the fixture. A dead fixture reports "exited 1" and hides the assertion
     ' that had already named the problem (the run_discovery lesson), so the
     ' raise becomes the "got" instead.
     on error goto next
-    first = qt.cell(nav2, "files2", 0, "name")
+    first = ui.cell(nav2, "files2", 0, "name")
     if error then
         first = "RAISED: " + error.message
         error.clear()
     end if
-    nested = qt.cell(nav2, "files2", 1, "name")
+    nested = ui.cell(nav2, "files2", 1, "name")
     if error then
         nested = "RAISED: " + error.message
         error.clear()
     end if
-    cap = qt.heading(nav2, "files2", "name")
+    cap = ui.heading(nav2, "files2", "name")
     if error then
         cap = "RAISED: " + error.message
         error.clear()
@@ -184,24 +184,24 @@ program main()
           first, "src")
     check("and so does the nested row", nested, "eval.c")
     check("the caption is on the drawn column", cap, "File")
-    check("and the depth still reads", string(qt.depth(nav2, "files2", 1)), "1")
+    check("and the depth still reads", string(ui.depth(nav2, "files2", 1)), "1")
 
     ' AND THE UNDRAWN COLUMN SAYS WHICH OF THE TWO THINGS IS WRONG: "there is
     ' no such column" would be false about a field the author can see in their
     ' own declaration.
     on error goto next
-    qt.cell(nav2, "files2", 0, "depth")
+    ui.cell(nav2, "files2", 0, "depth")
     check("asking for the depth column as a cell says it is not drawn",
           error.message,
-          "qt.cell: `files2`'s `depth` column carries the depth and is not " +
-          "drawn, so it holds no cell -- qt.depth answers it")
+          "ui.cell: `files2`'s `depth` column carries the depth and is not " +
+          "drawn, so it holds no cell -- ui.depth answers it")
     error.clear()
-    qt.cell(nav2, "files2", 0, "nope")
+    ui.cell(nav2, "files2", 0, "nope")
     check("and a column nobody declared still gets the plain message",
-          error.message, "qt.cell: table `files2` has no `nope` column")
+          error.message, "ui.cell: table `files2` has no `nope` column")
     error.clear()
     on error stop
-    qt.close(nav2)
+    ui.close(nav2)
 
     print "ok   " + string(g.checks) + " checks, " + string(g.bad) + " mismatches"
 end program

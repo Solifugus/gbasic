@@ -110,8 +110,12 @@ uses today. A first mapping, to be fixed in the increment, not here:
 | `max_length` | `maxLength` |
 | `wrap` | `lineWrapMode`, `wordWrap` |
 | `tab_width` | `tabStopDistance` |
-| `font_size` | field 1 of `QFont::toString` |
+| `font_size` | field 1 of `QFont::toString`; fractional points (Studio's zoom writes 11.5) |
 | `x`, `y`, `width`, `height` | geometry, read only |
+| `min_width`, `max_width`, `min_height`, `max_height` | the same Qt names, camel-cased; lifting a cap must work |
+| `tip` | `toolTip` (option and property) |
+| `colors` | read only: a record in the theme record's field names, what the part is drawn in (replaces reading `palette`) |
+| `emphasis` | readable; the teaching cue, replacing a per-part `styleSheet` selected through `objectName` |
 | `headings` | `headerHidden`, inverted |
 | `striped` | `alternatingRowColors` |
 | `sortable` | `sortingEnabled` |
@@ -120,12 +124,26 @@ uses today. A first mapping, to be fixed in the increment, not here:
 | `toolbar_shows` | `toolButtonStyle` (`"icons"`, `"text"`, `"both"`) |
 | invoke `press` | `click`, `trigger`, `toggle` (by part) |
 | invoke `focus`, `undo`, `redo`, `hide`, `raise`, `close` | `setFocus`, and the same names |
+| invoke `select_all`, `fit_columns` | `selectAll`, `resizeColumnsToContents` |
 | event `pressed` | `clicked`, `triggered` |
 | event `changed` | `textChanged`, `currentIndexChanged`, `currentChanged`, `toggled`, `stateChanged` |
-| event `chosen` | `itemSelectionChanged`, `itemClicked`, `cellClicked` |
+| event `chosen` | `itemSelectionChanged`: the selection moved, by click or by arrow key |
+| event `activated` | `itemClicked`, `cellClicked`, `itemActivated`, `activated`: a row was clicked or activated |
 | event `entered` | `returnPressed` |
 | event `context` | `customContextMenuRequested` |
 | events `closed`, `wheel`, `gutter`, `block`, `link` | gBASIC's already |
+
+**Selection and activation are two events, never one.** Studio's check
+found the first draft folding `itemClicked` into `chosen`. Studio opens a
+file on a click and only selects it on an arrow key. Merged, arrowing down
+the tree would open every file on the way. Studio's own rule says
+selection and activation are separate, and the vocabulary keeps them
+separate.
+
+Studio's session checked this table against every literal name, handler
+and option key it uses (2026-11-16). Its corrections are in the table: the
+two events above, `tip`, `select_all`, `fit_columns`, the size caps,
+fractional `font_size`, `colors` and a readable `emphasis`.
 
 The rest of the measured names lose their reason to exist:
 - `styleSheet`, `palette` and `objectName` go to the theme record (§7).
@@ -349,7 +367,8 @@ as gBASIC's:
 | `fg` | ink |
 | `faint` | secondary ink, disabled |
 | `line` | borders, separators, splitter handles |
-| `sel`, `on_sel` | selection and the ink on it |
+| `sel`, `on_sel` | selection and the ink on it; also a checked tool button |
+| `arrow`, `tick`, `dock_close`, `dock_float` | icon files: a choice's drop-down arrow, a check box's tick (palette-painted under Qt, so it drew no box in dark), a dock's close and float buttons |
 
 `ui.theme(record)` is every backend's. `ui.theme(text)` is a QSS and
 belongs to the `stylesheet` group. On Qt the record is rendered to QSS
@@ -436,7 +455,7 @@ vocabularies. §3 is rewritten: gBASIC's words only, Qt names refused with
 every name used in either tree today.
 
 **Q3. The theme record.** *Studio's
-`{ bg, base, ctl, hi, fg, faint, line, sel, on_sel }` as gBASIC's.*
+`{ bg, base, ctl, hi, fg, faint, line, sel, on_sel }` as gBASIC's,* with its four icon fields (`arrow`, `tick`, `dock_close`, `dock_float`), which Studio's check showed the sheet cannot do without.
 `font_size` stays a part word (§3). The three per-part sheets become a
 tree option, a `text` option `bold: true`, and an `emphasis` word for the
 teaching cue, fixed in push A's step 3.

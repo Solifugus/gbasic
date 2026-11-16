@@ -16,9 +16,9 @@ window ed( title: "Editor", width: 620, height: 420 )
 
     ' THE MARGIN IS AN EVENT, NOT A SIGNAL -- it is a plain child widget and
     ' emits nothing -- and the handler ASKS which line it was, the rule
-    ' `qt.wheel()` already follows.
+    ' `ui.wheel()` already follows.
     on code.gutter
-        c = qt.gutter_click()
+        c = ui.gutter_click()
         b = ed.marks("code", "break")
         if contains(b, c.line) then
             ed.mark("code", "break", b excluding [c.line])
@@ -31,12 +31,12 @@ end window
 
 program main( args )
     g = { clicked: [] }
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display -- nothing to show"
         return
     end if
 
-    qt.open(ed)
+    ui.open(ed)
     ed.write("code", join([ "function total(rows)",
                                 "    t = 0",
                                 "    for each r in rows",
@@ -65,7 +65,7 @@ program main( args )
     ed.mark("code", "warning", [])
     print "warning, cleared:            " + string(ed.marks("code", "warning"))
 
-    ' A BREAKPOINT, SET THE WAY A PERSON SETS ONE. `qt.gutter_press` is what
+    ' A BREAKPOINT, SET THE WAY A PERSON SETS ONE. `ui.gutter_press` is what
     ' stands in for the mouse; a line that is not on screen is refused,
     ' because a mouse could not land there either.
     ed.gutter_press("code", 4)
@@ -74,7 +74,7 @@ program main( args )
     print "breakpoints:                 " + string(ed.marks("code", "break"))
 
     ' CLICKING THE SAME LINE AGAIN CLEARS IT -- the handler above decides that,
-    ' not the margin: `qt.mark` replaces a list and the program says what the
+    ' not the margin: `ui.mark` replaces a list and the program says what the
     ' list is.
     ed.gutter_press("code", 4)
     print "after clicking 4 again:      " + string(ed.marks("code", "break"))

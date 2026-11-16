@@ -4,8 +4,8 @@
 ' A SPLIT CANNOT BE NAMED. Its one slot carries the direction (`across` or
 ' `down`), because a container takes a name OR options and never both -- so
 ' there is nothing to look up, and a split is addressed by naming a part INSIDE
-' it. That is the same rule `qt.pane` already follows, so the sizes are simply
-' part of what `qt.pane` answers.
+' it. That is the same rule `ui.pane` already follows, so the sizes are simply
+' part of what `ui.pane` answers.
 '
 ' WHAT YOU SET IS A RATIO, NOT A MEASUREMENT. Qt adds the drag handle and the
 ' layout's margins, and it re-proportions everything when the window is
@@ -39,13 +39,13 @@ window app( title: "Layout", width: 900, height: 420 )
 end window
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display, so no window -- the declaration is still checked"
         return
     end if
 
     rows = [{ line: "ready" }]
-    qt.open(app)
+    ui.open(app)
 
     ' WHAT THE SPLIT LOOKS LIKE NOW. `browser` is a part of the outer split, so
     ' naming it is how the outer split is addressed.

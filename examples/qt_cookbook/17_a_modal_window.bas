@@ -1,4 +1,4 @@
-' A WINDOW SHOWN MODALLY -- what `qt.confirm` is not.
+' A WINDOW SHOWN MODALLY -- what `ui.confirm` is not.
 '
 ' A message box offers two buttons and that is the whole of it, so anything
 ' richer -- a form to fill in, a list to choose from -- is an ordinary `window`
@@ -6,7 +6,7 @@
 ' the declaration, the binding and the handlers are the same code, and nothing
 ' here is modal-specific except the two verbs that answer it.
 '
-' `qt.open_modal` BLOCKS until somebody answers, and answers TRUE for an accept
+' `ui.open_modal` BLOCKS until somebody answers, and answers TRUE for an accept
 ' and FALSE for a reject, a close, or the window being dismissed. It CLOSES THE
 ' WINDOW BEFORE RETURNING, which is why the `closed` handler is where you read
 ' the form -- the same rule an ordinary window follows.
@@ -14,7 +14,7 @@
 ' AND IT DOES NOT STARVE THE REST OF THE PROGRAM. Opened from `main`, gBASIC's
 ' own sources keep running: a webserver answers and a `timer` fires, which is
 ' what lets this recipe answer its own window. The limitation is the other case
-' and `qt.confirm` already has it: a modal window raised from INSIDE a handler
+' and `ui.confirm` already has it: a modal window raised from INSIDE a handler
 ' suspends every source until it is answered.
 window edit( title: "Customer", width: 360, height: 200 )
     column( margin: 10, spacing: 8 )
@@ -29,7 +29,7 @@ window edit( title: "Customer", width: 360, height: 200 )
         end row
     end column
 
-    ' TWO VERBS, AND THEY ARE NOT `qt.answer`. That one drives a DIALOG from
+    ' TWO VERBS, AND THEY ARE NOT `ui.answer`. That one drives a DIALOG from
     ' the program when nobody is there -- a timeout, an unattended run. These
     ' are the person's own answer arriving through a button they pressed.
     on save.clicked
@@ -50,7 +50,7 @@ end window
 program main(args)
     g = { typed: {}, ticks: 0, press: "save" }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display -- nothing to open"
         return
     end if

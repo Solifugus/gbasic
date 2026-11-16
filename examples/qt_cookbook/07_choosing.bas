@@ -2,7 +2,7 @@
 ' remember; a `choice` shows the names and the program keeps the ids.
 '
 ' ITS ITEMS COME FROM DATA, so a declared `options:` list is for the fixed case
-' -- a direction, a status -- and `qt.options` is for anything that moves. BAG's
+' -- a direction, a status -- and `ui.options` is for anything that moves. BAG's
 ' area editor needs both in one window, which is the measurement that said
 ' support both rather than one.
 window move_form( title: "Choosing", width: 420, height: 220 )
@@ -22,12 +22,12 @@ program main(args)
               { id: 2, name: "The Garden" },
               { id: 3, name: "The Tunnel" } ]
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display"
         return
     end if
     plan = { heading: "north", leads_to: "" }
-    qt.open(move_form)
+    ui.open(move_form)
 
     ' A SENTINEL FIRST, so "nowhere" is choosable rather than absent.
     names = ["(nowhere)"]
@@ -37,7 +37,7 @@ program main(args)
     shown = move_form.options("leads_to", names)
     print "the dropdown offers " + string(shown) + " choices"
 
-    ' CHOOSING BY NAME. `qt.write` on a choice REFUSES a name that is not in
+    ' CHOOSING BY NAME. `ui.write` on a choice REFUSES a name that is not in
     ' the list rather than silently doing nothing, which is what Qt's own
     ' setCurrentText does on an uneditable box.
     move_form.write("leads_to", "The Garden")
@@ -53,5 +53,5 @@ program main(args)
     end for
     print "which is area id:   " + string(goes_to)
     print "the direction is:   " + move_form.read("heading")
-    qt.stop()
+    ui.stop()
 end program

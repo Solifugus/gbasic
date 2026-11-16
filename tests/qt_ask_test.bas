@@ -1,4 +1,4 @@
-' A TABLE THAT ASKS FOR ITS CELLS (§0.25) -- `table x to ask fn`, `qt.rows`,
+' A TABLE THAT ASKS FOR ITS CELLS (§0.25) -- `table x to ask fn`, `ui.rows`,
 ' and a model behind a QTableView. Under QT_QPA_PLATFORM=offscreen.
 '
 ' WHY IT EXISTS. `table x to show <list>` materialises every row into a
@@ -16,7 +16,7 @@
 '
 ' AND THAT CLAIM IS ASSERTED HERE, IN THE LANGUAGE, which took one more idea:
 ' nothing paints offscreen without a real turn of Qt's loop, so `repaint`
-' answered 0 -- the fixture hands the thread to `qt.run()` and takes it back
+' answered 0 -- the fixture hands the thread to `ui.run()` and takes it back
 ' with a timer, which is cookbook recipe 13's pattern. With that, a MILLION-row
 ' table asks for about three dozen cells.
 '
@@ -91,7 +91,7 @@ function cell_of(row, column)
     if column = 1 then
         ' A NUMBER, not text: the kind must survive the crossing and be
         ' rendered by the ONE renderer rather than by this module's own
-        ' opinion -- which is the rule `qt.write` already follows.
+        ' opinion -- which is the rule `ui.write` already follows.
         return row * 2
     end if
     return {date}"2026-03-04"
@@ -113,19 +113,19 @@ program main()
             ev = take_first(timer.ticks)
             g.ticks = g.ticks + 1
             if g.stopping and g.ticks >= 2 then
-                qt.stop()
+                ui.stop()
             end if
         end while
     end watch
 
-    qt.open(app)
+    ui.open(app)
 
     ' ---- the row count is a VERB, because it changes --------------------
-    check("a new asking table has no rows yet", qt.rows(app, "results"), 0)
-    qt.rows(app, "results", 100)
-    check("and it takes a count", qt.rows(app, "results"), 100)
-    qt.rows(app, "results", 1000000)
-    check("which can be set again", qt.rows(app, "results"), 1000000)
+    check("a new asking table has no rows yet", ui.rows(app, "results"), 0)
+    ui.rows(app, "results", 100)
+    check("and it takes a count", ui.rows(app, "results"), 100)
+    ui.rows(app, "results", 1000000)
+    check("which can be set again", ui.rows(app, "results"), 1000000)
 
     ' ---- THE COST IS THE VIEWPORT, NOT THE TABLE -----------------------
     ' THE LOAD-BEARING TIER. Asserted as a DIFFERENCE between two row counts
@@ -136,29 +136,29 @@ program main()
     ' TWO TURNS OF QT'S LOOP, AND BOTH ARE ENTERED FROM THE TOP LEVEL of the
     ' program block -- which is not a style choice. A `watch` body fires only
     ' while the GLOBAL frame is current (`watcher_trigger_change` returns at
-    ' once otherwise), so `qt.run()` called from inside a FUNCTION leaves that
+    ' once otherwise), so `ui.run()` called from inside a FUNCTION leaves that
     ' function's frame current for the whole of Qt's loop and every tick is
     ' appended to `timer.ticks` and never delivered. The timer's own schedule
     ' advances, so it looks like it is working, and the program HANGS. Measured
     ' while writing this fixture, which first wrapped these turns in a `spin()`
     ' helper and hung with no output at all.
-    ' THE COUNTER IS RESET BEFORE `qt.rows`, NOT AFTER, and that boundary is
+    ' THE COUNTER IS RESET BEFORE `ui.rows`, NOT AFTER, and that boundary is
     ' the assertion: what is being measured is the WHOLE cost of showing N
     ' rows -- telling the table how many there are AND painting it. Reset
     ' afterwards, a model that did expensive work while being told the count
     ' would be invisible, and a perturbation that prefetched five hundred rows
-    ' on every `qt.rows` passed every check in this file.
+    ' on every `ui.rows` passed every check in this file.
     g.asked = 0
     g.ticks = 0
     g.stopping = true
-    qt.rows(app, "results", 100)
-    qt.run()
+    ui.rows(app, "results", 100)
+    ui.run()
     small = g.asked
 
     g.asked = 0
     g.ticks = 0
-    qt.rows(app, "results", 1000000)
-    qt.run()
+    ui.rows(app, "results", 1000000)
+    ui.run()
     big = g.asked
 
     check("a hundred rows asks for some cells", small > 0, true)
@@ -173,78 +173,78 @@ program main()
     ' ---- the callback is asked for real coordinates ---------------------
     ' A CELL ENCODES ITS OWN ROW, so an offset shows real data about the wrong
     ' record rather than something obviously broken.
-    check("a cell knows its row", qt.cell(app, "results", 7, "who"),
+    check("a cell knows its row", ui.cell(app, "results", 7, "who"),
           "customer 7")
-    check("and a different row differs", qt.cell(app, "results", 8, "who"),
+    check("and a different row differs", ui.cell(app, "results", 8, "who"),
           "customer 8")
     check("the callback saw that row", g.last_row, 8)
 
     ' ---- the value's KIND survives the crossing ------------------------
     ' Rendered through the ONE renderer, so a number and a date arrive in the
     ' words the language itself uses.
-    check("a number cell", qt.cell(app, "results", 5, "total"), "10")
-    check("a date cell", qt.cell(app, "results", 5, "when"), "2026-03-04")
+    check("a number cell", ui.cell(app, "results", 5, "total"), "10")
+    check("a date cell", ui.cell(app, "results", 5, "when"), "2026-03-04")
 
     ' ---- THE COLUMN ORACLE ---------------------------------------------
     ' A cell's data comes from the CALLBACK and its heading from the
     ' DECLARATION, so a column mapped wrongly shows the right values under the
     ' wrong headings -- which only the captions can say. By POSITION, because
     ' by name shares the resolution being tested.
-    check("column 0 is the customer", qt.heading(app, "results", 0), "Customer")
-    check("column 1 is the total", qt.heading(app, "results", 1), "Total")
-    check("column 2 is the date", qt.heading(app, "results", 2), "Placed")
+    check("column 0 is the customer", ui.heading(app, "results", 0), "Customer")
+    check("column 1 is the total", ui.heading(app, "results", 1), "Total")
+    check("column 2 is the date", ui.heading(app, "results", 2), "Placed")
     ' AND THE CALLBACK IS ASKED FOR THE MATCHING COLUMN, which is the half a
     ' caption check cannot see.
-    x = qt.cell(app, "results", 1, "when")
+    x = ui.cell(app, "results", 1, "when")
     check("asking for the third column asks the callback for 2", g.last_col, 2)
 
     ' ---- a row can still be chosen -------------------------------------
-    qt.select(app, "results", 3)
-    check("a row can be chosen", qt.selected(app, "results"), 3)
+    ui.select(app, "results", 3)
+    check("a row can be chosen", ui.selected(app, "results"), 3)
 
     ' ---- refusals, each beside its nearest legal neighbour -------------
     on error goto next
-    qt.rows(app, "results", 0 - 5)
+    ui.rows(app, "results", 0 - 5)
     check("a negative row count is refused", error.message,
-          "qt.rows: a table cannot have fewer than no rows")
+          "ui.rows: a table cannot have fewer than no rows")
     error.clear()
 
-    qt.rows(app, "nope")
+    ui.rows(app, "nope")
     check("an unknown part is refused", error.message,
-          "qt.rows: `nope` is not a table that asks for its rows")
+          "ui.rows: `nope` is not a table that asks for its rows")
     error.clear()
     on error stop
 
-    qt.close(app)
+    ui.close(app)
 
     ' ---- THE CONTROL: a held table still works -------------------------
     ' The same word builds a different widget, so without this "an asking
     ' table works" is satisfied by a change that broke the ordinary one.
-    qt.open(held)
-    check("a held table still shows its list", qt.cell(held, "lines", 1, "name"),
+    ui.open(held)
+    check("a held table still shows its list", ui.cell(held, "lines", 1, "name"),
           "b")
-    check("and still reports its heading", qt.heading(held, "lines", 0), "Name")
+    check("and still reports its heading", ui.heading(held, "lines", 0), "Name")
     on error goto next
-    qt.rows(held, "lines")
+    ui.rows(held, "lines")
     check("and a held table is not an asking one", error.message,
-          "qt.rows: `lines` is not a table that asks for its rows")
+          "ui.rows: `lines` is not a table that asks for its rows")
     error.clear()
     on error stop
-    qt.close(held)
+    ui.close(held)
 
     ' ---- A PANE, NOT A COLUMN ------------------------------------------
     ' THREE CLAIMS, because "it opened" is satisfied by a table that was built
     ' and never enrolled: the LAYOUT must report it as a pane of the split
-    ' (asked of Qt by walking up, which is what `qt.pane` does), its CELLS must
+    ' (asked of Qt by walking up, which is what `ui.pane` does), its CELLS must
     ' still come from the callback, and the editor beside it must still be the
     ' OTHER pane -- without that last one, a table that had replaced the whole
     ' splitter would pass the first two.
-    qt.open(paned)
+    ui.open(paned)
     ' NOT `g`: that name is this fixture's state record, and shadowing it made
     ' the callback read a field of a number -- the cells came back EMPTY and the
     ' program died at the counter, two symptoms of one clobbered name.
-    paned_rows = qt.rows(paned, "grid", 50)
-    spot = qt.pane(paned, "grid")
+    paned_rows = ui.rows(paned, "grid", 50)
+    spot = ui.pane(paned, "grid")
     check("an asking table is a pane of the split", spot.kind, "split")
     check("and it is the second of two", string(spot.index) + " of " +
           string(spot.panes), "1 of 2")
@@ -253,10 +253,10 @@ program main()
     ' gives rather than as a string of its own, since the point is that the
     ' crossing still happens when the table's parent is a splitter.
     check("its cells still come from the callback",
-          qt.cell(paned, "grid", 3, "b"), "6")
+          ui.cell(paned, "grid", 3, "b"), "6")
     check("and the editor is still the other pane",
-          string(qt.pane(paned, "code").index), "0")
-    qt.close(paned)
+          string(ui.pane(paned, "code").index), "0")
+    ui.close(paned)
 
     cancelled = timer.cancel(beat)
     check("the timer was cancelled, so the program can end", cancelled, true)

@@ -105,7 +105,7 @@ window app( title: "Dialogs", width: 560, height: 420 )
     end on
 
     on edit_it.clicked
-        ' THE SAME WINDOW AS ANY OTHER, shown a different way. `qt.open_modal`
+        ' THE SAME WINDOW AS ANY OTHER, shown a different way. `ui.open_modal`
         ' blocks until the form is answered and closes it on the way out, so
         ' `on edit.closed` is where its values are read.
         if edit.open_modal() then
@@ -116,7 +116,7 @@ window app( title: "Dialogs", width: 560, height: 420 )
     end on
 
     on quit.clicked
-        qt.stop()
+        ui.stop()
     end on
 
     on app.closed
@@ -163,7 +163,7 @@ program main(args)
     g = { lines: [], work: "", typed: { who: "", limit: {USD}"0.00" },
           want: "yes", path: "" }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so there is no window to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
         return
@@ -173,7 +173,7 @@ program main(args)
     g.work = temp_dir()
     made = write({file}(g.work + "/report.txt"), "the quarterly numbers" + chr(10))
 
-    qt.open(app)
+    ui.open(app)
     x = app.write("log", "")
 
     if contains(args, "check") then
@@ -189,16 +189,16 @@ program main(args)
                     if g.want = "reject" then
                         a = edit.reject()
                     else
-                        d = qt.dialog()
+                        d = ui.dialog()
                         if not is_unknown(d) then
                             if d.kind = "chooser" then
                                 if g.want = "cancel" then
-                                    a = qt.answer(false)
+                                    a = ui.answer(false)
                                 else
-                                    a = qt.answer(g.path)
+                                    a = ui.answer(g.path)
                                 end if
                             else
-                                a = qt.answer(g.want = "yes")
+                                a = ui.answer(g.want = "yes")
                             end if
                         end if
                     end if
@@ -236,11 +236,11 @@ program main(args)
 
         cancelled = timer.cancel(beat)
         gone = remove_tree({dir}g.work)
-        qt.stop()
+        ui.stop()
         return
     end if
 
     print "Press a button. Close the window or press Quit to finish."
-    qt.run()
+    ui.run()
     gone = remove_tree({dir}g.work)
 end program

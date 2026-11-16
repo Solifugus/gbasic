@@ -40,9 +40,9 @@
 # spends its one free slot on the DIRECTION (§0.8 measured that a container
 # carries a name OR options, never both), so it cannot be named -- nothing can
 # address it, and nothing could say whether it was built, which way round it is
-# or how many panes it got. `qt.pane` is the oracle and was built BEFORE the
+# or how many panes it got. `ui.pane` is the oracle and was built BEFORE the
 # fixture, asked of the LAYOUT by walking up from a part that CAN be named,
-# which is the rule `qt.at` already follows for a grid.
+# which is the rule `ui.at` already follows for a grid.
 . "$(dirname "$0")/portable.sh"
 set -uo pipefail
 cd "$(dirname "$0")/.."
@@ -328,7 +328,7 @@ program main(args)
     w = { kind: "window", name: "app", options: { title: "B" },
           items: [ { kind: "container", word: "split", name: "sideways",
                      items: [] } ] }
-    print "CHECK " + qt.check(w)
+    print "CHECK " + ui.check(w)
 end program
 BAS
 set +e
@@ -404,12 +404,12 @@ window app( title: "PL", width: 300, height: 160 )
     end split
 end window
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NO DISPLAY"
         return
     end if
     on error goto refused
-    qt.open(app)
+    ui.open(app)
     print "ACCEPTED"
     return
 refused:
@@ -439,7 +439,7 @@ fi
 # platform plugin, font configuration or QApplication statics, so a leak claim
 # would be a suppression file describing Qt. What is new here is a widget tree
 # whose parents have NO LAYOUT, so a child is enrolled by reparenting rather
-# than by a layout call -- and `qt.pane` walks that tree afterwards.
+# than by a layout call -- and `ui.pane` walks that tree afterwards.
 printf 'TIER valgrind: no invalid access across three windows and the walk\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'

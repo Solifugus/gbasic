@@ -73,42 +73,42 @@ window viewer( title: "Read only", width: 520, height: 320 )
 end window
 
 program main()
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "SKIP no display"
         return
     end if
 
     print "-- the build's own answer, which is a question a program may ask"
-    ' ANSWERS RATHER THAN REFUSING, like qt.can_display: a build without
+    ' ANSWERS RATHER THAN REFUSING, like ui.can_display: a build without
     ' KSyntaxHighlighting still edits text, so a program needs to choose
     ' rather than be stopped.
-    ok("qt.can_highlight answers a boolean",
-       qt.can_highlight() = true or qt.can_highlight() = false)
+    ok("ui.can_highlight answers a boolean",
+       ui.can_highlight() = true or ui.can_highlight() = false)
 
-    qt.open(ed)
+    ui.open(ed)
 
     print "-- a source is a memo with four differences"
     ' (1) IT DOES NOT WRAP. The opposite default from `text`, and for the
     ' opposite reason: a wrapped line of code makes a line number stop
     ' matching the file, where an unwrapped paragraph truncates.
-    check("the editor does not wrap", qt.read(ed, "code", "lineWrapMode"),
+    check("the editor does not wrap", ui.read(ed, "code", "lineWrapMode"),
           "NoWrap")
-    check("and a memo still does", qt.read(ed, "log", "lineWrapMode"),
+    check("and a memo still does", ui.read(ed, "log", "lineWrapMode"),
           "WidgetWidth")
     ' (2) A NARROWER TAB. Asserted as a DIFFERENCE, never a value: the width
     ' is four spaces of the system's monospaced font, so the number is a fact
     ' about this machine's fonts and would make the check a transcript.
     ok("a tab is narrower than Qt's default",
-       qt.read(ed, "code", "tabStopDistance") <
-       qt.read(ed, "log", "tabStopDistance"))
+       ui.read(ed, "code", "tabStopDistance") <
+       ui.read(ed, "log", "tabStopDistance"))
     ' (3) A MONOSPACED FONT, asked of the system rather than named -- a
     ' hardcoded family is how a port acquires a fallback nobody chose.
     ok("the editor's font is not the memo's",
-       qt.read(ed, "code", "font") != qt.read(ed, "log", "font"))
+       ui.read(ed, "code", "font") != ui.read(ed, "log", "font"))
     ' (4) AND THE HIGHLIGHTER, which is the one thing here the by-name
     ' property route cannot reach, being an object rather than a property.
     ok("a memo has no highlighting at all",
-       is_unknown(qt.highlighting(ed, "log")))
+       is_unknown(ui.highlighting(ed, "log")))
 
     print "-- what is actually highlighting it: the oracle"
     ' THE NAME IS THE ORACLE and the FILE is the half the name cannot be. A
@@ -117,7 +117,7 @@ program main()
     ' against 8 -- so a check on the name alone cannot tell which file was
     ' read. Both are reported; the name is pinned and the file is asserted to
     ' be a real path, since which of the two wins is the machine's business.
-    applied = qt.highlighting(ed, "code")
+    applied = ui.highlighting(ed, "code")
     check("the definition applied is the one asked for", applied.language,
           "gBASIC")
     ok("and it names the file it came from", len(applied.file) > 0)
@@ -128,69 +128,69 @@ program main()
     ' `*.bas` by extension -- which answers FreeBASIC for gBASIC source, with
     ' no error, and highlights plausibly and wrongly.
     check("asking for FreeBASIC gives FreeBASIC",
-          qt.highlighting(ed, "other").language, "FreeBASIC")
+          ui.highlighting(ed, "other").language, "FreeBASIC")
     ok("so the two editors disagree about their language",
-       qt.highlighting(ed, "code").language !=
-       qt.highlighting(ed, "other").language)
+       ui.highlighting(ed, "code").language !=
+       ui.highlighting(ed, "other").language)
 
     print "-- a source with no language is a plain editor, and is silent"
-    check("nothing is applied", is_unknown(qt.highlighting(ed, "plain")), true)
+    check("nothing is applied", is_unknown(ui.highlighting(ed, "plain")), true)
     ' AND IT IS STILL AN EDITOR, which is the half that stops "no language"
     ' from being a broken widget.
-    qt.write(ed, "plain", "anything at all")
-    check("and it still holds text", qt.read(ed, "plain"), "anything at all")
+    ui.write(ed, "plain", "anything at all")
+    check("and it still holds text", ui.read(ed, "plain"), "anything at all")
 
     print "-- it is an editor: text goes in and comes back"
     ' BRACKETED, because a line break is only a continuation inside brackets.
     code = ("' a comment" + chr(10) + "print " + chr(34) + "hi" + chr(34) +
             chr(10) + "x = 42")
-    qt.write(ed, "code", code)
+    ui.write(ed, "code", code)
     check("every byte survives, newlines included",
-          qt.read(ed, "code"), code)
-    check("including the line count", len(split(qt.read(ed, "code"), chr(10))),
+          ui.read(ed, "code"), code)
+    check("including the line count", len(split(ui.read(ed, "code"), chr(10))),
           3)
-    qt.stop()
+    ui.stop()
 
     print "-- a source binds in a form, like any other value-bearing part"
     doc = { title: "hello.bas", body: "print " + chr(34) + "x" + chr(34) }
-    qt.open(editor)
+    ui.open(editor)
     check("the form populated it from the record",
-          qt.read(editor, "body"), doc.body)
-    check("and it is editable", qt.read(editor, "body", "readOnly"), false)
+          ui.read(editor, "body"), doc.body)
+    check("and it is editable", ui.read(editor, "body", "readOnly"), false)
     ' THE FOLD, which is what makes it a form part rather than a widget that
     ' happens to sit in one.
-    qt.write(editor, "body", "edited")
-    back = qt.subject(editor, "doc")
+    ui.write(editor, "body", "edited")
+    back = ui.subject(editor, "doc")
     check("and the record follows the widget", back.body, "edited")
     check("with the other field untouched", back.title, "hello.bas")
-    qt.stop()
+    ui.stop()
 
     print "-- `to show` makes it read-only, as it does a memo"
-    qt.open(viewer)
+    ui.open(viewer)
     check("a shown source cannot be typed into",
-          qt.read(viewer, "body", "readOnly"), true)
-    shown = qt.subject(viewer, "doc")
-    qt.write(viewer, "body", "tampered")
-    after = qt.subject(viewer, "doc")
+          ui.read(viewer, "body", "readOnly"), true)
+    shown = ui.subject(viewer, "doc")
+    ui.write(viewer, "body", "tampered")
+    after = ui.subject(viewer, "doc")
     check("and its record does not follow", after.body, shown.body)
-    qt.stop()
+    ui.stop()
 
     print "-- the builder: a source a program generates"
     ' §4's other door. A built record gets the declaration's own load-time
-    ' rules through `qt.check`, so a generated editor cannot be built wrong
+    ' rules through `ui.check`, so a generated editor cannot be built wrong
     ' more quietly than a written one.
     built = { kind: "window", name: "gen", options: { title: "Gen" },
               items: [ { kind: "container", word: "column", options: {},
                          items: [ { kind: "part", word: "source",
                                     name: "pane",
                                     options: { language: "gBASIC" } } ] } ] }
-    check("a built source passes qt.check", qt.check(built), true)
-    qt.open(built)
+    check("a built source passes ui.check", ui.check(built), true)
+    ui.open(built)
     check("and is highlighted the same way",
-          qt.highlighting(built, "pane").language, "gBASIC")
+          ui.highlighting(built, "pane").language, "gBASIC")
     check("and does not wrap either",
-          qt.read(built, "pane", "lineWrapMode"), "NoWrap")
-    qt.stop()
+          ui.read(built, "pane", "lineWrapMode"), "NoWrap")
+    ui.stop()
 
     print "-- refusals, each beside its nearest legal neighbour"
     ' THE CONTROLS ARE THE POINT: `language` and `theme` are not Qt properties,
@@ -211,9 +211,9 @@ program main()
                                     name: "s",
                                     options: { language: "gBASIC",
                                                theme: "light" } } ] } ] }
-    qt.open(legal)
+    ui.open(legal)
     check("while a real source takes both language and theme",
-          qt.highlighting(legal, "s").language, "gBASIC")
+          ui.highlighting(legal, "s").language, "gBASIC")
 
     print "-- a theme with no language: a themed plain editor"
     ' ASKED FOR BY gBASIC STUDIO: its editor for a file with no syntax (a .txt,
@@ -228,22 +228,22 @@ program main()
                                      options: { theme: "dark" } },
                                    { kind: "part", word: "source", name: "l",
                                      options: { theme: "light" } } ] } ] }
-    qt.open(themed)
-    dark = qt.read(themed, "d", "palette")
-    light = qt.read(themed, "l", "palette")
+    ui.open(themed)
+    dark = ui.read(themed, "d", "palette")
+    light = ui.read(themed, "l", "palette")
     check("a dark theme alone gives a dark background", brightness(base_of(dark)) < 384, true)
     check("with text lighter than it",
           brightness(text_of(dark)) > brightness(base_of(dark)), true)
     check("a light theme alone gives a light background", brightness(base_of(light)) > 384, true)
     check("the same colours a highlighted dark source gets",
-          dark, qt.read(ed, "code", "palette"))
+          dark, ui.read(ed, "code", "palette"))
     check("and no highlighter, since there is no language",
-          is_unknown(qt.highlighting(themed, "d")), true)
+          is_unknown(ui.highlighting(themed, "d")), true)
     ' THE CONTROL: an editor asking for no theme keeps its own colours, or
     ' "a theme alone applies" is satisfied by colouring every source dark.
     check("while a source with no theme keeps its own background",
-          base_of(qt.read(ed, "plain", "palette")) = base_of(dark), false)
-    qt.close(themed)
+          base_of(ui.read(ed, "plain", "palette")) = base_of(dark), false)
+    ui.close(themed)
 
     ' ---- THE CARET (§0.32) ---------------------------------------------
     ' ASKED FOR BY THE CONSUMER WITH THE USE THAT JUSTIFIES IT: *"stopped at
@@ -254,7 +254,7 @@ program main()
     ' invokable by name, both -1, because it answers a QTextCursor where the
     ' by-name route moves QVariants. So it is one of the genuinely unreachable
     ' things, like the highlighter and the margin.
-    qt.write(legal, "s", join([ "function total(rows)", "    t = 0",
+    ui.write(legal, "s", join([ "function total(rows)", "    t = 0",
                                 "    for each r in rows",
                                 "        t = t + r.amount", "    end for",
                                 "    return t", "end function" ], chr(10)))
@@ -263,10 +263,10 @@ program main()
     ' mark list are all 1-based -- so a diagnostic's `line:column` goes
     ' straight in and THERE IS NO CONVERSION AT THE CALL SITE.
     check("a fresh caret is at line 1 column 1",
-          string(qt.caret(legal, "s").line) + ":" +
-          string(qt.caret(legal, "s").column), "1:1")
-    qt.caret_to(legal, "s", 4, 9)
-    here = qt.caret(legal, "s")
+          string(ui.caret(legal, "s").line) + ":" +
+          string(ui.caret(legal, "s").column), "1:1")
+    ui.caret_to(legal, "s", 4, 9)
+    here = ui.caret(legal, "s")
     check("the caret goes where a diagnostic points",
           string(here.line) + ":" + string(here.column), "4:9")
     check("and reports no selection", string(here.selecting), "false")
@@ -277,21 +277,21 @@ program main()
     ' column 999 of line 2 landed on line 7 of a seven-line document. A
     ' plausible position in the wrong place, which is the class this backend is
     ' tested against.
-    qt.caret_to(legal, "s", 2, 999)
-    far = qt.caret(legal, "s")
+    ui.caret_to(legal, "s", 2, 999)
+    far = ui.caret(legal, "s")
     check("a column past the end of its line stays on that line",
           string(far.line), "2")
     ok("and lands one past the last character", far.column = 10)
 
     ' A `memo` HAS A CARET TOO, which is what says the verb is about a TEXT
-    ' EDITOR rather than about `source` -- the same reasoning `qt.highlighting`
+    ' EDITOR rather than about `source` -- the same reasoning `ui.highlighting`
     ' rests on one widget along.
     ok("a memo has a caret as well",
-       not is_unknown(qt.caret(ed, "log")))
+       not is_unknown(ui.caret(ed, "log")))
     ' AND A PART THAT IS NOT ONE ANSWERS AN ABSENCE rather than refusing:
     ' "where is the caret in this editor's language" has no answer, and
     ' `unknown` is the one that composes with `is_unknown` -- the shape
-    ' `qt.dock`, `qt.pane` and `qt.scrolled` all take.
+    ' `ui.dock`, `ui.pane` and `ui.scrolled` all take.
     ' A PART THAT EXISTS AND IS NOT AN EDITOR, which this check had to be
     ' corrected into: the first version named a part that is not there at all,
     ' which RAISES (and rightly -- an absent name is a mistake, where "that is
@@ -299,31 +299,31 @@ program main()
     ' The window is a part of itself (§0.17), so it is the nearest thing to
     ' hand that has no caret.
     ok("a part that is not an editor answers unknown",
-       is_unknown(qt.caret(ed, "ed")))
+       is_unknown(ui.caret(ed, "ed")))
 
     on error goto next
     ' A LINE PAST THE END IS REFUSED RATHER THAN CLAMPED, because a program
     ' putting the caret where a diagnostic said is working from a model of the
     ' document -- and if that model is stale, clamping puts the caret on the
     ' WRONG LINE and looks like it worked. The message carries the real length.
-    qt.caret_to(legal, "s", 99, 1)
+    ui.caret_to(legal, "s", 99, 1)
     ok("a line past the end is refused, naming the real length",
        contains(error.message, "this editor holds 7"))
     error.clear()
     ' LINE 0 IS THE 0-BASED CALLER'S MISTAKE, refused by name the way
-    ' `qt.mark`'s is, and the message says which numbering is meant.
-    qt.caret_to(legal, "s", 0, 1)
+    ' `ui.mark`'s is, and the message says which numbering is meant.
+    ui.caret_to(legal, "s", 0, 1)
     ok("line 0 is refused and names the numbering",
        contains(error.message, "start at 1"))
     error.clear()
     ' THE CONTROL ON BOTH: a well-formed move is still taken, or the refusals
     ' are satisfied by a verb that refuses everything.
-    took = qt.caret_to(legal, "s", 3, 2)
+    took = ui.caret_to(legal, "s", 3, 2)
     ok("and a well-formed move is still taken", took)
     error.clear()
-    check("which took", string(qt.caret(legal, "s").line), "3")
+    check("which took", string(ui.caret(legal, "s").line), "3")
 
-    qt.stop()
+    ui.stop()
 end program
 
 ' A REFUSAL, CAUGHT. Each case is a window built as a RECORD rather than
@@ -333,7 +333,7 @@ end program
 function refuse(what, needle)
     on error goto caught
     bad = refusal_window(what)
-    qt.open(bad)
+    ui.open(bad)
     print "MISMATCH " + what + " was ACCEPTED"
     return nothing
 caught:

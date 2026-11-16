@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# THE WINDOW LIFECYCLE (docs/qt_gui_design.md §0.17) -- `qt.close`,
-# `qt.is_open`, `on <win>.closed`, and the window addressable by its own name.
+# THE WINDOW LIFECYCLE (docs/qt_gui_design.md §0.17) -- `ui.close`,
+# `ui.is_open`, `on <win>.closed`, and the window addressable by its own name.
 #
 # WHAT WAS MISSING WAS NOT "A SECOND WINDOW". That was MEASURED FIRST and turned
 # out to work already: two windows open at once, parts scoped per window, a
-# dialog parenting to whichever one is named, `qt.stop()` with both up -- and
+# dialog parenting to whichever one is named, `ui.stop()` with both up -- and
 # opening the same one twice already refused by name. Third time in this backend
 # that measuring a gap before filling it found it closed (menus needed no
 # grammar; the builder's door was already open).
@@ -12,8 +12,8 @@
 # WHAT WAS MISSING WAS THE LIFECYCLE, and the four gaps were measured one
 # program at a time:
 #
-#   qt.close(win)                undefined function: qt.close
-#   a method on the WINDOW       qt.invoke: this window has no `a_win`
+#   ui.close(win)                undefined function: ui.close
+#   a method on the WINDOW       ui.invoke: this window has no `a_win`
 #   on a_win.closed              names nothing in this window
 #   quitOnLastWindowClosed       never set, never asserted, nothing could close
 #                                a window to find out
@@ -29,7 +29,7 @@
 #   delete right after close()   safe
 #
 # SO A CLOSE IS BOOKKEEPING AND NOT A HIDE. Qt does not set `WA_DeleteOnClose`,
-# so a window the person dismissed goes on answering `qt.read` with what it was
+# so a window the person dismissed goes on answering `ui.read` with what it was
 # showing -- a program reading off a screen nobody is looking at, raising
 # nothing. The close removes it from gBASIC's registry and every verb that needs
 # an open window then refuses by name, WHICH MAKES `on <win>.closed`
@@ -103,7 +103,7 @@ program main(args)
     w = { kind: "window", name: "app", options: { title: "x" },
           items: [ { kind: "part", word: "field", name: "app",
                      options: { label: "collides" } } ] }
-    print "CHECK " + qt.check(w)
+    print "CHECK " + ui.check(w)
 end program
 BAS
 set +e
@@ -234,7 +234,7 @@ fi
 # BOUNDED, because a loop that never ends is a HANG and a hang is not a failure
 # (run_string_nul.sh's recorded trap). `-k` because this interpreter installs a
 # SIGTERM handler for pool drain, so a bound that might not fire is not a bound.
-printf 'TIER loop: closing the last window ends qt.run(), and closing one of two does not\n'
+printf 'TIER loop: closing the last window ends ui.run(), and closing one of two does not\n'
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 60 ./gbasic \
     --line-buffered tests/qt_lifecycle_loop_fixture.bas \
@@ -247,7 +247,7 @@ elif [ "$loop_rc" != "0" ]; then
     fail "the loop fixture exited $loop_rc (a timeout here means the loop never ended)"
 else
     # THE CONTROL FIRST. Without it "the loop ended" is satisfied by a build
-    # where `qt.run()` returns immediately.
+    # where `ui.run()` returns immediately.
     if grep -q "STILL RUNNING WITH ONE OPEN" "$work/loop.out"; then
         pass "CONTROL: four ticks after one of two closed, the loop is still running"
     else
@@ -256,7 +256,7 @@ else
     fi
     if grep -q "LOOP DID NOT END" "$work/loop.out"; then
         cat "$work/loop.out"
-        fail "closing the last window left qt.run() running -- quitOnLastWindowClosed no longer holds"
+        fail "closing the last window left ui.run() running -- quitOnLastWindowClosed no longer holds"
     elif grep -q "^RUN RETURNED 0" "$work/loop.out" &&
          grep -q "^TICKS 6" "$work/loop.out"; then
         # TICKS PINNED, because `RUN RETURNED 0` alone is satisfied by a loop
@@ -264,7 +264,7 @@ else
         pass "and closing the last one ended it, on the tick that closed it"
     else
         cat "$work/loop.out"
-        fail "qt.run() did not return at the close of the last window"
+        fail "ui.run() did not return at the close of the last window"
     fi
     if grep -q "^FIRST OPEN false" "$work/loop.out" &&
        grep -q "^OTHER OPEN false" "$work/loop.out"; then
@@ -282,9 +282,9 @@ fi
 # program's windows, and nothing could see it -- they were merely HIDDEN, every
 # part stayed readable, and no fixture asked whether the window was still up.
 # It surfaced only once a close became bookkeeping, when a program that reads
-# its window after `qt.run()` returned was told it was not open -- MEASURED
+# its window after `ui.run()` returned was told it was not open -- MEASURED
 # rather than grepped, eight programs reading a window textually after
-# `qt.run()` and exactly ONE actually breaking.
+# `ui.run()` and exactly ONE actually breaking.
 printf 'TIER stop: asking for the thread back does not dismiss the windows\n'
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 60 ./gbasic \
@@ -292,7 +292,7 @@ QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 60 ./gbasic \
     > "$work/stop.out" 2> "$work/stop.err"
 stop_rc=$?
 if grep -q "SKIP no display" "$work/stop.out"; then
-    printf '  SKIP (no display -- what qt.stop does to a window was NOT measured)\n'
+    printf '  SKIP (no display -- what ui.stop does to a window was NOT measured)\n'
 elif [ "$stop_rc" != "0" ]; then
     cat "$work/stop.out"; tail -3 "$work/stop.err"
     fail "the stop fixture exited $stop_rc"
@@ -303,19 +303,19 @@ else
     # and which `is_open` alone would go on missing.
     if grep -q "^STILL OPEN true" "$work/stop.out" &&
        grep -q "^STILL READS Ada Lovelace" "$work/stop.out"; then
-        pass "after qt.run() returns the window is still open and still readable"
+        pass "after ui.run() returns the window is still open and still readable"
     else
-        cat "$work/stop.out"; fail "qt.stop() closed the window it was not asked to close"
+        cat "$work/stop.out"; fail "ui.stop() closed the window it was not asked to close"
     fi
     if grep -q "^STILL VISIBLE true" "$work/stop.out"; then
         pass "and still up on the screen, which is the half a registry check cannot see"
     else
-        cat "$work/stop.out"; fail "qt.stop() hid the window -- quit() closes every window, exit(0) does not"
+        cat "$work/stop.out"; fail "ui.stop() hid the window -- quit() closes every window, exit(0) does not"
     fi
     if grep -q "^CLOSED FIRED 0" "$work/stop.out"; then
         pass "and no closed handler fired, so that word still means one thing"
     else
-        cat "$work/stop.out"; fail "qt.stop() fired a closed handler, which would make that word mean two things"
+        cat "$work/stop.out"; fail "ui.stop() fired a closed handler, which would make that word mean two things"
     fi
 fi
 
@@ -331,7 +331,7 @@ window app( title: "R", width: 200, height: 100 )
     end column
 end window
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NO DISPLAY"
         return
     end if
@@ -358,18 +358,18 @@ BAS
 }
 
 refuse 'closing a window that is not open names it, rather than doing nothing' \
-    '    x = qt.close(app)' \
+    '    x = ui.close(app)' \
     'window `app` is not open, so there is nothing to close'
-refuse 'qt.close takes one window' \
-    '    o = qt.open(app)
-    x = qt.close(app, "who")' \
-    'qt.close expects one window declaration'
+refuse 'ui.close takes one window' \
+    '    o = ui.open(app)
+    x = ui.close(app, "who")' \
+    'ui.close expects one window declaration'
 refuse 'and something that is not a window at all' \
-    '    x = qt.close({ a: 1 })' \
-    'qt.close'
-refuse 'qt.is_open takes one window' \
-    '    x = qt.is_open(app, 1)' \
-    'qt.is_open expects one window declaration'
+    '    x = ui.close({ a: 1 })' \
+    'ui.close'
+refuse 'ui.is_open takes one window' \
+    '    x = ui.is_open(app, 1)' \
+    'ui.is_open expects one window declaration'
 # `closed` IS THE WINDOW'S OWN EVENT, and this is what says the special case is
 # NARROW rather than a word that now works anywhere: a button has no close
 # worth reporting, so `on save.closed` falls through to the by-name signal
@@ -387,12 +387,12 @@ window app( title: "R", width: 200, height: 100 )
     end on
 end window
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NO DISPLAY"
         return
     end if
     on error goto refused
-    o = qt.open(app)
+    o = ui.open(app)
     print "ACCEPTED"
     return
 refused:
@@ -412,12 +412,12 @@ else
     fail 'a part was given a `closed` handler, so the special case is too wide'
 fi
 
-# `qt.is_open` ANSWERS where `qt.close` refuses, which is the same split
-# `qt.can_display` and `qt.can_highlight` already make: a question asked IN
+# `ui.is_open` ANSWERS where `ui.close` refuses, which is the same split
+# `ui.can_display` and `ui.can_highlight` already make: a question asked IN
 # ORDER TO CHOOSE must not raise, or the choice cannot be made. It is needed
 # here because a window can close WITHOUT THE PROGRAM ASKING, so every other
 # verb starts raising for a reason that is nobody's mistake.
-printf 'TIER degrading: qt.is_open ANSWERS where the others refuse\n'
+printf 'TIER degrading: ui.is_open ANSWERS where the others refuse\n'
 cat > "$work/ask.bas" <<'BAS'
 window app( title: "Ask", width: 200, height: 100 )
     column
@@ -425,7 +425,7 @@ window app( title: "Ask", width: 200, height: 100 )
     end column
 end window
 program main(args)
-    print "ASKED " + string(qt.is_open(app))
+    print "ASKED " + string(ui.is_open(app))
 end program
 BAS
 set +e
@@ -436,12 +436,12 @@ ask_rc=$?
 if [ "$ask_rc" = "0" ] && grep -q "^ASKED false" "$work/ask.out"; then
     pass "with no display at all it answers false without raising"
 else
-    cat "$work/ask.out"; fail "qt.is_open did not answer with no display (exit $ask_rc)"
+    cat "$work/ask.out"; fail "ui.is_open did not answer with no display (exit $ask_rc)"
 fi
 
 # ---------------------------------------------------------------------- GROWTH
 # REOPENING IS A NEW SHAPE, not a faster old one: before this a second
-# `qt.open` met "already open", so nothing could open and close a window in a
+# `ui.open` met "already open", so nothing could open and close a window in a
 # loop -- and the obvious implementation grows for ever, one node per part per
 # open, plus a widget each time a close is noticed where it cannot be deleted.
 #

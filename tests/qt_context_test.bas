@@ -1,15 +1,15 @@
-' A CONTEXT MENU (§0.20) -- `popup`, `qt.popup`, `qt.right_click`, and the
+' A CONTEXT MENU (§0.20) -- `popup`, `ui.popup`, `ui.right_click`, and the
 ' policy a declared handler asks for. Under QT_QPA_PLATFORM=offscreen: real
 ' QMenus and real mouse events, no display.
 '
 ' WHY IT IS A WORD AND NOT A PROPERTY, measured before anything was written.
 ' `QMenu::popup` and `QMenu::exec` are NOT invokable by name (both -1 against
-' `show` at 18 and `hide` at 19), so `qt.invoke` cannot reach either and
+' `show` at 18 and `hide` at 19), so `ui.invoke` cannot reach either and
 ' `show()` would put the menu wherever it last was rather than where the
 ' pointer is. And a `menu` cannot be reused: it spends its one slot on the
 ' caption a person reads on the bar (§0.8 measured that a container carries a
 ' name OR options, never both), where a context menu has no bar to be read on
-' and needs a NAME so `qt.popup` can raise it. The same trade `split across`
+' and needs a NAME so `ui.popup` can raise it. The same trade `split across`
 ' makes in the other direction.
 '
 ' SELF-CHECKING NOT GOLDEN AND FORCED. Every defect here is an ORDINARY-LOOKING
@@ -27,12 +27,12 @@
 ' the signal fired 0 times and the event propagated to the PARENT; delivered to
 ' that widget's VIEWPORT it fired 1. A real right-click lands on the viewport,
 ' so the feature works for a person on all five kinds -- and gBASIC cannot name
-' a viewport, so without `qt.right_click` routing there the path is drivable
+' a viewport, so without `ui.right_click` routing there the path is drivable
 ' only on `field` and `button`, the two kinds that happen to have none.
 '
 ' AND THE ROW CAME FREE. I expected to have to deliver the signal's QPoint, or
 ' to select the row under the pointer as a backend policy. Measured, Qt MOVES
-' THE CURRENT ROW on a right-press by itself, so `qt.selected` already answers
+' THE CURRENT ROW on a right-press by itself, so `ui.selected` already answers
 ' "which row was right-clicked" -- the fifth time in this backend that
 ' measuring a gap before filling it found it closed.
 
@@ -67,7 +67,7 @@ window app( title: "Context", width: 620, height: 400 )
     end popup
 
     column
-        ' A TOOLBAR MENU BUTTON, which is what `qt.popup`'s third argument is
+        ' A TOOLBAR MENU BUTTON, which is what `ui.popup`'s third argument is
         ' for: a menu button's menu belongs UNDER the button rather than
         ' wherever the mouse happens to be, which is what §0.20 left open as
         ' "at the pointer only". Studio builds one (a Gtk.MenuButton with a
@@ -95,26 +95,26 @@ window app( title: "Context", width: 620, height: 400 )
     end column
 
     on proj.clicked
-        g.under = qt.popup(app, "editor_actions", "proj")
+        g.under = ui.popup(app, "editor_actions", "proj")
     end on
 
     on files.customContextMenuRequested
         g.asked = g.asked + 1
-        picked = qt.selected(app, "files")
+        picked = ui.selected(app, "files")
         r = g.rows[picked]
         ' WHAT STUDIO DOES: one menu built once, holding every item, with the
         ' ones this row does not offer HIDDEN. `visible` is Q_PROPERTY 14 of
         ' QAction, so this needed no new capability.
-        qt.set(app, "delete_it", "visible", r.kind = "file")
-        qt.set(app, "rename_it", "visible", r.kind = "file")
-        qt.set(app, "open_it", "visible", r.kind = "file")
+        ui.set(app, "delete_it", "visible", r.kind = "file")
+        ui.set(app, "rename_it", "visible", r.kind = "file")
+        ui.set(app, "open_it", "visible", r.kind = "file")
         ' PROPERTIES APPLY TO BOTH, which is what every file manager does --
         ' and it is deliberately the SUBMENU'S only item, so a directory's
         ' menu is non-empty ONLY through the submenu. That is the recursion
         ' asserted in the TRUE direction, which the empty-submenu check below
         ' cannot do.
-        qt.set(app, "info_it", "visible", true)
-        g.shown = qt.popup(app, "row_actions")
+        ui.set(app, "info_it", "visible", true)
+        g.shown = ui.popup(app, "row_actions")
     end on
 
     on code.customContextMenuRequested
@@ -181,7 +181,7 @@ program main()
             { name: "src",   kind: "dir" },
             { name: "b.bas", kind: "file" }]
     ' ONE RECORD, AND THE HANDLERS MUTATE ITS FIELDS. gBASIC has no closures
-    ' and a handler fires beneath `qt.run()`, so it can READ a variable in
+    ' and a handler fires beneath `ui.run()`, so it can READ a variable in
     ' `main` and CANNOT REBIND one -- warning 2104 says so and names this
     ' remedy. The first draft of this fixture counted into plain scalars and
     ' every counter read 0 while the handlers had plainly run, which is the
@@ -189,30 +189,30 @@ program main()
     g = { asked: 0, editor_asked: 0, opened: 0, shown: false, hits: 0,
           where: [], rows: rows, under: false }
 
-    qt.open(app)
+    ui.open(app)
 
     ' ---- the oracle: WHICH popup an item landed in ------------------------
     ' A flat by-name registry cannot witness a tree, which is the measurement
     ' the submenu oracle already rests on: an `item` keeps its name wherever
     ' its menu ends up, so one built into `editor_actions` instead of
     ' `row_actions` passes every other check in this file.
-    check("row_actions entries", qt.menus(app, "row_actions"),
+    check("row_actions entries", ui.menus(app, "row_actions"),
           ["Open", "Rename...", unknown, "Delete", "More"])
-    check("editor_actions entries", qt.menus(app, "editor_actions"),
+    check("editor_actions entries", ui.menus(app, "editor_actions"),
           ["Comment out"])
     ' A SEPARATOR ANSWERS `unknown` AND NOT "", which is the absent/empty
     ' distinction this language makes everywhere -- and is what caught a
     ' separator falling through as an empty-texted action one increment ago.
-    check("the separator is a line", is_unknown(qt.menus(app, "row_actions")[2]),
+    check("the separator is a line", is_unknown(ui.menus(app, "row_actions")[2]),
           true)
     ' A SUBMENU OF A POPUP needed no vocabulary: the same production recursing.
-    check("the submenu's own entries", qt.menus(app, 0), ["Quit"])
+    check("the submenu's own entries", ui.menus(app, 0), ["Quit"])
 
     ' ---- a popup is NOT on the bar ---------------------------------------
     ' The control that says `popup` is a different kind of menu rather than a
     ' spelling of `menu`. A popup added to the bar would render as an extra
     ' entry nobody reads, and every entry check above would still pass.
-    check("the bar holds only the declared menu", qt.menus(app), ["File"])
+    check("the bar holds only the declared menu", ui.menus(app), ["File"])
 
     ' ---- the policy a declared handler asks for ---------------------------
     ' THE LOAD-BEARING HALF. Every widget kind starts at `DefaultContextMenu`,
@@ -220,32 +220,32 @@ program main()
     ' without this the handler below is connected to a signal nothing emits and
     ' the right-click does nothing, silently.
     check("a part with a handler got the policy",
-          qt.read(app, "files", "contextMenuPolicy"), "CustomContextMenu")
-    check("so did the editor", qt.read(app, "code", "contextMenuPolicy"),
+          ui.read(app, "files", "contextMenuPolicy"), "CustomContextMenu")
+    check("so did the editor", ui.read(app, "code", "contextMenuPolicy"),
           "CustomContextMenu")
 
     ' ---- the right-click, and the row it lands on -------------------------
-    qt.right_click(app, "files", 1)
+    ui.right_click(app, "files", 1)
     check("the handler fired", g.asked, 1)
     ' Qt MOVES THE SELECTION on a right-press, so this is the row under the
     ' pointer rather than wherever the selection happened to be.
-    check("the selection followed the click", qt.selected(app, "files"), 1)
+    check("the selection followed the click", ui.selected(app, "files"), 1)
     ' Row 1 is a directory, so Open, Rename and Delete are hidden and the ONLY
     ' thing left is the submenu's own item -- so a `true` here can only come
     ' from counting INTO the submenu, which is the recursion's positive half.
     check("a directory offers only what the submenu leads to", g.shown, true)
     check("delete is hidden for a directory",
-          qt.read(app, "delete_it", "visible"), false)
+          ui.read(app, "delete_it", "visible"), false)
 
-    qt.right_click(app, "files", 2)
-    check("a second click moved the row", qt.selected(app, "files"), 2)
+    ui.right_click(app, "files", 2)
+    check("a second click moved the row", ui.selected(app, "files"), 2)
     check("the handler fired again", g.asked, 2)
-    check("delete is back for a file", qt.read(app, "delete_it", "visible"),
+    check("delete is back for a file", ui.read(app, "delete_it", "visible"),
           true)
 
     ' AND THE ITEMS STILL WORK, which is what says the popup's actions are
     ' connected like a bar menu's rather than merely built.
-    qt.invoke(app, "open_it", "trigger")
+    ui.invoke(app, "open_it", "trigger")
     check("the popup's item fired its handler", g.opened, 1)
 
     ' ---- nothing to show is `false`, not a refusal ------------------------
@@ -254,12 +254,12 @@ program main()
     ' failed". Measured, Qt agrees: an all-hidden menu answers isEmpty() true
     ' and popup() leaves it invisible. BOTH halves are asserted, since "true"
     ' alone passes on a verb that always says yes.
-    qt.set(app, "comment_it", "visible", false)
-    check("an all-hidden popup shows nothing", qt.popup(app, "editor_actions"),
+    ui.set(app, "comment_it", "visible", false)
+    check("an all-hidden popup shows nothing", ui.popup(app, "editor_actions"),
           false)
-    qt.set(app, "comment_it", "visible", true)
+    ui.set(app, "comment_it", "visible", true)
     check("and shows again once an item is back",
-          qt.popup(app, "editor_actions"), true)
+          ui.popup(app, "editor_actions"), true)
 
     ' AND A SUBMENU COUNTS FOR WHAT IT LEADS TO, NOT FOR ITSELF. Found by
     ' examples/qt/browser.bas rather than reasoned: hiding every item INSIDE a
@@ -267,118 +267,118 @@ program main()
     ' `isEmpty()` FALSE and SHOWS a menu holding nothing but an arrow leading
     ' nowhere -- "reads as a control that failed" one level in, which is
     ' exactly what this boolean exists to prevent. Qt's own test cannot see it.
-    qt.set(app, "open_it", "visible", false)
-    qt.set(app, "rename_it", "visible", false)
-    qt.set(app, "delete_it", "visible", false)
-    qt.set(app, "info_it", "visible", false)
+    ui.set(app, "open_it", "visible", false)
+    ui.set(app, "rename_it", "visible", false)
+    ui.set(app, "delete_it", "visible", false)
+    ui.set(app, "info_it", "visible", false)
     check("a popup holding only an empty submenu shows nothing",
-          qt.popup(app, "row_actions"), false)
+          ui.popup(app, "row_actions"), false)
     ' ITS CONTROL: the submenu's own item back, and only that, must show --
     ' without which "it recursed" is satisfied by a count that stopped treating
     ' a submenu as anything at all.
-    qt.set(app, "info_it", "visible", true)
+    ui.set(app, "info_it", "visible", true)
     check("and an item inside the submenu is enough",
-          qt.popup(app, "row_actions"), true)
+          ui.popup(app, "row_actions"), true)
 
     ' ---- a menu UNDER a part, rather than at the pointer -----------------
-    ' A MENU BUTTON'S MENU BELONGS UNDER THE BUTTON. §0.20 shipped `qt.popup`
+    ' A MENU BUTTON'S MENU BELONGS UNDER THE BUTTON. §0.20 shipped `ui.popup`
     ' at the pointer only and recorded that as open; Studio's toolbar menu
     ' button is the caller that closes it. Measured: popping at a widget's
     ' bottom-left lands exactly there.
-    qt.invoke(app, "proj", "click")
+    ui.invoke(app, "proj", "click")
     check("a menu popped under a button appeared", g.under, true)
     ' WHERE IT APPEARED, asserted as a DIFFERENCE. A perturbation that ignored
     ' the third argument and popped at the pointer left the boolean TRUE and
     ' was caught by NOTHING -- the fifth time in these increments that a green
     ' perturbation meant a missing observable.
-    left_at = qt.read(app, "editor_actions", "x")
-    x = qt.popup(app, "editor_actions", "far")
-    right_at = qt.read(app, "editor_actions", "x")
+    left_at = ui.read(app, "editor_actions", "x")
+    x = ui.popup(app, "editor_actions", "far")
+    right_at = ui.read(app, "editor_actions", "x")
     check("popping under a different button moved the menu",
           right_at > left_at, true)
     ' AND THE CONTROL: at the POINTER it is somewhere else again, which is what
     ' says the third argument is doing the work rather than the menu happening
     ' to land near whatever was asked.
-    x = qt.popup(app, "editor_actions")
+    x = ui.popup(app, "editor_actions")
     check("and at the pointer it is in neither place",
-          qt.read(app, "editor_actions", "x") != right_at, true)
+          ui.read(app, "editor_actions", "x") != right_at, true)
 
     ' ---- a rule in a layout, beside the menu separator above --------------
     ' THE SAME WORD, two widgets, one meaning. A row is divided by a VERTICAL
     ' line, which is the half a menu's separator cannot show.
     check("a toolbar divider is vertical",
-          qt.read(app, "toolbar_rule", "frameShape"), "VLine")
+          ui.read(app, "toolbar_rule", "frameShape"), "VLine")
 
     ' ---- the editor answers too -------------------------------------------
-    qt.right_click(app, "code")
+    ui.right_click(app, "code")
     check("a right-click in the editor fired", g.editor_asked, 1)
 
     ' ---- refusals, each beside its nearest legal neighbour ----------------
     on error goto next
-    qt.popup(app, "not_there")
+    ui.popup(app, "not_there")
     check("an unknown popup is refused", error.message,
-          "qt.popup: this window has no `not_there`")
+          "ui.popup: this window has no `not_there`")
     error.clear()
 
-    qt.popup(app, "files")
+    ui.popup(app, "files")
     ' NAMES THE KIND IT FOUND, because the mistake is naming a table where a
     ' popup was meant and "no such thing" would be false about a name that is
     ' right there.
     check("a table is not a popup menu", error.message,
-          "qt.popup: `files` is a QTableWidget, not a popup menu")
+          "ui.popup: `files` is a QTableWidget, not a popup menu")
     error.clear()
 
-    qt.popup(app, "row_actions", "not_a_part")
+    ui.popup(app, "row_actions", "not_a_part")
     check("popping under something that is not there is refused",
           error.message,
-          "qt.popup: there is nothing called `not_a_part` to pop under")
+          "ui.popup: there is nothing called `not_a_part` to pop under")
     error.clear()
 
-    qt.right_click(app, "open_it")
+    ui.right_click(app, "open_it")
     check("an item has nothing to click", error.message,
-          "qt.right_click: `open_it` is a QAction, which has nothing to click")
+          "ui.right_click: `open_it` is a QAction, which has nothing to click")
     error.clear()
 
-    qt.right_click(app, "files", 99)
+    ui.right_click(app, "files", 99)
     check("a row that is not there is refused", error.message,
-          "qt.right_click: that table has no such row")
+          "ui.right_click: that table has no such row")
     error.clear()
 
     ' WIDENED BY §0.33, which taught a tree row and a tab to be aimed at: the
     ' three kinds that HAVE a row or a tab are named, so a `source` is told
     ' what it is not rather than being measured against tables alone.
-    qt.right_click(app, "code", 0)
+    ui.right_click(app, "code", 0)
     check("only a table, a tree or a tabs has rows to click", error.message,
-          "qt.right_click: `code` is not a table, a tree or a `tabs`, so it " +
+          "ui.right_click: `code` is not a table, a tree or a `tabs`, so it " +
           "has no row or tab to click")
     error.clear()
 
-    qt.menus(app, "files")
+    ui.menus(app, "files")
     check("the oracle refuses a non-popup by name", error.message,
-          "qt.menus: this window has no popup menu called `files`")
+          "ui.menus: this window has no popup menu called `files`")
     error.clear()
     on error stop
 
-    qt.close(app)
+    ui.close(app)
 
     ' ---- the control: no handler, no policy change ------------------------
     ' Without this, "the policy is set" is satisfied by setting it on every
     ' widget, which takes Qt's own cut/copy/paste menu away from every `memo`
     ' and `field` in the language and says nothing.
-    qt.open(plain)
+    ui.open(plain)
     check("a memo with no handler keeps Qt's own menu",
-          qt.read(plain, "notes", "contextMenuPolicy"), "DefaultContextMenu")
+          ui.read(plain, "notes", "contextMenuPolicy"), "DefaultContextMenu")
     check("and so does a field",
-          qt.read(plain, "who", "contextMenuPolicy"), "DefaultContextMenu")
-    qt.close(plain)
+          ui.read(plain, "who", "contextMenuPolicy"), "DefaultContextMenu")
+    ui.close(plain)
 
     ' ---- TIER VIEWPORT: every kind a right-click can land on -------------
-    qt.open(kinds)
-    qt.right_click(kinds, "grid", 0)
-    qt.right_click(kinds, "note")
-    qt.right_click(kinds, "src")
-    qt.right_click(kinds, "one")
-    qt.right_click(kinds, "press")
+    ui.open(kinds)
+    ui.right_click(kinds, "grid", 0)
+    ui.right_click(kinds, "note")
+    ui.right_click(kinds, "src")
+    ui.right_click(kinds, "one")
+    ui.right_click(kinds, "press")
     ' THE THREE SCROLL-AREA KINDS ARE THE POINT. Without viewport routing they
     ' answer NOTHING -- measured at 0 against 1 -- so a run that reports only
     ' `field` and `button` is the defect, and `hits` alone could not say which
@@ -386,5 +386,5 @@ program main()
     check("every kind answered a right-click", g.hits, 5)
     check("and each one is the part that was clicked", g.where,
           ["table", "memo", "source", "field", "button"])
-    qt.close(kinds)
+    ui.close(kinds)
 end program

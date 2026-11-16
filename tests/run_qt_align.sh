@@ -1,6 +1,6 @@
 #!/bin/bash
 # A COLUMN'S ALIGNMENT -- `align:` on a table's or tree's `field`, and
-# `qt.alignment`, which asks Qt where a cell's text sits.
+# `ui.alignment`, which asks Qt where a cell's text sits.
 #
 # ASKED FOR BY gBASIC STUDIO: Matthew wants numbers right-aligned in Studio's
 # grid, an asking table, and the model answered only Qt's DisplayRole, so a

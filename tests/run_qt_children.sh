@@ -1,14 +1,14 @@
 #!/bin/bash
-# A CONTAINER WHOSE CHILDREN CHANGE (§0.27) -- `qt.refresh(win, name, items)`,
+# A CONTAINER WHOSE CHILDREN CHANGE (§0.27) -- `ui.refresh(win, name, items)`,
 # the third form of a verb that already means "re-read what this shows", and
-# `qt.tabs`, which is the only way to observe a caption.
+# `ui.tabs`, which is the only way to observe a caption.
 #
 # ASKED FOR BY THE CONSUMER, WITH MEASUREMENTS, which is why this one is not a
 # gap I found: docs/qt_dynamic_children_proposal.md was written by the gBASIC
 # Studio side from converting its shell, and it established the shape of the
-# gap rather than describing it -- `qt.read(win, "book", "count")` answers 2 for
-# a two-tab `tabs` so the set is OBSERVABLE, `qt.refresh(win, "book")` refuses
-# by naming tables, and `qt.invoke` passes NO ARGUMENTS, so `removeTab(int)`
+# gap rather than describing it -- `ui.read(win, "book", "count")` answers 2 for
+# a two-tab `tabs` so the set is OBSERVABLE, `ui.refresh(win, "book")` refuses
+# by naming tables, and `ui.invoke` passes NO ARGUMENTS, so `removeTab(int)`
 # and `setTabText(int, QString)` are out of reach by construction. Studio's
 # notebook is one tab per open document, which is what the application IS.
 #
@@ -129,7 +129,7 @@ decl "and a named tab with no caption is still refused" '    tabs book
 # Qt does not free its own platform plugin or QApplication statics).
 #
 # AND THE HALF BESIDE IT **IS** COVERED, measured the same way: skipping the
-# NAME PURGE also leaves every check green -- `qt.read` on a dropped name
+# NAME PURGE also leaves every check green -- `ui.read` on a dropped name
 # happens to refuse -- and valgrind reports 21 invalid reads, which is the
 # tier's own stated reason for existing. So the two halves are proven by
 # different tiers rather than both resting on this one.

@@ -3,14 +3,14 @@
 '
 ' A WHEEL IS AN EVENT, NOT A SIGNAL. A Qt widget has no wheel signal -- it
 ' RECEIVES one -- so `on code.wheel` is handled the way `on <window>.closed` is,
-' and the handler asks `qt.wheel()` for the event rather than taking arguments.
+' and the handler asks `ui.wheel()` for the event rather than taking arguments.
 ' `dy` is in NOTCHES (one click of the wheel) and positive means away from you.
 '
 ' THE ZOOM NEEDS NO VERB. `font` is an ordinary property that reads back as
 ' text -- "monospace,9,-1,5,400,..." -- so the size is just a number in a list:
 ' split it, change it, write it back.
 '
-' `qt.swallow()` IS WHAT STOPS THE EDITOR ALSO SCROLLING, and it is not
+' `ui.swallow()` IS WHAT STOPS THE EDITOR ALSO SCROLLING, and it is not
 ' optional: Ctrl + wheel scrolls a text view FASTER than a plain wheel, so
 ' without it the view jumps about while the text resizes. A handler that
 ' DECLINES leaves the wheel alone, which is what keeps ordinary scrolling
@@ -23,7 +23,7 @@ window app( title: "Zoom", width: 520, height: 360 )
     end column
 
     on code.wheel
-        ev = qt.wheel()
+        ev = ui.wheel()
         if not ev.ctrl then
             ' NOTHING, and the event is left alone so the editor scrolls.
             return
@@ -35,18 +35,18 @@ window app( title: "Zoom", width: 520, height: 360 )
         end if
         app.set("code", "font", f[0] + "," + string(number(f[1]) + bigger))
         g.zooms = g.zooms + 1
-        qt.swallow()
+        ui.swallow()
     end on
 end window
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display, so no window -- the declaration is still checked"
         return
     end if
 
     g = { zooms: 0 }
-    qt.open(app)
+    ui.open(app)
 
     lines = []
     for i = 1 to 200
@@ -57,7 +57,7 @@ program main(args)
     size = number(split(app.read("code", "font"), ",")[1])
     print "font at first:   " + string(size)
 
-    ' A PLAIN WHEEL SCROLLS and does not zoom. `qt.scroll` drives the wheel the
+    ' A PLAIN WHEEL SCROLLS and does not zoom. `ui.scroll` drives the wheel the
     ' way a mouse does, and answers whether anything CLAIMED the event.
     app.scroll_to("code", 50)
     claimed = app.scroll("code", -2)

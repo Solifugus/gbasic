@@ -1,5 +1,5 @@
 ' A CHANGING NOTEBOOK -- a container whose set of children changes while the
-' window is up, which is what `qt.refresh(win, name, items)` is for.
+' window is up, which is what `ui.refresh(win, name, items)` is for.
 '
 ' THE DECLARATION CANNOT CONTAIN A LOOP, so a window whose shape depends on
 ' data is BUILT as a record (recipe 10) -- and until this verb existed that
@@ -47,12 +47,12 @@ program main(args)
     open_docs = [ { id: 1, title: "notes.bas", text: "print 1" } ]
     editor = notebook_for(open_docs)
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so there is no window to open."
         return
     end if
 
-    qt.open(editor)
+    ui.open(editor)
     print "tabs at the start:   " + join(editor.tabs("book"), ", ")
 
     ' SOMEBODY TYPES. This is the state that has to survive everything below.
@@ -75,7 +75,7 @@ program main(args)
           string(editor.read("ed1") = "print 1" + chr(10) + "print 2"))
 
     ' AND ONE IS CLOSED. An absent child is DELETED, so its parts leave the
-    ' window with it -- `qt.read` on a closed document's editor refuses, which
+    ' window with it -- `ui.read` on a closed document's editor refuses, which
     ' is what stops a program reading off a screen nobody is looking at.
     open_docs = [ open_docs[0] ]
     n = editor.refresh("book", pages_for(open_docs))

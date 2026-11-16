@@ -4,7 +4,7 @@
 ' other way round from `menu`. A container carries a NAME or OPTIONS and never
 ' both, so `menu "File"` spends it on the caption a person reads on the bar --
 ' and a context menu has no bar to be read on, so what it needs is a NAME,
-' which is how `qt.popup` raises it at all.
+' which is how `ui.popup` raises it at all.
 '
 ' DECLARING THE HANDLER IS WHAT ASKS FOR IT. Every Qt widget starts out letting
 ' Qt put up its own menu, and under that setting the signal below is NEVER
@@ -13,10 +13,10 @@
 ' the handler is enough; the cost is that your menu REPLACES the one Qt would
 ' have shown, so a `memo` with a context handler loses its own cut and paste.
 '
-' THE ROW IS `qt.selected`, with nothing new to learn: Qt moves the selection on
+' THE ROW IS `ui.selected`, with nothing new to learn: Qt moves the selection on
 ' a right-press, so the handler asks the same question a left click asks. What
 ' this row OFFERS is decided by HIDING what it does not -- one menu built once,
-' narrowed per row -- and `qt.popup` answers FALSE when nothing in it is left
+' narrowed per row -- and `ui.popup` answers FALSE when nothing in it is left
 ' visible, because an empty context menu reads as a control that failed.
 
 window app( title: "Files", width: 460, height: 300 )
@@ -48,7 +48,7 @@ window app( title: "Files", width: 460, height: 300 )
 end window
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display, so no window -- the declaration is still checked"
         return
     end if
@@ -59,9 +59,9 @@ program main(args)
     ' ONE RECORD, because a handler cannot rebind a plain variable in `main`.
     g = { listing: listing, asked: "", offered: false, opened: "" }
 
-    qt.open(app)
+    ui.open(app)
 
-    ' RIGHT-CLICK THE FOLDER. `qt.right_click` drives it the way a mouse does,
+    ' RIGHT-CLICK THE FOLDER. `ui.right_click` drives it the way a mouse does,
     ' which is how a program can check its own menu with nobody there.
     app.right_click("files", 1)
     print "right-clicked:  " + g.asked

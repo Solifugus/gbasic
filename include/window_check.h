@@ -8,7 +8,7 @@
  *
  * §4 says the block is SUGAR OVER A BUILDER, because a declaration cannot
  * contain a loop and so cannot generate a row per invoice. MEASURED
- * 2026-10-18, THAT DOOR WAS ALREADY OPEN: `qt.open` reads the record the
+ * 2026-10-18, THAT DOOR WAS ALREADY OPEN: `ui.open` reads the record the
  * declaration binds and checks only that `kind` is `"window"`, so a record a
  * program BUILDS opens, renders and reads back exactly as a declared one.
  * Nobody knew, because nothing said so and nothing tested it.

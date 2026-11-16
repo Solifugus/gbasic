@@ -23,7 +23,7 @@
 # two different places, and neither is sufficient alone:
 #
 #   * WHICH DEFINITION WAS APPLIED -- gBASIC can ask, through
-#     `qt.highlighting`, and tests/qt_source_test.bas does.
+#     `ui.highlighting`, and tests/qt_source_test.bas does.
 #   * WHETHER THE TEXT IS REALLY COLOURED DIFFERENTLY -- gBASIC cannot ask,
 #     having no way to read a QTextLayout's format ranges, so
 #     tests/qt/source_probe.cpp does, in C++, with the control built in.
@@ -204,19 +204,19 @@ window w( title: "x", width: 400, height: 300 )
     end column
 end window
 program main()
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "nodisplay"
         return
     end if
-    qt.open(w)
-    h = qt.highlighting(w, "code")
+    ui.open(w)
+    h = ui.highlighting(w, "code")
     if is_unknown(h) then
         print "applied=none"
     else
         print "applied=" + h.language
         print "from=" + h.file
     end if
-    qt.stop()
+    ui.stop()
 end program
 BAS
 if ! premise_highlighter_built; then
@@ -337,7 +337,7 @@ else
         cat "$work/warn.err"; fail "nothing warned, and there is nothing on screen to notice"
     fi
     # IT MUST NAME THE PART, because it cannot name a POSITION: a window record
-    # holds no line, so the warning is reported at `qt.open` rather than at the
+    # holds no line, so the warning is reported at `ui.open` rather than at the
     # declaration that asked for the language. Naming `source code` is what
     # makes the site not matter.
     if grep -q 'source code' "$work/warn.err"; then
@@ -346,9 +346,9 @@ else
         cat "$work/warn.err"; fail "the warning did not name the part"
     fi
     if grep -q '^applied=none' "$work/warn.out"; then
-        pass "and qt.highlighting agrees that nothing was applied"
+        pass "and ui.highlighting agrees that nothing was applied"
     else
-        fail "the warning and qt.highlighting disagree about what happened"
+        fail "the warning and ui.highlighting disagree about what happened"
     fi
     # THE CONTROL, without which "it warns" is satisfied by a build that warns
     # about every source widget there is.

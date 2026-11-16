@@ -1,5 +1,5 @@
 #!/bin/bash
-# A WINDOW'S PIXELS (docs/qt_gui_design.md §0.37): `qt.capture(win, file,
+# A WINDOW'S PIXELS (docs/qt_gui_design.md §0.37): `ui.capture(win, file,
 # { part, scale })` writes a window, or one named part of it, to a PNG at a
 # chosen scale, offscreen. Asked for by the books (volume 3's gap ledger, S1):
 # a figure of Studio has to be something a build retakes, not a screenshot.

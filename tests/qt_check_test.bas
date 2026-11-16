@@ -1,4 +1,4 @@
-' `qt.check` -- the declaration's own rules, over a window a program BUILT.
+' `ui.check` -- the declaration's own rules, over a window a program BUILT.
 ' NEEDS NO QT AND NO DISPLAY, which is the point: this is a check on a
 ' DECLARATION, and the whole declarative surface was built to be provable with
 ' no toolkit (the `web.routes` property).
@@ -6,7 +6,7 @@
 ' MEASURED BEFORE A LINE WAS WRITTEN, which is what shaped the increment. §4 of
 ' docs/qt_gui_design.md says the block is SUGAR OVER A BUILDER because a
 ' declaration cannot contain a loop -- and that door turned out to be ALREADY
-' OPEN: `qt.open` reads the record the declaration binds and asks only that
+' OPEN: `ui.open` reads the record the declaration binds and asks only that
 ' `kind` is "window", so a built record opens, renders, reads back and fires
 ' handlers exactly as a declared one. Nobody knew, because nothing said so.
 '
@@ -31,7 +31,7 @@
 '
 ' THE CONTROLS ARE THE LOAD-BEARING HALF. A refusal suite with no control is
 ' satisfied by a checker that refuses everything -- and this one would be the
-' worst kind, since it now runs inside `qt.open` and would refuse every window
+' worst kind, since it now runs inside `ui.open` and would refuse every window
 ' in the language.
 
 function check(what, got, want)
@@ -47,7 +47,7 @@ end function
 ' that the words name the thing to edit.
 function refused(win)
     on error goto handle
-    ok = qt.check(win)
+    ok = ui.check(win)
     return "ACCEPTED"
 handle:
     message = error.message
@@ -71,7 +71,7 @@ program main()
     print "-- CONTROL: a built window with nothing wrong is ACCEPTED"
     good = { kind: "window", name: "ok", options: { title: "T", width: 300 },
              items: [ col([ field("a"), field("b") ]) ] }
-    check("a good built window passes", qt.check(good), true)
+    check("a good built window passes", ui.check(good), true)
 
     print "-- the vocabulary, with the declaration's near-miss hint"
     m = refused(win([ col([ { kind: "part", word: "feild", name: "a",
@@ -160,23 +160,23 @@ program main()
 
     print "-- CONTROLS: what must still be ACCEPTED"
     ' A refusal suite with no controls is satisfied by refusing everything, and
-    ' here that would refuse every window in the language, `qt.open` now
+    ' here that would refuse every window in the language, `ui.open` now
     ' running this. One per shape the vocabulary admits.
     check("a stretch with no name is fine",
-          qt.check(win([ col([ { kind: "part", word: "stretch",
+          ui.check(win([ col([ { kind: "part", word: "stretch",
                                  options: {} } ]) ])), true)
     check("a separator in a menu is fine",
-          qt.check(win([ { kind: "container", word: "menu", label: "File",
+          ui.check(win([ { kind: "container", word: "menu", label: "File",
                            options: {},
                            items: [ { kind: "part", word: "separator",
                                       options: {} } ] } ])), true)
     check("a menu at the window's top level is fine",
-          qt.check(win([ { kind: "container", word: "menu", label: "File",
+          ui.check(win([ { kind: "container", word: "menu", label: "File",
                            options: {},
                            items: [ { kind: "part", word: "item", name: "o",
                                       options: { label: "Open" } } ] } ])), true)
     check("a submenu inside a menu is fine",
-          qt.check(win([ { kind: "container", word: "menu", label: "File",
+          ui.check(win([ { kind: "container", word: "menu", label: "File",
                            options: {},
                            items: [ { kind: "container", word: "menu",
                                       label: "More", options: {},
@@ -184,33 +184,33 @@ program main()
                                                  name: "d", options: {} } ] } ] } ])),
           true)
     check("a tab inside a tabs is fine",
-          qt.check(win([ { kind: "container", word: "tabs", name: "tt",
+          ui.check(win([ { kind: "container", word: "tabs", name: "tt",
                            options: {},
                            items: [ { kind: "container", word: "tab",
                                       label: "One", options: {},
                                       items: [ field("a") ] } ] } ])), true)
     check("a row inside cells is fine",
-          qt.check(win([ { kind: "container", word: "cells", options: {},
+          ui.check(win([ { kind: "container", word: "cells", options: {},
                            items: [ { kind: "container", word: "row",
                                       options: {},
                                       items: [ field("a") ] } ] } ])), true)
     check("a table's columns are ITS OWN names, not the window's",
-          qt.check(win([ { kind: "container", word: "table", name: "t",
+          ui.check(win([ { kind: "container", word: "table", name: "t",
                            subject: "rows", direction: "show", options: {},
                            items: [ field("who") ] },
                          col([ field("who") ]) ])), true)
     check("a form inheriting the window's subject is fine",
-          qt.check({ kind: "window", name: "w", subject: "cust",
+          ui.check({ kind: "window", name: "w", subject: "cust",
                      direction: "edit", options: {},
                      items: [ { kind: "container", word: "form", options: {},
                                 items: [ field("a") ] } ] }), true)
     check("a handler carrying a function and naming a real part is fine",
-          qt.check(win([ col([ { kind: "part", word: "button", name: "go",
+          ui.check(win([ col([ { kind: "part", word: "button", name: "go",
                                  options: {} } ]),
                          { kind: "handler", target: "go", signal: "clicked",
                            handler: noop } ])), true)
     check("a handler may name a named CONTAINER",
-          qt.check(win([ { kind: "container", word: "table", name: "t",
+          ui.check(win([ { kind: "container", word: "table", name: "t",
                            subject: "rows", direction: "show", options: {},
                            items: [ field("who") ] },
                          { kind: "handler", target: "t", signal: "activated",
@@ -231,7 +231,7 @@ program main()
         i = i + 1
     end while
     check("CONTROL: sixty nested containers is accepted",
-          qt.check(win([ node ])), true)
+          ui.check(win([ node ])), true)
     while i <= 70
         node = { kind: "container", word: "column", options: {},
                  items: [ node ] }
@@ -241,7 +241,7 @@ program main()
     check("past the cap it is refused, naming the cap",
           contains(m, "nested more than 64 deep"), true)
 
-    print "-- qt.check refuses what is not a window at all"
+    print "-- ui.check refuses what is not a window at all"
     m = refused({ kind: "part", word: "field", name: "a", options: {} })
     check("a part is not a window", contains(m, "expects a window record"), true)
 end program

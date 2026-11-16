@@ -1,4 +1,4 @@
-' PANE SIZES (§0.22) -- `qt.pane(...).sizes` and `qt.resize_panes`, which is how
+' PANE SIZES (§0.22) -- `ui.pane(...).sizes` and `ui.resize_panes`, which is how
 ' "restore my layout" is written. Under QT_QPA_PLATFORM=offscreen, real
 ' QSplitters, no display.
 '
@@ -8,8 +8,8 @@
 ' everything else in this backend cannot see either. And a `split` CANNOT BE
 ' NAMED, its one slot being the direction, so there is nothing to address.
 '
-' SO IT IS ADDRESSED BY WALKING UP FROM A PART, which is the rule `qt.pane`
-' already follows and needed no new spelling: `sizes` joins what `qt.pane`
+' SO IT IS ADDRESSED BY WALKING UP FROM A PART, which is the rule `ui.pane`
+' already follows and needed no new spelling: `sizes` joins what `ui.pane`
 ' answers, and the write half is a verb taking the same part.
 '
 ' STUDIO NEEDS IT. Its shell reads `split.position` for three splits out of the
@@ -59,7 +59,7 @@ window app( title: "Panes", width: 900, height: 500 )
 end window
 
 ' A WINDOW WITH NO SPLIT, for the refusal that has nothing to do with scroll
-' areas: `qt.pane` already answers `unknown` for a part in neither region, and
+' areas: `ui.pane` already answers `unknown` for a part in neither region, and
 ' the writer must refuse rather than reach for whatever it can find.
 window flat( title: "Flat", width: 300, height: 160 )
     column
@@ -79,10 +79,10 @@ end window
 
 program main()
     rows = [{ line: "ready" }]
-    qt.open(app)
+    ui.open(app)
 
     ' ---- the sizes are part of what a pane IS ------------------------------
-    outer = qt.pane(app, "browser")
+    outer = ui.pane(app, "browser")
     check("the outer split has two panes", outer.panes, 2)
     check("and two sizes", count(outer.sizes), 2)
     ' THEY ADD UP TO THE SPLITTER, near enough: the handle and the margins are
@@ -96,45 +96,45 @@ program main()
     ' NOT AS A VALUE: `setSizes` is not exact, so asking for 200/700 and
     ' checking for 200 would fail on a correct implementation. What a program
     ' actually wants back is the proportion, and that is what survives.
-    qt.resize_panes(app, "browser", [200, 700])
-    narrow = qt.pane(app, "browser").sizes
+    ui.resize_panes(app, "browser", [200, 700])
+    narrow = ui.pane(app, "browser").sizes
     check("the first pane is now the smaller", narrow[0] < narrow[1], true)
     check("and about a quarter of the width",
           narrow[0] * 4 > narrow[1] and narrow[0] * 2 < narrow[1], true)
 
-    qt.resize_panes(app, "browser", [700, 200])
-    wide = qt.pane(app, "browser").sizes
+    ui.resize_panes(app, "browser", [700, 200])
+    wide = ui.pane(app, "browser").sizes
     check("and it can be made the larger", wide[0] > wide[1], true)
     ' THE DIFFERENCE IS THE ASSERTION: either reading alone passes on a verb
     ' that does nothing, since both are plausible layouts.
     check("so the two settings really differ", narrow[0] < wide[0], true)
 
     ' ---- the inner split is addressed by its own part ----------------------
-    inner = qt.pane(app, "code")
+    inner = ui.pane(app, "code")
     check("the inner split has two panes", inner.panes, 2)
     check("and its own sizes", count(inner.sizes), 2)
-    qt.resize_panes(app, "code", [100, 300])
+    ui.resize_panes(app, "code", [100, 300])
     ' AND SETTING THE INNER ONE LEAVES THE OUTER ALONE, which is the check that
     ' catches a walk that found the wrong splitter -- every size check above
     ' would still pass on one that resized whichever split it met first.
-    after = qt.pane(app, "browser").sizes
+    after = ui.pane(app, "browser").sizes
     check("resizing the inner split left the outer alone", after[0], wide[0])
-    small = qt.pane(app, "code").sizes
+    small = ui.pane(app, "code").sizes
     check("and the inner one moved", small[0] < small[1], true)
 
     ' ---- a table as a direct pane is found, which is the control ----------
     ' Without it, "a part whose region is a scroll is refused" is satisfied by
     ' a walk that refuses everything that is not a plain widget.
-    tb = qt.pane(app, "console")
+    tb = ui.pane(app, "console")
     check("a table as a direct pane reports its split", tb.kind, "split")
     check("and its sizes", count(tb.sizes), 2)
 
     ' ---- a pane may be collapsed, and come back ---------------------------
     ' 0 IS LEGAL and is how a shell hides a panel without forgetting it.
-    qt.resize_panes(app, "browser", [0, 900])
-    check("a pane can be collapsed", qt.pane(app, "browser").sizes[0], 0)
-    qt.resize_panes(app, "browser", [300, 600])
-    check("and brought back", qt.pane(app, "browser").sizes[0] > 0, true)
+    ui.resize_panes(app, "browser", [0, 900])
+    check("a pane can be collapsed", ui.pane(app, "browser").sizes[0], 0)
+    ui.resize_panes(app, "browser", [300, 600])
+    check("and brought back", ui.pane(app, "browser").sizes[0] > 0, true)
 
     ' ---- refusals, each beside its nearest legal neighbour -----------------
     on error goto next
@@ -142,73 +142,73 @@ program main()
     ' size on a two-pane split COLLAPSES the second (Qt answered [774, 0]) and
     ' three sizes honour NONE of them ([310, 464]) -- both ordinary-looking
     ' layouts that are not what was asked for.
-    qt.resize_panes(app, "browser", [500])
+    ui.resize_panes(app, "browser", [500])
     check("too few sizes is refused, naming both counts", error.message,
-          "qt.resize_panes: that split has 2 panes and 1 size was given")
+          "ui.resize_panes: that split has 2 panes and 1 size was given")
     error.clear()
 
-    qt.resize_panes(app, "browser", [100, 200, 300])
+    ui.resize_panes(app, "browser", [100, 200, 300])
     check("and too many", error.message,
-          "qt.resize_panes: that split has 2 panes and 3 sizes were given")
+          "ui.resize_panes: that split has 2 panes and 3 sizes were given")
     error.clear()
 
-    qt.resize_panes(app, "f1", [10, 20])
+    ui.resize_panes(app, "f1", [10, 20])
     ' A PART WHOSE NEAREST REGION IS A SCROLL, which is the interesting case:
     ' `f1` sits inside a `scroll` that is itself a pane, and the walk stops at
-    ' the nearest region -- the rule `qt.pane` already follows. Resizing "the
+    ' the nearest region -- the rule `ui.pane` already follows. Resizing "the
     ' split f1 is in" would otherwise reach past the thing that holds it.
     check("a part whose nearest region is a scroll is refused", error.message,
-          "qt.resize_panes: `f1` is not in a split")
+          "ui.resize_panes: `f1` is not in a split")
     error.clear()
 
-    qt.resize_panes(app, "nope", [10, 20])
+    ui.resize_panes(app, "nope", [10, 20])
     check("an unknown part is refused", error.message,
-          "qt.resize_panes: this window has no `nope`")
+          "ui.resize_panes: this window has no `nope`")
     error.clear()
 
-    qt.resize_panes(app, "browser", [-10, 500])
+    ui.resize_panes(app, "browser", [-10, 500])
     check("a negative size is refused rather than clamped", error.message,
-          "qt.resize_panes: a pane cannot be -10 wide")
+          "ui.resize_panes: a pane cannot be -10 wide")
     error.clear()
 
-    qt.resize_panes(app, "browser", [])
+    ui.resize_panes(app, "browser", [])
     check("an empty list is refused", error.message,
-          "qt.resize_panes: that split has 2 panes and 0 sizes were given")
+          "ui.resize_panes: that split has 2 panes and 0 sizes were given")
     error.clear()
 
-    qt.resize_panes(app, "browser", ["wide", "narrow"])
+    ui.resize_panes(app, "browser", ["wide", "narrow"])
     check("and a size that is not a number", error.message,
-          "qt.resize_panes: a pane's size must be a number")
+          "ui.resize_panes: a pane's size must be a number")
     error.clear()
     on error stop
 
     ' ---- a `scroll` reports no sizes, which is not the same as none --------
-    sc = qt.pane(app, "f1")
+    sc = ui.pane(app, "f1")
     check("a scroll is a scroll", sc.kind, "scroll")
     check("and carries no sizes at all", has(sc, "sizes"), false)
 
-    qt.close(app)
+    ui.close(app)
 
     ' ---- a window with no split at all -----------------------------------
-    qt.open(flat)
+    ui.open(flat)
     on error goto next
-    qt.resize_panes(flat, "only", [10, 20])
+    ui.resize_panes(flat, "only", [10, 20])
     check("a part in a window with no split is refused", error.message,
-          "qt.resize_panes: `only` is not in a split")
+          "ui.resize_panes: `only` is not in a split")
     error.clear()
     on error stop
-    check("and qt.pane says it is in neither region",
-          is_unknown(qt.pane(flat, "only")), true)
-    qt.close(flat)
+    check("and ui.pane says it is in neither region",
+          is_unknown(ui.pane(flat, "only")), true)
+    ui.close(flat)
 
     ' ---- three panes, because two-pane-only would pass everything above ----
-    qt.open(three)
-    t = qt.pane(three, "b")
+    ui.open(three)
+    t = ui.pane(three, "b")
     check("a three-pane split says three", t.panes, 3)
     check("and gives three sizes", count(t.sizes), 3)
-    qt.resize_panes(three, "b", [100, 300, 500])
-    got = qt.pane(three, "b").sizes
+    ui.resize_panes(three, "b", [100, 300, 500])
+    got = ui.pane(three, "b").sizes
     check("the three are in increasing order",
           got[0] < got[1] and got[1] < got[2], true)
-    qt.close(three)
+    ui.close(three)
 end program

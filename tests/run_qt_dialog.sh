@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# DIALOGS (docs/qt_gui_design.md §0.15) -- `qt.inform`, `qt.confirm`,
-# `qt.answer`.
+# DIALOGS (docs/qt_gui_design.md §0.15) -- `ui.inform`, `ui.confirm`,
+# `ui.answer`.
 #
 # A DIALOG OPENS A NESTED EVENT LOOP, which is the one case §5.1 ruled
 # direction B out on: under it gBASIC's poll does not run for the dialog's
@@ -190,7 +190,7 @@ window app( title: "D", width: 200, height: 100 )
 end window
 program main(args)
     on error goto refused
-    x = qt.confirm(app, "?")
+    x = ui.confirm(app, "?")
     print "ACCEPTED"
     return
 refused:

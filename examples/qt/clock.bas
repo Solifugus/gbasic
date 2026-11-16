@@ -15,20 +15,20 @@
 ' webserver stops answering and every timer misses while a message box is up.
 '
 ' SO QT OWNS THE LOOP AND A gBASIC SOURCE IS REGISTERED WITH IT. This program's
-' `timer` keeps firing after `qt.run()` has taken the thread, and what fires is
-' ordinary gBASIC. Nothing here arranges it: `qt.run()` is one call and the
+' `timer` keeps firing after `ui.run()` has taken the thread, and what fires is
+' ordinary gBASIC. Nothing here arranges it: `ui.run()` is one call and the
 ' timer is the same `timer.every` any other program uses.
 '
 ' TWO THINGS THIS EXAMPLE EXISTS TO TEACH, both learned by getting them wrong.
 '
 ' THE `watch` GOES INSIDE `program`. At the top level beside a `program` block
 ' it REGISTERS NOTHING and warning 2106 says so -- the block is what executes.
-' And it works inside because `qt.run()` BLOCKS THERE, so `main`'s frame is
+' And it works inside because `ui.run()` BLOCKS THERE, so `main`'s frame is
 ' still alive while the loop runs and the watcher can reach the counter in it.
 ' (A watcher that fires after `main` has returned has no such frame, which is
 ' why state for one of those has to live elsewhere.)
 '
-' `qt.stop()` DOES NOT CANCEL YOUR TIMERS, and it should not: a program may
+' `ui.stop()` DOES NOT CANCEL YOUR TIMERS, and it should not: a program may
 ' well close a window and go on serving. But a REPEATING timer keeps the event
 ' loop alive by itself, so stopping the window and leaving one live hands the
 ' thread to gBASIC's own loop and the program NEVER EXITS -- measured, 197 more
@@ -46,12 +46,12 @@ window clock( title: "Clock", width: 360, height: 240 )
     end column
 
     on close.clicked
-        qt.stop()
+        ui.stop()
     end on
 end window
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so there is no window to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
         return
@@ -65,7 +65,7 @@ program main(args)
     end if
     seen = 0
 
-    qt.open(clock)
+    ui.open(clock)
     beat = timer.every(0.2)
 
     watch(timer.ticks)
@@ -90,14 +90,14 @@ program main(args)
                 ' BOTH, AND IN THIS ORDER. Cancelling first would be fine too;
                 ' leaving the timer live is what does not work.
                 cancelled = timer.cancel(beat)
-                qt.stop()
+                ui.stop()
             end if
         end while
     end watch
 
     ' AFTER THIS LINE QT HAS THE THREAD. Everything the watcher does happens
     ' while it does.
-    qt.run()
+    ui.run()
 
     ' AND A REPEATING TIMER MUST BE GONE BY NOW or the program will not end:
     ' gBASIC's own loop runs after `main` for as long as there is work.

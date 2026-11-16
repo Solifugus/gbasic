@@ -16,18 +16,18 @@ window pad( title: "Editor", width: 640, height: 400 )
 end window
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display"
         return
     end if
-    qt.open(pad)
+    ui.open(pad)
 
     sample = ("' a comment" + chr(10) + "program main()" + chr(10) +
               "    x = 42" + chr(10) + "end program")
     pad.write("code", sample)
     pad.write("prose", sample)
 
-    ' WHAT IS ACTUALLY HIGHLIGHTING IT. `qt.highlighting` answers a record, or
+    ' WHAT IS ACTUALLY HIGHLIGHTING IT. `ui.highlighting` answers a record, or
     ' `unknown` when nothing is -- and an absent definition is a WARNING rather
     ' than a refusal, because the editor still works and an unhighlighted one
     ' looks entirely ordinary: the theme's normal text is applied to every line
@@ -38,7 +38,7 @@ program main(args)
     else
         print "highlighting:  " + h.language
     end if
-    print "this build can: " + string(qt.can_highlight())
+    print "this build can: " + string(ui.can_highlight())
 
     ' A `source` IS A `memo` WITH FOUR DIFFERENCES, and they read better beside
     ' a memo than as values.
@@ -52,5 +52,5 @@ program main(args)
                                       pad.read("prose", "font")))
     print "memo has none: " + string(is_unknown(pad.highlighting("prose")))
     print "text survives: " + string(len(pad.read("code")) = len(sample))
-    qt.stop()
+    ui.stop()
 end program

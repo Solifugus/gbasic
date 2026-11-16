@@ -254,8 +254,8 @@ void GbQtRelay::fire() {
     }
 }
 
-/* WHICH TAB AN EVENT IS ABOUT, held while one handler runs -- `qt.gutter_click`
- * and `qt.wheel`'s arrangement, reused rather than re-argued: a handler in this
+/* WHICH TAB AN EVENT IS ABOUT, held while one handler runs -- `ui.gutter_click`
+ * and `ui.wheel`'s arrangement, reused rather than re-argued: a handler in this
  * backend takes no arguments, so the event is ASKED FOR instead.
  *
  * -1 MEANS NO TAB, which covers both "no handler is running" and "the click was
@@ -314,7 +314,7 @@ void GbQtRelay::fireIndex(int index) {
      * names a new Qt version silently falls off -- but what it RECORDS is
      * narrowed here, since `stateChanged(int)` on a check box -- which the
      * fixture declares as the over-correction guard -- is an int about
-     * something else entirely, and answering it from `qt.which_tab` would be a
+     * something else entirely, and answering it from `ui.which_tab` would be a
      * wrong answer wearing a plausible number. */
     int prev = g_tabclick;
     QWidget *w = qobject_cast<QWidget *>(parent());
@@ -354,12 +354,12 @@ struct GbQtNode {
      * belongs to Qt -- it places the dock areas, the status bar and the tool
      * bars around a CENTRAL WIDGET -- so the declaration's items are parented
      * to that central widget while `widget` stays the window, which is what
-     * keeps `qt.read(win, "app", "windowTitle")`, `qt.close` and
+     * keeps `ui.read(win, "app", "windowTitle")`, `ui.close` and
      * `on app.closed` reaching the frame. Null everywhere else, and every
      * reader falls back to `widget`. */
     QWidget *host = nullptr;
     /* THE DECLARED WORD, kept because a RECONCILE has to know what a child IS:
-     * `qt.refresh(win, name, items)` keeps a child whose name AND word are
+     * `ui.refresh(win, name, items)` keeps a child whose name AND word are
      * unchanged, and a name alone is not enough -- a `field` replaced by a
      * `source` under one name is a different widget, and keeping the old one
      * would leave the window showing what the record no longer says. Set at
@@ -404,7 +404,7 @@ struct GbQtNode {
     /* ADDRESSED BY NAME, AND NOT EVERY NAMED THING IS A WIDGET: a menu `item`
      * is a QAction, which descends from QObject and not from QWidget. Holding
      * QObject* is what lets one registry serve both -- properties, signals and
-     * `qt.read` all work through QObject, so the three doors that genuinely
+     * `ui.read` all work through QObject, so the three doors that genuinely
      * need a widget (`grow`, a view's edit triggers, a table's cells) cast
      * and refuse instead of there being a second registry to keep in step. */
     QHash<QString, QObject *> parts;   /* root only */
@@ -445,8 +445,8 @@ static const char *dock_area_word(int area) {
  * call that is still on the stack, including destroying the widgets or items
  * that call belongs to.
  *
- * REPORTED FROM THE STUDIO BENCH WITH VALGRIND NAMING BOTH ENDS: `qt.select`
- * on a tree emits `itemSelectionChanged`, the handler calls `qt.refresh`, a
+ * REPORTED FROM THE STUDIO BENCH WITH VALGRIND NAMING BOTH ENDS: `ui.select`
+ * on a tree emits `itemSelectionChanged`, the handler calls `ui.refresh`, a
  * tree refresh DELETES EVERY ITEM, and `QTreeWidgetItem::setSelected` then
  * runs on with `this` freed. Severity high -- it segfaulted about three runs
  * in five, and when it did not it answered `unknown` for a row just selected.
@@ -888,7 +888,7 @@ private:
  * example subclasses for exactly this reason.
  *
  * A `memo` IS STILL A BARE QPlainTextEdit, which is not an oversight but what
- * makes `qt.mark` on a memo a refusal rather than a silent no-op: the cast
+ * makes `ui.mark` on a memo a refusal rather than a silent no-op: the cast
  * fails, and the message names the word the author wrote. */
 class GbQtSourceEdit : public QPlainTextEdit {
 public:
@@ -1060,7 +1060,7 @@ GbQtGutter::GbQtGutter(GbQtSourceEdit *owner)
 void GbQtGutter::paintEvent(QPaintEvent *ev) { m_owner->paintGutterOn(this, ev); }
 
 /* HOW MANY LINES AND MARKS THE LAST PAINT DREW. Read by the C++ probe tier,
- * because a painted glyph is unobservable from gBASIC: `qt.marks` answers what
+ * because a painted glyph is unobservable from gBASIC: `ui.marks` answers what
  * was SET, so a backend that stored a list and painted nothing would satisfy
  * it -- which is the green-perturbation shape this backend is tested against.
  * Kept here rather than in the probe so the probe measures the real painter. */
@@ -1176,7 +1176,7 @@ void GbQtSourceEdit::paintGutterOn(QWidget *g, QPaintEvent *ev) {
 
 /* THE GUTTER CLICK, held while one handler runs -- §0.21's arrangement exactly,
  * and reused rather than re-argued: a handler in this backend takes no
- * arguments, so the event is ASKED FOR instead (`qt.gutter_click`). A
+ * arguments, so the event is ASKED FOR instead (`ui.gutter_click`). A
  * breakpoint you cannot click to set is decorative, which is why this is in the
  * same increment as the `break` category rather than after it. */
 /* THE LINK BEING HANDLED in a `markdown` part (§0.38 B4), held while its
@@ -1225,7 +1225,7 @@ extern "C" int gb_qt_gutter_click(int *line) {
 
 
 /* DROP A WINDOW'S NODES. Reopening was impossible before this increment (a
- * second `qt.open` met "already open"), so repeated open/close is a new shape
+ * second `ui.open` met "already open"), so repeated open/close is a new shape
  * and would otherwise grow `g_nodes` by one entry per part per open, for ever.
  * Deleting the node structs is safe because nothing outside holds one: the
  * caller's handle is the registry entry, which has already been forgotten, and
@@ -1275,7 +1275,7 @@ static void retired_drain(void) {
  * has already been accepted or rejected -- `done()` marks it closed, so a
  * later `close()` is a no-op. A modal window therefore ends without an event
  * on the path that matters most, and bookkeeping hung off the filter alone
- * would silently not happen: `qt.is_open` would go on answering true for a
+ * would silently not happen: `ui.is_open` would go on answering true for a
  * window the program had finished with.
  *
  * THE HANDLER RUNS FIRST, WHILE THE WINDOW IS STILL REGISTERED, and that
@@ -1520,8 +1520,8 @@ extern "C" void *gb_qt_window(const char *name, const char *title, int width,
         QWidget *central = new QWidget(frame);
         box = new QVBoxLayout(central);
         frame->setCentralWidget(central);
-        /* THE NODE'S WIDGET STAYS THE WINDOW so `qt.read(win, "app",
-         * "windowTitle")`, `qt.close` and `on app.closed` all reach the frame
+        /* THE NODE'S WIDGET STAYS THE WINDOW so `ui.read(win, "app",
+         * "windowTitle")`, `ui.close` and `on app.closed` all reach the frame
          * -- what moves is only where children are PARENTED, which is the
          * central widget. Kept here so every `gb_qt_*` call below can ask one
          * node for both. */
@@ -1531,7 +1531,7 @@ extern "C" void *gb_qt_window(const char *name, const char *title, int width,
     }
     n->layout = box;
     /* THE WINDOW IS A PART OF ITSELF, in the only table that matters: one
-     * insert and `qt.read`, `qt.set`, `qt.invoke` and `on <name>.<signal>`
+     * insert and `ui.read`, `ui.set`, `ui.invoke` and `on <name>.<signal>`
      * all reach it, none of them knowing anything new. The load-time pass
      * refuses a part that shares the name, so this cannot shadow one. */
     if (name && *name) {
@@ -1822,10 +1822,10 @@ extern "C" void *gb_qt_container(void *parent, const char *word,
          *
          * WHAT IT HOLDS WAS DECIDED BY A MEASUREMENT: a QStatusBar has NO
          * property for its text -- `message` and `currentMessage` are both
-         * absent, and `showMessage(QString)` takes an argument `qt.invoke`
+         * absent, and `showMessage(QString)` takes an argument `ui.invoke`
          * cannot pass -- while a QLabel INSIDE it carries `text` as an
          * ordinary Q_PROPERTY. So the bar holds named `text` parts and
-         * `qt.set(win, "msg", "text", ...)` reaches them through the route
+         * `ui.set(win, "msg", "text", ...)` reaches them through the route
          * that already exists, which is §1's by-name argument paying off
          * rather than a verb of its own. */
         QMainWindow *frame = qobject_cast<QMainWindow *>(p->root->widget);
@@ -1878,7 +1878,7 @@ static bool label_placed_by_parent(const char *word, bool in_form) {
 }
 
 /* A caption placed beside `w` in a grid or a box, with `w` as its BUDDY -- as
- * QFormLayout::addRow makes its own -- so `qt.label` finds every caption the one
+ * QFormLayout::addRow makes its own -- so `ui.label` finds every caption the one
  * way, from Qt. */
 static QLabel *caption_for(const char *label, QWidget *w, GbQtNode *p) {
     QLabel *l = new QLabel(QString::fromUtf8(label), host_of(p));
@@ -2083,19 +2083,19 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
          * dropdown. MEASURED against a real program -- BAG's area editor,
          * where each of six exits names another area -- rather than chosen
          * from Qt's catalogue, which is why `list` was NOT added: a
-         * one-column `table` already answers a picker and `qt.selected`
+         * one-column `table` already answers a picker and `ui.selected`
          * addresses it.
          *
-         * ITS ITEMS COME FROM DATA, so they are filled by `qt.options` rather
+         * ITS ITEMS COME FROM DATA, so they are filled by `ui.options` rather
          * than guessed here; a declared `options:` literal is handled above in
          * qt.c, for the fixed case where typing them out is the honest thing. */
         w = new QComboBox(host_of(p));
     } else if (strcmp(word, "markdown") == 0) {
         /* RENDERED PROSE, read-only (§0.38 B4): Studio's preview pane. A
-         * QTextBrowser so `qt.set(win, part, "markdown", text)` reaches
+         * QTextBrowser so `ui.set(win, part, "markdown", text)` reaches
          * QTextEdit's own `markdown` property (CommonMark and GitHub's
          * tables, lists and task lists), and a link does NOT navigate: it is
-         * the `link` event, carrying its target (`qt.link()`). */
+         * the `link` event, carrying its target (`ui.link()`). */
         QTextBrowser *b = new QTextBrowser(host_of(p));
         b->setOpenLinks(false);
         b->setOpenExternalLinks(false);
@@ -2107,7 +2107,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
         /* MANY LINES, which `field` is not: a QLineEdit holds one, so a
          * description, a note or a game's output log had nowhere to go
          * either. QPlainTextEdit rather than QTextEdit because the subject is
-         * TEXT -- rich text would make `qt.read` answer markup for something
+         * TEXT -- rich text would make `ui.read` answer markup for something
          * a program put in as a string, and nothing in this vocabulary asks
          * for formatting. */
         QPlainTextEdit *m = new QPlainTextEdit(host_of(p));
@@ -2135,8 +2135,8 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
          *   and the HIGHLIGHTER, attached separately because it is an object
          *   rather than a property (see gb_qt_highlight).
          *
-         * IT IS A QPlainTextEdit LIKE `memo`, deliberately, so `qt.read` and
-         * `qt.write` reach it through the `plainText` branch that already
+         * IT IS A QPlainTextEdit LIKE `memo`, deliberately, so `ui.read` and
+         * `ui.write` reach it through the `plainText` branch that already
          * exists and a form can bind it with nothing new. Rich text would
          * make a program that put source in as a string read markup back. */
         GbQtSourceEdit *se = new GbQtSourceEdit(host_of(p));
@@ -2177,7 +2177,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
         pg->addWidget(w, p->grid_row, p->grid_col++);
     } else if (label_placed_by_parent(word, true) && pf) {
         /* addRow(text, w) makes the QLabel and makes `w` its buddy, which is
-         * what `qt.label` reads */
+         * what `ui.label` reads */
         pf->addRow(label && *label ? QString::fromUtf8(label) : QString(), w);
     } else if (pf) {
         pf->addRow(w);
@@ -2209,7 +2209,7 @@ extern "C" void *gb_qt_part(void *parent, const char *word, const char *name,
  * `setProperty("icon", QString(...))` returns FALSE for both a theme name and
  * a file path and the icon stays null, because QVariant will not convert a
  * string to a QIcon. So `icon` is the one property with a branch of its own --
- * and it is HERE, in the single door the declaration's options and `qt.set`
+ * and it is HERE, in the single door the declaration's options and `ui.set`
  * both go through, rather than in either of them.
  *
  * THREE SOURCES, TOLD APART BY FACTS RATHER THAN BY GUESSES:
@@ -2378,7 +2378,7 @@ static int set_property(QObject *widget, const char *prop, const QVariant &v,
         return 0;
     }
     /* THE ONE PROPERTY THAT NEEDS A CONVERSION, done here so the declaration
-     * and `qt.set` cannot disagree about what an icon source is. */
+     * and `ui.set` cannot disagree about what an icon source is. */
     if (strcmp(prop, "icon") == 0 && v.typeId() == QMetaType::QString) {
         QIcon icon;
         int how = icon_from_text(v.toString(), &icon, err, err_size);
@@ -2678,7 +2678,7 @@ extern "C" int gb_qt_connect(void *window, const char *target,
      * could not work: with no Q_OBJECT its metaobject is QWidget's, so a
      * search by type would match any child widget. */
     /* `link` (§0.38 B4): a link pressed in a `markdown` part, which never
-     * navigates. The target is held while the handler runs (`qt.link()`). */
+     * navigates. The target is held while the handler runs (`ui.link()`). */
     if (strcmp(signal, "link") == 0) {
         QTextBrowser *tb = qobject_cast<QTextBrowser *>(w);
         if (!tb) {
@@ -2872,7 +2872,7 @@ extern "C" char *gb_qt_read(void *window, const char *name) {
     } else if (qobject_cast<QPlainTextEdit *>(w)) {
         /* A QPlainTextEdit HAS NO `text` PROPERTY -- it is `plainText` -- and
          * the fallthrough below would have answered an INVALID QVariant,
-         * which this function reports as an absent part. So `qt.read` on a
+         * which this function reports as an absent part. So `ui.read` on a
          * perfectly real `memo` would have said the window has no such thing.
          * Named here rather than left to the fallthrough for that reason. */
         v = w->property("plainText");
@@ -2917,7 +2917,7 @@ extern "C" int gb_qt_write(void *window, const char *name, const char *text,
         if (at < 0) {
             say(err, err_size,
                 QByteArray("`") + name + "` has no choice `" + text +
-                "` -- fill its list with qt.options first");
+                "` -- fill its list with ui.options first");
             return 0;
         }
         box->setCurrentIndex(at);
@@ -2925,7 +2925,7 @@ extern "C" int gb_qt_write(void *window, const char *name, const char *text,
     }
     if (qobject_cast<QPlainTextEdit *>(w)) {
         /* THE WRITE HALF OF THE SAME FACT. `set_property(w, "text", ...)` is
-         * refused by the QMetaObject door, so a `qt.write` to a memo would
+         * refused by the QMetaObject door, so a `ui.write` to a memo would
          * have reported an unknown property for the one thing a memo is for. */
         return set_property(w, "plainText",
                             QVariant(QString::fromUtf8(text)), err, err_size);
@@ -3012,7 +3012,7 @@ extern "C" char *gb_qt_shortcuts(void *window, const char *name, char *err,
     return strdup(texts.join(QChar('\n')).toUtf8().constData());
 }
 
-/* PRESS A KEY, as `qt.right_click` and `qt.scroll` do for the mouse (asked
+/* PRESS A KEY, as `ui.right_click` and `ui.scroll` do for the mouse (asked
  * for by gBASIC Studio, whose every accelerator was untestable). A real
  * QKeyEvent pair sent to the part, with the part focused and its window
  * active, so Qt's shortcut map sees it -- measured: in Qt 6 a sendEvent'd
@@ -3048,10 +3048,10 @@ extern "C" int gb_qt_key(void *window, const char *name, const char *keys,
     }
     if (k.count() != 1) {
         say(err, err_size,
-            k.isEmpty() ? QByteArray("qt.key needs a key to press")
+            k.isEmpty() ? QByteArray("ui.key needs a key to press")
                         : QByteArray("`") + text.toUtf8() +
                               "` is a chord of several presses; send each "
-                              "with its own qt.key");
+                              "with its own ui.key");
         return 0;
     }
     Qt::Key key = k[0].key();
@@ -3102,7 +3102,7 @@ extern "C" int gb_qt_set_part_number(void *window, const char *name,
 }
 
 /* SHOWING WHITESPACE (§0.36): a flag on the document's default text option,
- * which is not a property, so `qt.set`/`qt.read` reach it by this name. Read
+ * which is not a property, so `ui.set`/`ui.read` reach it by this name. Read
  * back from the option itself, never from a stored flag. */
 static const QTextOption::Flags WHITESPACE_FLAGS =
     QTextOption::ShowTabsAndSpaces | QTextOption::ShowLineAndParagraphSeparators;
@@ -3203,7 +3203,7 @@ extern "C" int gb_qt_get(void *window, const char *name, const char *prop,
      * what to ask instead. */
     if (v.typeId() == QMetaType::QIcon) {
         say(err, err_size,
-            "an icon has no text form; ask `qt.has_icon(win, part)` whether "
+            "an icon has no text form; ask `ui.has_icon(win, part)` whether "
             "there is one");
         return 0;
     }
@@ -3264,7 +3264,7 @@ extern "C" int gb_qt_get(void *window, const char *name, const char *prop,
  * QTableView rather than a bigger version of this.
  *
  * ROWS ARE NOT SORTABLE BY CLICKING, deliberately: sorting the VIEW while the
- * subject keeps its own order would make `qt.selected`'s row index mean a
+ * subject keeps its own order would make `ui.selected`'s row index mean a
  * different row in each, and an index that silently means two things is worse
  * than no sorting. */
 /* THE WINDOW'S MENU BAR, made once and kept as a child of the window. A plain
@@ -3390,7 +3390,7 @@ extern "C" int gb_qt_menu_separator(void *menu, char *err, size_t err_size) {
 }
 
 /* A TOP-LEVEL POPUP MENU -- parented to the window and registered by NAME, so
- * `qt.popup` can find it and `qt.set(win, "row_actions", ...)` reaches it like
+ * `ui.popup` can find it and `ui.set(win, "row_actions", ...)` reaches it like
  * anything else named.
  *
  * NOT ADDED TO THE BAR, which is the whole difference, and the layout does not
@@ -3507,7 +3507,7 @@ static QTreeWidgetItem *tree_item_at(QTreeWidget *t, int index);
 static int tree_index_of(QTreeWidget *t, QTreeWidgetItem *want);
 
 /* WHERE A MOUSE WOULD LAND on a part, a table or tree row, or a tab: shared by
- * `qt.right_click` and `qt.click` (§0.36), so the two buttons aim the same
+ * `ui.right_click` and `ui.click` (§0.36), so the two buttons aim the same
  * way. */
 static int click_aim(void *window, const char *name, int row, QWidget **aimed,
                      QPoint *aimed_at, char *err, size_t err_size) {
@@ -3566,7 +3566,7 @@ static int click_aim(void *window, const char *name, int row, QWidget **aimed,
              * THE PRESS IS THE POINT, not an incidental part of the gesture:
              * on a table or a tree it MOVES the current row, and measured, on
              * a tab bar it does NOT -- which is the whole reason this verb's
-             * tab form needs `qt.which_tab` where the row form needs nothing.
+             * tab form needs `ui.which_tab` where the row form needs nothing.
              */
             if (row >= bar->count()) {
                 say(err, err_size, "that has no such tab");
@@ -3624,7 +3624,7 @@ extern "C" int gb_qt_right_click(void *window, const char *name, int row,
     /* A PRESS AND A RELEASE, THEN THE CONTEXT EVENT, in the order a mouse
      * produces them -- the press is what MOVES THE SELECTION (measured: Qt
      * sets `currentRow()` to the row under a right-press), which is what lets
-     * `qt.selected` answer "which row was right-clicked" with no new verb. A
+     * `ui.selected` answer "which row was right-clicked" with no new verb. A
      * bare context event would fire the handler over a stale selection. */
     QMouseEvent press(QEvent::MouseButtonPress, at, global, Qt::RightButton,
                       Qt::RightButton, Qt::NoModifier);
@@ -3639,7 +3639,7 @@ extern "C" int gb_qt_right_click(void *window, const char *name, int row,
 
 /* A LEFT CLICK (§0.36), asked for by gBASIC Studio, whose single-click-opens
  * path had no test: nothing could fire `itemClicked`. A press and a release
- * where a mouse would land, aimed as `qt.right_click` aims, so QT emits
+ * where a mouse would land, aimed as `ui.right_click` aims, so QT emits
  * `clicked`, `itemClicked` and the selection change itself; no handler is
  * called directly. */
 extern "C" int gb_qt_click(void *window, const char *name, int row, char *err,
@@ -3838,9 +3838,9 @@ extern "C" int gb_qt_has_icon(void *window, const char *name, int *has,
  *
  * DETERMINISTIC WITHIN A MACHINE, measured: one SVG drawn in two processes
  * gave byte-identical PNGs. Across machines it is not promised, for the reason
- * qt.capture's is not: text is drawn with whatever fonts are installed.
+ * ui.capture's is not: text is drawn with whatever fonts are installed.
  *
- * ON WHITE, NO ALPHA, as qt.capture's image is: a page shows transparency as
+ * ON WHITE, NO ALPHA, as ui.capture's image is: a page shows transparency as
  * black or a checkerboard. The SVG's own size is its viewBox (QSvgRenderer's
  * defaultSize) when no size is given; asking for one size alone keeps the
  * aspect ratio. */
@@ -3944,7 +3944,7 @@ extern "C" int gb_qt_capture(void *window, const char *name, double scale,
             return 0;
         }
     }
-    /* A LAYOUT CHANGE IS A POSTED EVENT, so a `qt.set` just before a capture
+    /* A LAYOUT CHANGE IS A POSTED EVENT, so a `ui.set` just before a capture
      * has not moved anything yet. Only layout requests are delivered here,
      * never the whole queue, because the queue can hold a click whose handler
      * is gBASIC code -- and a capture that ran a handler would be a verb that
@@ -4337,7 +4337,7 @@ static char *dup_qbytes(const QByteArray &bytes) {
  * name regardless of which edge it ended up on, and `visible` is true either
  * way, so a backend that ignored the area entirely would pass every check the
  * language can otherwise make. It is asked of THE WINDOW (`dockWidgetArea`)
- * rather than of anything we remembered, which is `qt.at`'s and `qt.pane`'s
+ * rather than of anything we remembered, which is `ui.at`'s and `ui.pane`'s
  * own justification: a remembered position agrees with a placement that was
  * wrong.
  *
@@ -4363,7 +4363,7 @@ extern "C" int gb_qt_dock_info(void *window, const char *name, char *area,
      * CONSTRUCTION: a QDockWidget can only be built on a QMainWindow, so a
      * name that casts to one implies the frame, and no program could produce
      * the message. An unexercised refusal rots, which is how §0.27 found a
-     * use-after-free in `qt.read`'s. */
+     * use-after-free in `ui.read`'s. */
     QMainWindow *frame = qobject_cast<QMainWindow *>(root->widget);
     if (!frame) {
         return 0;
@@ -4429,7 +4429,7 @@ extern "C" int gb_qt_layout_restore(void *window, const char *text, char *err,
     QByteArray raw = QByteArray::fromBase64(QByteArray(text ? text : ""));
     if (raw.isEmpty()) {
         say(err, err_size,
-            "that is not a layout this window saved -- `qt.layout` answers the "
+            "that is not a layout this window saved -- `ui.layout` answers the "
             "text to keep");
         return 0;
     }
@@ -4475,7 +4475,7 @@ static QPlainTextEdit *source_named(void *window, const char *name, char *err,
  * the two answer different questions and the difference is the point: that one
  * accepts any QPlainTextEdit, so it admits a `memo`, which is right for
  * highlighting (a memo CAN be highlighted) and wrong for a margin -- a `memo`
- * has no gutter and never will, so `qt.mark` on one is a refusal naming the
+ * has no gutter and never will, so `ui.mark` on one is a refusal naming the
  * word the author wrote rather than a call that quietly does nothing. */
 static GbQtSourceEdit *source_edit_named(void *window, const char *name,
                                          char *err, size_t err_size) {
@@ -4545,7 +4545,7 @@ public:
 };
 
 /* THE EVENT BEING HANDLED, held while one `block` handler runs: the shape
- * `qt.gutter_click` has, since a handler takes no arguments. */
+ * `ui.gutter_click` has, since a handler takes no arguments. */
 extern "C" char *gb_qt_link_event(void) {
     return g_link_live ? dup_qbytes(g_link_target.toUtf8()) : nullptr;
 }
@@ -5255,7 +5255,7 @@ extern "C" int gb_qt_block_press(void *window, const char *name, const char *id,
 /* ---- POSITIONS IN A TEXT EDITOR (§0.32, §0.36) ----------------------------
  *
  * COLUMNS COUNT CODEPOINTS, as `len`, `mid` and `regex` do, so a match found in
- * gBASIC goes straight into `qt.select_text`. Qt counts UTF-16 units, which
+ * gBASIC goes straight into `ui.select_text`. Qt counts UTF-16 units, which
  * differ after an astral character (an emoji is two), so the conversion lives
  * here, once. */
 static int codepoints_before(const QString &text, int units) {
@@ -5277,8 +5277,8 @@ static int units_for(const QString &text, int codepoints) {
     return i;
 }
 
-/* A 1-BASED (line, column) TO A DOCUMENT POSITION, the one resolver `qt.caret_to`,
- * `qt.select_text`, `qt.replace_text` and `qt.highlight_text` share.
+/* A 1-BASED (line, column) TO A DOCUMENT POSITION, the one resolver `ui.caret_to`,
+ * `ui.select_text`, `ui.replace_text` and `ui.highlight_text` share.
  *
  * A LINE PAST THE END IS REFUSED, not clamped: a program working from a stale
  * model of the document should be told so, and clamping would land on the
@@ -5292,7 +5292,7 @@ static bool text_position(QPlainTextEdit *e, int line, int column, int *at,
     if (line < 1 || column < 1) {
         say(err, err_size,
             "a line and a column both start at 1 -- the same numbering a "
-            "diagnostic and `qt.mark` use");
+            "diagnostic and `ui.mark` use");
         return false;
     }
     QTextBlock block = e->document()->findBlockByNumber(line - 1);
@@ -5347,12 +5347,12 @@ static QPlainTextEdit *text_editor_named(void *window, const char *name,
  * ask: `textCursor` is NOT a Q_PROPERTY and `textCursor()` is NOT invokable by
  * name (both -1), because it answers a QTextCursor and the by-name route moves
  * QVariants. So this is one of the genuinely unreachable things, like the
- * highlighter and the margin, rather than something a `qt.set` already does.
+ * highlighter and the margin, rather than something a `ui.set` already does.
  *
  * 1-BASED, WHICH IS §0.29's RULE AND NOT A FRESH CHOICE: `blockNumber` and
  * `positionInBlock` are both 0-based, and gBASIC's own diagnostics,
  * `source_outline` and a mark list are all 1-based -- so the +1 lives here,
- * once, and a diagnostic's `line:column` goes straight into `qt.caret_to`
+ * once, and a diagnostic's `line:column` goes straight into `ui.caret_to`
  * with no arithmetic at the call site. That is the whole use.
  *
  * 1 answered, 0 not a text editor, -1 refused (err set). */
@@ -5375,7 +5375,7 @@ extern "C" int gb_qt_caret(void *window, const char *name, int *line,
     if (line)   { *line = c.blockNumber() + 1; }
     if (column) { *column = codepoints_before(c.block().text(), c.positionInBlock()) + 1; }
     /* A CARET INSIDE A SELECTION IS ONE END OF A RANGE, so saying so is what
-     * keeps the reading unambiguous -- the `principal()` and `qt.dialog`
+     * keeps the reading unambiguous -- the `principal()` and `ui.dialog`
      * discipline, where an answer that could mean two things is worse than a
      * narrower one. The ANCHOR is deliberately not reported: nobody has asked
      * for it, and a verb answering five numbers when two were wanted is a
@@ -5462,7 +5462,7 @@ extern "C" int gb_qt_selection(void *window, const char *name, int *span,
     text_line_column(e, c.selectionStart(), &span[0], &span[1]);
     text_line_column(e, c.selectionEnd(), &span[2], &span[3]);
     /* selectedText() writes U+2029 between lines; the document's own text has
-     * a line feed, which is what `qt.read` answers */
+     * a line feed, which is what `ui.read` answers */
     QString t = c.selectedText();
     t.replace(QChar(0x2029), QChar('\n'));
     *text = dup_utf8(t);
@@ -5525,7 +5525,7 @@ extern "C" int gb_qt_replace_text(void *window, const char *name,
 }
 
 /* EVERY MATCH MARKED, as Qt's extra selections: the whole list replaced per
- * call, as `qt.mark` replaces a category, and [] clears it. */
+ * call, as `ui.mark` replaces a category, and [] clears it. */
 extern "C" int gb_qt_highlight_text(void *window, const char *name,
                                     const int *spans, size_t n, char *err,
                                     size_t err_size) {
@@ -5619,7 +5619,7 @@ extern "C" int gb_qt_gutter_enable(void *window, const char *name, int numbers,
 }
 
 /* { line_numbers, marks, width } OR NOTHING AT ALL, which is the distinction
- * `qt.pane`, `qt.dialog` and `principal()` all make for the same reason: a
+ * `ui.pane`, `ui.dialog` and `principal()` all make for the same reason: a
  * record reading `width: 0` would say a gutter exists and is empty, where the
  * truth is that this `source` has none. */
 extern "C" int gb_qt_gutter_info(void *window, const char *name, int *numbers,
@@ -5639,7 +5639,7 @@ extern "C" int gb_qt_gutter_info(void *window, const char *name, int *numbers,
 }
 
 /* PRESS THE MARGIN BESIDE A LINE, which is what makes the click path drivable
- * at all -- the same argument `qt.right_click` (§0.20) and `qt.scroll` (§0.21)
+ * at all -- the same argument `ui.right_click` (§0.20) and `ui.scroll` (§0.21)
  * rest on, and §0.18's rule that a claim nobody has run is not a claim. It is
  * a product verb rather than a test hook for the reason §0.21 records: Studio's
  * own notes list its scroll and key controllers as the controls it has no way
@@ -5718,7 +5718,7 @@ extern "C" int gb_qt_mark_set(void *window, const char *name, int kind,
 /* WHAT WAS SET, UNFILTERED -- never what is currently drawable. A program may
  * mark line 40 and then shorten the document, and a read that answered only
  * the lines still in the file would disagree with the write for a reason the
- * caller cannot see, making `qt.mark` then `qt.marks` non-idempotent. The
+ * caller cannot see, making `ui.mark` then `ui.marks` non-idempotent. The
  * drawing is the widget's business; the list is the program's. */
 extern "C" int gb_qt_mark_get(void *window, const char *name, int kind,
                               int *out, int max, char *err, size_t err_size) {
@@ -5841,7 +5841,7 @@ extern "C" int gb_qt_highlight(void *window, const char *name,
     if (!def.isValid()) {
         /* THE MESSAGE CARRIES THE PART'S NAME because its POSITION cannot:
          * a window record holds no line, so this warning is reported at
-         * `qt.open` rather than at the declaration that named the language.
+         * `ui.open` rather than at the declaration that named the language.
          * Naming the part is what makes the site not matter. */
         say(err, err_size,
             QByteArray("`source ") + name + "` asked for the `" +
@@ -6006,7 +6006,7 @@ extern "C" void *gb_qt_virtual_table(void *parent, const char *name,
     v->setModel(m);
     /* THE SAME THREE DECISIONS A `table` MAKES, for the same reasons recorded
      * there: whole rows are selected because a cell is not a record; one at a
-     * time, because `qt.selected` answers ONE index; and CLICK-TO-SORT IS OFF,
+     * time, because `ui.selected` answers ONE index; and CLICK-TO-SORT IS OFF,
      * since a sorted view would make that index mean a different row in the
      * view than in the data -- which here would be worse, the data being
      * somewhere this side never sees. */
@@ -6220,7 +6220,7 @@ extern "C" int gb_qt_table_set(void *window, const char *name, int row,
 
 extern "C" char *gb_qt_table_get(void *window, const char *name, int row,
                                  int col) {
-    /* AN ASKING TABLE ANSWERS THROUGH ITS MODEL, so `qt.cell` reads one the
+    /* AN ASKING TABLE ANSWERS THROUGH ITS MODEL, so `ui.cell` reads one the
      * same way it reads a held table -- which matters twice over: a program
      * should not have to know which kind it declared to read a cell, and this
      * is the route a check uses to observe that the callback is wired at all,
@@ -6267,7 +6267,7 @@ extern "C" char *gb_qt_table_get(void *window, const char *name, int row,
 }
 
 /* HOW MANY ROWS A TABLE OF EITHER KIND HAS, or -1 for a part that is not a
- * table at all -- which is the distinction `qt.selected` rests on, since it
+ * table at all -- which is the distinction `ui.selected` rests on, since it
  * answers `unknown` for "nobody has chosen" and must not use the same answer
  * for "that is a field". An asking table answers from its MODEL, so a program
  * does not have to know which kind it declared. */
@@ -6390,7 +6390,7 @@ extern "C" char *gb_qt_table_heading(void *window, const char *name,
 /* A SELECTION CHANGE RE-ENTERS THE INTERPRETER, so nothing may be held across
  * one. Reported by the gBASIC Studio session with valgrind naming both ends:
  * `setCurrentItem` emits `itemSelectionChanged`, whose handler is gBASIC code,
- * which may call `qt.refresh` -- and a tree's refresh DELETES EVERY ITEM. The
+ * which may call `ui.refresh` -- and a tree's refresh DELETES EVERY ITEM. The
  * pointer fetched before the call is then freed, and the next line writes
  * through it. Severity high: it segfaulted about three runs in five, and when
  * it did not it answered `unknown` for a row that had just been selected --
@@ -6407,7 +6407,7 @@ extern "C" char *gb_qt_table_heading(void *window, const char *name,
  * `setSelected` removed all 18 tree checks still pass, because
  * `setCurrentItem` selects as well in the DEFAULT selection mode. It is kept
  * because that is only true of the default -- a program that sets
- * `selectionMode` with `qt.set` would get a current row with no highlight --
+ * `selectionMode` with `ui.set` would get a current row with no highlight --
  * so the fix preserves every mode rather than the one the fixture uses.
  *
  * THE GENERAL RULE, worth more than the fix: a path that only exists once
@@ -6431,7 +6431,7 @@ extern "C" int gb_qt_table_select(void *window, const char *name, int row,
          * blocker inside the refresh helps, the crash is in Qt's handling).
          * So Qt finishes selecting first, and the changes are then announced
          * as Qt would have announced them: the handler still runs before
-         * qt.select returns, just never inside Qt. */
+         * ui.select returns, just never inside Qt. */
         QItemSelectionModel *sm = tr->selectionModel();
         const QModelIndex was_current = sm ? QModelIndex(sm->currentIndex()) : QModelIndex();
         const QItemSelection was_selected = sm ? sm->selection() : QItemSelection();
@@ -6561,7 +6561,7 @@ extern "C" int gb_qt_set_display_only(void *window, const char *name, int on,
  * the second would be a rule about this backend rather than about dialogs.
  */
 /* QDialog RATHER THAN QMessageBox, because a file chooser is one too and
- * `qt.answer` has to be able to tell them apart: the answer to a message box
+ * `ui.answer` has to be able to tell them apart: the answer to a message box
  * is yes or no and the answer to a chooser is a PATH, so handing one the
  * other's answer must be a sentence rather than a guess. */
 static QVector<QDialog *> g_dialogs;      /* innermost last */
@@ -6611,7 +6611,7 @@ static int show_box(void *window, const char *text, bool ask, int *answer,
     g_dialogs.append(box.data());
     /* 50ms IS gBASIC'S OWN POLL TIMEOUT, not a number chosen here: a source
      * serviced on this timer is serviced exactly as often as it would be with
-     * Qt out of the picture. Harmless when `qt.run()` already armed one -- the
+     * Qt out of the picture. Harmless when `ui.run()` already armed one -- the
      * count simply goes deeper. */
     pump_arm(50);
     int rc = box->exec();                   /* NESTED EVENT LOOP */
@@ -6693,7 +6693,7 @@ extern "C" int gb_qt_answer(int value, char *err, size_t err_size) {
         }
         say(err, err_size,
             "the open dialog is a file chooser, so `true` does not say which "
-            "file -- give qt.answer the path instead");
+            "file -- give ui.answer the path instead");
         return 0;
     }
     QMessageBox *box = qobject_cast<QMessageBox *>(g_dialogs.last());
@@ -6751,7 +6751,7 @@ extern "C" int gb_qt_answer_path(const char *path, char *err,
     }
     QString p = QString::fromUtf8(path ? path : "");
     if (p.isEmpty()) {
-        say(err, err_size, "qt.answer needs a path, or false to cancel");
+        say(err, err_size, "ui.answer needs a path, or false to cancel");
         return 0;
     }
     /* TYPED IN, NOT selectFile()'d, and that was measured rather than chosen:
@@ -6929,7 +6929,7 @@ extern "C" int gb_qt_close(void *window, char *err, size_t err_size) {
      * `g_closed`, and the widget both are parented to.
      *
      * MEASURED, AND BY PERTURBATION RATHER THAN BY READING: with this guard
-     * written as `!n->widget` alone it caught only the `qt.close` path, where
+     * written as `!n->widget` alone it caught only the `ui.close` path, where
      * nulling the widget below already stops a second entry -- so removing the
      * flag left the suite GREEN and the event-driven case segfaulted with no
      * output at all, block-buffered stdout going with the crash. Both
@@ -6968,7 +6968,7 @@ extern "C" int gb_qt_show_modal(void *window, int *accepted, char *err,
     /* 50ms IS gBASIC'S OWN POLL TIMEOUT, the same number and the same reason
      * `show_box` gives: a source serviced on this timer is serviced exactly as
      * often as it would be with Qt out of the picture. The count simply goes
-     * deeper when `qt.run()` already armed one. */
+     * deeper when `ui.run()` already armed one. */
     pump_arm(50);
     int rc = d->exec();                     /* NESTED EVENT LOOP */
     pump_disarm();
@@ -7014,7 +7014,7 @@ extern "C" void gb_qt_show(void *window) {
  * BEFORE the program handed over the thread had no pump at all: `exec()`
  * opened a nested loop with nothing servicing gBASIC, so a timer could not
  * fire and a program could not answer its own dialog. MEASURED -- the first
- * `qt.confirm` written outside `qt.run()` hung until a 30s timeout. A dialog
+ * `ui.confirm` written outside `ui.run()` hung until a 30s timeout. A dialog
  * arms it too now, so "gBASIC's own work keeps running while a box is up" is
  * true wherever the box was opened from, rather than only in the arrangement
  * the pump happened to be written for. */
@@ -7060,16 +7060,16 @@ extern "C" int gb_qt_run(int tick_ms) {
  * WINDOW (it calls closeAllWindows), where `exit(0)` ends the loop and leaves
  * them alone -- the widget is still visible afterwards.
  *
- * SO `qt.stop()` WAS DISMISSING THE PROGRAM'S WINDOWS as a side effect of
+ * SO `ui.stop()` WAS DISMISSING THE PROGRAM'S WINDOWS as a side effect of
  * asking for the thread back, and nothing could see it: the windows were
  * merely HIDDEN, every part stayed readable, and no fixture asked whether the
  * window was still up. It surfaced only once a close became bookkeeping, when
- * a program that reads its window after `qt.run()` returned started being
- * told it was not open (measured: eight read one textually after `qt.run()`,
+ * a program that reads its window after `ui.run()` returned started being
+ * told it was not open (measured: eight read one textually after `ui.run()`,
  * exactly one actually broke).
  *
- * `qt.stop()` MEANS "GIVE ME THE THREAD BACK" and nothing more. A program that
- * wants its window gone says `qt.close`, and the person who wants it gone
+ * `ui.stop()` MEANS "GIVE ME THE THREAD BACK" and nothing more. A program that
+ * wants its window gone says `ui.close`, and the person who wants it gone
  * presses the button; neither is what `stop` asks for, and firing `on
  * <win>.closed` on an orderly shutdown would make that handler mean two
  * different things. */
@@ -7110,7 +7110,7 @@ extern "C" void gb_qt_end(void) {
 /* ===========================================================================
  * A CONTAINER WHOSE CHILDREN CHANGE (§0.27)
  *
- * `qt.refresh(win, name, items)` reconciles a named container's children
+ * `ui.refresh(win, name, items)` reconciles a named container's children
  * against the record, keeping what has not changed. The C side drives the
  * walk; these are the four things it cannot do for itself.
  *
@@ -7123,19 +7123,19 @@ extern "C" void gb_qt_end(void) {
  * AND WHY "ABSENT" MEANS DELETED: also measured, a child dropped from a box
  * layout and NOT deleted stays PARENTED AND VISIBLE, floating at its old
  * geometry. So unhooking is not enough -- the widget goes, and its name goes
- * out of the registry with it, or `qt.read` answers from something nobody can
+ * out of the registry with it, or `ui.read` answers from something nobody can
  * see. That is §0.17's rule for a dismissed window one level in.
  * ========================================================================= */
 
 /* The children a container holds, in the order the user sees them. Asked of
- * QT rather than of any list of ours, for the reason `qt.at` and `qt.pane`
+ * QT rather than of any list of ours, for the reason `ui.at` and `ui.pane`
  * are: a remembered order would agree with an order that was never applied. */
 /* A PART'S CAPTION IN A BOX: the QLabel `caption_for` placed before it, found
- * the one way `qt.label` finds it, by its buddy. A caption is its own layout
+ * the one way `ui.label` finds it, by its buddy. A caption is its own layout
  * item, so everything that walks, moves or drops a box's children has to treat
  * the pair as one: until 2026-11-03 nothing did, and a reorder left every
  * caption piled at the end of the box, a drop left the dropped part's caption
- * on screen, and qt.children listed each caption as a nameless child. */
+ * on screen, and ui.children listed each caption as a nameless child. */
 static QLabel *box_caption_of(QBoxLayout *b, QWidget *w) {
     for (int i = 0; b && w && i < b->count(); i++) {
         QLabel *l = qobject_cast<QLabel *>(b->itemAt(i)->widget());
@@ -7358,9 +7358,9 @@ extern "C" int gb_qt_child_caption(void *container, void *child,
 }
 
 /* THE NAME OF A CHILD AT A POSITION, which is the ORDER ORACLE and was built
- * because the claim had nothing to check it with: `qt.tabs` answers a tab
+ * because the claim had nothing to check it with: `ui.tabs` answers a tab
  * set's captions, and a `column`'s order is observable through NOTHING --
- * `qt.at` answers coordinates for a `cells` grid only (§0.8 says so), so the
+ * `ui.at` answers coordinates for a `cells` grid only (§0.8 says so), so the
  * first draft of the fixture asked it and was told `a` is not in a `cells`.
  *
  * ASKED OF THE REGISTRY BY WIDGET, because a node carries its word and not its
@@ -7564,7 +7564,7 @@ extern "C" void *gb_qt_tree(void *parent, const char *name,
     }
     t->setHeaderLabels(caps);
     /* THE SAME THREE DECISIONS A `table` MAKES, for the reasons recorded
-     * there: whole rows are selected, one at a time because `qt.selected`
+     * there: whole rows are selected, one at a time because `ui.selected`
      * answers ONE index, and CLICK-TO-SORT IS OFF -- a sorted view would make
      * an index mean a different row in the view than in the data, which for a
      * tree would also destroy the nesting the depths describe. */

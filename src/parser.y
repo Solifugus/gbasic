@@ -1550,7 +1550,7 @@ window_item
      * `IDENT IDENT ( ... ) NEWLINE` the parser cannot tell a named LEAF from
      * the head of a container whose body is still to come. That is the same
      * wall §5.2 records for the server block's head, so the vocabulary carries
-     * A NAME OR OPTIONS AND NOT BOTH -- and `qt.set` is what makes that
+     * A NAME OR OPTIONS AND NOT BOTH -- and `ui.set` is what makes that
      * affordable, since a named container's properties can be set at run time
      * instead. */
     | IDENT IDENT NEWLINE window_item_list END IDENT NEWLINE {
@@ -1592,8 +1592,8 @@ window_item
      *
      * A `table` NEEDS A NAME where a `form` does not, and that is not a whim:
      * a form's parts are addressed by their OWN names, where a table shows
-     * many rows, so `qt.read(win, "placed")` could not say which -- the table
-     * itself is the thing a handler and `qt.selected` address.
+     * many rows, so `ui.read(win, "placed")` could not say which -- the table
+     * itself is the thing a handler and `ui.selected` address.
      *
      * MEASURED AT ZERO CONFLICTS before being written, which is what decided
      * the spelling §7 records rather than a nameless `table to show lines`:

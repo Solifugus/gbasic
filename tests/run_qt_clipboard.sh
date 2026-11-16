@@ -1,5 +1,5 @@
 #!/bin/bash
-# THE CLIPBOARD (§0.33) -- `qt.copy(text)` and `qt.clipboard()`.
+# THE CLIPBOARD (§0.33) -- `ui.copy(text)` and `ui.clipboard()`.
 #
 # REPORTED FROM THE gBASIC STUDIO BENCH as one of two gaps that stopped STU-21
 # being ported at all: its tab right-click menu offers `Close` and `Copy file
@@ -14,7 +14,7 @@
 # `QGuiApplication::clipboard()` is a class static and there is ONE clipboard
 # per application, so a verb taking a window would be claiming otherwise. That
 # claim is only checkable by NOT opening one, which is why every check in the
-# fixture before its last tier runs before `qt.open` is ever called.
+# fixture before its last tier runs before `ui.open` is ever called.
 #
 # THE MEASUREMENT STUDIO ASKED FOR IS THE TIER TO READ FIRST, and their warning
 # is the reason it exists: under GTK `clipboard.set_text` HANGS, and the route

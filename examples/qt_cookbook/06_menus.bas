@@ -40,13 +40,13 @@ window editor( title: "Menus", width: 480, height: 300 )
 end window
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display"
         return
     end if
-    qt.open(editor)
+    ui.open(editor)
 
-    ' THE BAR IS A TREE AND THE PARTS REGISTRY IS FLAT, so `qt.menus` is the
+    ' THE BAR IS A TREE AND THE PARTS REGISTRY IS FLAT, so `ui.menus` is the
     ' only thing that can witness the STRUCTURE -- an item in the wrong menu or
     ' a submenu hung off the bar is invisible to a lookup by name.
     print "the bar:        " + string(editor.menus())
@@ -61,5 +61,5 @@ program main(args)
     print "Save enabled:    " + string(editor.read("act_save", "enabled"))
     editor.write("title", "notes.txt")
     print "after typing:    " + string(editor.read("act_save", "enabled"))
-    qt.stop()
+    ui.stop()
 end program

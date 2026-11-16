@@ -2,7 +2,7 @@
 '
 ' `icon:` IS THE ONE OPTION THAT IS NOT AN ORDINARY PROPERTY. Qt will not turn
 ' a string into an icon by itself, so this is the single name with a conversion
-' behind it -- and it is the same conversion in the declaration and in `qt.set`,
+' behind it -- and it is the same conversion in the declaration and in `ui.set`,
 ' so the two cannot disagree about what a source is.
 '
 ' THREE SOURCES, TOLD APART BY FACTS. A name beginning `SP_` is one of Qt's own
@@ -19,9 +19,9 @@
 ' WARNING, never a raise: that is a fact about the machine, and refusing would
 ' stop a program running on a server with no icon theme at all.
 '
-' WHICH IS WHY `qt.has_icon` EXISTS. A QIcon has no text form -- a button
+' WHICH IS WHY `ui.has_icon` EXISTS. A QIcon has no text form -- a button
 ' carrying a real picture and one carrying nothing both read back as "" -- so
-' `qt.read` on an icon refuses and names this instead. It is also how a program
+' `ui.read` on an icon refuses and names this instead. It is also how a program
 ' decides to fall back to a text-only button.
 
 window app( title: "Icons", width: 440, height: 240 )
@@ -41,12 +41,12 @@ window app( title: "Icons", width: 440, height: 240 )
 end window
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display, so no window -- the declaration is still checked"
         return
     end if
 
-    qt.open(app)
+    ui.open(app)
 
     ' WHETHER ONE ARRIVED. There is no other way to ask: an icon has no text.
     print "OK has an icon:      " + string(app.has_icon("ok_it"))

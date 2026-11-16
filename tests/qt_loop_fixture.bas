@@ -5,7 +5,7 @@
 ' the probe could not see.
 '
 ' The webserver is the source because it is the one with a client that can
-' ASK. While `qt.run()` holds the thread, a request must still be answered --
+' ASK. While `ui.run()` holds the thread, a request must still be answered --
 ' and under the other arrangement it would not be, for as long as any nested
 ' Qt loop was up.
 load webserver
@@ -25,14 +25,14 @@ watch(server.requests)
         if req.path = "/quit" then
             append(server.responses, { id: req.id, body: "bye" })
             webserver.close(server)
-            qt.stop()
+            ui.stop()
         else
             append(server.responses, { id: req.id, body: "served while Qt owned the loop" })
         end if
     end while
 end watch
 
-ok = qt.open(app)
+ok = ui.open(app)
 print "window open"
-rc = qt.run()
+rc = ui.run()
 print "loop ended"

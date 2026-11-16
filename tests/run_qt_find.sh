@@ -1,9 +1,9 @@
 #!/bin/bash
-# STUDIO'S FIND-AND-REPLACE REQUESTS (docs/qt_gui_design.md §0.36): `qt.label`
+# STUDIO'S FIND-AND-REPLACE REQUESTS (docs/qt_gui_design.md §0.36): `ui.label`
 # (a part's caption, and a `choice` in a form that showed none), `whitespace`
-# on a source or memo, `qt.select_text`/`qt.selection`, `qt.replace_text` as
-# one undo step, `qt.highlight_text`/`qt.highlights`, and `qt.click`, the left
-# button aimed as `qt.right_click` aims.
+# on a source or memo, `ui.select_text`/`ui.selection`, `ui.replace_text` as
+# one undo step, `ui.highlight_text`/`ui.highlights`, and `ui.click`, the left
+# button aimed as `ui.right_click` aims.
 #
 # EVERY ORACLE IS QT: a caption is the QLabel whose buddy is the part, the
 # whitespace setting is the document's text option, a selection and the marks

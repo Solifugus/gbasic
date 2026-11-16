@@ -1,5 +1,5 @@
 #!/bin/bash
-# A `tree` (§0.28) -- rows with a DEPTH, shown as a tree, plus `qt.depth`.
+# A `tree` (§0.28) -- rows with a DEPTH, shown as a tree, plus `ui.depth`.
 #
 # THE USER ASKED FOR THIS BY NAME (*"a better looking tree view on the left"*),
 # relayed in docs/qt_studio_requests.md as the first of two asks that BLOCK a
@@ -15,7 +15,7 @@
 # QTreeWidget, and `showGrid` does not exist on one at all, so there are no
 # grid lines to turn off. The request's own note that header visibility "is not
 # a Q_PROPERTY" is true of `headerVisible` and NOT of `headerHidden`. So what
-# this adds is THE WIDGET AND THE DEPTH; the look was always one `qt.set` away,
+# this adds is THE WIDGET AND THE DEPTH; the look was always one `ui.set` away,
 # which the fixture asserts rather than assuming.
 #
 # THE SPELLING COSTS NO GRAMMAR: `tree files to show rows` is the production
@@ -29,7 +29,7 @@
 # index". An index into the rows the program handed over is the one number that
 # stays meaningful however the tree is expanded.
 #
-# `qt.depth` IS THE ORACLE AND IT HAD TO EXIST BEFORE THE CLAIM COULD BE
+# `ui.depth` IS THE ORACLE AND IT HAD TO EXIST BEFORE THE CLAIM COULD BE
 # CHECKED -- the fourth time in this backend that asking "what would be
 # observable if this did nothing?" produced a verb. A populate that IGNORED the
 # depth builds a flat tree whose every name, index, selection and refresh reads
@@ -109,7 +109,7 @@ decl "a tree to ASK is refused" '    tree files to ask cells
         field name( label: "File" )
     end tree' "a tree is \`to show\`"
 # ITS NAME IS REQUIRED, for the reason a table's is: the rows are many, so the
-# TREE is what a handler and `qt.selected` address.
+# TREE is what a handler and `ui.selected` address.
 decl "a nameless tree is refused" '    tree to show rows
         field name( label: "File" )
     end tree' "a tree needs a name"

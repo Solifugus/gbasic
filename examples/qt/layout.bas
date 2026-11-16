@@ -15,7 +15,7 @@
 ' `row` inside it means a row whose columns ALIGN with the rows above, which is
 ' the half a box cannot do, and `across:`/`down:` span them.
 '
-' AND ONLY THE GRID'S POSITIONS ARE READABLE. `qt.at` asks a QGridLayout where
+' AND ONLY THE GRID'S POSITIONS ARE READABLE. `ui.at` asks a QGridLayout where
 ' a widget is; a box layout has no coordinates to answer with, so the checks
 ' below cover the grid and the box half is shown rather than asserted. Said
 ' here because an example that quietly checks less than it looks like it does
@@ -74,18 +74,18 @@ window shapes( title: "Layout", width: 520, height: 460 )
     end column
 
     on close.clicked
-        qt.stop()
+        ui.stop()
     end on
 end window
 
 program main(args)
     nothing_in_particular = {}
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so there is no window to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
         return
     end if
-    qt.open(shapes)
+    ui.open(shapes)
 
     if contains(args, "check") then
         ' THE GRID IS WHAT CAN BE ASKED. Every one of these comes from the
@@ -110,13 +110,13 @@ program main(args)
         on error goto no_coords
         at = shapes.at("left")
         print "a button in a row answered " + string(at)
-        qt.stop()
+        ui.stop()
         return
 no_coords:
         print "a part in a `row` has no grid position: " + error.message
         error.clear()
-        qt.stop()
+        ui.stop()
         return
     end if
-    qt.run()
+    ui.run()
 end program

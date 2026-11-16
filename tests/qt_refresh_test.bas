@@ -1,4 +1,4 @@
-' `qt.refresh(win, table)` -- SHOW THE LIST AS IT IS NOW. Under
+' `ui.refresh(win, table)` -- SHOW THE LIST AS IT IS NOW. Under
 ' QT_QPA_PLATFORM=offscreen: real Qt, no display.
 '
 ' MEASURED 2026-10-18 WHILE BUILDING A WHOLE APPLICATION on this surface, and
@@ -8,7 +8,7 @@
 ' that is awkward; for anything list-driven -- orders arriving, a search result,
 ' a filtered view, a file tree -- it is fatal.
 '
-' IT IS THE SYMMETRIC HALF OF `qt.subject`, which is what settled the design:
+' IT IS THE SYMMETRIC HALF OF `ui.subject`, which is what settled the design:
 ' §2.2's watcher pair could not do write-back, so a record is read from the
 ' widgets AT THE MOMENT ASKED. This is the same principle the other way round,
 ' and nothing is tracked in between, so no change can be missed.
@@ -29,7 +29,7 @@ end function
 
 function refused(win, table)
     on error goto handle
-    n = qt.refresh(win, table)
+    n = ui.refresh(win, table)
     return "ACCEPTED " + string(n)
 handle:
     m = error.message
@@ -59,7 +59,7 @@ window board( title: "Board", width: 420, height: 320 )
         ' AND THE SAME SUBJECT SPLIT ACROSS TWO FORMS, which is how a long
         ' form is laid out (§0.5's own fixture does it): re-showing must visit
         ' BOTH, or the two directions disagree about what a subject reaches
-        ' since `qt.subject` already folds across all of them.
+        ' since `ui.subject` already folds across all of them.
         group "More of the same record"
             form to edit cur
                 field extra( label: "Extra" )
@@ -104,40 +104,40 @@ program main()
     rows = [ { a: "one" } ]
     cur = { title: "first", body: "one line", extra: "x" }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "SKIP no display"
         return
     end if
-    qt.open(board)
-    qt.open(plain)
+    ui.open(board)
+    ui.open(plain)
     listing = [ { n: "1" } ]
     thing = { q: "q" }
-    qt.open(both)
+    ui.open(both)
 
     print "-- what the table showed at open"
-    check("two rows at open", qt.read(board, "queue", "rowCount"), 2)
-    check("and the first is ada", qt.cell(board, "queue", 0, "who"), "ada")
+    check("two rows at open", ui.read(board, "queue", "rowCount"), 2)
+    check("and the first is ada", ui.cell(board, "queue", 0, "who"), "ada")
 
     print "-- THE DEFECT: the list changes and the table does not"
     jobs = append(jobs, { who: "alan", state: "waiting" })
     check("appending to the subject changes NOTHING on its own",
-          qt.read(board, "queue", "rowCount"), 2)
+          ui.read(board, "queue", "rowCount"), 2)
 
-    print "-- and what qt.refresh does about it"
-    n = qt.refresh(board, "queue")
+    print "-- and what ui.refresh does about it"
+    n = ui.refresh(board, "queue")
     check("it answers how many rows it showed", n, 3)
-    check("the table grew", qt.read(board, "queue", "rowCount"), 3)
-    check("the new row is there", qt.cell(board, "queue", 2, "who"), "alan")
+    check("the table grew", ui.read(board, "queue", "rowCount"), 3)
+    check("the new row is there", ui.cell(board, "queue", 2, "who"), "alan")
     ' AND THE OLD ROWS ARE STILL RIGHT, which a refresh that appended rather
     ' than rewrote would also satisfy -- so the shrink below is what separates
     ' them.
-    check("the old rows are unchanged", qt.cell(board, "queue", 0, "who"), "ada")
+    check("the old rows are unchanged", ui.cell(board, "queue", 0, "who"), "ada")
 
     print "-- IT SHRINKS, which is the half an append-only refresh fails"
     jobs = [ { who: "only", state: "done" } ]
-    check("it answers the new count", qt.refresh(board, "queue"), 1)
-    check("the table shrank", qt.read(board, "queue", "rowCount"), 1)
-    check("and shows the new list", qt.cell(board, "queue", 0, "who"), "only")
+    check("it answers the new count", ui.refresh(board, "queue"), 1)
+    check("the table shrank", ui.read(board, "queue", "rowCount"), 1)
+    check("and shows the new list", ui.cell(board, "queue", 0, "who"), "only")
     ' A STALE ROW BELOW IS THE DEFECT THIS CATCHES: if row 1 still existed it
     ' would hold "grace", a perfectly ordinary name under a correct heading.
     check("there is no row 1 left",
@@ -145,28 +145,28 @@ program main()
 
     print "-- the CELLS follow too, not just the count"
     jobs = [ { who: "ada", state: "done" } ]
-    shown = qt.refresh(board, "queue")
+    shown = ui.refresh(board, "queue")
     check("a changed FIELD of the same row is redrawn",
-          qt.cell(board, "queue", 0, "state"), "done")
+          ui.cell(board, "queue", 0, "state"), "done")
 
     print "-- an empty list is a list"
     jobs = []
-    check("refreshing to nothing answers 0", qt.refresh(board, "queue"), 0)
-    check("and the table is empty", qt.read(board, "queue", "rowCount"), 0)
+    check("refreshing to nothing answers 0", ui.refresh(board, "queue"), 0)
+    check("and the table is empty", ui.read(board, "queue", "rowCount"), 0)
     ' THE CONTROL FOR THAT: it comes BACK. A refresh that broke on empty would
     ' pass the check above and fail here.
     jobs = [ { who: "back", state: "waiting" } ]
-    check("and it fills again", qt.refresh(board, "queue"), 1)
-    check("with the right row", qt.cell(board, "queue", 0, "who"), "back")
+    check("and it fills again", ui.refresh(board, "queue"), 1)
+    check("with the right row", ui.cell(board, "queue", 0, "who"), "back")
 
     print "-- THE CAPTURE MOVES WITH IT, or a fold reads two different moments"
     rows = [ { a: "one" }, { a: "two" } ]
-    grew = qt.refresh(board, "sheet")
+    grew = ui.refresh(board, "sheet")
     check("the edit table grew", grew, 2)
     ' NO TYPING NEEDED, and a table's columns are deliberately NOT window-wide
-    ' names (§0.6), so `qt.write(board, "a", ...)` is correctly refused -- the
+    ' names (§0.6), so `ui.write(board, "a", ...)` is correctly refused -- the
     ' fold alone is what this tier is about.
-    back = qt.subject(board, "rows")
+    back = ui.subject(board, "rows")
     ' WITHOUT UPDATING THE CAPTURED RECORD this would fold the widgets over
     ' the ONE-element list captured at open, so the second row would vanish --
     ' a plausible result assembled from two different moments.
@@ -176,16 +176,16 @@ program main()
     ' §0.6 refused a form a NAME both ways, so the one thing it can be
     ' addressed by is the subject it declares -- and this verb takes either
     ' rather than growing a second one.
-    check("it populated at open", qt.read(board, "title"), "first")
+    check("it populated at open", ui.read(board, "title"), "first")
     cur = { title: "second", body: "two" + chr(10) + "lines", extra: "y" }
     check("changing the subject alone does NOTHING",
-          qt.read(board, "title"), "first")
-    drew = qt.refresh(board, "cur")
-    check("re-showing fills it", qt.read(board, "title"), "second")
-    check("including a memo", len(split(qt.read(board, "body"), chr(10))), 2)
+          ui.read(board, "title"), "first")
+    drew = ui.refresh(board, "cur")
+    check("re-showing fills it", ui.read(board, "title"), "second")
+    check("including a memo", len(split(ui.read(board, "body"), chr(10))), 2)
     ' BOTH FORMS, which is the check that separates visiting the subject from
     ' visiting the first form that mentions it.
-    check("and the OTHER form on the same subject", qt.read(board, "extra"), "y")
+    check("and the OTHER form on the same subject", ui.read(board, "extra"), "y")
     check("it answers how many parts it drew", drew, 3)
 
     print "-- refusals, each beside its nearest legal neighbour"
@@ -206,13 +206,13 @@ program main()
           contains(refused(both, "thing"), "means two things here"), true)
     ' THE CONTROL: each on its own still works in that same window.
     check("CONTROL: the unambiguous table in it still refreshes",
-          qt.refresh(both, "listing") >= 0, true)
-    qt.stop()
+          ui.refresh(both, "listing") >= 0, true)
+    ui.stop()
 end program
 
 function refused_cell(table, row)
     on error goto handle
-    v = qt.cell(board, table, row, "who")
+    v = ui.cell(board, table, row, "who")
     return "ANSWERED " + string(v)
 handle:
     m = error.message

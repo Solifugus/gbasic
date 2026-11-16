@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# A CONTEXT MENU (docs/qt_gui_design.md §0.20) -- `popup`, `qt.popup`,
-# `qt.right_click`, and the policy a declared handler asks for.
+# A CONTEXT MENU (docs/qt_gui_design.md §0.20) -- `popup`, `ui.popup`,
+# `ui.right_click`, and the policy a declared handler asks for.
 #
 # `set +e` BELOW WITHOUT A MATCHING `set -e`, DELIBERATELY: this file's mode is
 # `set -uo pipefail` -- no `-e` -- so `set +e` is a no-op and a `set -e` after
@@ -12,7 +12,7 @@
 # is built ONCE holding every item there is and HIDES the ones a row does not
 # offer -- so what it needs from a declaration is a menu that is DECLARED,
 # which is what a `window` block already is, and `visible` is Q_PROPERTY 14 of
-# QAction so `qt.set` already reaches it: no new capability. And its
+# QAction so `ui.set` already reaches it: no new capability. And its
 # `context_actions(rows, index)` takes an INDEX, so the one genuine gap looked
 # like "which row was right-clicked".
 #
@@ -24,8 +24,8 @@
 #   only through its VIEWPORT        right-click lands on the viewport, and
 #                                    gBASIC cannot name one
 #   QMenu::popup and ::exec are      both -1 against `show` 18, `hide` 19 --
-#   NOT invokable by name            so `qt.invoke` cannot raise a menu
-#   Qt MOVES THE SELECTION on a      so `qt.selected` already answers "which
+#   NOT invokable by name            so `ui.invoke` cannot raise a menu
+#   Qt MOVES THE SELECTION on a      so `ui.selected` already answers "which
 #   right-press (currentRow 3)       row", and the gap closed itself
 #   a QMenu parented to a widget     layout count 2 before, 2 after -- a popup
 #   WITH a layout is not taken       is placed by nothing, like the bar
@@ -275,7 +275,7 @@ else
     fi
     if grep -q "^ok   the selection followed the click" "$work/sem.out" &&
        grep -q "^ok   a second click moved the row" "$work/sem.out"; then
-        pass "ROW: a right-click moves the selection, so qt.selected answers it"
+        pass "ROW: a right-click moves the selection, so ui.selected answers it"
     else
         fail "the row question was not measured -- a handler would read a stale selection"
     fi
@@ -289,7 +289,7 @@ else
        grep -q "^ok   and shows again once an item is back" "$work/sem.out"; then
         pass "SHOWN: both halves of the boolean"
     else
-        fail "qt.popup's answer was not measured both ways -- a bare true alone passes on a verb that always says yes"
+        fail "ui.popup's answer was not measured both ways -- a bare true alone passes on a verb that always says yes"
     fi
     # THE SUBMENU HALF, found by examples/qt/browser.bas rather than reasoned:
     # hiding every item INSIDE a submenu does not hide the submenu, and
@@ -305,7 +305,7 @@ else
     # UNDER A PART rather than at the pointer, which §0.20 left open as its own
     # limitation and which Studio's toolbar menu button is the caller for: a
     # menu button's menu belongs under the button, not wherever the mouse is.
-    # THE POSITION, AND IT IS A DIFFERENCE. `qt.popup`'s boolean says only that
+    # THE POSITION, AND IT IS A DIFFERENCE. `ui.popup`'s boolean says only that
     # a menu appeared, so a perturbation that IGNORED the third argument and
     # popped at the pointer left every check green -- the fifth time in these
     # increments that a green perturbation meant a missing observable. A menu's

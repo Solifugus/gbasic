@@ -9,8 +9,8 @@
 '   §0.22's use-after-free, which showed up as `sizes` silently never being set;
 '   §0.27's reconcile never connecting a BUILT child's handlers, invisible
 '     because no perturbation put a handler on a new child;
-'   §0.31's own, reported from the Studio bench: `qt.select` on a tree enters
-'     the selection handler, the handler calls `qt.refresh`, a tree refresh
+'   §0.31's own, reported from the Studio bench: `ui.select` on a tree enters
+'     the selection handler, the handler calls `ui.refresh`, a tree refresh
 '     DELETES EVERY ITEM, and `setSelected` runs on with `this` freed --
 '     segfaulting about three runs in five and otherwise answering `unknown`
 '     for a row that had just been selected.
@@ -58,11 +58,11 @@ window shell( title: "Shell", width: 520, height: 400 )
     ' line: four re-entries from inside one Qt call.
     on files.itemSelectionChanged
         g.tree_fired = g.tree_fired + 1
-        qt.refresh(shell, "files")
-        g.seen = qt.cell(shell, "files", 0, "name")
-        qt.write(shell, "code", "row " + string(qt.selected(shell, "files")))
-        qt.mark(shell, "code", "section", [1])
-        qt.set(shell, "status", "text", "chose " + string(g.tree_fired))
+        ui.refresh(shell, "files")
+        g.seen = ui.cell(shell, "files", 0, "name")
+        ui.write(shell, "code", "row " + string(ui.selected(shell, "files")))
+        ui.mark(shell, "code", "section", [1])
+        ui.set(shell, "status", "text", "chose " + string(g.tree_fired))
     end on
 
     ' A HANDLER THAT SELECTS ANOTHER ROW OF ITS OWN TREE: every round really
@@ -80,7 +80,7 @@ window shell( title: "Shell", width: 520, height: 400 )
     on loop.itemSelectionChanged
         g.loop_fired = g.loop_fired + 1
         if g.loop_fired < 64 then
-            qt.select(shell, "loop", mod(g.loop_fired + 1, 2))
+            ui.select(shell, "loop", mod(g.loop_fired + 1, 2))
         end if
     end on
 
@@ -91,8 +91,8 @@ window shell( title: "Shell", width: 520, height: 400 )
     ' (found 2026-11-11 from the riscv64 port; nothing here shrank a table).
     on stock.itemSelectionChanged
         g.stock_fired = g.stock_fired + 1
-        qt.refresh(shell, "stock")
-        g.stock_seen = qt.cell(shell, "stock", 0, "sku")
+        ui.refresh(shell, "stock")
+        g.stock_seen = ui.cell(shell, "stock", 0, "sku")
     end on
 
     ' AND ONE ON THE TABLE, because the two kinds reach DIFFERENT code --
@@ -100,8 +100,8 @@ window shell( title: "Shell", width: 520, height: 400 )
     ' be made in both.
     on orders.itemSelectionChanged
         g.table_fired = g.table_fired + 1
-        qt.refresh(shell, "orders")
-        qt.set(shell, "status", "text", "order " + string(g.table_fired))
+        ui.refresh(shell, "orders")
+        ui.set(shell, "status", "text", "order " + string(g.table_fired))
     end on
 end window
 
@@ -122,7 +122,7 @@ window vanisher( title: "Vanisher", width: 360, height: 240 )
 
     on orders.itemSelectionChanged
         g.vanish_fired = g.vanish_fired + 1
-        qt.refresh(vanisher, "stack",
+        ui.refresh(vanisher, "stack",
                    [ { kind: "part", word: "text", name: "gone",
                        options: { label: "the table is gone" } } ])
     end on
@@ -133,7 +133,7 @@ program main()
           vanish_fired: 0, loop_fired: 0, stock_fired: 0, stock_seen: "" }
     items = [ { sku: "A-1" } ]
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NODISPLAY"
         return
     end if
@@ -141,15 +141,15 @@ program main()
     rows = rows_now(false)
     lines = [ { who: "Ada",  total: 10 },
               { who: "Grace", total: 20 } ]
-    qt.open(shell)
+    ui.open(shell)
 
     ' ---- THE SHAPE THAT CRASHED: select, with a handler that refreshes ----
     ' The program SURVIVING is the whole assertion. Before the fix this
     ' segfaulted about three runs in five and corrupted memory otherwise.
-    qt.select(shell, "files", 1)
+    ui.select(shell, "files", 1)
     check("a selection handler that refreshes did not take the program with it",
           g.tree_fired > 0, true)
-    qt.select(shell, "files", 2)
+    ui.select(shell, "files", 2)
     check("and a second select still works", g.tree_fired > 1, true)
 
     ' THE HANDLER READ THE TREE BACK FROM INSIDE ITSELF, which is what says
@@ -158,20 +158,20 @@ program main()
           "src")
 
     ' ---- THE SAME ON A TABLE, a different widget and different code -------
-    qt.select(shell, "orders", 1)
+    ui.select(shell, "orders", 1)
     check("a table's selection handler survives its own refresh",
           g.table_fired > 0, true)
 
     ' ---- A TABLE SHRUNK UNDER ITS SELECTION, by the program --------------
     for round = 1 to 5
         items = [ { sku: "A-1" }, { sku: "B-2" }, { sku: "C-3" }, { sku: "D-4" } ]
-        qt.refresh(shell, "stock")
-        qt.select(shell, "stock", 3)
+        ui.refresh(shell, "stock")
+        ui.select(shell, "stock", 3)
         items = [ { sku: "A-1" } ]
-        qt.refresh(shell, "stock")
+        ui.refresh(shell, "stock")
     next
     check("a table shrunk under its selected row survives its handler's refresh",
-          qt.cell(shell, "stock", 0, "sku"), "A-1")
+          ui.cell(shell, "stock", 0, "sku"), "A-1")
     check("and the handler heard each select and each lost selection",
           g.stock_fired, 10)
     check("reading the table as it now is", g.stock_seen, "A-1")
@@ -188,7 +188,7 @@ program main()
     check("the refreshing handler heard each change, not a recursion",
           g.tree_fired < 16, true)
     check("the recursion was bounded", g.tree_fired < 200, true)
-    qt.select(shell, "loop", 1)
+    ui.select(shell, "loop", 1)
     check("a handler selecting in its own tree loops until the bound",
           g.loop_fired >= 16, true)
     check("and it ended", g.loop_fired <= 64, true)
@@ -196,42 +196,42 @@ program main()
     ' ---- AND EVERYTHING IS STILL USABLE AFTERWARDS -----------------------
     ' The control on the whole fixture: a window that merely SURVIVED a crash
     ' would pass every check above. These say it still works.
-    check("the tree still answers", qt.cell(shell, "files", 0, "name"), "src")
-    check("the table still answers", qt.cell(shell, "orders", 0, "who"), "Ada")
+    check("the tree still answers", ui.cell(shell, "files", 0, "name"), "src")
+    check("the table still answers", ui.cell(shell, "orders", 0, "who"), "Ada")
     check("the editor still holds what a handler wrote",
-          contains(qt.read(shell, "code", "plainText"), "row"), true)
+          contains(ui.read(shell, "code", "plainText"), "row"), true)
     check("the margin still holds its mark",
-          string(qt.marks(shell, "code", "section")), "[1]")
+          string(ui.marks(shell, "code", "section")), "[1]")
     check("and a part a handler set reads back",
-          contains(qt.read(shell, "status", "text"), "order"), true)
+          contains(ui.read(shell, "status", "text"), "order"), true)
 
     ' A REFRESH FROM OUTSIDE A HANDLER IS UNCHANGED, which is the control on
     ' the deferral: with nothing on the stack the items are freed at once as
     ' they always were, and the tree still grows.
     rows = rows_now(true)
-    qt.refresh(shell, "files")
+    ui.refresh(shell, "files")
     check("a refresh outside a handler still re-reads the subject",
-          qt.cell(shell, "files", 3, "name"), "README.md")
+          ui.cell(shell, "files", 3, "name"), "README.md")
 
-    qt.close(shell)
+    ui.close(shell)
 
     ' ---- A HANDLER THAT DELETES ITS OWN WIDGET ---------------------------
     lines = [ { who: "Ada" }, { who: "Grace" } ]
-    qt.open(vanisher)
-    qt.select(vanisher, "orders", 1)
+    ui.open(vanisher)
+    ui.select(vanisher, "orders", 1)
     check("a handler that reconciles away its own widget does not crash",
           g.vanish_fired, 1)
     ' AND THE WIDGET REALLY IS GONE, which is what says the reconcile ran
     ' rather than being skipped -- without it "no crash" is satisfied by a
     ' refresh that did nothing.
     on error goto next
-    qt.read(vanisher, "orders", "enabled")
+    ui.read(vanisher, "orders", "enabled")
     check("and the widget really was removed",
           contains(error.message, "orders"), true)
     error.clear()
     check("while what replaced it is there",
-          qt.read(vanisher, "gone", "text"), "the table is gone")
-    qt.close(vanisher)
+          ui.read(vanisher, "gone", "text"), "the table is gone")
+    ui.close(vanisher)
 
     print "ok   " + string(g.checks) + " checks, " + string(g.bad) + " mismatches"
 end program

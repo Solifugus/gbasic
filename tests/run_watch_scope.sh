@@ -96,23 +96,23 @@ else
 fi
 
 echo "--- TIER qtrun ---"
-# DOGFOOD's live row 1 until 2026-11-08: qt.run() from inside a FUNCTION hung,
+# DOGFOOD's live row 1 until 2026-11-08: ui.run() from inside a FUNCTION hung,
 # its timer ticking into timer.ticks and never delivered. Both forms must tick
 # twice and exit 0 now; the top-level form is the control.
-sed 's/^    HANDOVER$/    qt.run()/' tests/watch_scope/qtrun.bas.in > "$tmp/qtrun_top.bas"
+sed 's/^    HANDOVER$/    ui.run()/' tests/watch_scope/qtrun.bas.in > "$tmp/qtrun_top.bas"
 sed 's/^    HANDOVER$/    handover()/' tests/watch_scope/qtrun.bas.in > "$tmp/qtrun_fn.bas"
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 15 ./gbasic --line-buffered "$tmp/qtrun_top.bas" >"$tmp/qt_top.out" 2>&1 </dev/null; top_rc=$?
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 15 ./gbasic --line-buffered "$tmp/qtrun_fn.bas" >"$tmp/qt_fn.out" 2>&1 </dev/null; fn_rc=$?
 if grep -q NODISPLAY "$tmp/qt_top.out" || grep -q "not available in this build" "$tmp/qt_top.out"; then
-    printf 'SKIP qtrun (no Qt or no display): qt.run from a function was NOT measured\n'
+    printf 'SKIP qtrun (no Qt or no display): ui.run from a function was NOT measured\n'
 elif [ "$top_rc" != 0 ] || ! grep -qx 'TICKS 2' "$tmp/qt_top.out"; then
     tail -3 "$tmp/qt_top.out" | sed 's/^/  /'
-    printf 'FAIL qtrun CONTROL (qt.run at the top level must tick and exit 0, rc %s)\n' "$top_rc"; status=1
+    printf 'FAIL qtrun CONTROL (ui.run at the top level must tick and exit 0, rc %s)\n' "$top_rc"; status=1
 elif [ "$fn_rc" != 0 ] || ! grep -qx 'TICKS 2' "$tmp/qt_fn.out"; then
     tail -3 "$tmp/qt_fn.out" | sed 's/^/  /'
-    printf 'FAIL qtrun (qt.run inside a function: rc %s; 124 is the old hang)\n' "$fn_rc"; status=1
+    printf 'FAIL qtrun (ui.run inside a function: rc %s; 124 is the old hang)\n' "$fn_rc"; status=1
 else
-    printf 'PASS qtrun (qt.run ticks from the top level and from inside a function)\n'
+    printf 'PASS qtrun (ui.run ticks from the top level and from inside a function)\n'
 fi
 
 echo "--- TIER shape ---"

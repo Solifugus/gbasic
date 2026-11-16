@@ -1093,7 +1093,7 @@ EOF
 fi
 
 # 11. THE Qt SURFACE against the reference, in BOTH directions. A `window`
-#     vocabulary word and a `qt.` verb are both PROMISES, and the reference is
+#     vocabulary word and a `ui.` verb are both PROMISES, and the reference is
 #     where somebody looks one up -- so a verb that ships undocumented is the
 #     roster rot in a surface that grew by ten verbs and one word in a single
 #     day (§0.20-§0.23). DERIVED from the source rather than listed, because a
@@ -1107,8 +1107,8 @@ if [ -f "$QTREF" ] && [ -f src/modules/qt.c ] && [ -f src/window_check.c ]; then
     nverbs=0
     for v in $verbs; do
         nverbs=$((nverbs + 1))
-        grep -q "qt\.$v" "$QTREF" \
-            || { echo "FAIL qt surface    $QTREF has no mention of \`qt.$v\`, which src/modules/qt.c dispatches"; qt_ok=0; status=1; }
+        grep -q "ui\.$v" "$QTREF" \
+            || { echo "FAIL qt surface    $QTREF has no mention of \`ui.$v\`, which src/modules/qt.c dispatches"; qt_ok=0; status=1; }
     done
     words=$(sed -n '/^static const char \*win_container_words/,/NULL};/p;/^static const char \*win_leaf_words/,/NULL};/p' src/window_check.c \
             | grep -oE '"[a-z]+"' | tr -d '"' | sort -u)

@@ -5,7 +5,7 @@
 # tests/run_source_comments.sh.
 #
 # Tiers:
-#   FIGURES (C, D1) -- tests/qt_notebook/figures_test.bas: qt.render_svg's
+#   FIGURES (C, D1) -- tests/qt_notebook/figures_test.bas: ui.render_svg's
 #     sizes read from each PNG's own header, scale, aspect, the same bytes
 #     twice, every refusal and that none wrote a file; and `theme:` naming a
 #     KSyntaxHighlighting theme, one shipped (Printing) and one the runner puts
@@ -15,7 +15,7 @@
 #   PIXELS -- PIL decodes the pictures: the SVG's box is its colour where the
 #     SVG put it (at scale 1 and 2), the background white and the PNG without
 #     alpha, and its text antialiased in gray (no colour fringes); the
-#     gray-themed editors are the theme's background. qt.capture's own text
+#     gray-themed editors are the theme's background. ui.capture's own text
 #     has subpixel colour fringes, which is printed, not asserted: a known
 #     limit for print figures, reported to Studio.
 #   BLOCKS (A, B2, B3) -- tests/qt_notebook/blocks_test.bas: every kind, read
@@ -170,11 +170,11 @@ if os.environ.get("NOTHEMES") != "1":
         im = Image.open(d + "/%s.png" % name).convert("RGB")
         w, h = im.size
         check(name + ": the theme's background", im.getpixel((w - 30, h - 30)) == (0xf2, 0xf2, 0xf2), im.getpixel((w - 30, h - 30)))
-    # NOT ASSERTED, MEASURED: qt.capture draws widget text with subpixel
+    # NOT ASSERTED, MEASURED: ui.capture draws widget text with subpixel
     # antialiasing (colour fringes on glyphs), which drawing into an image with
     # alpha does not change for QWidget::render. A known limit for print figures.
     im = Image.open(d + "/themes.png").convert("RGB")
-    print("note: qt.capture's subpixel fringes in the gray editor: %d pixels" % sum(1 for p in pixels(im) if max(p) - min(p) > 3))
+    print("note: ui.capture's subpixel fringes in the gray editor: %d pixels" % sum(1 for p in pixels(im) if max(p) - min(p) > 3))
     th = Image.open(d + "/themes.png").convert("RGB")
     dark = sum(1 for p in pixels(th) if p[0] < 0x90)
     check("themes: text was drawn (dark pixels exist)", dark > 20, dark)

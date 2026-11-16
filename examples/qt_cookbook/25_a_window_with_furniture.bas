@@ -48,23 +48,23 @@ window ide( title: "Workbench", width: 880, height: 560 )
 end window
 
 program main( args )
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display -- nothing to show"
         return
     end if
 
-    qt.open(ide)
+    ui.open(ide)
 
     ' WHERE A PANE IS, asked of the window rather than of the declaration.
     print "branches: " + ide.dock("branches").area + ", sharing a tab group with " + string(ide.dock("branches").tabbed_with)
     print "console:  " + ide.dock("console").area + ", sharing a tab group with " + string(ide.dock("console").tabbed_with)
 
     ' A STATUS BAR NEEDS NO VERB: a `text` part in it is an ordinary widget
-    ' whose `text` property `qt.set` reaches, which is why there is nothing
-    ' like `qt.status(...)` to learn.
+    ' whose `text` property `ui.set` reaches, which is why there is nothing
+    ' like `ui.status(...)` to learn.
     print "status says:              " + ide.read("msg", "text")
     ide.set("msg", "text", "Saved notes.bas")
-    print "and after qt.set:         " + ide.read("msg", "text")
+    print "and after ui.set:         " + ide.read("msg", "text")
 
     ' A TOOLBAR HOLDS WHAT A MENU HOLDS -- the same items, so `checkable:` and
     ' `icon:` work on them too.
@@ -73,7 +73,7 @@ program main( args )
     print "and one can be checkable: " + string(ide.read("save", "checkable"))
 
     ' KEEP THE ARRANGEMENT. The text is Qt's own format -- store it, do not
-    ' read it; `qt.dock` is what answers questions about a pane.
+    ' read it; `ui.dock` is what answers questions about a pane.
     saved = ide.layout()
     print "the layout is text, kept as " + string(len(saved)) + " characters"
 

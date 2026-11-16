@@ -7,4 +7,4 @@ after a change, even:           true
 and restored to narrow again:   true
 browser hidden:                 true
 and shown again:                true
-one size for two panes:         qt.resize_panes: that split has 2 panes and 1 size was given
+one size for two panes:         ui.resize_panes: that split has 2 panes and 1 size was given

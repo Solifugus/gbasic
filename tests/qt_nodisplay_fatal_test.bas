@@ -9,6 +9,6 @@ end window
 
 program main()
     print "progress line one"
-    ok = qt.open(tiny)
+    ok = ui.open(tiny)
     print "MISMATCH this line must not be reached"
 end program

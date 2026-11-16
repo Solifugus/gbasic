@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# PANE SIZES (docs/qt_gui_design.md §0.22) -- `qt.pane(...).sizes` and
-# `qt.resize_panes`, which is how "restore my layout" is written.
+# PANE SIZES (docs/qt_gui_design.md §0.22) -- `ui.pane(...).sizes` and
+# `ui.resize_panes`, which is how "restore my layout" is written.
 #
 # `set +e` BELOW WITHOUT A MATCHING `set -e`, DELIBERATELY: this file's mode is
 # `set -uo pipefail` -- no `-e` -- so `set +e` is a no-op and a `set -e` after
@@ -12,7 +12,7 @@
 # invokable by name (-1) -- the by-name route this backend reaches everything
 # else through cannot see either -- and a `split` CANNOT BE NAMED, its one slot
 # being the direction, so there is nothing to look up. It is therefore
-# addressed by WALKING UP FROM A PART, the rule `qt.pane` already follows, so
+# addressed by WALKING UP FROM A PART, the rule `ui.pane` already follows, so
 # `sizes` joins what that answers and needed no new spelling.
 #
 # STUDIO NEEDS IT, which is why this came before icons and completion: its
@@ -74,7 +74,7 @@ else
 fi
 
 # -------------------------------------------------------------- ONE WALK UP
-# `qt.pane` and `qt.resize_panes` must find the SAME splitter, or a program
+# `ui.pane` and `ui.resize_panes` must find the SAME splitter, or a program
 # would read one split's sizes and write another's. One walk, used by both --
 # the rule `would`/`execute` follow in `automation`, and the reason the INNER
 # tier below can be trusted to mean what it says.

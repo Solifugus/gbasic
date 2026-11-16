@@ -13,8 +13,8 @@
 ' built on this surface, the surface works.
 '
 ' THE ONE THING TO TAKE FROM IT: WHERE THE STATE LIVES. gBASIC has no closures,
-' and a handler fires from inside Qt's loop beneath `qt.run()`, so the frame it
-' sees is the one that called `qt.run` -- `main`. MEASURED, and the two halves
+' and a handler fires from inside Qt's loop beneath `ui.run()`, so the frame it
+' sees is the one that called `ui.run` -- `main`. MEASURED, and the two halves
 ' differ:
 '
 '   a handler CAN READ main's locals
@@ -31,9 +31,9 @@
 ' WHAT IT EXERCISES, which is most of the Qt surface in one screen: `text` for
 ' the room name and its description, `memo` for the transcript, a `table` for
 ' what is here, `field` plus `button` for typed commands, six buttons whose
-' `enabled` is set per room with `qt.set` -- which is what the by-name property
+' `enabled` is set per room with `ui.set` -- which is what the by-name property
 ' route is FOR -- a `menu` bar with a separator and a submenu, `group`/`row`/
-' `column` layout, and `qt.theme` for the look.
+' `column` layout, and `ui.theme` for the look.
 
 window game( title: "The Lantern Room", width: 620, height: 520 )
 
@@ -124,7 +124,7 @@ window game( title: "The Lantern Room", width: 620, height: 520 )
     end on
 
     on quit_item.triggered
-        qt.stop()
+        ui.stop()
     end on
 
     on about.triggered
@@ -265,7 +265,7 @@ function redraw()
     game.write("blurb", place.description)
     game.write("log", join(g.lines, chr(10)))
 
-    ' THE BUTTONS SAY WHERE YOU CAN GO, which is `qt.set` doing the job the
+    ' THE BUTTONS SAY WHERE YOU CAN GO, which is `ui.set` doing the job the
     ' declaration cannot: which exits exist is a fact about the room you are
     ' standing in, and the declaration was written before the game began.
     for each d in ["north", "south", "east", "west", "up", "down"]
@@ -283,7 +283,7 @@ function redraw()
     ' and this function can only READ it -- a function cannot change its
     ' caller -- so the handler that moved us assigned `g.visible`, and this
     ' hands that to the table. The list is read AT THE MOMENT ASKED, which is
-    ' `qt.subject`'s principle the other way round.
+    ' `ui.subject`'s principle the other way round.
     visible = g.visible
     shown = game.refresh("here")
     return nothing
@@ -470,23 +470,23 @@ program main(args)
     g.visible = things_here_at(1)
 
     ' THE TABLE'S SUBJECT. A `table to show` reads its list when the window
-    ' OPENS, so this is what it shows to begin with -- and `qt.refresh` is
+    ' OPENS, so this is what it shows to begin with -- and `ui.refresh` is
     ' what makes it follow the room you are standing in. Writing this example
     ' is what found that gap: without the verb, "what is here" showed the
     ' cellar's contents for the whole game.
     visible = things_here()
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so the game cannot be shown."
         print "Set QT_QPA_PLATFORM=offscreen to render without one, or play"
         print "the text version: ./gbasic examples/bag/generated_adventure.bas"
         return
     end if
 
-    qt.theme("QGroupBox { font-weight: bold; }" +
+    ui.theme("QGroupBox { font-weight: bold; }" +
              "QPlainTextEdit { background: #fbfbfb; }")
 
-    qt.open(game)
+    ui.open(game)
     redraw()
 
     if contains(args, "check") then
@@ -509,13 +509,13 @@ program main(args)
         print "after drop:   " + game.read("carried")
         print "menus:        " + string(game.menus())
         print "transcript:   " + string(len(g.lines)) + " lines"
-        ' THE TABLE FOLLOWED THE ROOM, which is what `qt.refresh` is for and
+        ' THE TABLE FOLLOWED THE ROOM, which is what `ui.refresh` is for and
         ' what the first draft of this example could not do: the key was
         ' dropped in the Tunnel, so that is the one thing here.
         print "here now:     " + string(game.read("here", "rowCount")) + " thing(s)"
         print "and it is:    " + game.cell("here", 0, "name")
-        qt.stop()
+        ui.stop()
         return
     end if
-    qt.run()
+    ui.run()
 end program

@@ -2,7 +2,7 @@
 ' takes, and the one `table` was designed for.
 '
 ' A `table` is NAMED where a form is not, because a table shows MANY rows and
-' the table itself is what a handler and `qt.selected` address. Its subject is
+' the table itself is what a handler and `ui.selected` address. Its subject is
 ' a LIST, and each `field` inside is a COLUMN read from every element -- the
 ' column's `name` says which field, its `label` says what the heading reads.
 window orders( title: "Orders", width: 620, height: 360 )
@@ -35,7 +35,7 @@ function pick()
     ' MUTATE THE SUBJECT'S FIELDS, NEVER REBIND IT. A handler cannot rebind
     ' `chosen` -- gBASIC has no closures, so the assignment would make a
     ' handler-local and warning 2104 would say so -- but writing its FIELDS
-    ' reaches the record `main` holds. `qt.refresh` then redraws the form from
+    ' reaches the record `main` holds. `ui.refresh` then redraws the form from
     ' it, addressed by the form's SUBJECT because a form has no name.
     chosen.who = row.who
     chosen.total = row.total
@@ -50,14 +50,14 @@ program main(args)
                { placed: "2026-03-09", who: "Grace Hopper",   total: {USD}1210.00 } ]
 
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display"
         return
     end if
     ' THE SUBJECTS ARE READ AT OPEN, so both are in place before the window is.
     rows = g.rows
     chosen = g.rows[0]
-    qt.open(orders)
+    ui.open(orders)
 
     print "the table drew " + string(len(g.rows)) + " rows"
     ' A HEADING COMES FROM `label:` AND A CELL FROM `name:` -- two different
@@ -71,5 +71,5 @@ program main(args)
     print "chosen row:        " + string(orders.selected("lines"))
     print "the form now says: " + orders.read("who")
     print "               and " + orders.read("total")
-    qt.stop()
+    ui.stop()
 end program

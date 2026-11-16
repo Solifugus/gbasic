@@ -1,6 +1,6 @@
 ' WHERE A HANDLER KEEPS STATE -- the one thing every author hits first.
 '
-' gBASIC has no closures, and a handler fires beneath `qt.run()`. It CAN READ a
+' gBASIC has no closures, and a handler fires beneath `ui.run()`. It CAN READ a
 ' variable in `main` and it CANNOT REBIND one: a plain assignment there
 ' silently makes a handler-local instead, and warning 2104 says so and names
 ' the remedy. So a stateful window keeps its state in ONE RECORD, and handlers
@@ -36,11 +36,11 @@ program main(args)
     ' ONE RECORD, declared before the window opens.
     g = { count: 0 }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display"
         return
     end if
-    qt.open(tally)
+    ui.open(tally)
 
     tally.invoke("up", "click")
     tally.invoke("up", "click")
@@ -52,5 +52,5 @@ program main(args)
 
     tally.invoke("reset", "click")
     print "after reset:                       " + string(g.count)
-    qt.stop()
+    ui.stop()
 end program

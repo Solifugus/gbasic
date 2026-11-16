@@ -103,14 +103,14 @@ int gb_qt_begin(char *err, size_t err_size);
 
 /* `name` IS THE DECLARATION'S OWN NAME, and it buys four doors for one line:
  * the root widget is registered in the same by-name table every part uses, so
- * `qt.read(win, "app", "windowTitle")`, `qt.set`, `qt.invoke(win, "app",
+ * `ui.read(win, "app", "windowTitle")`, `ui.set`, `ui.invoke(win, "app",
  * "showMaximized")` and `on app.closed` all reach the window itself through
  * machinery that already existed. MEASURED before relying on it: `windowTitle`
  * is a Q_PROPERTY of QWidget (index 43) and `close()` and `showMaximized()`
  * are both invokable by name (24 and 21), so nothing had to be added for any
  * of them -- which is note 4's by-name argument paying off a fourth time.
  *
- * Until this, `qt.invoke`/`qt.read`/`qt.set` reached PARTS only, so there was
+ * Until this, `ui.invoke`/`ui.read`/`ui.set` reached PARTS only, so there was
  * no way to address the window at all: no close, no raise, no reading or
  * setting its own title or size.
  *
@@ -125,7 +125,7 @@ int gb_qt_begin(char *err, size_t err_size);
  *
  * ONLY WHEN ASKED FOR, deliberately. Making every root a QDialog would have
  * worked and would have been a wider change for nothing: a QWidget root then
- * genuinely HAS no `accept`, so `qt.accept` on an ordinary window is refused
+ * genuinely HAS no `accept`, so `ui.accept` on an ordinary window is refused
  * by the same by-name door everything else goes through. */
 /* `kind` IS 0 PLAIN, 1 MODAL, 2 MAIN (§0.30) -- one value rather than two
  * booleans, because a window cannot be both and two flags would let a caller
@@ -141,7 +141,7 @@ void *gb_qt_window(const char *name, const char *title, int width, int height,
  * is the caption a `group` or a `tab` carries and is NULL for the others.
  *
  * `name` IS FOR A CONTAINER THAT IS ADDRESSABLE -- `tabs settings`, so
- * `on settings.currentChanged` and `qt.read(win, "settings", "currentIndex")`
+ * `on settings.currentChanged` and `ui.read(win, "settings", "currentIndex")`
  * can find it. NULL for the ones that are not; the load-time pass decides
  * which may carry one, and a `tab` never does (its CAPTION is what a person
  * reads, the rule a `menu` follows). */
@@ -149,7 +149,7 @@ void *gb_qt_container(void *parent, const char *word, const char *name,
                       const char *title, char *err, size_t err_size);
 
 /* A leaf word (`field`, `button`, `check`, `stretch`). `name` is the
- * declaration's name, which is how `qt.read`/`qt.write` and a handler's
+ * declaration's name, which is how `ui.read`/`ui.write` and a handler's
  * target find it again; `label` is the caption, which for a `field` is the
  * form row's label and for a `check` is the box's own text. */
 void *gb_qt_part(void *parent, const char *word, const char *name,
@@ -198,7 +198,7 @@ int gb_qt_cell_of(void *window, const char *name, int *row, int *col,
  *
  * A `split` SPENDS ITS ONE SLOT ON THE DIRECTION (§0.8 measured that a
  * container carries a name OR options and not both), so it cannot be named --
- * which means `qt.read`, `qt.set` and a handler cannot reach it, and nothing
+ * which means `ui.read`, `ui.set` and a handler cannot reach it, and nothing
  * could say whether a splitter was built, which way round it is, or how many
  * panes it got. ASKED OF THE LAYOUT, walking up from a part that CAN be named,
  * which is the rule `gb_qt_cell_of` already follows for a grid: a position we
@@ -281,7 +281,7 @@ int gb_qt_set_part_bool(void *window, const char *name, const char *prop,
  * `kind` comes back as 'b' bool, 'n' number or 't' text, DECIDED BY THE
  * QVariant rather than by the caller, so `readOnly` arrives as a gBASIC
  * boolean instead of the string "true" -- which matters because `if
- * qt.read(w, "f", "readOnly")` on the string "false" would be TRUE, every
+ * ui.read(w, "f", "readOnly")` on the string "false" would be TRUE, every
  * non-empty string being true in this language. `text` is malloc'd and set
  * only for 't'. */
 int gb_qt_get(void *window, const char *name, const char *prop, char *kind,
@@ -300,7 +300,7 @@ int gb_qt_get(void *window, const char *name, const char *prop, char *kind,
  * AN ITEM IS A QAction AND NOT A WIDGET, which is why the registry holds
  * QObject: an item is addressed by name for `on open.triggered`, for
  * `enabled:`/`shortcut:`/`checkable:` at construction, and for
- * `qt.read(win, "open", "enabled")`, and all three go through QObject. */
+ * `ui.read(win, "open", "enabled")`, and all three go through QObject. */
 void *gb_qt_menu(void *window, void *parent_menu, const char *title, char *err,
                  size_t err_size);
 void *gb_qt_menu_item(void *window, void *menu, const char *name,
@@ -355,7 +355,7 @@ char *gb_qt_popup_entry_title(void *window, const char *name, int entry,
  * word exists because the slot does: §0.8 measured that a container carries a
  * NAME OR OPTIONS AND NOT BOTH, `menu "File"` spends its one slot on the
  * caption a person reads on the bar, and a context menu has no bar to be read
- * on -- what it needs is a NAME, so `qt.popup(win, "row_actions")` can address
+ * on -- what it needs is a NAME, so `ui.popup(win, "row_actions")` can address
  * it. The same trade `split across` makes in the other direction, where the
  * direction is what no splitter can do without.
  *
@@ -365,14 +365,14 @@ char *gb_qt_popup_entry_title(void *window, const char *name, int entry,
  * exactly like the bar -- which is why it belongs to the window and is refused
  * inside a layout, for the same reason and not by analogy. And `QMenu::popup`
  * and `QMenu::exec` are NOT invokable by name (both -1 against `show` at 18 and
- * `hide` at 19), so `qt.invoke` cannot reach either and a verb is the only
+ * `hide` at 19), so `ui.invoke` cannot reach either and a verb is the only
  * route: `show()` would put the menu wherever it last was rather than where the
  * pointer is.
  *
  * IT ANSWERS WHETHER ANYTHING WAS SHOWN, and that is Studio's own question
  * rather than a convenience. Its context menu is built ONCE holding every item
  * there is and HIDES the ones a row does not offer (`visible` is Q_PROPERTY 14
- * of QAction, so `qt.set` already reaches it -- no new capability), and its own
+ * of QAction, so `ui.set` already reaches it -- no new capability), and its own
  * comment says an empty menu "reads as a control that failed". Measured, Qt
  * agrees: an all-hidden menu answers `isEmpty()` true and `popup()` leaves it
  * INVISIBLE. So the honest answer is a boolean, not a refusal -- an empty
@@ -402,7 +402,7 @@ int gb_qt_popup(void *window, const char *name, const char *under, int *shown,
  * IT SENDS A REAL PRESS AND RELEASE rather than a bare QContextMenuEvent,
  * because the selection is part of the answer: measured, Qt MOVES THE CURRENT
  * ROW on a right-press (row 3 under the pointer, `currentRow()` 3 afterwards),
- * so `qt.selected` already answers "which row was right-clicked" and the gap I
+ * so `ui.selected` already answers "which row was right-clicked" and the gap I
  * expected to have to close was closed by Qt. A bare event would fire the
  * signal and leave the selection where it was, which is a verb that drives
  * HALF of what a mouse does and would make the row question look unanswerable.
@@ -420,14 +420,14 @@ int gb_qt_right_click(void *window, const char *name, int row, char *err,
  * anything. A name has to be true of every route that fills it.
  *
  * THE FOURTH VERB OF A SHAPE WORTH NAMING, which the Studio bench named rather
- * than this backend: `qt.selected` answers which table or tree row, this one
- * which tab, and `qt.gutter_click` and `qt.wheel` answer the same question for
+ * than this backend: `ui.selected` answers which table or tree row, this one
+ * which tab, and `ui.gutter_click` and `ui.wheel` answer the same question for
  * a line and a turn of the wheel. Every one is *"which thing was this event
  * about?"*, answered by a verb BECAUSE A HANDLER TAKES NO ARGUMENTS.
  *
  * IT EXISTS BECAUSE A TAB IS THE ONE CASE Qt DOES NOT ANSWER BY ITSELF.
  * Measured: a right-press on a table or a tree MOVES the current row, so
- * `qt.selected` already says which one was clicked -- and a right-press on a
+ * `ui.selected` already says which one was clicked -- and a right-press on a
  * QTabBar correctly does NOT move the current index, so `currentIndex` answers
  * the tab that was ALREADY ACTIVE. Studio's rule is the opposite (*"right-
  * clicking a background tab to close it must not first switch you to it"*), so
@@ -476,8 +476,8 @@ int gb_qt_clipboard(char **text, long *len, char *err, size_t err_size);
  * filter CAN swallow it (102 -> 102), and declining leaves plain scrolling
  * intact (102 -> 105). And `font` is Q_PROPERTY 27 reading back as TEXT, so
  * THE ZOOM NEEDS NO VERB -- split the text, change the number, write it back,
- * which is why there is no `qt.zoom` and that is a measurement rather than a
- * deferral: `zoomIn`/`zoomOut` carry a defaulted argument `qt.invoke` could
+ * which is why there is no `ui.zoom` and that is a measurement rather than a
+ * deferral: `zoomIn`/`zoomOut` carry a defaulted argument `ui.invoke` could
  * not reach anyway.
  *
  * `dy` IS IN NOTCHES, NOT QT'S 120-UNIT ANGLE DELTA. One click of the wheel is
@@ -569,7 +569,7 @@ int gb_qt_resize_panes(void *window, const char *name, const int *sizes,
                        int count, char *err, size_t err_size);
 
 /* AN ICON FROM TEXT is done inside `set_property`, the ONE door the
- * declaration's options and `qt.set` both go through -- because measured,
+ * declaration's options and `ui.set` both go through -- because measured,
  * `setProperty("icon", QString(...))` returns FALSE for both a theme name and
  * a file path and the icon stays null: QVariant will not convert a string to a
  * QIcon, so this is the single property the by-name route cannot carry by
@@ -679,7 +679,7 @@ int gb_qt_scroll_to(void *window, const char *name, double at, char *err,
  *
  * `headers` is one caption per column, in declaration order, which is also the
  * order the cell calls below address. The table registers under `name` in the
- * same registry a part uses, so `qt.read(win, "orders", ...)`, a handler and
+ * same registry a part uses, so `ui.read(win, "orders", ...)`, a handler and
  * `gb_qt_set_display_only` all find it with no second lookup.
  *
  * ROW COUNT IS SET SEPARATELY from the cells because the subject's length is
@@ -777,7 +777,7 @@ int gb_qt_table_select(void *window, const char *name, int row, char *err,
 
 /* A `form to show` IS DISPLAY ONLY, so its parts must not take typing -- not
  * for neatness but because the alternative is a SILENT DISCARD: someone types
- * into a one-way form, nothing complains, and `qt.subject` never reports it.
+ * into a one-way form, nothing complains, and `ui.subject` never reports it.
  * That is the class warning 2107 exists for one level up.
  *
  * WHICH PROPERTY IS A FACT ABOUT THE WIDGET and so is decided here rather than
@@ -824,7 +824,7 @@ void gb_qt_syntax_path(const char *dir);
  * decision, recorded.
  *
  * `theme` is "light", "dark", or NULL to ask Qt's own palette. It is DECLARED
- * rather than always inferred because `qt.theme` sets a STYLESHEET, which does
+ * rather than always inferred because `ui.theme` sets a STYLESHEET, which does
  * not move the palette -- so a dark application with an inferred theme gets
  * light highlighting on a dark background, which is unreadable and which
  * nothing could report.
@@ -998,7 +998,7 @@ int gb_qt_confirm(void *window, const char *text, int *answer,
  *
  * NOT A TEST HOOK, though it is what lets a suite drive one: a dialog that
  * times out ("closing in ten seconds"), one dismissed because the data under
- * it changed, and an unattended run all need exactly this -- and `qt.invoke`
+ * it changed, and an unattended run all need exactly this -- and `ui.invoke`
  * is already here on the same argument, exercising a real signal through the
  * real connection rather than around it.
  *
@@ -1008,7 +1008,7 @@ int gb_qt_answer(int value, char *err, size_t err_size);
 
 /* WHAT IS OPEN, so a program driving its own dialogs is not driving blind.
  *
- * NOT A TEST HOOK, on the argument `qt.highlighting` already won: this backend
+ * NOT A TEST HOOK, on the argument `ui.highlighting` already won: this backend
  * applies things a program asked for and a program that cannot SEE what landed
  * has no way to tell an option that worked from one that silently did nothing
  * -- which is exactly how a leaf's `label:` reached no widget for four
@@ -1064,7 +1064,7 @@ char *gb_qt_choose(void *window, int kind, const char *title,
                    const char *folder, const char *name, const char *filter,
                    int *cancelled, char *err, size_t err_size);
 
-/* ANSWER THE OPEN CHOOSER WITH A PATH -- `qt.answer` for the dialog whose
+/* ANSWER THE OPEN CHOOSER WITH A PATH -- `ui.answer` for the dialog whose
  * answer is not yes or no.
  *
  * IT CHECKS THE PATH BEFORE ACCEPTING, and that is not defensiveness: measured,
@@ -1082,13 +1082,13 @@ void gb_qt_show(void *window);
  *   quitOnLastWindowClosed       true (Qt's default, never set by us)
  *   close() offscreen            delivers QEvent::Close to an event filter
  *   closing one of two windows   exec() keeps running
- *   closing the last one         exec() RETURNS -- so `qt.run()` ends
+ *   closing the last one         exec() RETURNS -- so `ui.run()` ends
  *   after close()                THE WIDGET IS STILL ALIVE AND READABLE
  *   delete immediately after     safe, close() having returned
  *
  * THE FIFTH ROW IS WHY A CLOSE IS BOOKKEEPING AND NOT A HIDE. Qt does not set
  * `WA_DeleteOnClose`, so a window the person dismissed goes on answering
- * `qt.read` with the values it was showing -- a program reading from a window
+ * `ui.read` with the values it was showing -- a program reading from a window
  * nobody can see, which is a plausible wrong answer and the class this backend
  * is tested against. So a close REMOVES the window from gBASIC's registry, and
  * every verb that needs an open one then refuses by name.
@@ -1112,27 +1112,27 @@ int gb_qt_close(void *window, char *err, size_t err_size);
 
 /* ---- A WINDOW SHOWN MODALLY (docs/qt_gui_design.md §0.18) -----------------
  *
- * §0.15 named this as what `qt.confirm` is not: two buttons is the whole of
+ * §0.15 named this as what `ui.confirm` is not: two buttons is the whole of
  * what a message box offers, and ANYTHING RICHER IS A WINDOW SHOWN MODALLY --
  * a form to fill in, a list to choose from, a thing with a layout of its own.
  *
- * IT IS THE SAME WINDOW. `qt.open` and `qt.open_modal` share one open path
+ * IT IS THE SAME WINDOW. `ui.open` and `ui.open_modal` share one open path
  * (`qt_open_declared`), so the declaration, the validation, the binding and
  * the handlers are not merely similar -- they are the same code, which is why
  * a modal window needs no second vocabulary.
  *
  * FOUR WAYS IT CAN END, MEASURED, and the table is the design:
  *
- *   qt.accept(win)    exec -> true    `closed` does NOT fire   still readable
- *   qt.reject(win)    exec -> false   does not fire            still readable
- *   qt.close(win)     exec -> false   FIRES                    closed
+ *   ui.accept(win)    exec -> true    `closed` does NOT fire   still readable
+ *   ui.reject(win)    exec -> false   does not fire            still readable
+ *   ui.close(win)     exec -> false   FIRES                    closed
  *   the X button      exec -> false   FIRES                    closed
  *
  * ACCEPTING IS NOT CLOSING -- `accept()` delivers no QEvent::Close at all
  * (measured) and leaves the widget hidden but alive. That asymmetry would be a
  * trap at the gBASIC level, where `false` would mean two different states and
- * a program would have to guard every `qt.close` with `qt.is_open`. So
- * `qt.open_modal` CLOSES THE WINDOW BEFORE IT RETURNS: the `closed` handler
+ * a program would have to guard every `ui.close` with `ui.is_open`. So
+ * `ui.open_modal` CLOSES THE WINDOW BEFORE IT RETURNS: the `closed` handler
  * then fires exactly once however the window ended, and §0.17's single rule --
  * that the handler is the one place a dismissed form can still be read --
  * extends to a modal window with no exception.
@@ -1145,7 +1145,7 @@ int gb_qt_show_modal(void *window, int *accepted, char *err, size_t err_size);
 
 /* ANSWER A MODAL WINDOW -- what a button handler calls to say yes or no.
  *
- * NOT `qt.answer`, which exists to drive a dialog FROM THE PROGRAM when no
+ * NOT `ui.answer`, which exists to drive a dialog FROM THE PROGRAM when no
  * person is there (a timeout, an unattended run, a suite). This is the
  * person's answer arriving through a button they pressed, which is a different
  * thing wearing the same word, so it gets its own verb rather than a third
@@ -1159,7 +1159,7 @@ void gb_qt_stop(void);
 void gb_qt_end(void);
 
 
-/* A CONTAINER WHOSE CHILDREN CHANGE (§0.27) -- `qt.refresh(win, name, items)`.
+/* A CONTAINER WHOSE CHILDREN CHANGE (§0.27) -- `ui.refresh(win, name, items)`.
  * The C side drives the walk and these are the parts it cannot do itself: the
  * container has to be resolved BY NAME (a position is the one thing a reorder
  * changes), a kept child has to be recognised and MOVED rather than rebuilt,
@@ -1178,9 +1178,9 @@ int gb_qt_child_caption(void *container, void *child, const char *text,
                         char *err, size_t err_size);
 int gb_qt_child_drop(void *container, void *child, char *err, size_t err_size);
 
-/* THE CAPTIONS OF A `tabs`, as a count plus a per-index read -- the `qt.menus`
+/* THE CAPTIONS OF A `tabs`, as a count plus a per-index read -- the `ui.menus`
  * shape, and for the same reason: `QTabWidget::tabText(int)` takes an argument
- * and `qt.invoke` passes none, so without this a caption is unobservable and
+ * and `ui.invoke` passes none, so without this a caption is unobservable and
  * every check about one passes on an implementation that never set it. */
 /* A `tree` (§0.28) -- rows with a DEPTH, drawn as a tree. The rows arrive one
  * at a time, each with its depth, and an INDEX IS INTO THE DECLARED ROWS: a
@@ -1206,7 +1206,7 @@ int gb_qt_tree_select(void *window, const char *name, int row, char *err,
                       size_t err_size);
 
 /* THE ORDER ORACLE: the name of the child at a position, or "" for one nobody
- * named. A box's order is observable through nothing else -- `qt.at` answers
+ * named. A box's order is observable through nothing else -- `ui.at` answers
  * coordinates for a `cells` grid only. */
 char *gb_qt_child_name(void *container, int index);
 

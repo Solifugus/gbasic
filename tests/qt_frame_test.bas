@@ -19,9 +19,9 @@
 ' is invisible from the language. Every part inside it reads back by name
 ' whichever edge it ended up on, and `visible` is true either way -- so a
 ' backend that ignored the area entirely would pass every other check here.
-' `qt.dock` is the oracle for that, built before this fixture (§0.8's lesson),
-' and it asks THE WINDOW rather than anything we remembered, which is `qt.at`'s
-' and `qt.pane`'s own justification.
+' `ui.dock` is the oracle for that, built before this fixture (§0.8's lesson),
+' and it asks THE WINDOW rather than anything we remembered, which is `ui.at`'s
+' and `ui.pane`'s own justification.
 
 window ide( title: "IDE", width: 900, height: 620 )
     toolbar main
@@ -76,63 +76,63 @@ end window
 program main()
     g = { checks: 0, bad: 0 }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NODISPLAY"
         return
     end if
 
-    qt.open(ide)
+    ui.open(ide)
 
     ' ---- THE PANES ARE WHERE THE DECLARATION PUT THEM ------------------
-    check("a pane is in its block's area", qt.dock(ide, "branches").area,
+    check("a pane is in its block's area", ui.dock(ide, "branches").area,
           "right")
-    check("and its sibling in the same one", qt.dock(ide, "results").area,
+    check("and its sibling in the same one", ui.dock(ide, "results").area,
           "right")
     ' THE SECOND BLOCK IS THE CHECK THAT SEPARATES "the area was read" from
     ' "everything went to one edge" -- without it a backend hardcoding `right`
     ' passes both checks above.
-    check("a second block is a different edge", qt.dock(ide, "console").area,
+    check("a second block is a different edge", ui.dock(ide, "console").area,
           "bottom")
 
     ' ---- PANES IN ONE BLOCK ARE TABBED, which is the ask's own point ----
     check("two panes in one block share a tab group",
-          string(qt.dock(ide, "branches").tabbed_with), "1")
+          string(ui.dock(ide, "branches").tabbed_with), "1")
     check("and a pane alone in its block does not",
-          string(qt.dock(ide, "console").tabbed_with), "0")
+          string(ui.dock(ide, "console").tabbed_with), "0")
 
     ' A NAME THAT IS NOT A DOCK ANSWERS unknown -- a different claim from "a
-    ' dock with no area", the distinction `qt.pane` and `principal()` make.
+    ' dock with no area", the distinction `ui.pane` and `principal()` make.
     check("a part that is not a pane is not a dock",
-          is_unknown(qt.dock(ide, "code")), true)
+          is_unknown(ui.dock(ide, "code")), true)
 
     ' ---- THE PANE'S CONTENTS ARE ORDINARY ------------------------------
     ' A dock is given a column, the choice a `tab` and a `scroll` already
     ' make, so anything works inside one with no further vocabulary.
-    check("a part inside a pane reads back", qt.read(ide, "b", "text"), "main")
-    qt.write(ide, "out", "a line")
-    check("and so does a memo", qt.read(ide, "out", "plainText"), "a line")
+    check("a part inside a pane reads back", ui.read(ide, "b", "text"), "main")
+    ui.write(ide, "out", "a line")
+    check("and so does a memo", ui.read(ide, "out", "plainText"), "a line")
 
     ' ---- THE STATUS BAR, AND WHY IT NEEDS NO VERB ----------------------
     ' MEASURED: a QStatusBar has NO property for its text -- `message` and
     ' `currentMessage` are both absent and `showMessage(QString)` takes an
-    ' argument `qt.invoke` cannot pass -- while a QLabel in it carries `text`
+    ' argument `ui.invoke` cannot pass -- while a QLabel in it carries `text`
     ' as an ordinary Q_PROPERTY. So the by-name route already reaches it.
-    check("a status bar's text reads back", qt.read(ide, "msg", "text"),
+    check("a status bar's text reads back", ui.read(ide, "msg", "text"),
           "Ready")
-    qt.set(ide, "msg", "text", "Saved")
-    check("and a program can change it", qt.read(ide, "msg", "text"), "Saved")
-    check("its neighbour is undisturbed", qt.read(ide, "pos", "text"), "1:1")
+    ui.set(ide, "msg", "text", "Saved")
+    check("and a program can change it", ui.read(ide, "msg", "text"), "Saved")
+    check("its neighbour is undisturbed", ui.read(ide, "pos", "text"), "1:1")
 
     ' ---- THE TOOLBAR'S ENTRIES ARE QActions ----------------------------
     ' Which is why a toolbar needed no new part kind: an `item` means the same
     ' thing in a toolbar as in a menu, by construction -- one walk serves both.
     check("a toolbar is addressed by its name",
-          qt.read(ide, "main", "windowTitle"), "main")
-    check("an item in it carries its label", qt.read(ide, "open", "text"),
+          ui.read(ide, "main", "windowTitle"), "main")
+    check("an item in it carries its label", ui.read(ide, "open", "text"),
           "Open")
     check("and can be set checkable like a menu's",
-          string(qt.set(ide, "save", "checkable", true)), "true")
-    check("which reads back", string(qt.read(ide, "save", "checkable")),
+          string(ui.set(ide, "save", "checkable", true)), "true")
+    check("which reads back", string(ui.read(ide, "save", "checkable")),
           "true")
 
     ' ---- THE MENU BAR IS STILL THE MENU BAR ----------------------------
@@ -140,38 +140,38 @@ program main()
     ' the central area -- a bar in the middle of the window -- so a main window
     ' must place it with `setMenuBar`. That it is still found by the existing
     ' oracle is what says the two paths agree.
-    bars = qt.menus(ide)
+    bars = ui.menus(ide)
     check("the menu bar survived the new root", len(bars), 1)
     check("and it is the one declared", bars[0], "File")
-    check("and its items too", qt.read(ide, "quit", "text"), "Quit")
+    check("and its items too", ui.read(ide, "quit", "text"), "Quit")
 
     ' ---- THE SAVED LAYOUT ----------------------------------------------
     ' A ROUND TRIP, not a value: Qt's blob is opaque and a check that pinned
     ' its text would be pinning Qt's format.
-    saved = qt.layout(ide)
+    saved = ui.layout(ide)
     check("a layout comes back as text", len(saved) > 0, true)
-    qt.set(ide, "branches", "floating", true)
-    check("a pane can be floated", string(qt.dock(ide, "branches").floating),
+    ui.set(ide, "branches", "floating", true)
+    check("a pane can be floated", string(ui.dock(ide, "branches").floating),
           "true")
     check("restoring the saved layout succeeds",
-          string(qt.restore_layout(ide, saved)), "true")
+          string(ui.restore_layout(ide, saved)), "true")
     check("and the pane is back where it was",
-          string(qt.dock(ide, "branches").floating), "false")
+          string(ui.dock(ide, "branches").floating), "false")
 
     ' AN UNRECOGNISED LAYOUT IS REPORTED, NOT RAISED -- which is what a program
     ' finds after its window's declaration has changed, an ordinary thing to
     ' meet on startup.
     check("a layout this window did not save is refused as a value",
-          string(qt.restore_layout(ide, "bm90IGEgbGF5b3V0")), "false")
+          string(ui.restore_layout(ide, "bm90IGEgbGF5b3V0")), "false")
 
-    qt.close(ide)
+    ui.close(ide)
 
     ' ---- THE CONTROL: AN ORDINARY WINDOW IS UNTOUCHED ------------------
-    qt.open(plain)
+    ui.open(plain)
     check("a window with no furniture still works",
-          string(qt.read(plain, "who", "enabled")), "true")
+          string(ui.read(plain, "who", "enabled")), "true")
     on error goto next
-    qt.layout(plain)
+    ui.layout(plain)
     check("and has no layout to save", contains(error.message,
           "has a layout to save"), true)
     error.clear()
@@ -181,9 +181,9 @@ program main()
     ' construction, a QDockWidget being buildable only on a main window, so
     ' no program could ever have produced it. `unknown` is the honest answer
     ' and the one that composes with `is_unknown`.
-    check("and nothing in it is a dock", is_unknown(qt.dock(plain, "who")),
+    check("and nothing in it is a dock", is_unknown(ui.dock(plain, "who")),
           true)
-    qt.close(plain)
+    ui.close(plain)
 
     print "ok   " + string(g.checks) + " checks, " + string(g.bad) + " mismatches"
 end program

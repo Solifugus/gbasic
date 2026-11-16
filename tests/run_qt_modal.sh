@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# A WINDOW SHOWN MODALLY (docs/qt_gui_design.md §0.18) -- `qt.open_modal`,
-# `qt.accept`, `qt.reject`.
+# A WINDOW SHOWN MODALLY (docs/qt_gui_design.md §0.18) -- `ui.open_modal`,
+# `ui.accept`, `ui.reject`.
 #
-# WHAT §0.15 NAMED THIS FOR: `qt.confirm` answers a boolean because two buttons
+# WHAT §0.15 NAMED THIS FOR: `ui.confirm` answers a boolean because two buttons
 # is the whole of what a message box offers, and ANYTHING RICHER IS A WINDOW
 # SHOWN MODALLY -- a form to fill in, a list to choose from, a thing with a
 # layout of its own. It has been the last item on §0.15's open list since
@@ -24,20 +24,20 @@
 # FOUR WAYS A MODAL WINDOW CAN END, and the fourth row is the one that shaped
 # the implementation:
 #
-#   qt.accept(win)   exec -> true    `closed` fires
-#   qt.reject(win)   exec -> false   fires
-#   qt.close(win)    exec -> false   fires
+#   ui.accept(win)   exec -> true    `closed` fires
+#   ui.reject(win)   exec -> false   fires
+#   ui.close(win)    exec -> false   fires
 #   the X button     exec -> false   fires
 #
 # ACCEPTING DELIVERS NO QEvent::Close AT ALL. Measured 2026-10-19, and finer
 # than the guess that prompted it: `close()` delivers one on a visible widget
 # AND on a merely hidden one, and NOTHING on a QDialog that `done()` has
 # already finished with. So bookkeeping hung off the event alone would silently
-# not happen for the commonest ending, and `qt.is_open` would answer true for a
+# not happen for the commonest ending, and `ui.is_open` would answer true for a
 # window the program had finished with. The ending is therefore one function
 # called from two places and idempotent, not a side effect of an event.
 #
-# AND `qt.open_modal` CLOSES THE WINDOW BEFORE RETURNING, so `false` means one
+# AND `ui.open_modal` CLOSES THE WINDOW BEFORE RETURNING, so `false` means one
 # state rather than two and §0.17's single rule -- the `closed` handler is
 # where a dismissed form is read -- holds here with no exception.
 . "$(dirname "$0")/portable.sh"
@@ -81,7 +81,7 @@ if [ "${sites:-0}" = "1" ]; then
     pass "exactly one place builds a window, so both verbs go through it"
 else
     grep -n 'gb_qt_window(' src/modules/qt.c
-    fail "src/modules/qt.c builds a window in $sites places -- qt.open and qt.open_modal can now drift"
+    fail "src/modules/qt.c builds a window in $sites places -- ui.open and ui.open_modal can now drift"
 fi
 # THE VACUITY CONTROL: "exactly one" is equally satisfied by a grep that cannot
 # match, so a planted second call must break it.
@@ -110,7 +110,7 @@ if grep -q "SKIP no display" "$work/sem.out"; then
 elif [ "$rc" != "0" ]; then
     # THE MISMATCHES FIRST, because a fixture that dies has usually already
     # named the cause and the exit code never does: every perturbation of the
-    # ending here kills the NEXT `qt.open_modal` with "already open", which
+    # ending here kills the NEXT `ui.open_modal` with "already open", which
     # says nothing about the window that failed to close.
     grep MISMATCH "$work/sem.out" | head -4
     tail -3 "$work/sem.out"; tail -3 "$work/sem.err"
@@ -250,7 +250,7 @@ window app( title: "R", width: 200, height: 100 )
     end column
 end window
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NO DISPLAY"
         return
     end if
@@ -277,36 +277,36 @@ BAS
 }
 
 refuse 'accepting an ordinary window names the verb that would have made it modal' \
-    '    o = qt.open(app)
-    x = qt.accept(app)' \
+    '    o = ui.open(app)
+    x = ui.accept(app)' \
     'not opened modally'
 refuse 'and rejecting one is refused the same way' \
-    '    o = qt.open(app)
-    x = qt.reject(app)' \
+    '    o = ui.open(app)
+    x = ui.reject(app)' \
     'not opened modally'
 refuse 'accepting a window that is not open names the window' \
-    '    x = qt.accept(app)' \
+    '    x = ui.accept(app)' \
     'window `app` is not open'
-refuse 'qt.accept takes one window' \
-    '    o = qt.open(app)
-    x = qt.accept(app, 1)' \
-    'qt.accept expects one window declaration'
-refuse 'qt.reject takes one window' \
-    '    x = qt.reject()' \
-    'qt.reject expects one window declaration'
-refuse 'qt.open_modal takes one window' \
-    '    x = qt.open_modal(app, 1)' \
-    'qt.open_modal expects one window declaration'
-refuse 'and refuses a window that is already open, like qt.open' \
-    '    o = qt.open(app)
-    x = qt.open_modal(app)' \
+refuse 'ui.accept takes one window' \
+    '    o = ui.open(app)
+    x = ui.accept(app, 1)' \
+    'ui.accept expects one window declaration'
+refuse 'ui.reject takes one window' \
+    '    x = ui.reject()' \
+    'ui.reject expects one window declaration'
+refuse 'ui.open_modal takes one window' \
+    '    x = ui.open_modal(app, 1)' \
+    'ui.open_modal expects one window declaration'
+refuse 'and refuses a window that is already open, like ui.open' \
+    '    o = ui.open(app)
+    x = ui.open_modal(app)' \
     'is already open'
 refuse 'and something that is not a window at all' \
-    '    x = qt.open_modal({ a: 1 })' \
-    'qt.open_modal'
+    '    x = ui.open_modal({ a: 1 })' \
+    'ui.open_modal'
 
 # ----------------------------------------------------------------- NO DISPLAY
-# THE SAME SENTENCE `qt.open` GIVES, because it is the same open path -- which
+# THE SAME SENTENCE `ui.open` GIVES, because it is the same open path -- which
 # is this tier's real subject: a second path would have had to remember to
 # refuse, and §0.3's whole point is that forgetting means an uncatchable abort.
 printf 'TIER no display: the shared path means the refusal is shared too\n'
@@ -318,7 +318,7 @@ window app( title: "ND", width: 200, height: 100 )
 end window
 program main(args)
     on error goto refused
-    x = qt.open_modal(app)
+    x = ui.open_modal(app)
     print "ACCEPTED"
     return
 refused:
@@ -335,7 +335,7 @@ if [ "$nd_rc" = "0" ] && grep -q "no display is available" "$work/nd.out"; then
     pass "with no display it names the display, and is catchable"
 else
     cat "$work/nd.out"
-    fail "qt.open_modal did not refuse by naming the display (exit $nd_rc)"
+    fail "ui.open_modal did not refuse by naming the display (exit $nd_rc)"
 fi
 
 # ------------------------------------------------------------------ VALGRIND

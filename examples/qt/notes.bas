@@ -56,20 +56,20 @@ window notes( title: "Notes", width: 540, height: 360 )
     end on
 
     on quit_app.triggered
-        qt.stop()
+        ui.stop()
     end on
 end window
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so there is no window to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
     else
         ' ONE STYLESHEET FOR THE WHOLE APPLICATION. A theme is TEXT, so a real
-        ' program loads one with `qt.theme(read({file}"dark.qss"))` -- the
+        ' program loads one with `ui.theme(read({file}"dark.qss"))` -- the
         ' platform supplies the sheet and the language supplies the file.
         ' A widget's own `styleSheet:` still wins; Qt resolves the cascade.
-        qt.theme("QWidget { font-size: 11pt; }" +
+        ui.theme("QWidget { font-size: 11pt; }" +
                  "QHeaderView::section { background: #eceff4; padding: 4px; }" +
                  "QGroupBox { font-weight: bold; }")
 
@@ -78,7 +78,7 @@ program main(args)
                        { title: "Fix the gate",  tag: "house" } ]
         current = {}
 
-        qt.open(notes)
+        ui.open(notes)
         notes.select("note_list", 0)
 
         if contains(args, "check") then
@@ -88,13 +88,13 @@ program main(args)
             ' all produce zero mismatches to a by-name check.
             print "menus:         " + string(notes.menus())
             print "File holds:    " + string(notes.menus(0))
-            print "theme set:     " + string(len(qt.theme()) > 0)
+            print "theme set:     " + string(len(ui.theme()) > 0)
             print "notes:         " + string(len(notes_held))
             print "chosen:        " + string(notes.selected("note_list"))
             print "its title:     " + notes.cell("note_list", 0, "title")
-            qt.stop()
+            ui.stop()
             return
         end if
-        qt.run()
+        ui.run()
     end if
 end program

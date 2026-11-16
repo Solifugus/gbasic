@@ -1,5 +1,5 @@
-' THE WHEEL (§0.21) -- `on <part>.wheel`, `qt.wheel`, `qt.swallow`, and
-' `qt.scroll` to drive it. Under QT_QPA_PLATFORM=offscreen: real QWheelEvents,
+' THE WHEEL (§0.21) -- `on <part>.wheel`, `ui.wheel`, `ui.swallow`, and
+' `ui.scroll` to drive it. Under QT_QPA_PLATFORM=offscreen: real QWheelEvents,
 ' no display.
 '
 ' DERIVED FROM gBASIC STUDIO'S OWN SOURCE, which uses a
@@ -15,10 +15,10 @@
 ' `font` is Q_PROPERTY 27 of QWidget and reads back as TEXT
 ' ("monospace,9,-1,5,400,..."), so a program splits it, changes the number and
 ' writes it back, which is asserted below rather than taken on trust. That is
-' why there is no `qt.zoom`: `zoomIn`/`zoomOut` take a defaulted argument so
-' `qt.invoke` cannot reach them, and nothing needs them to.
+' why there is no `ui.zoom`: `zoomIn`/`zoomOut` take a defaulted argument so
+' `ui.invoke` cannot reach them, and nothing needs them to.
 '
-' AND WHY `qt.swallow` IS NOT OPTIONAL. Measured, Ctrl+wheel scrolls a
+' AND WHY `ui.swallow` IS NOT OPTIONAL. Measured, Ctrl+wheel scrolls a
 ' QPlainTextEdit FASTER than a plain one (95 -> 111 against 92 -> 95), so a
 ' handler that zooms without claiming the event leaves the editor jumping
 ' about while it resizes -- and swallowing genuinely stops it (102 -> 102),
@@ -50,7 +50,7 @@ window app( title: "Wheel", width: 480, height: 360 )
     end column
 
     on code.wheel
-        ev = qt.wheel()
+        ev = ui.wheel()
         g.seen = g.seen + 1
         g.dy = ev.dy
         g.dy_exact = ev.dy_exact
@@ -64,15 +64,15 @@ window app( title: "Wheel", width: 480, height: 360 )
             ' THE ZOOM, IN ARITHMETIC. `font` reads back as text, so the size
             ' is a number in a list -- no verb needed, which is what the
             ' measurement said and what this asserts.
-            f = split(qt.read(app, "code", "font"), ",")
+            f = split(ui.read(app, "code", "font"), ",")
             bigger = 2
             if ev.dy < 0 then
                 bigger = 0 - 2
             end if
-            qt.set(app, "code", "font", f[0] + "," + string(number(f[1]) + bigger))
+            ui.set(app, "code", "font", f[0] + "," + string(number(f[1]) + bigger))
             g.zoomed = g.zoomed + 1
             ' CLAIMED, so the view does not also scroll.
-            qt.swallow()
+            ui.swallow()
         end if
     end on
 
@@ -95,18 +95,18 @@ program main()
     g = { seen: 0, dy: 0, dy_exact: 0, dy_sum: 0, dy_round_sum: 0, ctrl: false, shift: false, zoomed: 0, grid_seen: 0,
           rows: rows }
 
-    qt.open(app)
+    ui.open(app)
     ' SOMEWHERE TO SCROLL. Without content the scrollbar has a range of zero and
     ' every position check below would be 0 = 0 -- true, and about nothing.
     lines = []
     for i = 1 to 400
         lines = append(lines, "line " + string(i))
     end for
-    x = qt.write(app, "code", join(lines, chr(10)))
+    x = ui.write(app, "code", join(lines, chr(10)))
 
     ' ---- the event reaches the handler, with its direction and modifiers ----
-    before = number(split(qt.read(app, "code", "font"), ",")[1])
-    unclaimed = qt.scroll(app, "code", 1)
+    before = number(split(ui.read(app, "code", "font"), ",")[1])
+    unclaimed = ui.scroll(app, "code", 1)
     check("a plain wheel reached the handler", g.seen, 1)
     ' THE OTHER HALF: a handler that declined must leave the event alone, or
     ' installing one costs the editor its scrolling. Measured, swallowing
@@ -119,81 +119,81 @@ program main()
     ' STUDIO'S RULE HELD: a plain wheel changed nothing.
     check("a plain wheel did not zoom", g.zoomed, 0)
     check("so the font is unchanged",
-          number(split(qt.read(app, "code", "font"), ",")[1]), before)
+          number(split(ui.read(app, "code", "font"), ",")[1]), before)
 
-    qt.scroll(app, "code", -1)
+    ui.scroll(app, "code", -1)
     check("one notch down is a negative dy", g.dy < 0, true)
     check("still no zoom", g.zoomed, 0)
 
     ' ---- Ctrl + wheel, which is the whole of what Studio needs -------------
-    ' `qt.scroll` ANSWERS WHETHER ANYTHING CLAIMED THE EVENT, which is what
+    ' `ui.scroll` ANSWERS WHETHER ANYTHING CLAIMED THE EVENT, which is what
     ' makes swallowing observable at all: a QPlainTextEdit has no scroll
     ' position a program can read (verticalScrollBar is a method, not a
-    ' property), so without this the one thing `qt.swallow` does would be
-    ' unassertable. Same shape as `qt.popup` answering whether it showed.
-    claimed = qt.scroll(app, "code", 1, "ctrl")
+    ' property), so without this the one thing `ui.swallow` does would be
+    ' unassertable. Same shape as `ui.popup` answering whether it showed.
+    claimed = ui.scroll(app, "code", 1, "ctrl")
     check("ctrl was reported", g.ctrl, true)
     check("and it zoomed", g.zoomed, 1)
     check("and the event was claimed", claimed, true)
     ' THE ZOOM IS ASSERTED ON THE FONT, not on the counter: a handler that ran
     ' and set nothing reads identically.
     check("the font grew by two points",
-          number(split(qt.read(app, "code", "font"), ",")[1]), before + 2)
-    qt.scroll(app, "code", -1, "ctrl")
+          number(split(ui.read(app, "code", "font"), ",")[1]), before + 2)
+    ui.scroll(app, "code", -1, "ctrl")
     check("and shrank back", 
-          number(split(qt.read(app, "code", "font"), ",")[1]), before)
+          number(split(ui.read(app, "code", "font"), ",")[1]), before)
 
     ' ---- SWALLOWING MUST STOP THE VIEW, not merely report that it did -----
-    ' THIS TIER EXISTS BECAUSE A PERTURBATION WENT GREEN. `qt.scroll` answers
+    ' THIS TIER EXISTS BECAUSE A PERTURBATION WENT GREEN. `ui.scroll` answers
     ' whether anything CLAIMED the event, and a filter made to record the claim
     ' and then return FALSE -- so the claim is reported while the view scrolls
-    ' anyway -- was caught by NOTHING: that answer agrees with `qt.swallow`
+    ' anyway -- was caught by NOTHING: that answer agrees with `ui.swallow`
     ' having been called, whatever Qt then did. Agreement is not correctness,
     ' so the claim is now asserted against the view itself, which is what
-    ' `qt.scrolled` is for.
-    qt.scroll_to(app, "code", 40)
-    sat = qt.scrolled(app, "code")
+    ' `ui.scrolled` is for.
+    ui.scroll_to(app, "code", 40)
+    sat = ui.scrolled(app, "code")
     check("the editor is where we put it", sat, 40)
     ' A PLAIN WHEEL: the handler declines, so the view MUST move.
-    qt.scroll(app, "code", -2)
-    moved = qt.scrolled(app, "code")
+    ui.scroll(app, "code", -2)
+    moved = ui.scrolled(app, "code")
     check("a declined wheel really scrolled the view", moved != sat, true)
     ' CTRL + WHEEL: the handler swallows, so the view MUST NOT move -- which is
     ' the half that was unobservable, and the reason this pair is a difference
     ' rather than two facts about one path.
-    qt.scroll(app, "code", -2, "ctrl")
+    ui.scroll(app, "code", -2, "ctrl")
     check("a swallowed wheel left the view alone",
-          qt.scrolled(app, "code"), moved)
+          ui.scrolled(app, "code"), moved)
 
     ' ---- a sub-notch turn is still a turn ---------------------------------
     ' A trackpad sends deltas under Qt's 120-unit notch, which integer division
     ' reports as ZERO -- a handler told the wheel moved by nothing, in the one
     ' value whose SIGN is the whole of what a zoom reads. Driven with a
-    ' fraction, which is why `qt.scroll` takes one: without it the rounding
+    ' fraction, which is why `ui.scroll` takes one: without it the rounding
     ' could not be exercised and a perturbation removing it went green.
-    qt.scroll(app, "code", 0.25)
+    ui.scroll(app, "code", 0.25)
     check("a quarter-notch up still reads as up", g.dy, 1)
-    qt.scroll(app, "code", -0.25)
+    ui.scroll(app, "code", -0.25)
     check("and a quarter-notch down as down", g.dy, -1)
     ' THE UNROUNDED TURN BESIDE IT, asked for by gBASIC Studio: a trackpad
     ' sends many small deltas, and with only the rounded value each one counts
     ' as a whole notch, so one swipe climbs several zoom steps. `dy` keeps its
     ' rule; `dy_exact` is what a program accumulates.
     check("the same quarter-notch is -0.25 unrounded", g.dy_exact, -0.25)
-    qt.scroll(app, "code", 2)
+    ui.scroll(app, "code", 2)
     check("a whole turn is unchanged unrounded", g.dy_exact, 2)
     g.dy_sum = 0
     g.dy_round_sum = 0
-    qt.scroll(app, "code", 0.25)
-    qt.scroll(app, "code", 0.25)
-    qt.scroll(app, "code", 0.25)
-    qt.scroll(app, "code", 0.25)
+    ui.scroll(app, "code", 0.25)
+    ui.scroll(app, "code", 0.25)
+    ui.scroll(app, "code", 0.25)
+    ui.scroll(app, "code", 0.25)
     check("four quarter-notches accumulate to exactly one notch", g.dy_sum, 1)
     check("where the rounded values count four", g.dy_round_sum, 4)
 
     ' ---- a part that does not scroll answers `unknown`, not 0 -------------
     check("a field has no scroll position",
-          is_unknown(qt.scrolled(app, "plain")), true)
+          is_unknown(ui.scrolled(app, "plain")), true)
 
     ' ---- a second modifier, so `ctrl` is read rather than assumed ----------
     ' ASSERTED AS A DIFFERENCE AGAINST THE COUNT BEFORE IT, not against a
@@ -201,54 +201,54 @@ program main()
     ' number written here is a transcript that breaks whenever a check is added
     ' -- which it did, the first time.
     zoomed_before = g.zoomed
-    qt.scroll(app, "code", 1, "shift")
+    ui.scroll(app, "code", 1, "shift")
     check("shift is reported", g.shift, true)
     check("and shift is not ctrl", g.ctrl, false)
     check("so it did not zoom", g.zoomed, zoomed_before)
 
     ' ---- a table answers too, through its own viewport ---------------------
-    qt.scroll(app, "grid", -1)
+    ui.scroll(app, "grid", -1)
     check("a table's wheel reached its handler", g.grid_seen, 1)
 
     ' ---- refusals, each beside its nearest legal neighbour -----------------
     on error goto next
-    qt.wheel()
-    check("qt.wheel outside a wheel handler is refused", error.message,
-          "qt.wheel: no wheel event is being handled")
+    ui.wheel()
+    check("ui.wheel outside a wheel handler is refused", error.message,
+          "ui.wheel: no wheel event is being handled")
     error.clear()
 
-    qt.swallow()
-    check("and so is qt.swallow", error.message,
-          "qt.swallow: no event is being handled")
+    ui.swallow()
+    check("and so is ui.swallow", error.message,
+          "ui.swallow: no event is being handled")
     error.clear()
 
-    qt.scroll(app, "nothing_here", 1)
+    ui.scroll(app, "nothing_here", 1)
     check("an unknown part is refused", error.message,
-          "qt.scroll: this window has no `nothing_here`")
+          "ui.scroll: this window has no `nothing_here`")
     error.clear()
 
-    qt.scroll(app, "code", 1, "meta")
+    ui.scroll(app, "code", 1, "meta")
     check("an unknown modifier is refused by name", error.message,
-          "qt.scroll: `meta` is not a modifier -- use ctrl, shift or alt")
+          "ui.scroll: `meta` is not a modifier -- use ctrl, shift or alt")
     error.clear()
 
-    qt.scroll(app, "code", 0)
+    ui.scroll(app, "code", 0)
     check("zero notches is refused", error.message,
-          "qt.scroll: a wheel turns by at least one notch")
+          "ui.scroll: a wheel turns by at least one notch")
     error.clear()
 
-    qt.scroll_to(app, "plain", 10)
+    ui.scroll_to(app, "plain", 10)
     check("scrolling a part that does not scroll is refused", error.message,
-          "qt.scroll_to: `plain` does not scroll")
+          "ui.scroll_to: `plain` does not scroll")
     error.clear()
 
-    qt.scrolled(app, "no_such_part")
+    ui.scrolled(app, "no_such_part")
     check("an unknown part is refused by the reader too", error.message,
-          "qt.scrolled: this window has no `no_such_part`")
+          "ui.scrolled: this window has no `no_such_part`")
     error.clear()
     on error stop
 
-    qt.close(app)
+    ui.close(app)
 
     ' ---- the control: no handler, so nothing is filtered -------------------
     ' Without this, "the handler fires" is satisfied by a backend that installs
@@ -256,16 +256,16 @@ program main()
     ' everywhere -- which would cost every `source` and `table` in the language
     ' its ordinary scrolling, silently. A part in a window that declared NO
     ' wheel handler must leave every event unclaimed.
-    qt.open(plain_win)
+    ui.open(plain_win)
     check("a part with no handler claims nothing",
-          qt.scroll(plain_win, "untouched", -3), false)
-    qt.close(plain_win)
+          ui.scroll(plain_win, "untouched", -3), false)
+    ui.close(plain_win)
 
     ' AND THE SAME WITHIN ONE WINDOW: `plain` declared no wheel handler while
     ' `code` in the same window did, so a filter installed per WINDOW rather
     ' than per declared handler is caught here and nowhere else.
-    qt.open(app)
+    ui.open(app)
     check("an undeclared part in a window that has one claims nothing",
-          qt.scroll(app, "plain", 1), false)
-    qt.close(app)
+          ui.scroll(app, "plain", 1), false)
+    ui.close(app)
 end program

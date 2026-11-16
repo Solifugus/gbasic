@@ -1,5 +1,5 @@
 ' A window's methods are qt's verbs (docs/handle_methods_design.md):
-' `app.read(part, prop)` is `qt.read(app, part, prop)`. Each method is asked
+' `app.read(part, prop)` is `ui.read(app, part, prop)`. Each method is asked
 ' beside the module form, and they must agree.
 
 window app( title: "Methods", width: 240, height: 120 )
@@ -23,7 +23,7 @@ end function
 
 program main(args)
     g = { clicks: 0 }
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "SKIP no display"
         return
     end if
@@ -32,12 +32,12 @@ program main(args)
     check("open makes it open", app.is_open(), true)
     w = app.write("who", "Ada Lovelace")
     check("read through a method", app.read("who", "text"), "Ada Lovelace")
-    check("the module form agrees", qt.read(app, "who", "text"), app.read("who", "text"))
+    check("the module form agrees", ui.read(app, "who", "text"), app.read("who", "text"))
     s = app.set("save", "enabled", false)
-    check("set through a method", qt.read(app, "save", "enabled"), false)
+    check("set through a method", ui.read(app, "save", "enabled"), false)
     s = app.set("save", "enabled", true)
     i = app.invoke("save", "click")
     check("invoke fires the handler", g.clicks, 1)
     c = app.close()
-    check("close through a method", qt.is_open(app), false)
+    check("close through a method", ui.is_open(app), false)
 end program

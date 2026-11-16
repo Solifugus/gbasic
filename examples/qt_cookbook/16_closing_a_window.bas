@@ -1,10 +1,10 @@
 ' CLOSING A WINDOW -- and knowing when the person closed it for you.
 '
-' `qt.close(win)` IS THE OTHER HALF OF `qt.open`, and a close is BOOKKEEPING
+' `ui.close(win)` IS THE OTHER HALF OF `ui.open`, and a close is BOOKKEEPING
 ' rather than a hide: Qt leaves a dismissed window alive and still holding its
 ' values, so a program that went on reading one would be reading off a screen
-' nobody is looking at. After a close, `qt.read`, `qt.write` and `qt.subject`
-' all refuse by name and `qt.is_open` answers false.
+' nobody is looking at. After a close, `ui.read`, `ui.write` and `ui.subject`
+' all refuse by name and `ui.is_open` answers false.
 '
 ' WHICH MAKES `on <win>.closed` THE PLACE TO SAVE. It fires BEFORE the window
 ' stops being open, so it is the one moment a program can still read what
@@ -13,8 +13,8 @@
 ' will do every day.
 '
 ' THE WINDOW IS A PART OF ITSELF. Its own name reaches it in the same by-name
-' table every part lives in, so `qt.read(app, "app", "windowTitle")`,
-' `qt.set(app, "app", ...)` and `qt.invoke(app, "app", "close")` all work with
+' table every part lives in, so `ui.read(app, "app", "windowTitle")`,
+' `ui.set(app, "app", ...)` and `ui.invoke(app, "app", "close")` all work with
 ' no extra vocabulary. The one cost: a part may NOT take the window's name, and
 ' is refused by name if it tries.
 window app( title: "Closing", width: 360, height: 180 )
@@ -37,13 +37,13 @@ end window
 program main(args)
     g = { saved: {}, closes: 0 }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display -- nothing to open"
         return
     end if
 
     cust = { who: "Ada Lovelace", limit: {USD}"500.00" }
-    qt.open(app)
+    ui.open(app)
     print "open:    " + string(app.is_open())
 
     ' THE WINDOW ITSELF, ADDRESSED BY ITS OWN NAME.
@@ -60,7 +60,7 @@ program main(args)
     print "saved:   " + g.saved.who + ", " + string(g.saved.limit)
 
     ' AND AFTERWARDS THE WINDOW REFUSES, which is the point: there is nothing
-    ' on screen to read. `qt.is_open` is how you ask without raising.
+    ' on screen to read. `ui.is_open` is how you ask without raising.
     on error goto next
     stale = app.read("who")
     if error then
@@ -71,14 +71,14 @@ program main(args)
     ' REOPENING BUILDS A FRESH WINDOW. The form captures its subject again, so
     ' what was typed before the close is gone -- a close is not a hide you can
     ' undo.
-    qt.open(app)
+    ui.open(app)
     print "reopened who: " + app.read("who")
     print "reopened title: " + app.read("app", "windowTitle")
 
-    ' AND `qt.stop()` IS NOT A CLOSE. It means "give me the thread back" and
+    ' AND `ui.stop()` IS NOT A CLOSE. It means "give me the thread back" and
     ' nothing more: the window stays open, stays readable, and no `closed`
     ' handler fires. (Qt's own `quit()` closes every top-level window; gBASIC
     ' deliberately does not use it.)
     print "closes so far: " + string(g.closes)
-    qt.stop()
+    ui.stop()
 end program

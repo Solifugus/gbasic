@@ -52,7 +52,7 @@ window app( title: "gBASIC editor", width: 760, height: 520 )
         ' and that is load-bearing rather than fussy: `*.bas` is claimed by
         ' FreeBASIC at the same priority as gBASIC, so a lookup by extension
         ' picks FreeBASIC -- with no error, and plausibly, FreeBASIC being a
-        ' near neighbour. `theme:` is DECLARED because `qt.theme` sets a
+        ' near neighbour. `theme:` is DECLARED because `ui.theme` sets a
         ' stylesheet, which does not move Qt's palette, so a dark application
         ' with an inferred theme gets light highlighting on a dark background.
         source code( language: "gBASIC", theme: "dark" )
@@ -72,16 +72,16 @@ window app( title: "gBASIC editor", width: 760, height: 520 )
         load_self()
     end on
     on act_dark.triggered
-        qt.theme("QWidget { background: #2e3440; color: #eceff4; }")
+        ui.theme("QWidget { background: #2e3440; color: #eceff4; }")
     end on
     on act_light.triggered
-        qt.theme("")
+        ui.theme("")
     end on
     on act_quit.triggered
-        qt.stop()
+        ui.stop()
     end on
     on close.clicked
-        qt.stop()
+        ui.stop()
     end on
 end window
 
@@ -97,17 +97,17 @@ function load_self()
 end function
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so there is no editor to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
         return
     end if
 
-    qt.open(app)
+    ui.open(app)
     load_self()
 
     if contains(args, "check") then
-        ' WHAT IS ACTUALLY HIGHLIGHTING IT. `qt.highlighting` answers a record
+        ' WHAT IS ACTUALLY HIGHLIGHTING IT. `ui.highlighting` answers a record
         ' or `unknown`, and it reports the FILE as well as the language for a
         ' reason the language alone cannot cover: a definition the user has
         ' installed in their own home SHADOWS the one gBASIC ships and reports
@@ -121,7 +121,7 @@ program main(args)
             print "highlighting:   " + h.language
             print "from:           " + h.file
         end if
-        print "build can:      " + string(qt.can_highlight())
+        print "build can:      " + string(ui.can_highlight())
 
         print "-- a source is a memo with four differences"
         ' BRACKETED: a line break continues a statement only inside brackets.
@@ -147,8 +147,8 @@ program main(args)
         ' where the highlighter did and for the same reason. The DATA for it
         ' already exists: `source_outline` and src/lsp/.
         print "-- not yet: a line-number gutter, and completion"
-        qt.stop()
+        ui.stop()
         return
     end if
-    qt.run()
+    ui.run()
 end program

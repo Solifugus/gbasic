@@ -42,7 +42,7 @@
 #                a method that does not exist -- each refused BY NAME, each
 #                beside a legal neighbour.
 #   BUILD        a build without Qt refuses in the convention's own words, and
-#                `qt.can_display()` still ANSWERS rather than raising, which is
+#                `ui.can_display()` still ANSWERS rather than raising, which is
 #                what lets a program degrade gracefully.
 #
 #   VALGRIND     ACCESS ONLY, and the split is the whole reason there is a tier
@@ -192,7 +192,7 @@ fi
 # would mean every button acting before anybody pressed one.
 # ASSERTED ON THE HANDLER'S FIRST LINE, which needs nothing but the handler
 # having run. Against the line that READS the widget this control could not
-# fail: a handler fired at connect time raises inside `qt.read` -- the window
+# fail: a handler fired at connect time raises inside `ui.read` -- the window
 # is not registered yet -- so it prints nothing and the ordering still looks
 # right. Measured, by the perturbation written for this check coming back green.
 if [ "$(grep -n 'SIGNAL save.clicked' "$work/w.out" | head -1 | cut -d: -f1)" -gt \
@@ -225,7 +225,7 @@ window w( title: "W" )
 end window
 program main()
     on error goto next
-    x = qt.open(w)
+    x = ui.open(w)
     if error then
         print "REFUSED: " + error.message
     else
@@ -265,7 +265,7 @@ fi
 # ITS OWN DESIGN: accepting an option and ACTING ON IT are two claims, and
 # nothing here could see the second -- so a backend that took every option and
 # applied none passed this tier, which is the one tier arguing that the by-name
-# route works. `qt.read(win, part, property)` is the read half of that route and
+# route works. `ui.read(win, part, property)` is the read half of that route and
 # is what closes it; both properties are now read back.
 cat > "$work/goodprop.bas" <<'EOF'
 window w( title: "W" )
@@ -274,9 +274,9 @@ window w( title: "W" )
     end column
 end window
 program main()
-    print "opened: " + string(qt.open(w))
-    print "text took effect: " + qt.read(w, "go", "text")
-    print "enabled took effect: " + string(qt.read(w, "go", "enabled"))
+    print "opened: " + string(ui.open(w))
+    print "text took effect: " + ui.read(w, "go", "text")
+    print "enabled took effect: " + string(ui.read(w, "go", "enabled"))
 end program
 EOF
 set +e
@@ -308,7 +308,7 @@ printf 'TIER properties: read back in the KIND Qt declares, not as text\n'
 # THE KIND IS THE LOAD-BEARING PART and it is not a preference. Every non-empty
 # string is TRUE in this language, so a boolean answered as the text "false"
 # reads BACKWARDS in the one place a property is most likely to be used --
-# `if qt.read(f, "readOnly")`. The kind therefore comes from the QVariant, and
+# `if ui.read(f, "readOnly")`. The kind therefore comes from the QVariant, and
 # this tier asserts `type()` and not only the value, because `string(false)` and
 # the text "false" are the same characters and a value check cannot tell them
 # apart -- the same trap the finio OFX adapter's amounts hid behind.
@@ -320,18 +320,18 @@ window p( title: "P" )
     end column
 end window
 program main()
-    x = qt.open(p)
-    print "text: " + qt.read(p, "name", "placeholderText")
-    print "number: " + string(qt.read(p, "name", "maxLength")) + " / " + type(qt.read(p, "name", "maxLength"))
-    print "bool: " + string(qt.read(p, "name", "readOnly")) + " / " + type(qt.read(p, "name", "readOnly"))
-    print "checked: " + string(qt.read(p, "live", "checked")) + " / " + type(qt.read(p, "live", "checked"))
+    x = ui.open(p)
+    print "text: " + ui.read(p, "name", "placeholderText")
+    print "number: " + string(ui.read(p, "name", "maxLength")) + " / " + type(ui.read(p, "name", "maxLength"))
+    print "bool: " + string(ui.read(p, "name", "readOnly")) + " / " + type(ui.read(p, "name", "readOnly"))
+    print "checked: " + string(ui.read(p, "live", "checked")) + " / " + type(ui.read(p, "live", "checked"))
     on error goto next
-    y = qt.read(p, "name", "texx")
+    y = ui.read(p, "name", "texx")
     if error then
         print "BADPROP: " + error.message
         error.clear()
     end if
-    z = qt.read(p, "nope", "text")
+    z = ui.read(p, "nope", "text")
     if error then
         print "BADPART: " + error.message
         error.clear()
@@ -418,7 +418,7 @@ fi
 #
 # THE SUBJECT MUST EXIST, and the message has to name the FORM: `env_get` would
 # say `undefined variable: nowhere`, which is true and says nothing about the
-# declaration that wanted it or about where qt.open looks.
+# declaration that wanted it or about where ui.open looks.
 if grep -q 'NOSUBJECT: window `orphan`: `form to edit nowhere` found no `nowhere`' "$work/b.out"; then
     pass "a form bound to a name that is not in scope is refused, naming the form"
 else
@@ -430,7 +430,7 @@ else
     fail "the wrong-kind refusal: $(grep NOTARECORD "$work/b.out" || echo 'never fired')"
 fi
 if grep -q 'NOSUCHFORM: window `editor` has no form bound to `nosuchsubject`' "$work/b.out"; then
-    pass "qt.subject on a name no form binds is refused"
+    pass "ui.subject on a name no form binds is refused"
 else
     fail "the unbound-name refusal: $(grep NOSUCHFORM "$work/b.out" || echo 'never fired')"
 fi
@@ -487,7 +487,7 @@ fi
 # handler which can never fire, firing on one that can.
 #
 # PROVEN BY FIRING IT, not by the window opening: `itemSelectionChanged` is a
-# no-arg signal `qt.select` emits, which is why the fixture uses it rather than
+# no-arg signal `ui.select` emits, which is why the fixture uses it rather than
 # `activated` (a double-click no fixture can produce). A handler connected and
 # never fired looks identical to one that worked.
 if grep -qx 'SIGNAL orders.itemSelectionChanged' "$work/t.out"; then
@@ -510,7 +510,7 @@ if grep -q 'BADELEMENT: .*element 1 of `mixed` is number' "$work/t.out"; then
 else
     fail "the bad-element refusal: $(grep BADELEMENT "$work/t.out" || echo 'never fired')"
 fi
-if grep -q 'BADCOLUMN: qt.cell: table `orders` has no `nosuch` column' "$work/t.out"; then
+if grep -q 'BADCOLUMN: ui.cell: table `orders` has no `nosuch` column' "$work/t.out"; then
     pass "a column name the table does not declare is refused"
 else
     fail "the bad-column refusal: $(grep BADCOLUMN "$work/t.out" || echo 'never fired')"
@@ -518,8 +518,8 @@ fi
 # A PART THAT IS NOT A TABLE IS ITS OWN SENTENCE. Answering `unknown` there
 # would read as "nothing is selected", which is true of a button and is not
 # what the author asked.
-if grep -q 'NOTATABLE: qt.selected: `close` is not a table' "$work/t.out"; then
-    pass "qt.selected on something that is not a table says so"
+if grep -q 'NOTATABLE: ui.selected: `close` is not a table' "$work/t.out"; then
+    pass "ui.selected on something that is not a table says so"
 else
     fail "the not-a-table refusal: $(grep NOTATABLE "$work/t.out" || echo 'never fired')"
 fi
@@ -555,11 +555,11 @@ if [ "${cchecks:-0}" -ge 18 ]; then
 else
     fail "only $cchecks cells checks ran -- the fixture stopped early"
 fi
-# `qt.at` ASKS THE LAYOUT, walking up from the widget rather than from any
+# `ui.at` ASKS THE LAYOUT, walking up from the widget rather than from any
 # record of where we put it -- a remembered position would agree with a
 # placement that was wrong, which is no oracle. A part in no grid is refused
 # rather than answering a position, since every number would be a lie.
-if grep -q "NOTINGRID: qt.at: \`ok\` is not in a \`cells\`" "$work/c.out"; then
+if grep -q "NOTINGRID: ui.at: \`ok\` is not in a \`cells\`" "$work/c.out"; then
     pass "a part outside any cells is refused rather than given a position"
 else
     fail "the not-in-a-grid refusal: $(grep NOTINGRID "$work/c.out" || echo 'never fired')"
@@ -567,7 +567,7 @@ fi
 
 # ------------------------------------------------------------------------ TABS
 
-printf 'TIER tabs: a book of pages, and qt.set -- the write half of the route\n'
+printf 'TIER tabs: a book of pages, and ui.set -- the write half of the route\n'
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
     tests/qt_tabs_test.bas > "$work/tb.out" 2> "$work/tb.err"
@@ -610,12 +610,12 @@ fi
 # setter that accepted an unknown name would store a dynamic property nothing
 # reads -- an option silently doing nothing, which is the defect the closed
 # head vocabulary exists to prevent one level up.
-if grep -q 'BADPROP: qt.set: a QPushButton has no `texx` property' "$work/tb.out"; then
-    pass "qt.set refuses an unknown property BY NAME, as the read half does"
+if grep -q 'BADPROP: ui.set: a QPushButton has no `texx` property' "$work/tb.out"; then
+    pass "ui.set refuses an unknown property BY NAME, as the read half does"
 else
     fail "the bad-property refusal: $(grep BADPROP "$work/tb.out" || echo 'never fired')"
 fi
-if grep -q 'BADPART: qt.set: this window has no `nope`' "$work/tb.out"; then
+if grep -q 'BADPART: ui.set: this window has no `nope`' "$work/tb.out"; then
     pass "and an absent part in its own words"
 else
     fail "the bad-part refusal: $(grep BADPART "$work/tb.out" || echo 'never fired')"
@@ -628,7 +628,7 @@ printf 'TIER choice: one of a list, through either of its two doors\n'
 # every area six exits and each NAMES ANOTHER AREA, which a `field` can only
 # answer by typing an id and a `table` is a grid rather than a dropdown. The
 # same measurement said NOT to add a `list`, a one-column `table` already being
-# a picker that `qt.selected` addresses and `qt.refresh` keeps current.
+# a picker that `ui.selected` addresses and `ui.refresh` keeps current.
 #
 # AND IT CAUGHT TWO GAPS OF MINE: `qt_bindable_word` admitted only `field` and
 # `check`, so a `choice` AND a `memo` rendered perfectly and bound NOT AT ALL --
@@ -769,8 +769,8 @@ else
 fi
 # A MENU IS NOT A PART. Its CAPTION is what a person reads and its ITEMS are
 # what a handler addresses, so the caption must not answer as a name -- which
-# would let `qt.read(win, "File")` look like it worked.
-if grep -q 'NOTADDRESSABLE: qt.read: this window has no `Recent`' "$work/m.out"; then
+# would let `ui.read(win, "File")` look like it worked.
+if grep -q 'NOTADDRESSABLE: ui.read: this window has no `Recent`' "$work/m.out"; then
     pass "a menu's caption is not a part name"
 else
     fail "a menu answered to its caption: $(grep NOTADDRESS "$work/m.out" || echo 'never fired')"
@@ -784,7 +784,7 @@ printf 'TIER theme: one stylesheet for the application, and it needs no display\
 # `field a( styleSheet: "..." )` has been reachable since the by-name property
 # route shipped -- that route (§1) paying off in a way nobody designed. What it
 # cannot reach is ONE sheet for the whole application, which is what anybody
-# means by a theme, and that is what `qt.theme` adds.
+# means by a theme, and that is what `ui.theme` adds.
 cat > "$work/theme.bas" <<'EOF'
 window w( title: "W" )
     column
@@ -792,17 +792,17 @@ window w( title: "W" )
     end column
 end window
 program main()
-    print "EMPTY:[" + qt.theme() + "]"
-    print "SET:" + string(qt.theme("QLineEdit { background: #222; }"))
-    print "BEFORE:" + qt.theme()
-    print "DISPLAY:" + string(qt.can_display())
-    x = qt.open(w)
-    print "AFTER:" + qt.theme()
-    print "WIDGET:" + qt.read(w, "a", "styleSheet")
-    print "CHANGED:" + string(qt.theme("QLineEdit { background: #fff; }"))
-    print "NOW:" + qt.theme()
+    print "EMPTY:[" + ui.theme() + "]"
+    print "SET:" + string(ui.theme("QLineEdit { background: #222; }"))
+    print "BEFORE:" + ui.theme()
+    print "DISPLAY:" + string(ui.can_display())
+    x = ui.open(w)
+    print "AFTER:" + ui.theme()
+    print "WIDGET:" + ui.read(w, "a", "styleSheet")
+    print "CHANGED:" + string(ui.theme("QLineEdit { background: #fff; }"))
+    print "NOW:" + ui.theme()
     on error goto next
-    y = qt.theme(42)
+    y = ui.theme(42)
     if error then
         print "REFUSED:" + error.message
         error.clear()
@@ -857,12 +857,12 @@ fi
 # AND IT WORKS WITH NO DISPLAY AT ALL, which is the half that could not be
 # asserted offscreen: setting a theme is harmless metadata, so refusing it on a
 # text-only machine would make a program that themes before asking
-# `qt.can_display()` fail for no reason.
+# `ui.can_display()` fail for no reason.
 cat > "$work/themenodisp.bas" <<'EOF'
 program main()
-    print "SET:" + string(qt.theme("QWidget { color: #abc; }"))
-    print "BACK:" + qt.theme()
-    print "DISPLAY:" + string(qt.can_display())
+    print "SET:" + string(ui.theme("QWidget { color: #abc; }"))
+    print "BACK:" + ui.theme()
+    print "DISPLAY:" + string(ui.can_display())
 end program
 EOF
 set +e
@@ -919,7 +919,7 @@ else
         loop_rc=$?
         set -e
         if [ "$loop_rc" = "0" ] && grep -qx 'loop ended' "$work/loop.out"; then
-            pass "and qt.stop() from inside a handler ends the loop cleanly"
+            pass "and ui.stop() from inside a handler ends the loop cleanly"
         else
             printf '    %s\n' "$(tail -3 "$work/loop.err")"
             fail "the loop did not end cleanly (exit $loop_rc)"
@@ -935,7 +935,7 @@ printf 'TIER valgrind: no invalid access while a real window is bound and folded
 # or writes memory it does not own. That is not a weak claim for the code under
 # test: a form's capture is a `Value` COPY held in a registry across the whole
 # life of the window and freed in two places (a failed open, and teardown), and
-# the fold reads it again on every `qt.subject` -- which is a refcounted value
+# the fold reads it again on every `ui.subject` -- which is a refcounted value
 # surviving calls, the shape PLAT-RECIDX's two real defects had and neither of
 # which produced a wrong answer.
 if ! vg_available; then
@@ -1002,13 +1002,13 @@ else
     fi
 fi
 
-printf 'TIER degrading: `qt.can_display` ANSWERS where everything else refuses\n'
+printf 'TIER degrading: `ui.can_display` ANSWERS where everything else refuses\n'
 # THE SHAPE `has_builtin` ALREADY HAS, and the reason is the same: a program
 # asking whether it may open a window is degrading gracefully, and "this build
 # has no Qt" is one of the answers to that question rather than an error.
 cat > "$work/ask.bas" <<'EOF'
 program main()
-    print "can_display: " + string(qt.can_display())
+    print "can_display: " + string(ui.can_display())
 end program
 EOF
 set +e
@@ -1018,7 +1018,7 @@ set -e
 if [ "$ask_rc" = "0" ] && grep -qx 'can_display: false' "$work/ask.out"; then
     pass "with no display it answers false without raising"
 else
-    fail "qt.can_display did not answer (exit $ask_rc): $(tr '\n' '|' < "$work/ask.out")"
+    fail "ui.can_display did not answer (exit $ask_rc): $(tr '\n' '|' < "$work/ask.out")"
 fi
 set +e
 QT_QPA_PLATFORM=offscreen timeout -k 5 60 ./gbasic "$work/ask.bas" > "$work/ask2.out" 2>&1

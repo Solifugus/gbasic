@@ -351,11 +351,11 @@ for error handling, `ERRORS.md`.
   service manager. → `tests/run_process_lifetime.sh`
 - **Supervising a child from a GUI loop** — compose the two: `process.start`,
   then a `timer.every` watcher that polls and reads each tick; a gBASIC timer
-  keeps firing while `qt.run()` holds the thread. No actor and no mailbox are
+  keeps firing while `ui.run()` holds the thread. No actor and no mailbox are
   needed, because `start`/`poll`/`read` never block, so a GUI loop can drive a
   live child without a worker. → `tests/native_platform/plat_proc_basic.bas`
   (the non-blocking primitives), `examples/qt/clock.bas` (a timer under
-  `qt.run()`)
+  `ui.run()`)
 - **Seeing a child's output while it runs** — a gBASIC child's stdout is BLOCK-buffered
   on a pipe, so short output only appears when it exits, and output still buffered when
   the child is killed is lost outright. Start the child with `--line-buffered` as its
@@ -446,7 +446,7 @@ for error handling, `ERRORS.md`.
 - **Cryptography (`load crypto`)** — signed cookies, CSRF, JWT/HS256, flat JSON.
   → `examples/crypto_compose_test.bas`
 - **Desktop UI, where to start** — a `window` declaration opened with
-  `qt.open`, which is what gBASIC Studio is built on. A window is a record, so
+  `ui.open`, which is what gBASIC Studio is built on. A window is a record, so
   the same thing can be declared or built from data. Recipes:
   `docs/qt_cookbook.md`. → `examples/qt_cookbook/01_first_window.bas`
 - **STATE IN A GUI HANDLER MUST LIVE IN A RECORD** — gBASIC has no closures,
@@ -456,6 +456,6 @@ for error handling, `ERRORS.md`.
   This is the single most common way gBASIC GUI code fails.
   → `examples/qt_cookbook/03_state_in_handlers.bas`
 - **Testing GUI code** — `QT_QPA_PLATFORM=offscreen` builds real widgets with
-  nothing on screen, and `qt.invoke`, `qt.key`, `qt.right_click` and
-  `qt.scroll` drive them the way a person would, so a suite asserts behaviour
+  nothing on screen, and `ui.invoke`, `ui.key`, `ui.right_click` and
+  `ui.scroll` drive them the way a person would, so a suite asserts behaviour
   without a display. → `examples/qt_cookbook/13_the_event_loop.bas`

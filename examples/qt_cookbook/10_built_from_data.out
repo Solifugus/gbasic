@@ -1,4 +1,4 @@
-the built record passes qt.check: true
+the built record passes ui.check: true
 it generated 3 rows
 row 0 shows:  Consulting
 row 2 holds:  12

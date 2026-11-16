@@ -39,7 +39,7 @@ window customer( title: "Customer", width: 420 )
 
     end column
 
-    ' A handler is ordinary gBASIC. `qt.subject` answers the WHOLE record the
+    ' A handler is ordinary gBASIC. `ui.subject` answers the WHOLE record the
     ' form is working on, read from the widgets at this moment -- so a handler
     ' says `saving` once rather than naming every part it wants back.
     on save.clicked
@@ -50,26 +50,26 @@ window customer( title: "Customer", width: 420 )
         print "  email   " + edited.email
         print "  limit   " + string(edited.limit) + " (" + type(edited.limit) + ")"
         print "  on hold " + string(edited.hold) + " (" + type(edited.hold) + ")"
-        qt.stop()
+        ui.stop()
     end on
 
     on cancel.clicked
         print "cancelled"
-        qt.stop()
+        ui.stop()
     end on
 end window
 
 program main(args)
-    ' ASK FIRST. `qt.can_display()` answers rather than raising -- including on
+    ' ASK FIRST. `ui.can_display()` answers rather than raising -- including on
     ' a build with no Qt in it at all -- so a program can do something else
     ' instead of ending.
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so there is no window to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
     else
         ' THE SUBJECT, AND NOTHING ELSE TO WIRE. Both forms above say
         ' `form to edit cust`, and a field named `email` takes `cust.email` --
-        ' the binding IS the name. `qt.open` reads `cust` from this frame, so
+        ' the binding IS the name. `ui.open` reads `cust` from this frame, so
         ' the record only has to be in scope here.
         '
         ' NOTE `limit` IS MONEY, not text: the field declares `type: {USD}`, so
@@ -79,7 +79,7 @@ program main(args)
                  email: "ada@example.com", limit: {USD}"2500.00",
                  hold: false }
 
-        qt.open(customer)
+        ui.open(customer)
 
         ' `check` PRINTS WHAT IT CAN SEE AND EXITS, which is how this example
         ' is gated and also how you verify a Qt install without a screen.
@@ -97,9 +97,9 @@ program main(args)
             ' money into a string that still prints the same digits.
             print "limit is a:    " + type(back.limit)
             print "untouched:     " + string(cust.name)
-            qt.stop()
+            ui.stop()
             return
         end if
-        qt.run()
+        ui.run()
     end if
 end program

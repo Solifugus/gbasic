@@ -36,7 +36,7 @@ window orders( title: "Orders", width: 560, height: 380 )
 
     ' CHOOSING A ROW IS READING, so the table is `to show` and still
     ' selectable -- a display-only table is uneditable, not disabled.
-    ' `qt.selected` answers an INDEX, which is what lets it index the very
+    ' `ui.selected` answers an INDEX, which is what lets it index the very
     ' list the table was built from.
     on lines_view.itemSelectionChanged
         at = orders.selected("lines_view")
@@ -48,12 +48,12 @@ window orders( title: "Orders", width: 560, height: 380 )
     end on
 
     on done.clicked
-        qt.stop()
+        ui.stop()
     end on
 end window
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display is available, so there is no window to open."
         print "Set QT_QPA_PLATFORM=offscreen to render without one."
     else
@@ -65,7 +65,7 @@ program main(args)
         ' fills it in.
         chosen = {}
 
-        qt.open(orders)
+        ui.open(orders)
         ' A ROW CHOSEN FROM THE PROGRAM, so the window opens with something in
         ' it rather than waiting to be clicked.
         orders.select("lines_view", 0)
@@ -83,9 +83,9 @@ program main(args)
             orders.select("lines_view", 2)
             print "after select:  " + string(orders.selected("lines_view"))
             print "that customer: " + orders.cell("lines_view", 2, "who")
-            qt.stop()
+            ui.stop()
             return
         end if
-        qt.run()
+        ui.run()
     end if
 end program

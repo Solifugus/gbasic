@@ -2,7 +2,7 @@
  * Copyright 2026 Matthew C. Tedder. See LICENSE and LICENSING.md.
  *
  * DOES THE MARGIN REALLY PAINT? The claim gBASIC cannot make, and it has to be
- * made somewhere: `qt.marks` answers WHAT WAS SET, so a backend that stored a
+ * made somewhere: `ui.marks` answers WHAT WAS SET, so a backend that stored a
  * list and painted nothing satisfies every check in the language -- which is
  * the green-perturbation shape this backend is tested against, and the reason
  * §0.20-§0.26 produced five verbs by asking what would be observable if the

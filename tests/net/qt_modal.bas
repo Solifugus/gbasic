@@ -19,11 +19,11 @@ end window
 
 program main(args)
     G = { go: args[1], answered: false }
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NO DISPLAY"
         return
     end if
-    qt.open(app)
+    ui.open(app)
     watch(net.events)
         while count(net.events) > 0
             e = take_first(net.events)
@@ -43,7 +43,7 @@ program main(args)
             ev = take_first(timer.ticks)
             if not G.answered and exists({file}G.go) then
                 G.answered = true
-                ok = qt.answer(true)
+                ok = ui.answer(true)
             end if
         end while
     end watch
@@ -51,9 +51,9 @@ program main(args)
     ready {file}= args[0]
     write(ready, string(srv.port))
     print "DIALOG UP"
-    answered = qt.confirm(app, "Serving while this is open?")
+    answered = ui.confirm(app, "Serving while this is open?")
     print "DIALOG DOWN " + string(answered)
     srv.close()
-    qt.close(app)
+    ui.close(app)
     stopped = timer.cancel(beat)
 end program

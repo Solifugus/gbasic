@@ -41,7 +41,7 @@ window ledger( title: "Ledger", width: 520, height: 300 )
     ' `itemSelectionChanged` RATHER THAN `activated`, and the choice is what
     ' makes this provable: `activated` needs a double-click or Enter, which no
     ' fixture can produce, where `itemSelectionChanged` is a no-arg signal
-    ' `qt.select` emits -- so the whole path (a handler whose target is a
+    ' `ui.select` emits -- so the whole path (a handler whose target is a
     ' CONTAINER, connected by name, re-entering the evaluator) is driven
     ' without a human. A handler that was connected and never fired would
     ' otherwise look identical to one that worked.
@@ -93,16 +93,16 @@ program main()
     items = [ { name: "bolt", qty: 4 }, { name: "nut", qty: 12 } ]
     memos = [ { tag: "a", body: "first" }, { tag: "b", body: "second" } ]
 
-    check("a show table opens", qt.open(ledger), true)
-    check("an edit table opens", qt.open(sheet), true)
+    check("a show table opens", ui.open(ledger), true)
+    check("an edit table opens", ui.open(sheet), true)
 
     ' ------------------------------------------------- SHAPE, FROM THE DECLARATION
     check("one column per declared field",
-          qt.read(ledger, "orders", "columnCount"), 3)
+          ui.read(ledger, "orders", "columnCount"), 3)
     check("one row per element of the subject",
-          qt.read(ledger, "orders", "rowCount"), 3)
+          ui.read(ledger, "orders", "rowCount"), 3)
     check("and a different table gets its own shape",
-          qt.read(sheet, "stock", "columnCount"), 2)
+          ui.read(sheet, "stock", "columnCount"), 2)
 
     ' ------------------------------------------------------------- POPULATION
     ' ASSERTED CELL BY CELL AND ADDRESSED BY THE COLUMN'S OWN NAME, because a
@@ -112,17 +112,17 @@ program main()
     ' or every check here is satisfied by a backend writing one value into
     ' every cell it can find.
     check("the first row's text comes from the first element",
-          qt.cell(ledger, "orders", 0, "who"), "Ada")
-    check("the last row's from the last", qt.cell(ledger, "orders", 2, "who"),
+          ui.cell(ledger, "orders", 0, "who"), "Ada")
+    check("the last row's from the last", ui.cell(ledger, "orders", 2, "who"),
           "Alan")
     check("a middle row is not the first either",
-          qt.cell(ledger, "orders", 1, "who"), "Grace")
+          ui.cell(ledger, "orders", 1, "who"), "Grace")
     check("money is written in gBASIC's own words",
-          qt.cell(ledger, "orders", 0, "total"), "120.50")
+          ui.cell(ledger, "orders", 0, "total"), "120.50")
     check("so a column is read from its OWN field",
-          qt.cell(ledger, "orders", 0, "placed"), "2026-01-04")
+          ui.cell(ledger, "orders", 0, "placed"), "2026-01-04")
     check("and two columns of one row DIFFER",
-          qt.cell(ledger, "orders", 0, "who") = qt.cell(ledger, "orders", 0, "placed"),
+          ui.cell(ledger, "orders", 0, "who") = ui.cell(ledger, "orders", 0, "placed"),
           false)
 
     ' ------------------------------------------------- THE MAPPING ORACLE
@@ -138,13 +138,13 @@ program main()
     ' IDENTICAL output, which is the signature of checks that cannot separate
     ' two different defects.
     check("the first column's caption is the one declared for it",
-          qt.heading(ledger, "orders", "placed"), "Date")
-    check("and the second's is its own", qt.heading(ledger, "orders", "who"),
+          ui.heading(ledger, "orders", "placed"), "Date")
+    check("and the second's is its own", ui.heading(ledger, "orders", "who"),
           "Customer")
-    check("and the third's", qt.heading(ledger, "orders", "total"), "Total")
+    check("and the third's", ui.heading(ledger, "orders", "total"), "Total")
     ' AND THE TWO WAYS OF ASKING MUST AGREE, which is the half that makes this
     ' an oracle rather than a restatement. By NAME the caption is found through
-    ' the same resolution `qt.cell` uses, so a PERMUTED resolution answers both
+    ' the same resolution `ui.cell` uses, so a PERMUTED resolution answers both
     ' consistently and neither can witness it; by POSITION the header is read
     ' in the order the declaration wrote it. Requiring agreement pins the
     ' name-to-column mapping against something that does not depend on it.
@@ -152,22 +152,22 @@ program main()
     ' MEASURED: with only the by-name form, the two perturbations above gave
     ' identical output and this tier added nothing.
     check("asking by name and by position agree for column 0",
-          qt.heading(ledger, "orders", "placed") = qt.heading(ledger, "orders", 0),
+          ui.heading(ledger, "orders", "placed") = ui.heading(ledger, "orders", 0),
           true)
     check("and for column 1",
-          qt.heading(ledger, "orders", "who") = qt.heading(ledger, "orders", 1),
+          ui.heading(ledger, "orders", "who") = ui.heading(ledger, "orders", 1),
           true)
     check("and for column 2",
-          qt.heading(ledger, "orders", "total") = qt.heading(ledger, "orders", 2),
+          ui.heading(ledger, "orders", "total") = ui.heading(ledger, "orders", 2),
           true)
     ' AND THE CAPTIONS COME FROM THE DECLARATION ITSELF, read back as data --
     ' so the expected text is not a literal somebody could edit to match.
     cols = ledger.items[0].items[0].items
     check("the captions are the declaration's own labels, in its own order",
-          qt.heading(ledger, "orders", 0) = cols[0].options.label and
-          qt.heading(ledger, "orders", 2) = cols[2].options.label, true)
+          ui.heading(ledger, "orders", 0) = cols[0].options.label and
+          ui.heading(ledger, "orders", 2) = cols[2].options.label, true)
     check("so `Customer` sits over the customer, not over the date",
-          qt.heading(ledger, "orders", "who") = "Date", false)
+          ui.heading(ledger, "orders", "who") = "Date", false)
 
     ' --------------------------------------------------------- DIRECTION
     ' A `show` TABLE IS NOT EDITABLE AND IS STILL SELECTABLE, which is why it
@@ -175,11 +175,11 @@ program main()
     ' `readOnly`, and DISABLING it would stop a person choosing a row -- and
     ' choosing a row is reading, not editing.
     check("a show table takes no editing",
-          qt.read(ledger, "orders", "editTriggers"), "NoEditTriggers")
+          ui.read(ledger, "orders", "editTriggers"), "NoEditTriggers")
     check("CONTROL: an edit table does",
-          qt.read(sheet, "stock", "editTriggers") = "NoEditTriggers", false)
+          ui.read(sheet, "stock", "editTriggers") = "NoEditTriggers", false)
     check("and a show table is still enabled, so a row can be chosen",
-          qt.read(ledger, "orders", "enabled"), true)
+          ui.read(ledger, "orders", "enabled"), true)
 
     ' --------------------------------------------------------- SELECTION
     ' NOTHING CHOSEN ANSWERS `unknown`, not -1 and not 0. Both of those are
@@ -187,26 +187,26 @@ program main()
     ' picked -- the answer `materiality` and `principal()` already give for
     ' "nobody said".
     check("with nothing chosen, there is no row",
-          is_unknown(qt.selected(ledger, "orders")), true)
-    ' `qt.select` IS HOW A PROGRAM CHOOSES ONE -- a window opening with
+          is_unknown(ui.selected(ledger, "orders")), true)
+    ' `ui.select` IS HOW A PROGRAM CHOOSES ONE -- a window opening with
      ' yesterday's order highlighted, or a row just added being made current.
-    check("choosing a row answers", qt.select(ledger, "orders", 1), true)
+    check("choosing a row answers", ui.select(ledger, "orders", 1), true)
     check("and that row is what comes back",
-          qt.selected(ledger, "orders"), 1)
+          ui.selected(ledger, "orders"), 1)
     check("and it is a number, so it can index the subject",
-          type(qt.selected(ledger, "orders")), "number")
+          type(ui.selected(ledger, "orders")), "number")
     ' GUARDED, because `lines[unknown]` RAISES -- and a perturbation that makes
     ' selection answer nothing would then kill the fixture and hide the two
     ' mismatches above, which had already named the problem. run_discovery.sh
     ' records that trap and this increment's own binding fixture hit it.
-    at = qt.selected(ledger, "orders")
+    at = ui.selected(ledger, "orders")
     check("which is what makes it compose with the list the program holds",
           not is_unknown(at) and lines[at].who = "Grace", true)
     ' AND IT CAN BE UNCHOSEN, so "nobody has chosen" is sayable in both
     ' directions rather than only readable.
-    check("choosing nothing clears it", qt.select(ledger, "orders", unknown), true)
+    check("choosing nothing clears it", ui.select(ledger, "orders", unknown), true)
     check("and there is no row again",
-          is_unknown(qt.selected(ledger, "orders")), true)
+          is_unknown(ui.selected(ledger, "orders")), true)
 
     ' ------------------------------------------------------------- THE FOLD
     ' THE RECORD FOLLOWS THE WIDGETS for a table exactly as for a form, and the
@@ -218,7 +218,7 @@ program main()
     ' perturbations did exactly that, and the mismatches above only survived
     ' because of --line-buffered. run_discovery.sh's recorded trap.
     on error goto next
-    before = qt.subject(sheet, "items")
+    before = ui.subject(sheet, "items")
     if error then
         print "MISMATCH the fold of an untouched edit table raised: " + error.message
         error.clear()
@@ -233,14 +233,14 @@ program main()
     ' AND IT READS THE WIDGETS rather than handing back the capture it already
     ' holds -- which every check above is satisfied without, the capture and
     ' the cells agreeing until something changes one. `clearContents` is a
-    ' no-arg Qt slot, so `qt.invoke` can empty the view with no human in front
+    ' no-arg Qt slot, so `ui.invoke` can empty the view with no human in front
     ' of it, and the fold must then report what the view says.
-    check("a text-only edit table opens", qt.open(notes_sheet), true)
-    kept = qt.subject(notes_sheet, "memos")
+    check("a text-only edit table opens", ui.open(notes_sheet), true)
+    kept = ui.subject(notes_sheet, "memos")
     check("CONTROL: its fold agrees with the capture to begin with",
           kept[1].body, "second")
-    x = qt.invoke(notes_sheet, "notes", "clearContents")
-    emptied = qt.subject(notes_sheet, "memos")
+    x = ui.invoke(notes_sheet, "notes", "clearContents")
+    emptied = ui.subject(notes_sheet, "memos")
     check("the fold reports the emptied cell, not the captured value",
           emptied[1].body, "")
 
@@ -248,9 +248,9 @@ program main()
     ' zero would be an ordinary-looking quantity nobody entered. The sentence
     ' is the MODIFIER'S own, which is the cause; what it cannot say is which
     ' row, the same stated gap the form's `type:` refusal has.
-    x = qt.invoke(sheet, "stock", "clearContents")
+    x = ui.invoke(sheet, "stock", "clearContents")
     on error goto next
-    y = qt.subject(sheet, "items")
+    y = ui.subject(sheet, "items")
     if error then
         print "EMPTYNUMBER: " + error.message
         error.clear()
@@ -260,7 +260,7 @@ program main()
 
     ' ------------------------------------------------------------- REFUSALS
     notalist = { a: 1 }
-    x = qt.open(bad_subject)
+    x = ui.open(bad_subject)
     if error then
         print "NOTALIST: " + error.message
         error.clear()
@@ -269,7 +269,7 @@ program main()
     end if
 
     mixed = [ { a: 1 }, 7 ]
-    x = qt.open(bad_element)
+    x = ui.open(bad_element)
     if error then
         print "BADELEMENT: " + error.message
         error.clear()
@@ -280,18 +280,18 @@ program main()
     ' AN EMPTY LIST IS NOT AN ERROR -- a ledger with no orders yet is an
     ' ordinary state, and a table of nothing is the honest rendering of it.
     none_at_all = []
-    check("an empty list opens", qt.open(empty_table), true)
+    check("an empty list opens", ui.open(empty_table), true)
     check("and the table has no rows",
-          qt.read(empty_table, "nothing_yet", "rowCount"), 0)
+          ui.read(empty_table, "nothing_yet", "rowCount"), 0)
     check("while still having its column",
-          qt.read(empty_table, "nothing_yet", "columnCount"), 1)
+          ui.read(empty_table, "nothing_yet", "columnCount"), 1)
 
-    x = qt.cell(ledger, "orders", 0, "nosuch")
+    x = ui.cell(ledger, "orders", 0, "nosuch")
     if error then
         print "BADCOLUMN: " + error.message
         error.clear()
     end if
-    x = qt.selected(ledger, "close")
+    x = ui.selected(ledger, "close")
     if error then
         print "NOTATABLE: " + error.message
         error.clear()

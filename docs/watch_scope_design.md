@@ -161,10 +161,10 @@ end function
   on the stack, since all of them are still alive.
 - **The condition is re-checked after each delivery**, and the statement ends
   once it is true.
-- **This is the same change that ends the open `qt.run()`-from-a-function
+- **This is the same change that ends the open `ui.run()`-from-a-function
   defect** (DOGFOOD live list row 1). That defect is the loop running inside a
   function while delivery is refused because the global frame is not current.
-  With delivery to every live frame, `qt.run()` inside a function services its
+  With delivery to every live frame, `ui.run()` inside a function services its
   sources too.
 - **Transward's case:** a library function, such as `transport.run(config)`,
   watches its own sources and waits until it is stopped. The library owns the
@@ -233,7 +233,7 @@ they were put:
   queue's `pending` marks then dropped them, a watch registered in that very
   body among them. The wait now sets the running queue aside, clearing those
   marks, and restores both after.
-- **It ended live row 1** (`qt.run()` from a function starved the loop), as §4
+- **It ended live row 1** (`ui.run()` from a function starved the loop), as §4
   predicted: that was a delivery refused because a function frame was current.
 - **One of my own tiers could hang.** Valgrind ran the fixture unbounded, and
   a perturbation removing the no-source check hung it for 15 minutes. It is

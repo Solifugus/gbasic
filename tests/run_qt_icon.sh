@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # ICONS (docs/qt_gui_design.md §0.23) -- `icon:` on a leaf or a menu item,
-# `qt.set(... "icon" ...)`, and `qt.has_icon`.
+# `ui.set(... "icon" ...)`, and `ui.has_icon`.
 #
 # `set +e` BELOW WITHOUT A MATCHING `set -e`, DELIBERATELY: this file's mode is
 # `set -uo pipefail` -- no `-e` -- so `set +e` is a no-op and a `set -e` after
@@ -11,7 +11,7 @@
 # assumed: `setProperty("icon", QString(...))` returns FALSE for both a theme
 # name and a file path and the icon stays null, QVariant not converting a
 # string to a QIcon. So `icon` gets a branch of its own -- in `set_property`,
-# the ONE door the declaration's options and `qt.set` both go through, which is
+# the ONE door the declaration's options and `ui.set` both go through, which is
 # what makes them unable to disagree about what an icon source is.
 #
 # SIX MEASUREMENTS, AND FOUR DECIDED SOMETHING:
@@ -40,9 +40,9 @@
 # THE TIER TO READ FIRST IS ORACLE, and it was not foreseen -- it came from
 # asking what a check could OBSERVE. A QIcon has no text form, so a declared
 # `icon:` was unobservable and every check would have passed on a backend that
-# resolved nothing; `qt.read` on an icon was answering "" for a button that HAD
+# resolved nothing; `ui.read` on an icon was answering "" for a button that HAD
 # one, which is a WRONG answer rather than no answer. It refuses now and names
-# `qt.has_icon`, which is the oracle and is also what a program needs, an icon
+# `ui.has_icon`, which is the oracle and is also what a program needs, an icon
 # the theme lacks being a warning rather than a refusal.
 . "$(dirname "$0")/portable.sh"
 set -uo pipefail
@@ -71,7 +71,7 @@ if [ "$(wc -c < "$png")" -lt 60 ]; then
 fi
 
 # ------------------------------------------------------------------ ONE DOOR
-# THE DECLARATION AND `qt.set` MUST AGREE ABOUT WHAT AN ICON SOURCE IS, so the
+# THE DECLARATION AND `ui.set` MUST AGREE ABOUT WHAT AN ICON SOURCE IS, so the
 # conversion lives in `set_property` and nowhere else. Two copies would drift
 # in the way that matters: a path accepted by one door and refused by the other.
 printf 'TIER one door: the conversion lives in set_property alone\n'
@@ -124,12 +124,12 @@ else
        grep -q "^ok   a part that declared none has none" "$work/sem.out"; then
         pass "ORACLE: an icon is observable, and its absence too"
     else
-        fail "qt.has_icon did not run -- a QIcon has no text form, so without it every check passes on a backend that resolved nothing"
+        fail "ui.has_icon did not run -- a QIcon has no text form, so without it every check passes on a backend that resolved nothing"
     fi
     if grep -q "^ok   reading an icon as text is refused" "$work/sem.out"; then
         pass "READ: refused rather than answering an empty string"
     else
-        fail "qt.read on an icon was not asserted -- measured, it answers \"\" for a button that HAS one, which is a wrong answer and not no answer"
+        fail "ui.read on an icon was not asserted -- measured, it answers \"\" for a button that HAS one, which is a wrong answer and not no answer"
     fi
     if grep -q "^ok   a path that is not there is refused, naming it" "$work/sem.out" &&
        grep -q "^ok   an unknown SP_ name is refused" "$work/sem.out"; then
@@ -164,14 +164,14 @@ window app( title: "T", width: 200, height: 120 )
     end column
 end window
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NO DISPLAY"
         return
     end if
-    qt.open(app)
-    print "FOUND=" + string(qt.has_icon(app, "go"))
+    ui.open(app)
+    print "FOUND=" + string(ui.has_icon(app, "go"))
     print "STILL RUNNING"
-    qt.close(app)
+    ui.close(app)
 end program
 BAS
 set +e
@@ -209,7 +209,7 @@ fi
 
 # ------------------------------------------------------------------ VALGRIND
 # ACCESS-ONLY, for the reason run_qt_backend.sh records. What is NEW here is a
-# QIcon built from text on every option and every `qt.set`, and an enum lookup
+# QIcon built from text on every option and every `ui.set`, and an enum lookup
 # through QStyle's static metaobject.
 printf 'TIER valgrind: no invalid access across the icon conversions\n'
 if ! command -v valgrind >/dev/null 2>&1; then

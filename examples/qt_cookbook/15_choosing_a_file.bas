@@ -12,7 +12,7 @@
 ' does not -- so `unknown` is what forces you to notice, and `if path then` on
 ' it raises rather than quietly taking the wrong branch.
 '
-' A RECIPE HAS NOBODY TO CLICK, so a timer answers for one. `qt.answer` takes
+' A RECIPE HAS NOBODY TO CLICK, so a timer answers for one. `ui.answer` takes
 ' the PATH here rather than true or false, because that is what a chooser's
 ' answer is; `false` is a cancel, and `true` is refused, since it would have to
 ' mean "accept what?".
@@ -28,7 +28,7 @@ end window
 program main(args)
     g = { mode: "path", want: "" }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display"
         return
     end if
@@ -36,16 +36,16 @@ program main(args)
     work = temp_dir()
     report = write({file}(work + "/report.txt"), "the quarterly numbers" + chr(10))
 
-    qt.open(app)
+    ui.open(app)
 
     beat = timer.every(0.05)
     watch(timer.ticks)
         while count(timer.ticks) > 0
             ev = take_first(timer.ticks)
             if g.mode = "cancel" then
-                ok = qt.answer(false)
+                ok = ui.answer(false)
             else
-                ok = qt.answer(g.want)
+                ok = ui.answer(g.want)
             end if
         end while
     end watch
@@ -84,5 +84,5 @@ program main(args)
 
     cancelled = timer.cancel(beat)
     gone = remove_tree({dir}work)
-    qt.stop()
+    ui.stop()
 end program

@@ -29,7 +29,7 @@ the text version rather than failing.
 GUI cannot have, because Qt owns the loop. So `gui.bas` is the same game with
 its control flow turned inside out, and building it is what found two gaps in
 the Qt surface: there was no word for a paragraph of text (`text`/`memo` now),
-and a table did not follow a list that changed (`qt.refresh` now). See §0.10 to
+and a table did not follow a list that changed (`ui.refresh` now). See §0.10 to
 §0.12 of `docs/qt_gui_design.md`.
 
 ### Describing a world in a window
@@ -51,10 +51,10 @@ surface rather than illustrating them —
 |---|---|
 | `memo` | a description is a paragraph, and nothing could show one |
 | `choice` | an exit **names another area**, six times per area |
-| `qt.refresh` | choosing a row must *show that area*, and a form populated once at open — so did a table, so neither the list nor the editor followed the data |
+| `ui.refresh` | choosing a row must *show that area*, and a form populated once at open — so did a table, so neither the list nor the editor followed the data |
 
 **The one thing to take from it is where the state lives.** gBASIC has no
-closures, and a handler fires beneath `qt.run()`, so the frame it sees is
+closures, and a handler fires beneath `ui.run()`, so the frame it sees is
 `main`'s. A handler can *read* a local there and **cannot rebind a scalar** —
 warning 2104 says so and names the remedy: *mutate a field of a shared record
 instead.* So the whole game state is one record `g`, and every handler mutates

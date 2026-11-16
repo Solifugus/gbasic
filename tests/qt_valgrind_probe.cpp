@@ -26,7 +26,7 @@
 // combo box filled and its popup shown and hidden (QComboBox::hidePopup, and
 // the rows inserted), a key typed into a line edit (internalInsert, its value
 // a local of QLineEdit::deselect) and Qt's own file dialog, non-native as
-// qt.choose_file forces it (QFileDialogPrivate::restoreFromSettings); every
+// ui.choose_file forces it (QFileDialogPrivate::restoreFromSettings); every
 // origin was in QLabel's, QComboBox's or QFileDialog's own construction.
 // Whether it is Qt's s390x build or valgrind's s390x support was not separated.
 //
@@ -120,7 +120,7 @@ int main(int argc, char **argv) {
     tabs->addTab(second, "Second");
     main.setCentralWidget(tabs);
     main.show();
-    // a label whose style sheet is set the way qt.set sets a property
+    // a label whose style sheet is set the way ui.set sets a property
     QLabel styled("Total");
     styled.setProperty("styleSheet", QVariant(QString("color: #336; font-weight: bold")));
     styled.show();
@@ -131,12 +131,12 @@ int main(int argc, char **argv) {
     choice.show();
     choice.showPopup();
     choice.hidePopup();
-    // a key typed into a line edit, the event qt.key sends
+    // a key typed into a line edit, the event ui.key sends
     QLineEdit typed;
     typed.show();
     QKeyEvent press(QEvent::KeyPress, Qt::Key_A, Qt::NoModifier, "a");
     QApplication::sendEvent(&typed, &press);
-    // Qt's own file dialog, which qt.choose_file forces over the native one
+    // Qt's own file dialog, which ui.choose_file forces over the native one
     QFileDialog chooser(nullptr, "Open", "/tmp");
     chooser.setOption(QFileDialog::DontUseNativeDialog);
     chooser.show();

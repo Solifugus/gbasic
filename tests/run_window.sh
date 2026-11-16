@@ -404,7 +404,7 @@ fi
 # written the other's way and quietly mean something else. The difference is
 # real rather than a spelling: a form's parts are addressed by their own names,
 # where a table shows MANY rows, so the TABLE is what a handler and
-# `qt.selected` address.
+# `ui.selected` address.
 src table_unnamed <<'EOF'
 window w( title: "x" )
     table to show lines
@@ -475,7 +475,7 @@ refuse "a part directly inside cells is refused, naming the remedy" "put it insi
 # the rule useless, because after `IDENT IDENT ( ... ) NEWLINE` the parser
 # cannot tell a named LEAF from a container head. That is the wall §5.2 records
 # for the server block, so the vocabulary carries A NAME OR OPTIONS AND NOT
-# BOTH, and `qt.set` is what makes that affordable.
+# BOTH, and `ui.set` is what makes that affordable.
 src tabs_ok <<'EOF'
 window w( title: "x" )
     column
@@ -540,7 +540,7 @@ refuse "a tab with no caption is refused" "a tab needs a caption"
 
 # A NAMED BOX IS ADMITTED SINCE §0.27, AND THE RULE DID NOT CHANGE -- its
 # consequences did. A name is for a container "with state something addresses",
-# and `qt.refresh(win, name, items)` gives a box some: THE SET OF CHILDREN. The
+# and `ui.refresh(win, name, items)` gives a box some: THE SET OF CHILDREN. The
 # verb cannot address what cannot be named, so refusing the name refused the
 # feature. This case asserted the opposite until that increment, which is the
 # honest shape of a deliberate change rather than a weakening.
@@ -623,7 +623,7 @@ EOF
 refuse "a handler naming a COLUMN is refused, since a column is not addressable" "names nothing in this window"
 
 # TWO COLUMNS SHOWING ONE FIELD is a mistake with no sensible reading: both
-# would hold the same value and `qt.cell` could not say which was meant.
+# would hold the same value and `ui.cell` could not say which was meant.
 src table_dup_column <<'EOF'
 window w( title: "x" )
     table lines_view to show lines

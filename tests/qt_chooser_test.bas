@@ -22,11 +22,11 @@
 ' AND THE ORACLE WAS BUILT BEFORE THE FIXTURE, which is the discipline §0.8
 ' arrived at the hard way: `title:` and `filter:` are otherwise ACCEPTED AND
 ' UNOBSERVABLE, the hole a leaf's `label:` sat in for four increments while
-' every check passed. `qt.dialog()` is what makes them assertable.
+' every check passed. `ui.dialog()` is what makes them assertable.
 '
 ' WHAT MAKES ANY OF THIS DRIVABLE WITHOUT A PERSON is that gBASIC's own
 ' sources are serviced while the nested loop is up, so a `timer` can answer the
-' program's own chooser -- and `qt.answer` does it the way a person does, by
+' program's own chooser -- and `ui.answer` does it the way a person does, by
 ' typing into the chooser's name field and pressing its Open button, because
 ' `selectFile` is IGNORED while the dialog is visible (measured: Qt will not
 ' overwrite what somebody is typing).
@@ -38,26 +38,26 @@
 ' `unknown`. One field, one kind.
 function drive()
     if g.mode = "cancel" then
-        ok = qt.answer(false)
+        ok = ui.answer(false)
         return nothing
     end if
     if g.mode = "true" then
         on error goto refused_true
-        ok = qt.answer(true)
+        ok = ui.answer(true)
         return nothing
 refused_true:
         g.refusal = error.message
         error.clear()
-        ok = qt.answer(false)
+        ok = ui.answer(false)
         return nothing
     end if
     on error goto refused
-    ok = qt.answer(g.want)
+    ok = ui.answer(g.want)
     return nothing
 refused:
     g.refusal = error.message
     error.clear()
-    ok = qt.answer(false)
+    ok = ui.answer(false)
     return nothing
 end function
 
@@ -78,7 +78,7 @@ end window
 program main(args)
     g = { mode: "path", want: "", seen: {}, refusal: "", ticks: 0 }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "SKIP no display"
         return
     end if
@@ -86,22 +86,22 @@ program main(args)
     here = work + "/have.txt"
     absent = work + "/not-there.txt"
 
-    qt.open(app)
+    ui.open(app)
 
     print "-- answering with a path when nothing is open is refused"
     on error goto nothing_open
-    x = qt.answer(here)
+    x = ui.answer(here)
     print "MISMATCH a path was accepted with no dialog open"
     return
 nothing_open:
     check("refused, naming the state", contains(error.message, "no dialog is open"), true)
     error.clear()
 
-    print "-- and qt.dialog() says so rather than inventing a record"
+    print "-- and ui.dialog() says so rather than inventing a record"
     ' `unknown` RATHER THAN AN EMPTY RECORD, the distinction `principal()`
     ' already makes: "nothing is open" and "a dialog carrying no fields" are
     ' different claims.
-    check("nothing open answers unknown", is_unknown(qt.dialog()), true)
+    check("nothing open answers unknown", is_unknown(ui.dialog()), true)
 
     ' THE DRIVER. One tick reads what is open, then answers it according to
     ' `g.want` -- so every case below is the same mechanism with a different
@@ -112,7 +112,7 @@ nothing_open:
         while count(timer.ticks) > 0
             ev = take_first(timer.ticks)
             g.ticks = g.ticks + 1
-            d = qt.dialog()
+            d = ui.dialog()
             if not is_unknown(d) then
                 g.seen = d
                 drive()
@@ -123,7 +123,7 @@ nothing_open:
     print "-- choosing a file that is there"
     g.mode = "path"
     g.want = here
-    chosen = qt.choose_file(app, { title: "Open a thing", folder: work, filter: ["Text (*.txt)", "All (*)"] })
+    chosen = ui.choose_file(app, { title: "Open a thing", folder: work, filter: ["Text (*.txt)", "All (*)"] })
     check("the path comes back", chosen, here)
     check("as text, so it composes with {file}", type(chosen), "string")
     check("and the file really reads", read({file}chosen), "hello" + chr(10))
@@ -145,21 +145,21 @@ nothing_open:
     ' a `{dir}`, so the most natural `folder:` there is was refused as "not
     ' text". Every path builtin in this language already takes a string, a
     ' `{file}` or a `{dir}` alike, and a GUI module is the wrong place to be
-    ' stricter -- so `qt.answer` takes one too, asserted here because the
+    ' stricter -- so `ui.answer` takes one too, asserted here because the
     ' chooser and the answer are two separate doors and a fix reaching one is
     ' the shape webclient's read and write halves had.
     g.want = {file}here
-    by_ref = qt.choose_file(app, { folder: {dir}work })
+    by_ref = ui.choose_file(app, { folder: {dir}work })
     check("a {dir} folder and a {file} answer", by_ref, here)
 
     print "-- naming a file to write, which need not exist yet"
     g.want = work + "/fresh.txt"
-    saving = qt.choose_save(app, { title: "Save as", folder: work, name: "fresh.txt" })
+    saving = ui.choose_save(app, { title: "Save as", folder: work, name: "fresh.txt" })
     check("a name for a file that is not there", saving, work + "/fresh.txt")
 
     print "-- choosing a folder"
     g.want = work
-    folder = qt.choose_folder(app, { title: "Pick a folder", folder: work })
+    folder = ui.choose_folder(app, { title: "Pick a folder", folder: work })
     check("the folder comes back", folder, work)
 
     print "-- cancelling answers unknown, never \"\""
@@ -178,7 +178,7 @@ nothing_open:
     ' exec, where selectFile is still honoured, so there is a selection for a
     ' result-code-ignoring backend to hand back.
     g.mode = "cancel"
-    none = qt.choose_file(app, { folder: work, name: "have.txt" })
+    none = ui.choose_file(app, { folder: work, name: "have.txt" })
     check("cancel is unknown", is_unknown(none), true)
     check("and not the empty string", contains([""], none), false)
     check("and not the file it opened on", contains([here], none), false)
@@ -186,7 +186,7 @@ nothing_open:
     ' chooser that never answers anything.
     g.mode = "path"
     g.want = here
-    again = qt.choose_file(app, { folder: work })
+    again = ui.choose_file(app, { folder: work })
     check("while a choice is still a path", again, here)
 
     print "-- a path this chooser cannot take is refused, not hung"
@@ -198,7 +198,7 @@ nothing_open:
     ' either dialog. That is a hang, and a hang is not a failure.
     g.refusal = ""
     g.want = absent
-    gave_up = qt.choose_file(app, { folder: work })
+    gave_up = ui.choose_file(app, { folder: work })
     check("refused, naming the path", contains(g.refusal, "not-there.txt"), true)
     check("and saying it is not there", contains(g.refusal, "not there"), true)
     check("so the chooser ended cancelled rather than hanging", is_unknown(gave_up), true)
@@ -209,9 +209,9 @@ nothing_open:
     ' somebody meant is the one thing this verb must not do.
     g.refusal = ""
     g.mode = "true"
-    nope = qt.choose_file(app, { folder: work })
-    check("refused, naming the remedy", contains(g.refusal, "give qt.answer the path"), true)
+    nope = ui.choose_file(app, { folder: work })
+    check("refused, naming the remedy", contains(g.refusal, "give ui.answer the path"), true)
 
     cancelled = timer.cancel(beat)
-    qt.stop()
+    ui.stop()
 end program

@@ -8,11 +8,11 @@
 # so the page's output is a golden over genuine objects with nothing on screen,
 # the same technique run_qt_backend.sh and run_gui_cookbook.sh use.
 #
-# A RECIPE DOES NOT CALL `qt.run()`, and the page says so rather than leaving
-# it to be noticed: `qt.run()` hands Qt the thread until something calls
-# `qt.stop()`, so a recipe that reached it would HANG -- measured, killed at 60s
+# A RECIPE DOES NOT CALL `ui.run()`, and the page says so rather than leaving
+# it to be noticed: `ui.run()` hands Qt the thread until something calls
+# `ui.stop()`, so a recipe that reached it would HANG -- measured, killed at 60s
 # under the offscreen platform. Each one opens its window, fires what a person
-# would have clicked with `qt.invoke`, prints what it can observe and stops,
+# would have clicked with `ui.invoke`, prints what it can observe and stops,
 # which is also the `check` idiom every program in examples/qt/ carries.
 #
 # THE SYNTAX PATH IS SET for recipe 09, which highlights a `source` widget:
@@ -32,7 +32,7 @@ export GBASIC_SYNTAX_PATH=editors/kate
 cookbook_recipe_skip() {
     case "$1" in
         09_code_editor)
-            if [ "$(printf 'print qt.can_highlight()\n' > /tmp/gb_hl_$$.bas
+            if [ "$(printf 'print ui.can_highlight()\n' > /tmp/gb_hl_$$.bas
                     ./gbasic /tmp/gb_hl_$$.bas 2>/dev/null; rm -f /tmp/gb_hl_$$.bas)" = "false" ]; then
                 printf 'SKIP examples/qt_cookbook/09_code_editor.bas (no KSyntaxHighlighting in this build)\n'
                 return 0

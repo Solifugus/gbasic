@@ -40,11 +40,11 @@ end window
 
 program main(args)
     g = { ticks: 0, asked: false }
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "NO DISPLAY"
         return
     end if
-    qt.open(app)
+    ui.open(app)
     beat = timer.every(0.1)
     watch(timer.ticks)
         while count(timer.ticks) > 0
@@ -54,19 +54,19 @@ program main(args)
             if not g.asked then
                 g.asked = true
                 print "DIALOG UP"
-                answered = qt.confirm(app, "Really?")
+                answered = ui.confirm(app, "Really?")
                 print "DIALOG DOWN " + string(answered)
             else
                 ' ONLY REACHABLE IF WATCHER DISPATCH BECAME RE-ENTRANT. If it
                 ' ever is, the limitation is gone and three documents overstate
                 ' it -- which is why the suite fails saying so.
-                ok = qt.answer(true)
+                ok = ui.answer(true)
             end if
             if g.ticks > 40 then
-                qt.stop()
+                ui.stop()
             end if
         end while
     end watch
-    rc = qt.run()
+    rc = ui.run()
     print "LOOP ENDED"
 end program

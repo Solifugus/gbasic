@@ -1519,8 +1519,8 @@ end window
 
 That block **binds a name to a record** and does nothing else — it costs no
 display and no Qt, which is why the whole declaration can be checked on a
-text-only machine. `qt.check(greeter)` applies its rules and answers `true` or
-refuses with the first problem; `qt.open` runs the same check before it builds
+text-only machine. `ui.check(greeter)` applies its rules and answers `true` or
+refuses with the first problem; `ui.open` runs the same check before it builds
 anything.
 
 To put it on screen, open it and hand Qt the thread:
@@ -1528,21 +1528,21 @@ To put it on screen, open it and hand Qt the thread:
 <!--needs-context-->
 ```basic
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display, so there is no window to open."
         return
     end if
-    qt.open(greeter)
-    qt.run()
+    ui.open(greeter)
+    ui.run()
 end program
 ```
 
-**`qt.can_display()` answers rather than raising**, including on a build with no
+**`ui.can_display()` answers rather than raising**, including on a build with no
 Qt at all — so a program degrades instead of dying, and that guard is the
 idiom rather than a nicety. With no display, Qt itself would abort
 uncatchably.
 
-`qt.run()` hands the thread to Qt and returns when `qt.stop()` is called.
+`ui.run()` hands the thread to Qt and returns when `ui.stop()` is called.
 gBASIC's own work is still serviced while it holds it: a `timer`, a webserver
 and an actor mailbox all keep running.
 
@@ -1582,7 +1582,7 @@ record never follows.
 
 ### Where a handler keeps state
 
-gBASIC has no closures, and a handler fires beneath `qt.run()`. It **can read**
+gBASIC has no closures, and a handler fires beneath `ui.run()`. It **can read**
 a variable in `main`, and it **cannot rebind** one — assigning to a plain
 variable there silently makes a handler-local instead, and warning 2104 says so
 and names the remedy. So a stateful window keeps its state in **one record**
@@ -1605,12 +1605,12 @@ end window
 ```basic
 program main(args)
     g = { count: 0 }
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "No display."
         return
     end if
-    qt.open(counter)
-    qt.run()
+    ui.open(counter)
+    ui.run()
     print "clicked " + string(g.count) + " times"
 end program
 ```

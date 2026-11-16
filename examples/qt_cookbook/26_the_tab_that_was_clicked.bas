@@ -6,7 +6,7 @@
 ' current tab, and that is Qt behaving correctly -- right-clicking a background
 ' tab to close it must not first switch you to it. So a handler that reads
 ' `currentIndex` acts on whichever tab was ALREADY ACTIVE, which closes the
-' wrong document and raises nothing. `qt.which_tab()` answers the one the event
+' wrong document and raises nothing. `ui.which_tab()` answers the one the event
 ' is about.
 '
 ' IT ANSWERS `unknown` when the click was not over a tab, which is ordinary
@@ -38,7 +38,7 @@ window app( title: "Notebook", width: 520, height: 300 )
     on book.customContextMenuRequested
         ' ASK WHICH TAB, then decide what the menu may offer for it. A program
         ' that reads `currentIndex` here is reading the wrong tab.
-        which = qt.which_tab()
+        which = ui.which_tab()
         if is_unknown(which) then
             app.set("said", "text", "that was the page, not a tab")
         else
@@ -53,8 +53,8 @@ window app( title: "Notebook", width: 520, height: 300 )
         ' AND THE CLIPBOARD TAKES NO WINDOW: there is one per application, so
         ' there is nothing to name. It copies eagerly, so the text is on the
         ' clipboard the moment this returns.
-        ok = qt.copy(g.paths[g.aimed])
-        app.set("said", "text", "copied " + qt.clipboard())
+        ok = ui.copy(g.paths[g.aimed])
+        app.set("said", "text", "copied " + ui.clipboard())
     end on
 end window
 
@@ -62,16 +62,16 @@ program main(args)
     g = { aimed: 0,
           paths: [ "/src/notes.bas", "/src/util.bas", "/src/main.bas" ] }
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display, so no window -- and no clipboard either"
         return
     end if
 
-    qt.open(app)
+    ui.open(app)
     app.set("book", "currentIndex", 0)
     print "the first tab is current: " + string(app.read("book", "currentIndex"))
 
-    ' A PERSON WOULD RIGHT-CLICK THE THIRD TAB. `qt.right_click`'s third
+    ' A PERSON WOULD RIGHT-CLICK THE THIRD TAB. `ui.right_click`'s third
     ' argument aims at a tab's own rectangle, through the tab bar, which is
     ' where a real click lands.
     app.right_click("book", 2)
@@ -85,7 +85,7 @@ program main(args)
     ' NOW THE MENU ITEM, which is what a person would click next.
     app.invoke("copy_path", "trigger")
     print "after Copy file path:   " + app.read("said", "text")
-    print "the clipboard holds:    " + qt.clipboard()
+    print "the clipboard holds:    " + ui.clipboard()
 
     ' AND A RIGHT-CLICK THAT MISSES EVERY TAB: the page emits the same signal.
     app.right_click("book")

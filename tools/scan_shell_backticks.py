@@ -3,7 +3,7 @@
 
 ELEVEN INSTANCES IN THIS TREE, which is why there is a scanner rather than
 another paragraph. The shape is always the same: a message written for a reader
-quotes a name the way this project quotes names -- `qt.confirm`, `load`,
+quotes a name the way this project quotes names -- `ui.confirm`, `load`,
 `unreachable` -- and the shell runs it. What makes it expensive is that the
 damage is INVISIBLE WHERE IT IS WRITTEN: the substitution usually fails
 quietly, so the line prints with the quoted word MISSING and reads as an

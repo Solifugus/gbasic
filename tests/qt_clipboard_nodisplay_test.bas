@@ -8,7 +8,7 @@
 ' refusal must be CATCHABLE so a program can carry on without the clipboard,
 ' and the lines printed around it must still arrive.
 '
-' AND IT MUST NAME THE DISPLAY. `qt.copy` takes no window, so there is no
+' AND IT MUST NAME THE DISPLAY. `ui.copy` takes no window, so there is no
 ' window to blame -- but `gb_qt_begin`'s own refusal says "no window can be
 ' opened", which is true of a window and the wrong cause for a clipboard. The
 ' wrong-cause class this tree has now recorded six times.
@@ -16,7 +16,7 @@ program main()
     print "progress line one"
 
     on error goto next
-    ok = qt.copy("something")
+    ok = ui.copy("something")
     if error then
         print "COPY REFUSED: " + error.message
     else
@@ -24,7 +24,7 @@ program main()
     end if
 
     on error goto next
-    text = qt.clipboard()
+    text = ui.clipboard()
     if error then
         print "READ REFUSED: " + error.message
     else

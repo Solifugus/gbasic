@@ -19,8 +19,8 @@
  * build without Qt would raise at the IMPORT, taking the whole program with
  * it, which is the shrink run_discovery.sh's note argues against.
  *
- * THE ADDRESS OF A WINDOW IS ITS DECLARATION, not a handle. `qt.open(customer)`
- * takes the record the block bound and `qt.read(customer, "name")` takes the
+ * THE ADDRESS OF A WINDOW IS ITS DECLARATION, not a handle. `ui.open(customer)`
+ * takes the record the block bound and `ui.read(customer, "name")` takes the
  * same thing -- exactly as `web.routes(app)` takes a server record. So there is
  * no 28th value kind, which would owe answers for rendering, `encode`,
  * comparison and copying (PLAT-EQ's lesson: a new kind silently opted into the
@@ -36,7 +36,7 @@
  *     a property of the declaration rather than an omission here: a non-literal
  *     option is recorded as `unknown` by name and not by value (§0.2), because
  *     `show: cust.id` names a place to read in the frame where the subject
- *     lives. So population is the program's: `qt.write(customer, "name",
+ *     lives. So population is the program's: `ui.write(customer, "name",
  *     cust.name)`. The watcher pair that makes `form to edit` two-way is the
  *     next increment.
  */
@@ -48,7 +48,7 @@
 #endif
 
 static void qt_raise(const char *message) {
-    runtime_error_raise(message, QT_ERROR_CODE, "qt");
+    runtime_error_raise(message, QT_ERROR_CODE, "ui");
 }
 
 static const char *qt_record_text(Value *record, const char *field) {
@@ -59,12 +59,12 @@ static const char *qt_record_text(Value *record, const char *field) {
     return f->value->as.string;
 }
 
-/* ---- `qt.check`: the declaration's own rules, over a window a program BUILT
+/* ---- `ui.check`: the declaration's own rules, over a window a program BUILT
  *
  * §4 of docs/qt_gui_design.md says the block is SUGAR OVER A BUILDER, because
  * a declaration cannot contain a loop and so cannot generate a row per
  * invoice. MEASURED 2026-10-18, THAT DOOR WAS ALREADY OPEN AND NOBODY KNEW:
- * `qt.open` reads the record the declaration binds and asks only that `kind`
+ * `ui.open` reads the record the declaration binds and asks only that `kind`
  * is `"window"`, so a record a program builds opens, renders, reads back and
  * fires handlers exactly as a declared one. The builder needed no verb.
  *
@@ -496,19 +496,19 @@ static int qt_check_window_record(Value *win, char *message, size_t cap) {
  * lets the record be the address. */
 /* WHAT A FORM CAPTURED WHEN THE WINDOW OPENED. The declaration names the
  * subject (`form to edit cust` records subject "cust"), and its VALUE is read
- * from the frame that called `qt.open` -- which is what §0.2 means by "a place
+ * from the frame that called `ui.open` -- which is what §0.2 means by "a place
  * to read in the frame where the subject lives", that frame being exactly the
  * one doing the asking.
  *
  * THE RECORD IS KEPT RATHER THAN RE-READ, and that is forced rather than
  * preferred. §2.2 proposed "a watcher per field in each direction"; the first
  * direction works that way and THE SECOND CANNOT, because a widget's signal
- * fires inside QApplication::exec() beneath `qt.run()`, so the frame current
- * at signal time is whichever one called `qt.run` and not reliably the one
- * that called `qt.open`. There is no frame to write back into.
+ * fires inside QApplication::exec() beneath `ui.run()`, so the frame current
+ * at signal time is whichever one called `ui.run` and not reliably the one
+ * that called `ui.open`. There is no frame to write back into.
  *
  * What replaces it is smaller than a watcher, and it is the language's own
- * rule: a record is a VALUE, so `qt.subject` reads the widgets AT THE MOMENT
+ * rule: a record is a VALUE, so `ui.subject` reads the widgets AT THE MOMENT
  * IT IS ASKED and folds them into this capture. Nothing has to be tracked
  * between the two, which also means no change signal can be missed. */
 typedef struct {
@@ -588,7 +588,7 @@ static QtOpenWindow *qt_window_entry(const char *name) {
 
 /* THE WINDOW HAS CLOSED, and this is the whole of gBASIC's side of it: the
  * entry goes, so every verb that needs an open window refuses by name and
- * `qt.open` will build a fresh one.
+ * `ui.open` will build a fresh one.
  *
  * BY NODE RATHER THAN BY NAME because the backend has no names of its own --
  * it was handed one for the by-name table and holds no record of which
@@ -600,7 +600,7 @@ static QtOpenWindow *qt_window_entry(const char *name) {
  * ordering that makes `on app.closed` the place to read a form: see
  * `GbQtCloser::eventFilter`. */
 /* THE REGISTRY'S NAME FOR A NODE, which is also the authority on whether the
- * window is still open at all: `qt.open_modal` needs to close the window it
+ * window is still open at all: `ui.open_modal` needs to close the window it
  * opened, and after the X button ended the modal loop the entry is already
  * gone -- so asking the registry is how the two endings are told apart without
  * the backend having to report which one happened. */
@@ -731,7 +731,7 @@ static int qt_cell_text(const char *fn, int row, int column, char **text) {
         /* THROUGH THE ONE RENDERER (PLAT-RENDER), so a date, money or a
          * duration reaches a cell in the words the language itself uses --
          * rather than this module growing a second opinion about how a value
-         * looks, which is the rule `qt.write` already follows. */
+         * looks, which is the rule `ui.write` already follows. */
         Value as_text = builtin_string_value(result);
         if (as_text.kind == VALUE_STRING && as_text.as.string && text) {
             *text = copy_string(as_text.as.string);
@@ -753,7 +753,7 @@ static int qt_cell_text(const char *fn, int row, int column, char **text) {
  * has written comes near it.
  *
  * WHY THERE IS A CAP AT ALL, which the use-after-free was hiding: a selection
- * handler that calls `qt.refresh` CHANGES THE SELECTION, which calls the
+ * handler that calls `ui.refresh` CHANGES THE SELECTION, which calls the
  * handler again -- a true feedback loop in the program rather than a Qt fault,
  * since every round genuinely alters the selection. Before the lifetime fix
  * the loop terminated by corrupting memory (it "fired 8 times" and answered
@@ -858,7 +858,7 @@ static int qt_structural_option(const char *name) {
 }
 
 /* FILL A `choice`'S LIST FROM AN ARRAY. ONE PIECE OF CODE for both doors --
- * the declared `options:` literal and the run-time `qt.options` -- because a
+ * the declared `options:` literal and the run-time `ui.options` -- because a
  * choice filled one way and refilled the other must hold the same thing, which
  * is the rule `qt_populate_table` follows for a table's rows.
  *
@@ -1242,7 +1242,7 @@ static int qt_build_item(void *parent, Value *item, void *root) {
         /* THE ONE SLOT MEANS DIFFERENT THINGS, so it is handed over
          * differently: a `docks` block spends it on the AREA (the `split
          * across` arrangement, §0.19) where a `toolbar` spends it on its NAME
-         * -- which is what `qt.set(win, "main", "movable", ...)` reaches and
+         * -- which is what `ui.set(win, "main", "movable", ...)` reaches and
          * what Qt keys a saved layout by. A `status` spends it on neither,
          * there being one bar per window. */
         const char *slot = qt_record_text(item, "name");
@@ -1427,7 +1427,7 @@ static int qt_build_item(void *parent, Value *item, void *root) {
     }
     /* A DECLARED `options:` LIST, for the fixed case -- a direction, a status,
      * a currency -- where typing them out is the honest thing. The data-driven
-     * case is `qt.options`, and BAG's editor needs both in one program: the
+     * case is `ui.options`, and BAG's editor needs both in one program: the
      * directions are fixed and the areas are not, which is the measurement
      * that said support both rather than one.
      *
@@ -1684,7 +1684,7 @@ static int qt_build_items(void *parent, Value *items, void *root) {
  * afterwards -- and a form that cannot be re-shown was a GAP, found by trying
  * to write BAG's editor, where choosing a row has to show that area.
  *
- * `filled` COUNTS WHAT IT WROTE, so `qt.refresh` can answer how many things it
+ * `filled` COUNTS WHAT IT WROTE, so `ui.refresh` can answer how many things it
  * drew rather than a bare success. That is the difference between "it ran" and
  * "it did something", and every defect this backend has is the first kind. */
 static int qt_populate_form(void *root, Value *form, Value *slot,
@@ -1777,7 +1777,7 @@ static int qt_populate_form(void *root, Value *form, Value *slot,
             /* A `choice` WHOSE LIST IS NOT FILLED YET IS NOT A MISTAKE, and
              * the ordering makes it ordinary: a declared `options:` list is
              * filled at construction and so is there, but one filled by
-             * `qt.options` can only be filled AFTER the window is open --
+             * `ui.options` can only be filled AFTER the window is open --
              * which is after this pass. So the subject's value has nothing to
              * match and the selection is simply left alone.
              *
@@ -1810,7 +1810,7 @@ static int qt_bind_form(void *root, Value *form, const char *window_name) {
     Value *slot = qt_subject_slot(subject);
     if (!slot) {
         snprintf(message, sizeof(message),
-                 "window `%s`: `form to %s %s` found no `%s` -- qt.open reads "
+                 "window `%s`: `form to %s %s` found no `%s` -- ui.open reads "
                  "the subject from the frame that calls it",
                  window_name, direction, subject, subject);
         qt_raise(message);
@@ -1828,7 +1828,7 @@ static int qt_bind_form(void *root, Value *form, const char *window_name) {
     /* ONE CAPTURE PER SUBJECT, not per form. Two forms may edit one record --
      * the fixture's own `cust` is split across a column and a group, which is
      * how a long form is laid out -- and a second capture of the same variable
-     * would be a second answer to `qt.subject`. The FOLD still visits every
+     * would be a second answer to `ui.subject`. The FOLD still visits every
      * form carrying that subject, so a record spread over several groups is
      * gathered back whole. */
     int already = 0;
@@ -1892,7 +1892,7 @@ static int qt_count_subject(Value *items, const char *subject) {
 
 /* EVERY FORM AND TABLE CARRYING ONE SUBJECT, RE-SHOWN. A subject can drive
  * several parts -- §0.5's own fixture splits `cust` across a column and a
- * group, which is how a long form is laid out -- and `qt.subject` already
+ * group, which is how a long form is laid out -- and `ui.subject` already
  * folds across all of them, so re-showing has to visit all of them too or the
  * two directions would disagree about what a subject reaches.
  *
@@ -1919,7 +1919,7 @@ static int qt_reshow_subject(void *root, Value *items, const char *subject,
                 if (slot->kind != VALUE_RECORD) {
                     char message[512];
                     snprintf(message, sizeof(message),
-                             "qt.refresh: `%s` fills a form, so it needs a "
+                             "ui.refresh: `%s` fills a form, so it needs a "
                              "record, and it holds %s", subject,
                              value_kind_name(slot->kind));
                     qt_raise(message);
@@ -1935,7 +1935,7 @@ static int qt_reshow_subject(void *root, Value *items, const char *subject,
                 if (slot->kind != VALUE_ARRAY) {
                     char message[512];
                     snprintf(message, sizeof(message),
-                             "qt.refresh: `%s` fills a %s, so it needs a "
+                             "ui.refresh: `%s` fills a %s, so it needs a "
                              "list of records, and it holds %s", subject, word,
                              value_kind_name(slot->kind));
                     qt_raise(message);
@@ -1984,7 +1984,7 @@ static const char *qt_tree_depth_field(Value *tree);
  * §0.28's own fixture declares it LAST, where the drawn indices and the
  * declared ones agree by accident, so nothing could see it -- and the
  * consequence was not a wrong caption but a tree that read back as EMPTY:
- * `qt.cell(win, "files", 0, "name")` resolved to column 1 of a one-column
+ * `ui.cell(win, "files", 0, "name")` resolved to column 1 of a one-column
  * widget, `gb_qt_table_get` answered nothing, and the message said *"table
  * `files` has no row 0"* -- naming the one thing that was not wrong, over a
  * tree that had populated correctly. Two fields in the other order, no
@@ -2042,7 +2042,7 @@ static int qt_table_column(Value *table, const char *field) {
  * widget -- and with it the text, the caret, the scroll position and the undo
  * stack, which is the whole reason the verb exists rather than a rebuild
  * being dressed up. A new child is BUILT through `qt_build_item`, the same
- * door `qt.open` uses, so a window cannot render one way at open and another
+ * door `ui.open` uses, so a window cannot render one way at open and another
  * afterwards; that is the rule `qt_populate_table` and `qt_populate_form`
  * already follow one widget along.
  *
@@ -2141,7 +2141,7 @@ static int qt_connect_built(void *root, Value *items, const QtNameSet *built,
             }
             if (!signal || !hf || !hf->value ||
                 hf->value->kind != VALUE_FUNCTION) {
-                qt_raise("qt.refresh: this handler carries no function to call");
+                qt_raise("ui.refresh: this handler carries no function to call");
                 return 0;
             }
             const char *fn = hf->value->as.function.name;
@@ -2159,14 +2159,14 @@ static int qt_connect_built(void *root, Value *items, const QtNameSet *built,
             }
             err[0] = '\0';
             if (!gb_qt_connect(root, target, signal, fn, err, sizeof(err))) {
-                snprintf(message, sizeof(message), "qt.refresh: %s",
+                snprintf(message, sizeof(message), "ui.refresh: %s",
                          err[0] ? err : "that handler could not be connected");
                 qt_raise(message);
                 return 0;
             }
             if (!qt_names_add(done, target) || !qt_names_add(done, signal) ||
                 !qt_names_add(done, fn)) {
-                qt_raise("qt.refresh ran out of memory");
+                qt_raise("ui.refresh ran out of memory");
                 return 0;
             }
             continue;
@@ -2197,7 +2197,7 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
     if (!kept || !was) {
         free(kept);
         free(was);
-        qt_raise("qt.refresh ran out of memory");
+        qt_raise("ui.refresh ran out of memory");
         return 0;
     }
     for (int i = 0; i < before; i++) {
@@ -2211,7 +2211,7 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
             free(kept);
             free(was);
             free(built.names);
-            qt_raise("qt.refresh: every item must be a record");
+            qt_raise("ui.refresh: every item must be a record");
             return 0;
         }
         const char *name = qt_record_text(entry, "name");
@@ -2227,7 +2227,7 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
                 free(kept);
                 free(was);
                 free(built.names);
-                snprintf(message, sizeof(message), "qt.refresh: %s",
+                snprintf(message, sizeof(message), "ui.refresh: %s",
                          err[0] ? err : "that child could not be replaced");
                 qt_raise(message);
                 return 0;
@@ -2254,7 +2254,7 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
                 free(kept);
                 free(was);
                 free(built.names);
-                snprintf(message, sizeof(message), "qt.refresh: %s",
+                snprintf(message, sizeof(message), "ui.refresh: %s",
                          err[0] ? err : "that caption could not be set");
                 qt_raise(message);
                 return 0;
@@ -2268,7 +2268,7 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
             free(kept);
             free(was);
             free(built.names);
-            qt_raise("qt.refresh ran out of memory");
+            qt_raise("ui.refresh ran out of memory");
             return 0;
         }
     }
@@ -2291,7 +2291,7 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
             free(kept);
             free(was);
             free(built.names);
-            snprintf(message, sizeof(message), "qt.refresh: %s",
+            snprintf(message, sizeof(message), "ui.refresh: %s",
                      err[0] ? err : "that child could not be removed");
             qt_raise(message);
             return 0;
@@ -2310,7 +2310,7 @@ static int qt_reconcile_children(void *root, void *container, Value *items,
         if (child) {
             err[0] = '\0';
             if (!gb_qt_child_place(container, child, at, err, sizeof(err))) {
-                snprintf(message, sizeof(message), "qt.refresh: %s",
+                snprintf(message, sizeof(message), "ui.refresh: %s",
                          err[0] ? err : "that child could not be placed");
                 qt_raise(message);
                 free(built.names);
@@ -2736,7 +2736,7 @@ static int qt_bind_table(void *root, Value *table, const char *window_name) {
     Value *slot = qt_subject_slot(subject);
     if (!slot) {
         snprintf(message, sizeof(message),
-                 "window `%s`: `table %s to %s %s` found no `%s` -- qt.open "
+                 "window `%s`: `table %s to %s %s` found no `%s` -- ui.open "
                  "reads the subject from the frame that calls it",
                  window_name, name, direction, subject, subject);
         qt_raise(message);
@@ -2799,7 +2799,7 @@ static int qt_bind_tree(void *root, Value *tree, const char *window_name) {
     Value *slot = qt_subject_slot(subject);
     if (!slot) {
         snprintf(message, sizeof(message),
-                 "window `%s`: `tree %s to show %s` found no `%s` -- qt.open "
+                 "window `%s`: `tree %s to show %s` found no `%s` -- ui.open "
                  "reads the subject from the frame that calls it",
                  window_name, name, subject, subject);
         qt_raise(message);
@@ -2974,7 +2974,7 @@ static int qt_connect_items(void *root, Value *items) {
  * cannot be forgotten, and a forgotten one does not leak -- it leaves
  * something BOUND after the session ended. Here that something is a live
  * QApplication and an open window, which would outlive the program that asked
- * for it and meet the next `qt.open` in the same process as a second
+ * for it and meet the next `ui.open` in the same process as a second
  * QApplication, which Qt does not allow. Called from runtime_teardown beside
  * http_shutdown and timer_shutdown. */
 static void qt_shutdown(void) {
@@ -3005,14 +3005,14 @@ static int qt_window_record(Value *v, const char *verb) {
     char message[256];
     if (v->kind != VALUE_RECORD) {
         snprintf(message, sizeof(message),
-                 "qt.%s expects a window declaration", verb);
+                 "ui.%s expects a window declaration", verb);
         qt_raise(message);
         return 0;
     }
     const char *kind = qt_record_text(v, "kind");
     if (!kind || strcmp(kind, "window") != 0) {
         snprintf(message, sizeof(message),
-                 "qt.%s expects a window declaration", verb);
+                 "ui.%s expects a window declaration", verb);
         qt_raise(message);
         return 0;
     }
@@ -3021,7 +3021,7 @@ static int qt_window_record(Value *v, const char *verb) {
 
 #endif /* HAVE_QT */
 
-/* `qt.check` ANSWERS ON A BUILD WITH NO QT, like `can_display` and for a
+/* `ui.check` ANSWERS ON A BUILD WITH NO QT, like `can_display` and for a
  * stronger reason: it is a check on a DECLARATION, and the whole declarative
  * surface was built to be provable with no display and no toolkit. A program
  * that builds a window on a headless machine and validates it before shipping
@@ -3029,7 +3029,7 @@ static int qt_window_record(Value *v, const char *verb) {
 static Value qt_check_verb(AstExpr *expr, size_t argc) {
     char message[512];
     if (argc != 1) {
-        qt_raise("qt.check expects one window record");
+        qt_raise("ui.check expects one window record");
         return value_null();
     }
     Value win = eval_expr(expr->as.call.args.items[0]);
@@ -3038,13 +3038,13 @@ static Value qt_check_verb(AstExpr *expr, size_t argc) {
         return value_null();
     }
     if (win.kind != VALUE_RECORD) {
-        qt_raise("qt.check expects one window record");
+        qt_raise("ui.check expects one window record");
         value_free(win);
         return value_null();
     }
     const char *kind = qt_record_text(&win, "kind");
     if (!kind || strcmp(kind, "window") != 0) {
-        qt_raise("qt.check expects a window record -- one carrying "
+        qt_raise("ui.check expects a window record -- one carrying "
                  "`kind: \"window\"`, which is what a `window` block binds");
         value_free(win);
         return value_null();
@@ -3089,7 +3089,7 @@ static Value qt_check_verb(AstExpr *expr, size_t argc) {
 #if HAVE_QT
 
 /* GUARDED, AND THE CONVENTION CUTS BOTH WAYS. This file's note says code that
- * is NOT optional must stay OUT of these guards -- `qt.check` below is exactly
+ * is NOT optional must stay OUT of these guards -- `ui.check` below is exactly
  * that, answering on a build with no Qt. The mirror is this: code that IS
  * optional must stay IN them, and this helper calls `gb_qt_window`,
  * `gb_qt_begin` and `gb_qt_show`, none of which exists without Qt. Written
@@ -3099,7 +3099,7 @@ static Value qt_check_verb(AstExpr *expr, size_t argc) {
  * all run on a full build. The cheap check CLAUDE.md names (`make
  * QT_AVAILABLE=0`) is the one I skipped.
  */
-/* OPEN A WINDOW -- THE WHOLE PATH, ONE COPY. `qt.open` and `qt.open_modal`
+/* OPEN A WINDOW -- THE WHOLE PATH, ONE COPY. `ui.open` and `ui.open_modal`
  * differ in exactly two things: whether the root is a QDialog (so `exec()`
  * exists) and what happens after it is built. Everything else -- the record
  * check, the already-open refusal, the display refusal, starting Qt, the
@@ -3117,7 +3117,7 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
     *root_out = NULL;
     if (argc != 1) {
         snprintf(message, sizeof(message),
-                 "qt.%s expects one window declaration", verb);
+                 "ui.%s expects one window declaration", verb);
         qt_raise(message);
         return 0;
     }
@@ -3130,7 +3130,7 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
         value_free(win);
         return 0;
     }
-    /* THE SAME RULES, WHETHER OR NOT ANYBODY CALLED `qt.check`. A
+    /* THE SAME RULES, WHETHER OR NOT ANYBODY CALLED `ui.check`. A
      * declaration met them at LOAD time; a built record meets them here,
      * because a validator nobody is obliged to call is necessary and not
      * sufficient -- `rules.validate` refused a malformed stack all along
@@ -3170,7 +3170,7 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
     if (!qt_begun) {
         err[0] = '\0';
         if (!gb_qt_begin(err, sizeof(err))) {
-            snprintf(message, sizeof(message), "qt.%s: %s", verb,
+            snprintf(message, sizeof(message), "ui.%s: %s", verb,
                      err[0] ? err : "Qt could not start");
             qt_raise(message);
             value_free(win);
@@ -3267,7 +3267,7 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
          * combined -- and this is a refusal rather than a silent downgrade
          * because the alternative is a modal window whose declared panes
          * simply are not there. */
-        qt_raise("qt.open_modal: a window with dock panes, a toolbar or a "
+        qt_raise("ui.open_modal: a window with dock panes, a toolbar or a "
                  "status bar cannot be shown modally -- those belong to a main "
                  "window, and a modal window is a dialog");
         value_free(win);
@@ -3317,7 +3317,7 @@ static int qt_span_of(Value v, int *span, const char **text, const char *verb,
     char message[256];
     if (v.kind != VALUE_RECORD) {
         snprintf(message, sizeof(message),
-                 "qt.%s expects each range as a record {line, column, line2, "
+                 "ui.%s expects each range as a record {line, column, line2, "
                  "column2%s}, and item %zu is not one", verb,
                  text ? ", text" : "", at + 1);
         qt_raise(message);
@@ -3327,7 +3327,7 @@ static int qt_span_of(Value v, int *span, const char **text, const char *verb,
         RecordField *f = record_find(&v, names[k]);
         if (!f || !f->value || f->value->kind != VALUE_NUMBER) {
             snprintf(message, sizeof(message),
-                     "qt.%s: item %zu has no `%s` number", verb, at + 1,
+                     "ui.%s: item %zu has no `%s` number", verb, at + 1,
                      names[k]);
             qt_raise(message);
             return 0;
@@ -3338,7 +3338,7 @@ static int qt_span_of(Value v, int *span, const char **text, const char *verb,
         RecordField *f = record_find(&v, "text");
         if (!f || !f->value || f->value->kind != VALUE_STRING) {
             snprintf(message, sizeof(message),
-                     "qt.%s: item %zu has no `text` to put in the range", verb,
+                     "ui.%s: item %zu has no `text` to put in the range", verb,
                      at + 1);
             qt_raise(message);
             return 0;
@@ -3358,8 +3358,8 @@ static Value qt_span_record(const int *span) {
 }
 
 /* FIND AND REPLACE ON A `source` OR A `memo`, AND A PART'S CAPTION (§0.36):
- * qt.select_text, qt.selection, qt.replace_text, qt.highlight_text,
- * qt.highlights and qt.label. Every argument is evaluated before any is
+ * ui.select_text, ui.selection, ui.replace_text, ui.highlight_text,
+ * ui.highlights and ui.label. Every argument is evaluated before any is
  * checked, and every value is freed on every path. */
 static Value qt_text_verb(AstExpr *expr, const char *verb, size_t argc) {
     char message[512];
@@ -3370,7 +3370,7 @@ static Value qt_text_verb(AstExpr *expr, const char *verb, size_t argc) {
     int is_highlight = strcmp(verb, "highlight_text") == 0;
     size_t want = is_select ? 6 : (is_replace || is_highlight) ? 3 : 2;
     if (argc != want) {
-        snprintf(message, sizeof(message), "qt.%s expects %s", verb,
+        snprintf(message, sizeof(message), "ui.%s expects %s", verb,
                  is_select ? "a window, a part's name, and a line, a column, a "
                              "second line and a second column"
                  : is_replace ? "a window, a part's name, and an edit "
@@ -3393,7 +3393,7 @@ static Value qt_text_verb(AstExpr *expr, const char *verb, size_t argc) {
     if (!qt_window_record(&args[0], verb) || args[1].kind != VALUE_STRING) {
         if (!error_action_pending()) {
             snprintf(message, sizeof(message),
-                     "qt.%s expects the part's name as text", verb);
+                     "ui.%s expects the part's name as text", verb);
             qt_raise(message);
         }
         goto done;
@@ -3412,7 +3412,7 @@ static Value qt_text_verb(AstExpr *expr, const char *verb, size_t argc) {
         int span[4];
         for (int k = 0; k < 4; k++) {
             if (args[2 + k].kind != VALUE_NUMBER) {
-                qt_raise("qt.select_text expects the line and column numbers "
+                qt_raise("ui.select_text expects the line and column numbers "
                          "as numbers");
                 goto done;
             }
@@ -3427,7 +3427,7 @@ static Value qt_text_verb(AstExpr *expr, const char *verb, size_t argc) {
         Value list = args[2];
         int one = is_replace && list.kind == VALUE_RECORD;
         if (!one && list.kind != VALUE_ARRAY) {
-            snprintf(message, sizeof(message), "qt.%s expects %s", verb,
+            snprintf(message, sizeof(message), "ui.%s expects %s", verb,
                      is_replace ? "an edit record or an array of them"
                                 : "an array of ranges ([] clears them)");
             qt_raise(message);
@@ -3495,7 +3495,7 @@ static Value qt_text_verb(AstExpr *expr, const char *verb, size_t argc) {
         free(text);
     }
     if (!ok) {
-        snprintf(message, sizeof(message), "qt.%s: %s", verb,
+        snprintf(message, sizeof(message), "ui.%s: %s", verb,
                  err[0] ? err : "that could not be done");
         qt_raise(message);
     }
@@ -3525,7 +3525,7 @@ static Value qt_eval_call(AstExpr *expr) {
 
 #if !HAVE_QT
     (void)argc;
-    /* `qt.can_display` answers rather than raising, deliberately and for the
+    /* `ui.can_display` answers rather than raising, deliberately and for the
      * same reason `has_builtin` exists: a program asking whether it may open a
      * window is DEGRADING GRACEFULLY, and a build with no Qt is one of the
      * answers to that question. Every other verb refuses in the convention's
@@ -3563,20 +3563,20 @@ static Value qt_eval_call(AstExpr *expr) {
 
     if (strcmp(verb, "can_display") == 0) {
         if (argc != 0) {
-            qt_raise("qt.can_display takes no arguments");
+            qt_raise("ui.can_display takes no arguments");
             return value_null();
         }
         return value_bool(gb_qt_can_display() ? 1 : 0);
     }
 
-    /* A BUILD-LEVEL QUESTION, where `qt.highlighting` is a per-widget one, and
+    /* A BUILD-LEVEL QUESTION, where `ui.highlighting` is a per-widget one, and
      * both are needed: this one tells a program whether to offer the feature
      * at all, that one tells it what a particular editor actually got -- which
      * a boolean cannot, since the definition can be the wrong one or somebody
      * else's copy of the right one. */
     if (strcmp(verb, "can_highlight") == 0) {
         if (argc != 0) {
-            qt_raise("qt.can_highlight takes no arguments");
+            qt_raise("ui.can_highlight takes no arguments");
             return value_null();
         }
         return value_bool(gb_qt_has_highlighting() ? 1 : 0);
@@ -3596,7 +3596,7 @@ static Value qt_eval_call(AstExpr *expr) {
      */
     if (strcmp(verb, "copy") == 0) {
         if (argc != 1) {
-            qt_raise("qt.copy expects the text to copy");
+            qt_raise("ui.copy expects the text to copy");
             return value_null();
         }
         Value v = eval_expr(expr->as.call.args.items[0]);
@@ -3625,13 +3625,13 @@ static Value qt_eval_call(AstExpr *expr) {
             len = given ? strlen(given) : 0;
         }
         if (!given) {
-            qt_raise("qt.copy expects text, or a file or folder reference");
+            qt_raise("ui.copy expects text, or a file or folder reference");
             value_free(v);
             return value_null();
         }
         if (!gb_qt_can_display()) {
             qt_raise("no display is available, so there is no clipboard to "
-                     "copy to. Guard with qt.can_display()");
+                     "copy to. Guard with ui.can_display()");
             value_free(v);
             return value_null();
         }
@@ -3639,7 +3639,7 @@ static Value qt_eval_call(AstExpr *expr) {
         int ok = gb_qt_copy(given, (long)len, err, sizeof(err));
         value_free(v);
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.copy: %s",
+            snprintf(message, sizeof(message), "ui.copy: %s",
                      err[0] ? err : "the text could not be copied");
             qt_raise(message);
             return value_null();
@@ -3654,13 +3654,13 @@ static Value qt_eval_call(AstExpr *expr) {
      * chooser answers `unknown` and a chosen empty name could not happen. */
     if (strcmp(verb, "clipboard") == 0) {
         if (argc != 0) {
-            qt_raise("qt.clipboard takes no arguments -- it answers what is on "
-                     "the clipboard, and qt.copy(text) puts something there");
+            qt_raise("ui.clipboard takes no arguments -- it answers what is on "
+                     "the clipboard, and ui.copy(text) puts something there");
             return value_null();
         }
         if (!gb_qt_can_display()) {
             qt_raise("no display is available, so there is no clipboard to "
-                     "read. Guard with qt.can_display()");
+                     "read. Guard with ui.can_display()");
             return value_null();
         }
         char *text = NULL;
@@ -3668,7 +3668,7 @@ static Value qt_eval_call(AstExpr *expr) {
         err[0] = '\0';
         int rc = gb_qt_clipboard(&text, &len, err, sizeof(err));
         if (rc < 0) {
-            snprintf(message, sizeof(message), "qt.clipboard: %s",
+            snprintf(message, sizeof(message), "ui.clipboard: %s",
                      err[0] ? err : "the clipboard could not be read");
             qt_raise(message);
             return value_null();
@@ -3694,11 +3694,11 @@ static Value qt_eval_call(AstExpr *expr) {
     }
 
     /* A WINDOW SHOWN MODALLY (docs/qt_gui_design.md §0.18) -- what §0.15 named
-     * as the thing `qt.confirm` is not: two buttons is the whole of what a
+     * as the thing `ui.confirm` is not: two buttons is the whole of what a
      * message box offers, and anything richer is a window with a layout of its
      * own.
      *
-     * IT IS THE SAME WINDOW. This and `qt.open` share one open path, so the
+     * IT IS THE SAME WINDOW. This and `ui.open` share one open path, so the
      * declaration, the validation, the binding and the handlers are the same
      * code rather than merely similar -- which is why a modal window needs no
      * vocabulary of its own.
@@ -3706,8 +3706,8 @@ static Value qt_eval_call(AstExpr *expr) {
      * IT CLOSES THE WINDOW BEFORE RETURNING, and that is the decision worth
      * reading. Measured, `accept()` delivers no close event at all and leaves
      * the widget hidden but readable, while the X button closes it -- so
-     * `false` would otherwise mean two different states and every `qt.close`
-     * after one would need an `qt.is_open` guard. Closing here makes the
+     * `false` would otherwise mean two different states and every `ui.close`
+     * after one would need an `ui.is_open` guard. Closing here makes the
      * `closed` handler fire exactly once however the window ended, so §0.17's
      * single rule -- the handler is where a dismissed form is read -- holds
      * for a modal window too. */
@@ -3719,19 +3719,19 @@ static Value qt_eval_call(AstExpr *expr) {
         int accepted = 0;
         err[0] = '\0';
         if (!gb_qt_show_modal(root, &accepted, err, sizeof(err))) {
-            snprintf(message, sizeof(message), "qt.open_modal: %s",
+            snprintf(message, sizeof(message), "ui.open_modal: %s",
                      err[0] ? err : "that window could not be shown modally");
             qt_raise(message);
             return value_null();
         }
         /* THE REGISTRY DECIDES WHETHER THERE IS ANYTHING LEFT TO CLOSE: after
          * the X button it has already forgotten the window, and closing again
-         * would be the refusal `qt.close` correctly makes. */
+         * would be the refusal `ui.close` correctly makes. */
         const char *still = qt_window_name_of(root);
         if (still) {
             err[0] = '\0';
             if (!gb_qt_close(root, err, sizeof(err))) {
-                snprintf(message, sizeof(message), "qt.open_modal: %s",
+                snprintf(message, sizeof(message), "ui.open_modal: %s",
                          err[0] ? err : "that window could not be closed");
                 qt_raise(message);
                 return value_null();
@@ -3747,7 +3747,7 @@ static Value qt_eval_call(AstExpr *expr) {
 
     /* SAY YES OR NO TO A MODAL WINDOW -- what a button handler calls.
      *
-     * NOT `qt.answer`, which exists to drive a dialog FROM THE PROGRAM when
+     * NOT `ui.answer`, which exists to drive a dialog FROM THE PROGRAM when
      * nobody is there (a timeout, an unattended run, a suite). This is the
      * person's own answer arriving through a button they pressed: a different
      * thing wearing the same word, so it gets its own verb rather than a third
@@ -3756,7 +3756,7 @@ static Value qt_eval_call(AstExpr *expr) {
         int accepting = strcmp(verb, "accept") == 0;
         if (argc != 1) {
             snprintf(message, sizeof(message),
-                     "qt.%s expects one window declaration", verb);
+                     "ui.%s expects one window declaration", verb);
             qt_raise(message);
             return value_null();
         }
@@ -3783,8 +3783,8 @@ static Value qt_eval_call(AstExpr *expr) {
         value_free(win);
         if (!ok) {
             snprintf(message, sizeof(message),
-                     "qt.%s: %s -- use qt.open_modal to show it modally, or "
-                     "qt.close to shut an ordinary window", verb,
+                     "ui.%s: %s -- use ui.open_modal to show it modally, or "
+                     "ui.close to shut an ordinary window", verb,
                      err[0] ? err : "that window was not opened modally");
             qt_raise(message);
             return value_null();
@@ -3793,23 +3793,23 @@ static Value qt_eval_call(AstExpr *expr) {
     }
 
     /* CLOSE A WINDOW (docs/qt_gui_design.md §0.17). THE OTHER HALF OF
-     * `qt.open`, and until this there was none: a window could be opened and
+     * `ui.open`, and until this there was none: a window could be opened and
      * never shut, which for a second window is the whole point -- one you open,
      * use and dismiss.
      *
      * IT REFUSES WHEN THE WINDOW IS NOT OPEN rather than doing nothing, which
-     * is the rule `qt.answer` already follows: a silent no-op is the failure
+     * is the rule `ui.answer` already follows: a silent no-op is the failure
      * class this backend is tested against, and here it would hide the one
      * case a program most needs to know about -- the person closed it first.
-     * `qt.is_open` is how a program asks without raising.
+     * `ui.is_open` is how a program asks without raising.
      *
-     * A CLOSE IS NOT UNDONE BY REOPENING. `qt.open` builds a fresh window from
+     * A CLOSE IS NOT UNDONE BY REOPENING. `ui.open` builds a fresh window from
      * the declaration, so a form captures its subject again and nothing of the
      * old one survives -- which is what makes a dismissed window's values
      * readable only in the `closed` handler. */
     if (strcmp(verb, "close") == 0) {
         if (argc != 1) {
-            qt_raise("qt.close expects one window declaration");
+            qt_raise("ui.close expects one window declaration");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -3835,7 +3835,7 @@ static Value qt_eval_call(AstExpr *expr) {
         int ok = gb_qt_close(root, err, sizeof(err));
         value_free(win);
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.close: %s",
+            snprintf(message, sizeof(message), "ui.close: %s",
                      err[0] ? err : "that window could not be closed");
             qt_raise(message);
             return value_null();
@@ -3844,7 +3844,7 @@ static Value qt_eval_call(AstExpr *expr) {
     }
 
     /* IS IT STILL THERE? ANSWERS RATHER THAN REFUSING, which is the same
-     * argument `qt.can_display` and `qt.can_highlight` rest on: this is a
+     * argument `ui.can_display` and `ui.can_highlight` rest on: this is a
      * question a program asks IN ORDER TO CHOOSE, and a raise would make the
      * choice unmakeable.
      *
@@ -3855,7 +3855,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * told. */
     if (strcmp(verb, "is_open") == 0) {
         if (argc != 1) {
-            qt_raise("qt.is_open expects one window declaration");
+            qt_raise("ui.is_open expects one window declaration");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -3889,12 +3889,12 @@ static Value qt_eval_call(AstExpr *expr) {
      * thing that changes when the declaration is reordered -- and then it
      * reads a real value from the wrong column, which is a plausible answer. */
     if (strcmp(verb, "cell") == 0 || strcmp(verb, "alignment") == 0) {
-        /* `qt.alignment` IS `qt.cell` ASKING A DIFFERENT QUESTION OF THE SAME
+        /* `ui.alignment` IS `ui.cell` ASKING A DIFFERENT QUESTION OF THE SAME
          * CELL: where its text sits, as Qt would paint it ("left", "right" or
          * "center"). One branch, so the two address a cell identically and
          * refuse identically. */
         int is_align = strcmp(verb, "alignment") == 0;
-        const char *vn = is_align ? "qt.alignment" : "qt.cell";
+        const char *vn = is_align ? "ui.alignment" : "ui.cell";
         if (argc != 4) {
             snprintf(message, sizeof(message),
                      "%s expects a window, a table, a row and a column name", vn);
@@ -3951,7 +3951,7 @@ static Value qt_eval_call(AstExpr *expr) {
             snprintf(message, sizeof(message),
                      col == -2
                          ? "%s: `%s`'s `%s` column carries the depth and "
-                           "is not drawn, so it holds no cell -- qt.depth "
+                           "is not drawn, so it holds no cell -- ui.depth "
                            "answers it"
                          : "%s: table `%s` has no `%s` column",
                      vn, which.as.string, colv.as.string);
@@ -3990,7 +3990,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * DIFFERENT SOURCES in the declaration -- so the caption is the only thing
      * that pins the column MAPPING independently of the mapping itself.
      *
-     * WITHOUT IT, population and `qt.cell` both map a column to a name, and
+     * WITHOUT IT, population and `ui.cell` both map a column to a name, and
      * two perturbations -- "every column reads the first field" and "a cell
      * ignores the name and reads column 0" -- produced IDENTICAL output, which
      * is the signature of a check that cannot separate them. If both were
@@ -4006,7 +4006,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * THE CAPTIONS ARE WHAT DISTINGUISHES THEM, and as a list they pin the
      * COUNT and the ORDER as well -- a submenu that escaped shows up as a
      * third entry, and two menus that swapped show up reordered. Same shape as
-     * `qt.heading` one directive over, found the same way. */
+     * `ui.heading` one directive over, found the same way. */
     /* WHERE A PART SITS IN ITS GRID -- `{ row, column, across, down }`.
      *
      * THE REASON IS AN ORACLE, built before the fixture because the pattern
@@ -4021,16 +4021,16 @@ static Value qt_eval_call(AstExpr *expr) {
     /* WHICH DRAGGABLE OR SCROLLED REGION A PART SITS IN (§0.19) -- `split` and
      * `scroll`'s oracle, and it exists because WITHOUT IT NEITHER IS
      * OBSERVABLE. A `split` spends its one slot on the direction, so it cannot
-     * be named, so `qt.read`, `qt.set` and a handler cannot reach it and
+     * be named, so `ui.read`, `ui.set` and a handler cannot reach it and
      * nothing could say whether a splitter was built, which way round it is,
      * or how many panes it got.
      *
      * ASKED OF THE LAYOUT, walking up from a part that CAN be named -- the rule
-     * `qt.at` already follows, and for the same reason: a position we
+     * `ui.at` already follows, and for the same reason: a position we
      * remembered would agree with a placement that was wrong. */
     if (strcmp(verb, "pane") == 0) {
         if (argc != 2) {
-            qt_raise("qt.pane expects a window and a part's name");
+            qt_raise("ui.pane expects a window and a part's name");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -4042,7 +4042,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (!qt_window_record(&win, "pane") || which.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                qt_raise("qt.pane expects the part's name as text");
+                qt_raise("ui.pane expects the part's name as text");
             }
             value_free(win);
             value_free(which);
@@ -4074,7 +4074,7 @@ static Value qt_eval_call(AstExpr *expr) {
             /* `unknown`, NOT A RECORD OF ZEROES: "this part is in no split and
              * no scroll" is an ordinary answer, and a record saying
              * `panes: 0` would read as a splitter that holds nothing. The rule
-             * `qt.dialog` and `principal()` already follow. */
+             * `ui.dialog` and `principal()` already follow. */
             free(part);
             free(kindt);
             free(dirt);
@@ -4123,7 +4123,7 @@ static Value qt_eval_call(AstExpr *expr) {
 
     if (strcmp(verb, "at") == 0) {
         if (argc != 2) {
-            qt_raise("qt.at expects a window and a part's name");
+            qt_raise("ui.at expects a window and a part's name");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -4135,7 +4135,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (!qt_window_record(&win, "at") || which.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                qt_raise("qt.at expects the part's name as text");
+                qt_raise("ui.at expects the part's name as text");
             }
             value_free(win);
             value_free(which);
@@ -4156,7 +4156,7 @@ static Value qt_eval_call(AstExpr *expr) {
                                &down);
         if (!ok) {
             snprintf(message, sizeof(message),
-                     "qt.at: `%s` is not in a `cells` in window `%s`",
+                     "ui.at: `%s` is not in a `cells` in window `%s`",
                      which.as.string, wname ? wname : "");
             qt_raise(message);
             value_free(win);
@@ -4173,7 +4173,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return out;
     }
 
-    /* SET ONE PROPERTY BY NAME -- the write half of the route `qt.read(win,
+    /* SET ONE PROPERTY BY NAME -- the write half of the route `ui.read(win,
      * part, prop)` opened, and it was left out when that shipped.
      *
      * TWO REASONS, AND THE FIRST IS THE ORDINARY ONE: a program wants to
@@ -4191,7 +4191,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * than something the author has to design around. */
     if (strcmp(verb, "set") == 0) {
         if (argc != 4) {
-            qt_raise("qt.set expects a window, a part, a property and a value");
+            qt_raise("ui.set expects a window, a part, a property and a value");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -4206,7 +4206,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, "set") || which.kind != VALUE_STRING ||
             prop.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                qt_raise("qt.set expects the part's name and the property's "
+                qt_raise("ui.set expects the part's name and the property's "
                          "name as text");
             }
             value_free(win); value_free(which);
@@ -4226,7 +4226,7 @@ static Value qt_eval_call(AstExpr *expr) {
         /* THROUGH THE SAME DOOR THE DECLARATION'S OPTIONS GO THROUGH, so a
          * property the widget does not carry is refused BY NAME here too --
          * the two halves of one route must agree about what a property name
-         * is, which is the rule `qt.read`'s own refusal already follows. */
+         * is, which is the rule `ui.read`'s own refusal already follows. */
         err[0] = '\0';
         int ok = 0;
         switch (v.kind) {
@@ -4262,7 +4262,7 @@ static Value qt_eval_call(AstExpr *expr) {
         value_free(win); value_free(which);
         value_free(prop); value_free(v);
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.set: %s",
+            snprintf(message, sizeof(message), "ui.set: %s",
                      err[0] ? err : "that property was refused");
             qt_raise(message);
             return value_null();
@@ -4271,20 +4271,20 @@ static Value qt_eval_call(AstExpr *expr) {
             /* THE SAME NOTE THROUGH THE OTHER DOOR. Both halves of one route
              * must say the same thing about an icon the theme does not have,
              * or an author would get a warning from the declaration and
-             * silence from `qt.set`. */
-            warn_fmt(2116, "icon", "qt.set: %s", err);
+             * silence from `ui.set`. */
+            warn_fmt(2116, "icon", "ui.set: %s", err);
         }
         return value_bool(1);
     }
 
     if (strcmp(verb, "children") == 0) {
         /* THE NAMES OF A CONTAINER'S CHILDREN, IN ORDER -- the oracle for
-         * `qt.refresh(win, name, items)` and the only way a box's order can be
-         * seen at all: `qt.at` answers coordinates for a `cells` grid alone
-         * (§0.8), and `qt.tabs` answers captions rather than identity. A child
+         * `ui.refresh(win, name, items)` and the only way a box's order can be
+         * seen at all: `ui.at` answers coordinates for a `cells` grid alone
+         * (§0.8), and `ui.tabs` answers captions rather than identity. A child
          * nobody named answers "", which is a different claim from absent. */
         if (argc != 2) {
-            qt_raise("qt.children expects a window and the container's name");
+            qt_raise("ui.children expects a window and the container's name");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -4296,7 +4296,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, "children") ||
             which.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                qt_raise("qt.children expects a window and the container's "
+                qt_raise("ui.children expects a window and the container's "
                          "name as text");
             }
             value_free(win); value_free(which);
@@ -4316,7 +4316,7 @@ static Value qt_eval_call(AstExpr *expr) {
         void *container = gb_qt_container_node(root, which.as.string, cerr,
                                                sizeof(cerr));
         if (!container) {
-            snprintf(message, sizeof(message), "qt.children: %s",
+            snprintf(message, sizeof(message), "ui.children: %s",
                      cerr[0] ? cerr : "that container cannot be found");
             qt_raise(message);
             value_free(win); value_free(which);
@@ -4343,16 +4343,16 @@ static Value qt_eval_call(AstExpr *expr) {
          * the by-name route because `textCursor` is measurably neither a
          * property nor invokable.
          *
-         * BOTH DIRECTIONS THROUGH ONE BRANCH, the rule `qt.mark`/`qt.marks`
+         * BOTH DIRECTIONS THROUGH ONE BRANCH, the rule `ui.mark`/`ui.marks`
          * already follow: a reader and a writer that disagreed about what a
          * line number MEANS would be the off-by-one §0.29 exists to have no
          * room for, and here they share the numbering by construction. */
         int putting = strcmp(verb, "caret_to") == 0;
         if (argc != (putting ? 4 : 2)) {
             qt_raise(putting
-                         ? "qt.caret_to expects a window, a part's name, a "
+                         ? "ui.caret_to expects a window, a part's name, a "
                            "line and a column"
-                         : "qt.caret expects a window and a part's name");
+                         : "ui.caret expects a window and a part's name");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -4369,9 +4369,9 @@ static Value qt_eval_call(AstExpr *expr) {
             (putting && (lv.kind != VALUE_NUMBER || cv.kind != VALUE_NUMBER))) {
             if (!error_action_pending()) {
                 qt_raise(putting
-                             ? "qt.caret_to expects a window, a part's name as "
+                             ? "ui.caret_to expects a window, a part's name as "
                                "text, and a line and a column as numbers"
-                             : "qt.caret expects a window and a part's name as "
+                             : "ui.caret expects a window and a part's name as "
                                "text");
             }
             value_free(win); value_free(which); value_free(lv); value_free(cv);
@@ -4396,7 +4396,7 @@ static Value qt_eval_call(AstExpr *expr) {
             int ok = gb_qt_caret_to(root, pname, (int)want_line,
                                     (int)want_col, err, sizeof(err));
             if (!ok) {
-                snprintf(message, sizeof(message), "qt.caret_to: %s",
+                snprintf(message, sizeof(message), "ui.caret_to: %s",
                          err[0] ? err : "the caret could not be moved");
                 free(pname);
                 qt_raise(message);
@@ -4409,7 +4409,7 @@ static Value qt_eval_call(AstExpr *expr) {
         int got = gb_qt_caret(root, pname, &line, &column, &selecting, err,
                              sizeof(err));
         if (got < 0) {
-            snprintf(message, sizeof(message), "qt.caret: %s",
+            snprintf(message, sizeof(message), "ui.caret: %s",
                      err[0] ? err : "the caret could not be read");
             free(pname);
             qt_raise(message);
@@ -4419,8 +4419,8 @@ static Value qt_eval_call(AstExpr *expr) {
         if (got == 0) {
             /* NOT A TEXT EDITOR IS AN ABSENCE, not a refusal: "where is the
              * caret in this button" has no answer, and `unknown` is the one
-             * that composes with `is_unknown` -- the shape `qt.dock`,
-             * `qt.pane` and `qt.scrolled` all take. */
+             * that composes with `is_unknown` -- the shape `ui.dock`,
+             * `ui.pane` and `ui.scrolled` all take. */
             return value_unknown();
         }
         Value out = value_record(NULL, 0);
@@ -4445,13 +4445,13 @@ static Value qt_eval_call(AstExpr *expr) {
          * ONE DOOR FOR BOTH DIRECTIONS, because the pair has to agree about
          * what a category IS: a writer that accepted `warn` and a reader that
          * did not would make a mark unreadable for a reason nothing explains.
-         * The shape `qt.read`/`qt.set` already share. */
+         * The shape `ui.read`/`ui.set` already share. */
         int setting = strcmp(verb, "mark") == 0;
         if (argc != (setting ? 4 : 3)) {
             qt_raise(setting
-                         ? "qt.mark expects a window, a `source`'s name, a "
+                         ? "ui.mark expects a window, a `source`'s name, a "
                            "category and a list of lines"
-                         : "qt.marks expects a window, a `source`'s name and "
+                         : "ui.marks expects a window, a `source`'s name and "
                            "a category");
             return value_null();
         }
@@ -4470,10 +4470,10 @@ static Value qt_eval_call(AstExpr *expr) {
             (setting && lines.kind != VALUE_ARRAY)) {
             if (!error_action_pending()) {
                 qt_raise(setting
-                             ? "qt.mark expects a window, a `source`'s name "
+                             ? "ui.mark expects a window, a `source`'s name "
                                "and a category as text, and the lines as an "
                                "array"
-                             : "qt.marks expects a window, and a `source`'s "
+                             : "ui.marks expects a window, and a `source`'s "
                                "name and a category as text");
             }
             value_free(win); value_free(which); value_free(cat);
@@ -4491,7 +4491,7 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         /* THE NAMES ARE COPIED BEFORE THE VALUES GO (§0.22's defect, found a
-         * second time in `qt.read` by §0.27). */
+         * second time in `ui.read` by §0.27). */
         char *pname = copy_string(which.as.string);
         char *cname = copy_string(cat.as.string);
         value_free(win); value_free(which); value_free(cat);
@@ -4515,11 +4515,11 @@ static Value qt_eval_call(AstExpr *expr) {
             const char *near = gb_nearest_word(cname, set);
             if (near) {
                 snprintf(message, sizeof(message),
-                         "qt.%s: `%s` is not a mark category -- did you mean "
+                         "ui.%s: `%s` is not a mark category -- did you mean "
                          "`%s`?", verb, cname, near);
             } else {
                 snprintf(message, sizeof(message),
-                         "qt.%s: `%s` is not a mark category; the categories "
+                         "ui.%s: `%s` is not a mark category; the categories "
                          "are %s", verb, cname, listing);
             }
             free(pname); free(cname);
@@ -4536,7 +4536,7 @@ static Value qt_eval_call(AstExpr *expr) {
                                    (int)(sizeof(buf) / sizeof(buf[0])), err,
                                    sizeof(err));
             if (n < 0) {
-                snprintf(message, sizeof(message), "qt.marks: %s",
+                snprintf(message, sizeof(message), "ui.marks: %s",
                          err[0] ? err : "that margin could not be read");
                 free(pname);
                 qt_raise(message);
@@ -4565,7 +4565,7 @@ static Value qt_eval_call(AstExpr *expr) {
             Value *el = &lines.as.array.store->items[i];
             if (el->kind != VALUE_NUMBER) {
                 snprintf(message, sizeof(message),
-                         "qt.mark: the lines are numbers, and item %zu holds "
+                         "ui.mark: the lines are numbers, and item %zu holds "
                          "%s", i, value_kind_name(el->kind));
                 free(nums); free(pname);
                 value_free(lines);
@@ -4584,7 +4584,7 @@ static Value qt_eval_call(AstExpr *expr) {
              * success while drawing nothing. */
             if (line < 1) {
                 snprintf(message, sizeof(message),
-                         "qt.mark: line numbers start at 1, and item %zu is "
+                         "ui.mark: line numbers start at 1, and item %zu is "
                          "%ld", i, line);
                 free(nums); free(pname);
                 value_free(lines);
@@ -4598,7 +4598,7 @@ static Value qt_eval_call(AstExpr *expr) {
                                 sizeof(err));
         free(nums);
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.mark: %s",
+            snprintf(message, sizeof(message), "ui.mark: %s",
                      err[0] ? err : "that margin could not be marked");
             free(pname);
             qt_raise(message);
@@ -4617,12 +4617,12 @@ static Value qt_eval_call(AstExpr *expr) {
          * every check the language can otherwise make.
          *
          * ASKED OF THE WINDOW rather than of anything we remembered, which is
-         * `qt.at`'s and `qt.pane`'s own justification -- a remembered position
+         * `ui.at`'s and `ui.pane`'s own justification -- a remembered position
          * agrees with a placement that was wrong. Answers `unknown` for a name
          * that is not a dock, which is a different claim from "a dock with no
          * area". */
         if (argc != 2) {
-            qt_raise("qt.dock expects a window and a pane's name");
+            qt_raise("ui.dock expects a window and a pane's name");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -4633,7 +4633,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (!qt_window_record(&win, "dock") || which.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                qt_raise("qt.dock expects a window and a pane's name as text");
+                qt_raise("ui.dock expects a window and a pane's name as text");
             }
             value_free(win); value_free(which);
             return value_null();
@@ -4657,7 +4657,7 @@ static Value qt_eval_call(AstExpr *expr) {
         int got = gb_qt_dock_info(root, pname, area, sizeof(area), &floating,
                                   &tabbed, &visible, err, sizeof(err));
         if (got < 0) {
-            snprintf(message, sizeof(message), "qt.dock: %s",
+            snprintf(message, sizeof(message), "ui.dock: %s",
                      err[0] ? err : "that pane could not be read");
             free(pname);
             qt_raise(message);
@@ -4696,13 +4696,13 @@ static Value qt_eval_call(AstExpr *expr) {
          *
          * AND IT IS QT'S FORMAT, NOT OURS: a program keeps it and does not
          * read it, which is why it is one opaque string rather than a record
-         * naming areas -- `qt.dock` is what answers questions. */
+         * naming areas -- `ui.dock` is what answers questions. */
         int saving = strcmp(verb, "layout") == 0;
         if (argc != (saving ? 1 : 2)) {
             qt_raise(saving
-                         ? "qt.layout expects a window"
-                         : "qt.restore_layout expects a window and the text "
-                           "`qt.layout` answered");
+                         ? "ui.layout expects a window"
+                         : "ui.restore_layout expects a window and the text "
+                           "`ui.layout` answered");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -4716,8 +4716,8 @@ static Value qt_eval_call(AstExpr *expr) {
             (!saving && text.kind != VALUE_STRING)) {
             if (!error_action_pending()) {
                 qt_raise(saving
-                             ? "qt.layout expects a window"
-                             : "qt.restore_layout expects a window and the "
+                             ? "ui.layout expects a window"
+                             : "ui.restore_layout expects a window and the "
                                "layout as text");
             }
             value_free(win); value_free(text);
@@ -4739,7 +4739,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (saving) {
             char *out = gb_qt_layout_save(root, err, sizeof(err));
             if (!out) {
-                snprintf(message, sizeof(message), "qt.layout: %s",
+                snprintf(message, sizeof(message), "ui.layout: %s",
                          err[0] ? err : "this window has no layout to save");
                 qt_raise(message);
                 return value_null();
@@ -4765,11 +4765,11 @@ static Value qt_eval_call(AstExpr *expr) {
 
     if (strcmp(verb, "gutter_press") == 0) {
         /* A PRESS IN THE MARGIN, which is how the `gutter` handler is driven
-         * without a person -- `qt.right_click`'s shape (§0.20) and
-         * `qt.scroll`'s (§0.21), and in the product surface for the reason
+         * without a person -- `ui.right_click`'s shape (§0.20) and
+         * `ui.scroll`'s (§0.21), and in the product surface for the reason
          * stated there rather than as a test hook. */
         if (argc != 3) {
-            qt_raise("qt.gutter_press expects a window, a `source`'s name and "
+            qt_raise("ui.gutter_press expects a window, a `source`'s name and "
                      "a line");
             return value_null();
         }
@@ -4783,7 +4783,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, "gutter_press") ||
             which.kind != VALUE_STRING || linev.kind != VALUE_NUMBER) {
             if (!error_action_pending()) {
-                qt_raise("qt.gutter_press expects a window, a `source`'s name "
+                qt_raise("ui.gutter_press expects a window, a `source`'s name "
                          "as text and a line number");
             }
             value_free(win); value_free(which); value_free(linev);
@@ -4804,7 +4804,7 @@ static Value qt_eval_call(AstExpr *expr) {
         char err[QT_ERRBUF];
         err[0] = '\0';
         if (!gb_qt_gutter_press(root, pname, (int)line, err, sizeof(err))) {
-            snprintf(message, sizeof(message), "qt.gutter_press: %s",
+            snprintf(message, sizeof(message), "ui.gutter_press: %s",
                      err[0] ? err : "that margin could not be pressed");
             free(pname);
             qt_raise(message);
@@ -4815,8 +4815,8 @@ static Value qt_eval_call(AstExpr *expr) {
     }
 
     if (strcmp(verb, "gutter") == 0) {
-        /* WHAT THE MARGIN IS, or NOTHING AT ALL -- the shape `qt.pane`,
-         * `qt.dialog` and `principal()` all take, for the reason stated
+        /* WHAT THE MARGIN IS, or NOTHING AT ALL -- the shape `ui.pane`,
+         * `ui.dialog` and `principal()` all take, for the reason stated
          * there: a record reading `width: 0` would say a margin exists and is
          * empty, where the truth is that this `source` has none.
          *
@@ -4826,7 +4826,7 @@ static Value qt_eval_call(AstExpr *expr) {
          * nine-line one -- which a gutter that ignored the count would fail
          * while passing any presence check. */
         if (argc != 2) {
-            qt_raise("qt.gutter expects a window and a `source`'s name");
+            qt_raise("ui.gutter expects a window and a `source`'s name");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -4837,7 +4837,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (!qt_window_record(&win, "gutter") || which.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                qt_raise("qt.gutter expects a window and a `source`'s name as "
+                qt_raise("ui.gutter expects a window and a `source`'s name as "
                          "text");
             }
             value_free(win); value_free(which);
@@ -4860,7 +4860,7 @@ static Value qt_eval_call(AstExpr *expr) {
         int got = gb_qt_gutter_info(root, pname, &numbers, &marks, &width, err,
                                     sizeof(err));
         if (got < 0) {
-            snprintf(message, sizeof(message), "qt.gutter: %s",
+            snprintf(message, sizeof(message), "ui.gutter: %s",
                      err[0] ? err : "that margin could not be read");
             free(pname);
             qt_raise(message);
@@ -4887,9 +4887,9 @@ static Value qt_eval_call(AstExpr *expr) {
          * you cannot click to set is decorative, and a breakpoint is why the
          * user said the margin matters. ANSWERS `unknown` OUTSIDE A HANDLER,
          * which is a different claim from "line 0" and is the distinction
-         * `qt.wheel` and `principal()` already make. */
+         * `ui.wheel` and `principal()` already make. */
         if (argc != 0) {
-            qt_raise("qt.gutter_click takes no arguments -- it answers the "
+            qt_raise("ui.gutter_click takes no arguments -- it answers the "
                      "click being handled");
             return value_null();
         }
@@ -4904,16 +4904,16 @@ static Value qt_eval_call(AstExpr *expr) {
 
     if (strcmp(verb, "which_tab") == 0) {
         /* WHICH TAB THE EVENT BEING HANDLED IS ABOUT -- the fourth verb of a
-         * shape the Studio bench named rather than this backend: `qt.selected`
-         * answers which row, `qt.gutter_click` which line, `qt.wheel` which
+         * shape the Studio bench named rather than this backend: `ui.selected`
+         * answers which row, `ui.gutter_click` which line, `ui.wheel` which
          * way, and this one which tab. All four exist because a handler in
          * this backend takes no arguments, so the event is ASKED FOR.
          *
          * IT IS THE ONE CASE Qt DOES NOT ANSWER BY ITSELF, which is why it
          * needs a verb where a row does not: measured, a right-press MOVES a
-         * table's or a tree's current row, so `qt.selected` already says which
+         * table's or a tree's current row, so `ui.selected` already says which
          * was clicked -- and a right-press on a QTabBar correctly does NOT
-         * move the current index, so `qt.read(win, part, "currentIndex")`
+         * move the current index, so `ui.read(win, part, "currentIndex")`
          * answers the tab that was ALREADY ACTIVE. Studio's rule is the
          * opposite ("right-clicking a background tab to close it must not
          * first switch you to it"), so without this a port acts on the wrong
@@ -4923,7 +4923,7 @@ static Value qt_eval_call(AstExpr *expr) {
          * "the click was not over a tab" -- the second is an ordinary case,
          * since a right-click on a tab widget's PAGE emits the same signal and
          * `tabAt` answers nothing for it. 0 would be a valid-looking index and
-         * -1 is the C answer, not gBASIC's; the `qt.selected`/`principal()`
+         * -1 is the C answer, not gBASIC's; the `ui.selected`/`principal()`
          * distinction.
          *
          * NOT `tab_click`, WHICH WAS THE FIRST NAME AND WAS A LIE: the int
@@ -4932,7 +4932,7 @@ static Value qt_eval_call(AstExpr *expr) {
          * PROGRAM calls `setCurrentIndex`, where nobody clicked anything. The
          * name has to be true of every route that fills it. */
         if (argc != 0) {
-            qt_raise("qt.which_tab takes no arguments -- it answers the tab "
+            qt_raise("ui.which_tab takes no arguments -- it answers the tab "
                      "the event being handled is about");
             return value_null();
         }
@@ -4944,18 +4944,18 @@ static Value qt_eval_call(AstExpr *expr) {
     }
 
     if (strcmp(verb, "shortcuts") == 0 || strcmp(verb, "key") == 0) {
-        /* `qt.shortcuts(win, part)` answers EVERY shortcut a part answers to,
-         * because `qt.read(..., "shortcut")` reports only the first -- the
-         * property holds one sequence, measured. `qt.key(win, part, keys)`
+        /* `ui.shortcuts(win, part)` answers EVERY shortcut a part answers to,
+         * because `ui.read(..., "shortcut")` reports only the first -- the
+         * property holds one sequence, measured. `ui.key(win, part, keys)`
          * presses one key combination on a part through Qt's shortcut map,
-         * the keyboard's `qt.right_click`, and answers whether anything took
+         * the keyboard's `ui.right_click`, and answers whether anything took
          * it. Both asked for by gBASIC Studio, whose accelerators were
          * untestable. */
         int is_key = strcmp(verb, "key") == 0;
         if (argc != (is_key ? 3 : 2)) {
-            qt_raise(is_key ? "qt.key expects a window, a part's name and the "
+            qt_raise(is_key ? "ui.key expects a window, a part's name and the "
                               "keys to press, like \"Ctrl+S\""
-                            : "qt.shortcuts expects a window and a part's name");
+                            : "ui.shortcuts expects a window and a part's name");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -4969,9 +4969,9 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, verb) || which.kind != VALUE_STRING ||
             (is_key && keys.kind != VALUE_STRING)) {
             if (!error_action_pending()) {
-                qt_raise(is_key ? "qt.key expects a window, a part's name as "
+                qt_raise(is_key ? "ui.key expects a window, a part's name as "
                                   "text and the keys as text"
-                                : "qt.shortcuts expects a window and a part's "
+                                : "ui.shortcuts expects a window and a part's "
                                   "name as text");
             }
             value_free(win); value_free(which); value_free(keys);
@@ -4995,7 +4995,7 @@ static Value qt_eval_call(AstExpr *expr) {
             int ok = gb_qt_key(root, pname, ktext, &handled, err, sizeof(err));
             free(pname); free(ktext);
             if (!ok) {
-                snprintf(message, sizeof(message), "qt.key: %s",
+                snprintf(message, sizeof(message), "ui.key: %s",
                          err[0] ? err : "that key could not be pressed");
                 qt_raise(message);
                 return value_null();
@@ -5005,7 +5005,7 @@ static Value qt_eval_call(AstExpr *expr) {
         char *joined = gb_qt_shortcuts(root, pname, err, sizeof(err));
         free(pname);
         if (!joined) {
-            snprintf(message, sizeof(message), "qt.shortcuts: %s",
+            snprintf(message, sizeof(message), "ui.shortcuts: %s",
                      err[0] ? err : "that part has no shortcuts");
             qt_raise(message);
             return value_null();
@@ -5043,10 +5043,10 @@ static Value qt_eval_call(AstExpr *expr) {
          * builds a FLAT tree whose every name, index, selection and refresh
          * reads back correctly, so nothing else can see it. The fourth time in
          * this backend that asking "what would be observable if this did
-         * nothing?" produced a verb (§0.20's `qt.right_click`, §0.21's
-         * `qt.scrolled`, §0.23's `qt.has_icon`, and this). */
+         * nothing?" produced a verb (§0.20's `ui.right_click`, §0.21's
+         * `ui.scrolled`, §0.23's `ui.has_icon`, and this). */
         if (argc != 3) {
-            qt_raise("qt.depth expects a window, a tree's name and a row");
+            qt_raise("ui.depth expects a window, a tree's name and a row");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -5059,7 +5059,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, "depth") || which.kind != VALUE_STRING ||
             rowv.kind != VALUE_NUMBER) {
             if (!error_action_pending()) {
-                qt_raise("qt.depth expects a window, a tree's name as text and "
+                qt_raise("ui.depth expects a window, a tree's name as text and "
                          "a row number");
             }
             value_free(win); value_free(which); value_free(rowv);
@@ -5075,23 +5075,23 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         /* THE NAME IS COPIED BEFORE THE VALUE GOES (§0.22's defect, and the
-         * one §0.27 found in `qt.read` a second time). */
+         * one §0.27 found in `ui.read` a second time). */
         char *tname = copy_string(which.as.string);
         long row = (long)rowv.as.num.value;
         value_free(win); value_free(which); value_free(rowv);
         int d = gb_qt_tree_depth(root, tname, (int)row);
         if (d == -2) {
             /* NOT A TREE IS A DIFFERENT ANSWER FROM NO SUCH ROW, which is the
-             * distinction `qt.selected` already rests on: "that is a field" and
+             * distinction `ui.selected` already rests on: "that is a field" and
              * "nobody is there" must not share a sentence. */
-            snprintf(message, sizeof(message), "qt.depth: `%s` is not a tree",
+            snprintf(message, sizeof(message), "ui.depth: `%s` is not a tree",
                      tname);
             free(tname);
             qt_raise(message);
             return value_null();
         }
         if (d < 0) {
-            snprintf(message, sizeof(message), "qt.depth: `%s` has no row %ld",
+            snprintf(message, sizeof(message), "ui.depth: `%s` has no row %ld",
                      tname, row);
             free(tname);
             qt_raise(message);
@@ -5104,11 +5104,11 @@ static Value qt_eval_call(AstExpr *expr) {
     if (strcmp(verb, "tabs") == 0) {
         /* THE CAPTIONS OF A `tabs`, AS A LIST, and it exists because they are
          * otherwise unobservable: `QTabWidget::tabText(int)` takes an argument
-         * and `qt.invoke` passes none, so every check about a caption would
-         * pass on an implementation that never set one. The `qt.menus` shape
+         * and `ui.invoke` passes none, so every check about a caption would
+         * pass on an implementation that never set one. The `ui.menus` shape
          * for the same reason one widget along. */
         if (argc != 2) {
-            qt_raise("qt.tabs expects a window and the tab set's name");
+            qt_raise("ui.tabs expects a window and the tab set's name");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -5119,7 +5119,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (!qt_window_record(&win, "tabs") || which.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                qt_raise("qt.tabs expects a window and the tab set's name as "
+                qt_raise("ui.tabs expects a window and the tab set's name as "
                          "text");
             }
             value_free(win); value_free(which);
@@ -5140,7 +5140,7 @@ static Value qt_eval_call(AstExpr *expr) {
              * naming a window's other container where a `tabs` was meant --
              * and "no tabs" would be a true sentence about the wrong thing. */
             snprintf(message, sizeof(message),
-                     "qt.tabs: this window has no tab set called `%s`",
+                     "ui.tabs: this window has no tab set called `%s`",
                      which.as.string);
             qt_raise(message);
             value_free(win); value_free(which);
@@ -5152,7 +5152,7 @@ static Value qt_eval_call(AstExpr *expr) {
         char *tname = copy_string(which.as.string);
         value_free(win); value_free(which);
         /* AN EMPTY ARRAY FOR A TAB SET WITH NO PAGES, not a refusal -- the
-         * `qt.menus` rule: "there are none" is the honest answer to the
+         * `ui.menus` rule: "there are none" is the honest answer to the
          * question that was asked, and a reconcile can legitimately empty one. */
         Value *caps = n ? malloc(sizeof(Value) * (size_t)n) : NULL;
         if (n && !caps) {
@@ -5174,7 +5174,7 @@ static Value qt_eval_call(AstExpr *expr) {
          * item added to the WRONG menu keeps its name, so nothing else in the
          * fixture can see it. */
         if (argc != 1 && argc != 2) {
-            qt_raise("qt.menus expects a window, and optionally which menu's "
+            qt_raise("ui.menus expects a window, and optionally which menu's "
                      "entries to read");
             return value_null();
         }
@@ -5214,7 +5214,7 @@ static Value qt_eval_call(AstExpr *expr) {
             } else if (idx.kind == VALUE_NUMBER) {
                 which = (int)idx.as.num.value;
             } else {
-                qt_raise("qt.menus expects the menu's position as a number, or "
+                qt_raise("ui.menus expects the menu's position as a number, or "
                          "a popup menu's name as text");
                 value_free(win);
                 value_free(idx);
@@ -5238,15 +5238,15 @@ static Value qt_eval_call(AstExpr *expr) {
                  * was meant -- and "no menu at position" would be nonsense
                  * about a name. */
                 snprintf(message, sizeof(message),
-                         "qt.menus: this window has no popup menu called `%s`",
+                         "ui.menus: this window has no popup menu called `%s`",
                          pname);
                 qt_raise(message);
                 free(pname);
             } else if (which < 0) {
-                qt_raise("qt.menus: that window has no menu bar to read");
+                qt_raise("ui.menus: that window has no menu bar to read");
             } else {
                 snprintf(message, sizeof(message),
-                         "qt.menus: this window has no menu at position %d",
+                         "ui.menus: this window has no menu at position %d",
                          which);
                 qt_raise(message);
             }
@@ -5292,18 +5292,18 @@ static Value qt_eval_call(AstExpr *expr) {
      *
      * IT DOES NOT NEED A DISPLAY and does not open one: the sheet is
      * remembered and applied when a QApplication is constructed. A program
-     * therefore sets its theme first and asks `qt.can_display()` after, and
+     * therefore sets its theme first and asks `ui.can_display()` after, and
      * the first window is built already themed instead of appearing plain and
      * then changing.
      *
      * THE THEME IS TEXT, NOT A FILE, which is the platform/policy split this
-     * tree keeps making: `qt.theme(read({file}"dark.qss"))` composes out of
+     * tree keeps making: `ui.theme(read({file}"dark.qss"))` composes out of
      * what the language already has, where a file argument would put file
      * resolution, missing-file behaviour and a search path inside a GUI
      * module that has no business owning them. */
     if (strcmp(verb, "theme") == 0) {
         if (argc > 1) {
-            qt_raise("qt.theme takes a stylesheet to set, or nothing to read "
+            qt_raise("ui.theme takes a stylesheet to set, or nothing to read "
                      "the current one");
             return value_null();
         }
@@ -5319,8 +5319,8 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         if (v.kind != VALUE_STRING) {
-            qt_raise("qt.theme expects a stylesheet as text -- "
-                     "`qt.theme(read({file}\"dark.qss\"))` to load one");
+            qt_raise("ui.theme expects a stylesheet as text -- "
+                     "`ui.theme(read({file}\"dark.qss\"))` to load one");
             value_free(v);
             return value_null();
         }
@@ -5328,7 +5328,7 @@ static Value qt_eval_call(AstExpr *expr) {
         int ok = gb_qt_theme_set(v.as.string, err, sizeof(err));
         value_free(v);
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.theme: %s",
+            snprintf(message, sizeof(message), "ui.theme: %s",
                      err[0] ? err : "that stylesheet was refused");
             qt_raise(message);
             return value_null();
@@ -5336,7 +5336,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    /* `qt.refresh(win, table)` -- SHOW THE LIST AS IT IS NOW.
+    /* `ui.refresh(win, table)` -- SHOW THE LIST AS IT IS NOW.
      *
      * MEASURED, AND IT WAS A GAP RATHER THAN A LIMIT: a `table to show`
      * captured its subject when the window opened and NEVER FOLLOWED IT, so
@@ -5345,19 +5345,19 @@ static Value qt_eval_call(AstExpr *expr) {
      * list-driven -- orders arriving, a search result, a filtered view -- it
      * is fatal, and Studio's file tree is exactly that shape.
      *
-     * IT IS THE SYMMETRIC HALF OF `qt.subject`, which is what settled the
+     * IT IS THE SYMMETRIC HALF OF `ui.subject`, which is what settled the
      * design: §2.2's watcher pair could not do write-back, so a record is read
      * from the widgets AT THE MOMENT ASKED. This is the same principle the
      * other way -- the list is read from the frame AT THE MOMENT ASKED, with
      * nothing tracked in between, so no change can be missed.
      *
-     * THE CAPTURED RECORD IS UPDATED TOO. A later `qt.subject` folds the
+     * THE CAPTURED RECORD IS UPDATED TOO. A later `ui.subject` folds the
      * widgets back over what the form captured at open, and leaving that stale
      * would make a refreshed table fold into the OLD list -- a plausible
      * record built from two different moments. */
-    /* `qt.options(win, part, list)` -- a `choice`'S LIST, FROM DATA.
+    /* `ui.options(win, part, list)` -- a `choice`'S LIST, FROM DATA.
      *
-     * The same principle as `qt.refresh` one widget along: the list is read AT
+     * The same principle as `ui.refresh` one widget along: the list is read AT
      * THE MOMENT ASKED, nothing tracked in between. Here it is passed rather
      * than named, because a choice has no declared subject to re-read -- which
      * is the honest difference: a table says `to show lines` and a choice does
@@ -5366,11 +5366,11 @@ static Value qt_eval_call(AstExpr *expr) {
      * CLEARING RESETS THE SELECTION and that is deliberate: a list that has
      * changed may not contain what was chosen, and keeping an index into a
      * list that has moved is how a form comes to report a value nobody picked.
-     * A program that wants the old choice back asks for it with `qt.write`,
+     * A program that wants the old choice back asks for it with `ui.write`,
      * which refuses one that is not in the new list. */
     if (strcmp(verb, "options") == 0) {
         if (argc != 3) {
-            qt_raise("qt.options expects a window, a part's name and a list");
+            qt_raise("ui.options expects a window, a part's name and a list");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -5383,7 +5383,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, "options") || which.kind != VALUE_STRING ||
             list.kind != VALUE_ARRAY) {
             if (!error_action_pending()) {
-                qt_raise("qt.options expects a window, the part's name as text "
+                qt_raise("ui.options expects a window, the part's name as text "
                          "and a list");
             }
             value_free(win); value_free(which); value_free(list);
@@ -5398,7 +5398,7 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(win); value_free(which); value_free(list);
             return value_null();
         }
-        if (!qt_fill_choice(root, which.as.string, &list, "qt.options")) {
+        if (!qt_fill_choice(root, which.as.string, &list, "ui.options")) {
             value_free(win); value_free(which); value_free(list);
             return value_null();
         }
@@ -5415,7 +5415,7 @@ static Value qt_eval_call(AstExpr *expr) {
          * re-show what a table or a form already has. Three: reconcile a
          * named container's children against the record. */
         if (argc != 2 && argc != 3) {
-            qt_raise("qt.refresh expects a window and the table's name, and "
+            qt_raise("ui.refresh expects a window and the table's name, and "
                      "optionally a container's items to reconcile");
             return value_null();
         }
@@ -5430,7 +5430,7 @@ static Value qt_eval_call(AstExpr *expr) {
             if (!qt_window_record(&win, "refresh") ||
                 which.kind != VALUE_STRING || items.kind != VALUE_ARRAY) {
                 if (!error_action_pending()) {
-                    qt_raise("qt.refresh expects a window, a container's name "
+                    qt_raise("ui.refresh expects a window, a container's name "
                              "as text, and its items as an array");
                 }
                 value_free(win); value_free(which); value_free(items);
@@ -5450,7 +5450,7 @@ static Value qt_eval_call(AstExpr *expr) {
             void *container = gb_qt_container_node(root, which.as.string, cerr,
                                                    sizeof(cerr));
             if (!container) {
-                snprintf(message, sizeof(message), "qt.refresh: %s",
+                snprintf(message, sizeof(message), "ui.refresh: %s",
                          cerr[0] ? cerr : "that container cannot be found");
                 qt_raise(message);
                 value_free(win); value_free(which); value_free(items);
@@ -5477,7 +5477,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (!qt_window_record(&win, "refresh") || which.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                qt_raise("qt.refresh expects a window and the table's name as "
+                qt_raise("ui.refresh expects a window and the table's name as "
                          "text");
             }
             value_free(win); value_free(which);
@@ -5516,7 +5516,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (table && subject_nodes > 0) {
             snprintf(message, sizeof(message),
-                     "qt.refresh: window `%s` has both a table named `%s` and "
+                     "ui.refresh: window `%s` has both a table named `%s` and "
                      "%d part(s) bound to a subject called `%s`, so the name "
                      "means two things here -- rename one",
                      wname ? wname : "", which.as.string, subject_nodes,
@@ -5527,7 +5527,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (!table && subject_nodes == 0) {
             snprintf(message, sizeof(message),
-                     "qt.refresh: window `%s` declares no table named `%s` and "
+                     "ui.refresh: window `%s` declares no table named `%s` and "
                      "nothing bound to a subject of that name",
                      wname ? wname : "", which.as.string);
             qt_raise(message);
@@ -5537,20 +5537,20 @@ static Value qt_eval_call(AstExpr *expr) {
         const char *subject = table ? qt_record_text(table, "subject") : NULL;
         if (table && !subject) {
             snprintf(message, sizeof(message),
-                     "qt.refresh: table `%s` is bound to nothing to refresh "
+                     "ui.refresh: table `%s` is bound to nothing to refresh "
                      "from", which.as.string);
             qt_raise(message);
             value_free(win); value_free(which);
             return value_null();
         }
-        /* THE SAME NON-RAISING WALK `qt.open` USES, so the sentence about a
+        /* THE SAME NON-RAISING WALK `ui.open` USES, so the sentence about a
          * missing subject is the one an author has already met. */
         const char *from = table ? subject : which.as.string;
         Value *slot = qt_subject_slot(from);
         if (!slot) {
             snprintf(message, sizeof(message),
-                     "qt.refresh: `%s` is not in scope here -- it is read from "
-                     "the frame that calls qt.refresh, as qt.open reads it from "
+                     "ui.refresh: `%s` is not in scope here -- it is read from "
+                     "the frame that calls ui.refresh, as ui.open reads it from "
                      "the frame that calls that", from);
             qt_raise(message);
             value_free(win); value_free(which);
@@ -5562,7 +5562,7 @@ static Value qt_eval_call(AstExpr *expr) {
          * names which of the two was wanted. */
         if (table && slot->kind != VALUE_ARRAY) {
             snprintf(message, sizeof(message),
-                     "qt.refresh: `%s` needs a list of records, and it holds %s",
+                     "ui.refresh: `%s` needs a list of records, and it holds %s",
                      subject, value_kind_name(slot->kind));
             qt_raise(message);
             value_free(win); value_free(which);
@@ -5625,7 +5625,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * it. */
     if (strcmp(verb, "highlighting") == 0) {
         if (argc != 2) {
-            qt_raise("qt.highlighting expects a window and a part's name");
+            qt_raise("ui.highlighting expects a window and a part's name");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -5637,7 +5637,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, "highlighting") ||
             which.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                qt_raise("qt.highlighting expects a window and the part's "
+                qt_raise("ui.highlighting expects a window and the part's "
                          "name as text");
             }
             value_free(win); value_free(which);
@@ -5690,7 +5690,7 @@ static Value qt_eval_call(AstExpr *expr) {
         int asking = strcmp(verb, "confirm") == 0;
         if (argc != 2) {
             snprintf(message, sizeof(message),
-                     "qt.%s expects a window and a message", verb);
+                     "ui.%s expects a window and a message", verb);
             qt_raise(message);
             return value_null();
         }
@@ -5703,7 +5703,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, verb) || text.kind != VALUE_STRING) {
             if (!error_action_pending()) {
                 snprintf(message, sizeof(message),
-                         "qt.%s expects a window and the message as text", verb);
+                         "ui.%s expects a window and the message as text", verb);
                 qt_raise(message);
             }
             value_free(win); value_free(text);
@@ -5720,8 +5720,8 @@ static Value qt_eval_call(AstExpr *expr) {
              * three lines to avoid. */
             if (!gb_qt_can_display()) {
                 snprintf(message, sizeof(message),
-                         "no display is available, so qt.%s has no window to "
-                         "put a dialog on. Guard with qt.can_display()", verb);
+                         "no display is available, so ui.%s has no window to "
+                         "put a dialog on. Guard with ui.can_display()", verb);
             } else {
                 snprintf(message, sizeof(message), "window `%s` is not open",
                          wname ? wname : "");
@@ -5736,7 +5736,7 @@ static Value qt_eval_call(AstExpr *expr) {
             ? gb_qt_confirm(root, text.as.string, &answered, err, sizeof(err))
             : gb_qt_inform(root, text.as.string, err, sizeof(err));
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.%s: %s", verb,
+            snprintf(message, sizeof(message), "ui.%s: %s", verb,
                      err[0] ? err : "the dialog could not be shown");
             qt_raise(message);
             value_free(win); value_free(text);
@@ -5752,12 +5752,12 @@ static Value qt_eval_call(AstExpr *expr) {
     /* ANSWER THE DIALOG THAT IS OPEN, from the program rather than a person.
      * Not a test hook, though it is what lets a suite drive one without a
      * human: a dialog that times out, one dismissed because the data under it
-     * changed, and an unattended run all need it -- and `qt.invoke` is already
+     * changed, and an unattended run all need it -- and `ui.invoke` is already
      * here on the same argument. It is only reachable from a `watch` body or a
      * handler, because that is the only code that runs while a box is up. */
     if (strcmp(verb, "answer") == 0) {
         if (argc != 1) {
-            qt_raise("qt.answer expects one value -- true or false for a message box, or a path for a file chooser");
+            qt_raise("ui.answer expects one value -- true or false for a message box, or a path for a file chooser");
             return value_null();
         }
         Value v = eval_expr(expr->as.call.args.items[0]);
@@ -5784,7 +5784,7 @@ static Value qt_eval_call(AstExpr *expr) {
             int pok = gb_qt_answer_path(given, err, sizeof(err));
             value_free(v);
             if (!pok) {
-                snprintf(message, sizeof(message), "qt.answer: %s",
+                snprintf(message, sizeof(message), "ui.answer: %s",
                          err[0] ? err : "the dialog could not be answered");
                 qt_raise(message);
                 return value_null();
@@ -5801,13 +5801,13 @@ static Value qt_eval_call(AstExpr *expr) {
         value_free(v);
         if (refused || error_action_pending()) {
             if (!error_action_pending()) {
-                qt_raise("qt.answer expects true or false, or a path for a file chooser");
+                qt_raise("ui.answer expects true or false, or a path for a file chooser");
             }
             return value_null();
         }
         err[0] = '\0';
         if (!gb_qt_answer(yes, err, sizeof(err))) {
-            snprintf(message, sizeof(message), "qt.answer: %s",
+            snprintf(message, sizeof(message), "ui.answer: %s",
                      err[0] ? err : "the dialog could not be answered");
             qt_raise(message);
             return value_null();
@@ -5822,8 +5822,8 @@ static Value qt_eval_call(AstExpr *expr) {
      * folder?" -- which is also how Qt splits them, and which lets each one
      * refuse the options that mean nothing to it rather than ignore them.
      *
-     * `qt.open_file` WAS REJECTED AS A NAME: it reads as though it opens the
-     * file, and `f = qt.open_file(app)` looks like it answers contents or a
+     * `ui.open_file` WAS REJECTED AS A NAME: it reads as though it opens the
+     * file, and `f = ui.open_file(app)` looks like it answers contents or a
      * handle. These verbs CHOOSE; the program does the reading.
      *
      * THE ANSWER IS TEXT, and that was a decision rather than the easy route.
@@ -5833,14 +5833,14 @@ static Value qt_eval_call(AstExpr *expr) {
      * from the DECLARATION and not from Qt (§0.5: a widget holds text, so
      * folding back blindly turns `{ id: 42 }` into `{ id: "42" }`). A chooser
      * has no declaration to read a kind from, and what Qt holds is a path. So
-     * text, and `{file}qt.choose_file(app)` where a typed value is wanted --
+     * text, and `{file}ui.choose_file(app)` where a typed value is wanted --
      * one inline modifier, which is the spelling 0.5.0 added for exactly this.
      *
      * CANCELLING ANSWERS `unknown`, NEVER "". The empty string is a plausible
      * wrong answer: `if path = "" then` happens to work while
      * `read({file}path)` does not, so an author who forgot to check gets a
-     * puzzle instead of a raise. `unknown` is what `qt.selected` already
-     * answers for "nothing is chosen" and what `qt.highlighting` answers for
+     * puzzle instead of a raise. `unknown` is what `ui.selected` already
+     * answers for "nothing is chosen" and what `ui.highlighting` answers for
      * "no definition", and `if path then` on it RAISES, which is loud. */
     if (strcmp(verb, "choose_file") == 0 || strcmp(verb, "choose_save") == 0 ||
         strcmp(verb, "choose_folder") == 0) {
@@ -5849,7 +5849,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (strcmp(verb, "choose_folder") == 0) { kind = GB_QT_PICK_FOLDER; }
         if (argc < 1 || argc > 2) {
             snprintf(message, sizeof(message),
-                     "qt.%s expects a window, and optionally a record of "
+                     "ui.%s expects a window, and optionally a record of "
                      "options", verb);
             qt_raise(message);
             return value_null();
@@ -5869,8 +5869,8 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (argc == 2 && opts.kind != VALUE_RECORD) {
             snprintf(message, sizeof(message),
-                     "qt.%s expects its options as a record -- "
-                     "`qt.%s(app, { title: \"Open\" })`", verb, verb);
+                     "ui.%s expects its options as a record -- "
+                     "`ui.%s(app, { title: \"Open\" })`", verb, verb);
             qt_raise(message);
             value_free(win); value_free(opts);
             return value_null();
@@ -5898,11 +5898,11 @@ static Value qt_eval_call(AstExpr *expr) {
                     const char *near = gb_nearest_word(fname, pick_opts);
                     if (near) {
                         snprintf(message, sizeof(message),
-                                 "qt.%s does not know the option `%s` -- did "
+                                 "ui.%s does not know the option `%s` -- did "
                                  "you mean `%s`?", verb, fname, near);
                     } else {
                         snprintf(message, sizeof(message),
-                                 "qt.%s does not know the option `%s`. It "
+                                 "ui.%s does not know the option `%s`. It "
                                  "takes title, folder, name and filter", verb,
                                  fname);
                     }
@@ -5919,7 +5919,7 @@ static Value qt_eval_call(AstExpr *expr) {
                     (strcmp(fname, "filter") == 0 ||
                      strcmp(fname, "name") == 0)) {
                     snprintf(message, sizeof(message),
-                             "qt.choose_folder has no use for `%s` -- a folder "
+                             "ui.choose_folder has no use for `%s` -- a folder "
                              "has no name filter, and `folder:` is where it "
                              "starts", fname);
                     qt_raise(message);
@@ -5941,7 +5941,7 @@ static Value qt_eval_call(AstExpr *expr) {
                             Value *el = &f->value->as.array.store->items[e];
                             if (el->kind != VALUE_STRING) {
                                 snprintf(message, sizeof(message),
-                                         "qt.%s expects every filter to be "
+                                         "ui.%s expects every filter to be "
                                          "text, like \"Programs (*.bas)\"",
                                          verb);
                                 qt_raise(message);
@@ -5960,7 +5960,7 @@ static Value qt_eval_call(AstExpr *expr) {
                         }
                     } else {
                         snprintf(message, sizeof(message),
-                                 "qt.%s expects `filter` as text or a list of "
+                                 "ui.%s expects `filter` as text or a list of "
                                  "text, like \"Programs (*.bas)\"", verb);
                         qt_raise(message);
                         value_free(win); value_free(opts);
@@ -5988,14 +5988,14 @@ static Value qt_eval_call(AstExpr *expr) {
                 if (strcmp(fname, "title") == 0 &&
                     (!f->value || f->value->kind != VALUE_STRING)) {
                     snprintf(message, sizeof(message),
-                             "qt.%s expects `title` as text", verb);
+                             "ui.%s expects `title` as text", verb);
                     qt_raise(message);
                     value_free(win); value_free(opts);
                     return value_null();
                 }
                 if (!as_path) {
                     snprintf(message, sizeof(message),
-                             "qt.%s expects `%s` as text, a {file} or a {dir}",
+                             "ui.%s expects `%s` as text, a {file} or a {dir}",
                              verb, fname);
                     qt_raise(message);
                     value_free(win); value_free(opts);
@@ -6014,8 +6014,8 @@ static Value qt_eval_call(AstExpr *expr) {
              * rediscovered. */
             if (!gb_qt_can_display()) {
                 snprintf(message, sizeof(message),
-                         "no display is available, so qt.%s has no window to "
-                         "put a chooser on. Guard with qt.can_display()", verb);
+                         "no display is available, so ui.%s has no window to "
+                         "put a chooser on. Guard with ui.can_display()", verb);
             } else {
                 snprintf(message, sizeof(message), "window `%s` is not open",
                          wname ? wname : "");
@@ -6034,7 +6034,7 @@ static Value qt_eval_call(AstExpr *expr) {
             if (cancelled) {
                 return value_unknown();
             }
-            snprintf(message, sizeof(message), "qt.%s: %s", verb,
+            snprintf(message, sizeof(message), "ui.%s: %s", verb,
                      err[0] ? err : "the chooser could not be shown");
             qt_raise(message);
             return value_null();
@@ -6044,18 +6044,18 @@ static Value qt_eval_call(AstExpr *expr) {
         return out;
     }
 
-    /* `qt.dialog()` -- WHAT IS OPEN, so a program driving its own dialogs is
+    /* `ui.dialog()` -- WHAT IS OPEN, so a program driving its own dialogs is
      * not driving blind.
      *
      * BUILT BEFORE THE FIXTURE, which is the discipline §0.8 arrived at the
      * hard way: `title:` and `filter:` would otherwise be accepted and
      * unobservable, which is the hole a leaf's `label:` sat in for four
      * increments while every check passed. It is not a test hook for the same
-     * reason `qt.highlighting` is not -- being unable to see what landed is
+     * reason `ui.highlighting` is not -- being unable to see what landed is
      * being unable to tell an option that worked from one that did nothing. */
     if (strcmp(verb, "dialog") == 0) {
         if (argc != 0) {
-            qt_raise("qt.dialog takes nothing -- it answers the dialog that "
+            qt_raise("ui.dialog takes nothing -- it answers the dialog that "
                      "is open");
             return value_null();
         }
@@ -6087,7 +6087,7 @@ static Value qt_eval_call(AstExpr *expr) {
 
     if (strcmp(verb, "heading") == 0) {
         if (argc != 3) {
-            qt_raise("qt.heading expects a window, a table and a column name");
+            qt_raise("ui.heading expects a window, a table and a column name");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -6100,7 +6100,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, "heading") || which.kind != VALUE_STRING ||
             (colv.kind != VALUE_STRING && colv.kind != VALUE_NUMBER)) {
             if (!error_action_pending()) {
-                qt_raise("qt.heading expects the table's name as text and the "
+                qt_raise("ui.heading expects the table's name as text and the "
                          "column's name, or its position as a number");
             }
             value_free(win); value_free(which); value_free(colv);
@@ -6115,7 +6115,7 @@ static Value qt_eval_call(AstExpr *expr) {
                            : NULL;
         if (!root || !table) {
             snprintf(message, sizeof(message),
-                     root ? "qt.heading: window `%s` declares no table named `%s`"
+                     root ? "ui.heading: window `%s` declares no table named `%s`"
                           : "window `%s` is not open",
                      wname ? wname : "", which.as.string);
             qt_raise(message);
@@ -6124,7 +6124,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         /* BY NAME **OR** BY POSITION, and the second form is what makes the
          * first an oracle rather than a restatement. Asked by NAME this goes
-         * through `qt_table_column`, which is the same resolution `qt.cell`
+         * through `qt_table_column`, which is the same resolution `ui.cell`
          * uses -- so a PERMUTED resolution answers both consistently and
          * neither can witness it. Asked by POSITION it reads the header
          * directly, in the order the declaration wrote it, so requiring the
@@ -6138,9 +6138,9 @@ static Value qt_eval_call(AstExpr *expr) {
         if (col < 0) {
             snprintf(message, sizeof(message),
                      col == -2
-                         ? "qt.heading: `%s`'s `%s` column carries the depth "
+                         ? "ui.heading: `%s`'s `%s` column carries the depth "
                            "and is not drawn, so it has no caption"
-                         : "qt.heading: table `%s` has no `%s` column",
+                         : "ui.heading: table `%s` has no `%s` column",
                      which.as.string,
                      colv.kind == VALUE_STRING ? colv.as.string : "that");
             qt_raise(message);
@@ -6158,14 +6158,14 @@ static Value qt_eval_call(AstExpr *expr) {
         value_free(win); value_free(which); value_free(colv);
         if (!text && ncols >= 0 && (col < 0 || col >= ncols)) {
             snprintf(message, sizeof(message),
-                     "qt.heading: `%s` has no column %d", asked, col);
+                     "ui.heading: `%s` has no column %d", asked, col);
             free(asked);
             qt_raise(message);
             return value_null();
         }
         free(asked);
         if (!text) {
-            qt_raise("qt.heading: that column has no caption");
+            qt_raise("ui.heading: that column has no caption");
             return value_null();
         }
         Value out = value_string(text);
@@ -6179,7 +6179,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * directions rather than only readable. */
     if (strcmp(verb, "select") == 0) {
         if (argc != 3) {
-            qt_raise("qt.select expects a window, a table's name and a row");
+            qt_raise("ui.select expects a window, a table's name and a row");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -6192,7 +6192,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, "select") || which.kind != VALUE_STRING ||
             (rowv.kind != VALUE_NUMBER && rowv.kind != VALUE_UNKNOWN)) {
             if (!error_action_pending()) {
-                qt_raise("qt.select expects the table's name as text and a row "
+                qt_raise("ui.select expects the table's name as text and a row "
                          "number, or `unknown` to choose nothing");
             }
             value_free(win); value_free(which); value_free(rowv);
@@ -6213,7 +6213,7 @@ static Value qt_eval_call(AstExpr *expr) {
                                     sizeof(err));
         value_free(win); value_free(which); value_free(rowv);
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.select: %s",
+            snprintf(message, sizeof(message), "ui.select: %s",
                      err[0] ? err : "that row could not be chosen");
             qt_raise(message);
             return value_null();
@@ -6223,7 +6223,7 @@ static Value qt_eval_call(AstExpr *expr) {
 
     /* WHICH ROW A PERSON HAS CHOSEN. Answers the INDEX rather than the record,
      * so it composes with the subject the program already holds
-     * (`lines[qt.selected(win, "orders")]`) and does not become a second,
+     * (`lines[ui.selected(win, "orders")]`) and does not become a second,
      * staler copy of a row.
      *
      * NOTHING SELECTED ANSWERS `unknown`, NOT -1 AND NOT 0. Both of those are
@@ -6233,7 +6233,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * `principal()` already give for "nobody said". */
     if (strcmp(verb, "selected") == 0) {
         if (argc != 2) {
-            qt_raise("qt.selected expects a window and a table's name");
+            qt_raise("ui.selected expects a window and a table's name");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -6245,7 +6245,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (!qt_window_record(&win, "selected") || which.kind != VALUE_STRING) {
             if (which.kind != VALUE_STRING && !error_action_pending()) {
-                qt_raise("qt.selected expects the table's name as text");
+                qt_raise("ui.selected expects the table's name as text");
             }
             value_free(win);
             value_free(which);
@@ -6263,12 +6263,12 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         int row = gb_qt_table_rows(root, which.as.string);
         if (row < 0) {
-            /* A PART THAT IS NOT A TABLE IS ITS OWN SENTENCE. `qt.selected`
+            /* A PART THAT IS NOT A TABLE IS ITS OWN SENTENCE. `ui.selected`
              * on a field is a mistake about what the thing IS, and answering
              * `unknown` would read as "nothing is selected" -- true of a field
              * and not what the author asked. */
             snprintf(message, sizeof(message),
-                     "qt.selected: `%s` is not a table in window `%s`",
+                     "ui.selected: `%s` is not a table in window `%s`",
                      which.as.string, wname ? wname : "");
             qt_raise(message);
             value_free(win);
@@ -6299,7 +6299,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * a check in the one case where the widget decides. */
     if (strcmp(verb, "subject") == 0) {
         if (argc != 2) {
-            qt_raise("qt.subject expects a window and the subject's name");
+            qt_raise("ui.subject expects a window and the subject's name");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -6311,7 +6311,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (!qt_window_record(&win, "subject") || which.kind != VALUE_STRING) {
             if (which.kind != VALUE_STRING && !error_action_pending()) {
-                qt_raise("qt.subject expects the subject's name as text");
+                qt_raise("ui.subject expects the subject's name as text");
             }
             value_free(win);
             value_free(which);
@@ -6366,15 +6366,15 @@ static Value qt_eval_call(AstExpr *expr) {
 
     if (strcmp(verb, "read") == 0 || strcmp(verb, "write") == 0) {
         int writing = strcmp(verb, "write") == 0;
-        /* `qt.read` TAKES AN OPTIONAL PROPERTY NAME, which is the read half of
+        /* `ui.read` TAKES AN OPTIONAL PROPERTY NAME, which is the read half of
          * the by-name route the declaration's options already take. Two
          * arguments ask what the part is SHOWING; three ask one named property
          * of the widget. */
         int reading_prop = (!writing && argc == 3);
         if (writing ? argc != 3u : (argc != 2u && argc != 3u)) {
             snprintf(message, sizeof(message),
-                     writing ? "qt.write expects a window, a name and a value"
-                             : "qt.read expects a window, a name and "
+                     writing ? "ui.write expects a window, a name and a value"
+                             : "ui.read expects a window, a name and "
                                "optionally a property");
             qt_raise(message);
             return value_null();
@@ -6389,7 +6389,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, verb) || which.kind != VALUE_STRING) {
             if (which.kind != VALUE_STRING && !error_action_pending()) {
                 snprintf(message, sizeof(message),
-                         "qt.%s expects the part's name as text", verb);
+                         "ui.%s expects the part's name as text", verb);
                 qt_raise(message);
             }
             value_free(win);
@@ -6415,7 +6415,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 return value_null();
             }
             if (prop.kind != VALUE_STRING) {
-                qt_raise("qt.read expects the property's name as text");
+                qt_raise("ui.read expects the property's name as text");
                 value_free(win);
                 value_free(which);
                 value_free(prop);
@@ -6431,7 +6431,7 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(which);
             value_free(prop);
             if (!ok) {
-                snprintf(message, sizeof(message), "qt.read: %s",
+                snprintf(message, sizeof(message), "ui.read: %s",
                          err[0] ? err : "that property could not be read");
                 qt_raise(message);
                 free(text);
@@ -6499,7 +6499,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         value_free(text);
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.write: %s",
+            snprintf(message, sizeof(message), "ui.write: %s",
                      err[0] ? err : "that value could not be shown");
             qt_raise(message);
             value_free(win);
@@ -6518,7 +6518,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * an ordinary outcome and `false` is the truthful report, not an error. */
     if (strcmp(verb, "popup") == 0) {
         if (argc != 2 && argc != 3) {
-            qt_raise("qt.popup expects a window, a popup menu's name and "
+            qt_raise("ui.popup expects a window, a popup menu's name and "
                      "optionally a part to pop under");
             return value_null();
         }
@@ -6531,7 +6531,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (!qt_window_record(&win, "popup") || which.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                qt_raise("qt.popup expects the popup menu's name as text");
+                qt_raise("ui.popup expects the popup menu's name as text");
             }
             value_free(win);
             value_free(which);
@@ -6559,7 +6559,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 return value_null();
             }
             if (u.kind != VALUE_STRING) {
-                qt_raise("qt.popup expects the part to pop under as text");
+                qt_raise("ui.popup expects the part to pop under as text");
                 value_free(win); value_free(which); value_free(u);
                 return value_null();
             }
@@ -6571,7 +6571,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!gb_qt_popup(root, which.as.string, under, &shown, err,
                          sizeof(err))) {
             free(under);
-            snprintf(message, sizeof(message), "qt.popup: %s",
+            snprintf(message, sizeof(message), "ui.popup: %s",
                      err[0] ? err : "that menu could not be raised");
             qt_raise(message);
             value_free(win);
@@ -6589,13 +6589,13 @@ static Value qt_eval_call(AstExpr *expr) {
      * answer an event sent to the widget, only one sent to its VIEWPORT, which
      * gBASIC has no way to name -- so without this the path is drivable only
      * on the two kinds that happen to have no viewport. */
-    /* `qt.click` is the left button through the same aiming (§0.36): Studio's
+    /* `ui.click` is the left button through the same aiming (§0.36): Studio's
      * single-click-opens path could not be driven, since nothing fired
      * `itemClicked`. */
     if (strcmp(verb, "right_click") == 0 || strcmp(verb, "click") == 0) {
         int left = strcmp(verb, "click") == 0;
         if (argc != 2 && argc != 3) {
-            snprintf(message, sizeof(message), "qt.%s expects a window, a part's name "
+            snprintf(message, sizeof(message), "ui.%s expects a window, a part's name "
                      "and optionally a row", verb);
             qt_raise(message);
             return value_null();
@@ -6617,7 +6617,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 return value_null();
             }
             if (r.kind != VALUE_NUMBER) {
-                snprintf(message, sizeof(message), "qt.%s expects the row as a number", verb);
+                snprintf(message, sizeof(message), "ui.%s expects the row as a number", verb);
                 qt_raise(message);
                 value_free(win);
                 value_free(which);
@@ -6627,7 +6627,7 @@ static Value qt_eval_call(AstExpr *expr) {
             row = (int)r.as.num.value;
             value_free(r);
             if (row < 0) {
-                snprintf(message, sizeof(message), "qt.%s: a row is counted from 0", verb);
+                snprintf(message, sizeof(message), "ui.%s: a row is counted from 0", verb);
                 qt_raise(message);
                 value_free(win);
                 value_free(which);
@@ -6637,7 +6637,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, verb) ||
             which.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                snprintf(message, sizeof(message), "qt.%s expects the part's name as text", verb);
+                snprintf(message, sizeof(message), "ui.%s expects the part's name as text", verb);
                 qt_raise(message);
             }
             value_free(win);
@@ -6658,7 +6658,7 @@ static Value qt_eval_call(AstExpr *expr) {
         int clicked = left ? gb_qt_click(root, which.as.string, row, err, sizeof(err))
                            : gb_qt_right_click(root, which.as.string, row, err, sizeof(err));
         if (!clicked) {
-            snprintf(message, sizeof(message), "qt.%s: %s", verb,
+            snprintf(message, sizeof(message), "ui.%s: %s", verb,
                      err[0] ? err : "that part could not be clicked");
             qt_raise(message);
             value_free(win);
@@ -6677,13 +6677,13 @@ static Value qt_eval_call(AstExpr *expr) {
      * asked in the wrong place would otherwise read zeros and act on them. */
     if (strcmp(verb, "wheel") == 0) {
         if (argc != 0) {
-            qt_raise("qt.wheel takes no arguments -- it answers the event "
+            qt_raise("ui.wheel takes no arguments -- it answers the event "
                      "being handled");
             return value_null();
         }
         int dy = 0, dx = 0, ctrl = 0, shift = 0, alt = 0;
         if (!gb_qt_wheel_event(&dy, &dx, &ctrl, &shift, &alt)) {
-            qt_raise("qt.wheel: no wheel event is being handled");
+            qt_raise("ui.wheel: no wheel event is being handled");
             return value_null();
         }
         Value out = value_record(NULL, 0);
@@ -6707,12 +6707,12 @@ static Value qt_eval_call(AstExpr *expr) {
     /* CLAIM IT, so the view does not also act on it. */
     if (strcmp(verb, "swallow") == 0) {
         if (argc != 0) {
-            qt_raise("qt.swallow takes no arguments");
+            qt_raise("ui.swallow takes no arguments");
             return value_null();
         }
         err[0] = '\0';
         if (!gb_qt_swallow(err, sizeof(err))) {
-            snprintf(message, sizeof(message), "qt.swallow: %s",
+            snprintf(message, sizeof(message), "ui.swallow: %s",
                      err[0] ? err : "that event could not be claimed");
             qt_raise(message);
             return value_null();
@@ -6721,12 +6721,12 @@ static Value qt_eval_call(AstExpr *expr) {
     }
 
     /* SET THE PANE SIZES OF THE SPLIT A PART IS IN. The write half of what
-     * `qt.pane` reports, and the answer to §0.19's open item: `setSizes` takes
+     * `ui.pane` reports, and the answer to §0.19's open item: `setSizes` takes
      * a QList<int>, so it is neither a property nor invokable, and a `split`
      * cannot be named -- so the part is what addresses it. */
     if (strcmp(verb, "resize_panes") == 0) {
         if (argc != 3) {
-            qt_raise("qt.resize_panes expects a window, a part's name and a "
+            qt_raise("ui.resize_panes expects a window, a part's name and a "
                      "list of sizes");
             return value_null();
         }
@@ -6740,7 +6740,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, "resize_panes") ||
             which.kind != VALUE_STRING || list.kind != VALUE_ARRAY) {
             if (!error_action_pending()) {
-                qt_raise("qt.resize_panes expects the part's name as text and "
+                qt_raise("ui.resize_panes expects the part's name as text and "
                          "the sizes as a list");
             }
             value_free(win); value_free(which); value_free(list);
@@ -6761,7 +6761,7 @@ static Value qt_eval_call(AstExpr *expr) {
             sizes[i] = (int)v->as.num.value;
         }
         if (bad) {
-            qt_raise("qt.resize_panes: a pane's size must be a number");
+            qt_raise("ui.resize_panes: a pane's size must be a number");
             free(sizes);
             value_free(win); value_free(which); value_free(list);
             return value_null();
@@ -6782,7 +6782,7 @@ static Value qt_eval_call(AstExpr *expr) {
         free(sizes);
         value_free(win); value_free(which); value_free(list);
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.resize_panes: %s",
+            snprintf(message, sizeof(message), "ui.resize_panes: %s",
                      err[0] ? err : "those panes could not be resized");
             qt_raise(message);
             return value_null();
@@ -6790,12 +6790,12 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    /* WHERE A PART IS SCROLLED TO, and the write half. `qt.scrolled` answers
+    /* WHERE A PART IS SCROLLED TO, and the write half. `ui.scrolled` answers
      * `unknown` for a part that does not scroll -- a different claim from
      * "scrolled to nowhere", since a `button` has no position where a `source`
      * at the top has position 0. */
     /* WHETHER A PART HAS AN ICON. The oracle, and the only observable there is:
-     * a QIcon has no text form, so `qt.read` on `icon` refuses and names this.
+     * a QIcon has no text form, so `ui.read` on `icon` refuses and names this.
      * It is also what a program needs, an icon the machine's theme lacks being
      * a warning rather than a refusal -- so falling back to a text-only button
      * means being able to ask. */
@@ -6805,8 +6805,8 @@ static Value qt_eval_call(AstExpr *expr) {
         return qt_text_verb(expr, verb, argc);
     }
 
-    /* A WINDOW'S PIXELS, written to a PNG file (§0.37): `qt.capture(win,
-     * file)` for the whole window, `qt.capture(win, file, { part: "results",
+    /* A WINDOW'S PIXELS, written to a PNG file (§0.37): `ui.capture(win,
+     * file)` for the whole window, `ui.capture(win, file, { part: "results",
      * scale: 2 })` for one part drawn at twice its size. It answers what was
      * written, `{ file, width, height }` in pixels, because a figure build
      * wants to check the size it got and a script wants the file it can
@@ -6816,14 +6816,14 @@ static Value qt_eval_call(AstExpr *expr) {
      * it is written by `write`'s own code, so a folder that is not there fails
      * with the sentence `write` gives. */
     /* BLOCKS BETWEEN THE LINES OF A `source` (§0.38 A): replace-all, as
-     * qt.mark replaces a category, and reconciled by id in the backend. With
+     * ui.mark replaces a category, and reconciled by id in the backend. With
      * no items, what Qt holds now: each block's id, the line its cursors are
      * on after any edits, its height as laid out, whether it is on screen,
      * collapsed, and covering its line -- the oracle a fixture proves
      * anchoring with. */
     if (strcmp(verb, "blocks") == 0) {
         if (argc != 2 && argc != 3) {
-            qt_raise("qt.blocks expects a window and a `source`'s name, and "
+            qt_raise("ui.blocks expects a window and a `source`'s name, and "
                      "the blocks as an array to set them");
             return value_null();
         }
@@ -6837,7 +6837,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, verb) || which.kind != VALUE_STRING ||
             (argc == 3 && list.kind != VALUE_ARRAY)) {
             if (!error_action_pending()) {
-                qt_raise("qt.blocks expects a window, a `source`'s name as "
+                qt_raise("ui.blocks expects a window, a `source`'s name as "
                          "text, and the blocks as an array of records");
             }
             value_free(win); value_free(which); value_free(list);
@@ -6859,7 +6859,7 @@ static Value qt_eval_call(AstExpr *expr) {
             int n = gb_qt_blocks_get(root, pname, info, 1024, err, sizeof(err));
             free(pname);
             if (n < 0) {
-                snprintf(message, sizeof(message), "qt.blocks: %s", err);
+                snprintf(message, sizeof(message), "ui.blocks: %s", err);
                 qt_raise(message);
                 return value_null();
             }
@@ -6882,7 +6882,7 @@ static Value qt_eval_call(AstExpr *expr) {
         size_t count = list.as.array.store ? list.as.array.store->count : 0;
         if (count > 1024) {
             free(pname); value_free(list);
-            qt_raise("qt.blocks: at most 1024 blocks in one source");
+            qt_raise("ui.blocks: at most 1024 blocks in one source");
             return value_null();
         }
         GbQtBlockItem *items = count ? calloc(count, sizeof(GbQtBlockItem)) : NULL;
@@ -6898,7 +6898,7 @@ static Value qt_eval_call(AstExpr *expr) {
             char where[96];
             snprintf(where, sizeof(where), "block %zu", i + 1);
             if (v->kind != VALUE_RECORD) {
-                snprintf(message, sizeof(message), "qt.blocks: %s is a %s, not a record "
+                snprintf(message, sizeof(message), "ui.blocks: %s is a %s, not a record "
                          "{ id, line, kind, content }", where, value_kind_name(v->kind));
                 ok = 0;
                 break;
@@ -6912,7 +6912,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 if (!known) {
                     const char *near = gb_nearest_word(fname, fields);
                     snprintf(message, sizeof(message),
-                             "qt.blocks: %s has a field `%s`%s%s%s; a block has "
+                             "ui.blocks: %s has a field `%s`%s%s%s; a block has "
                              "id, line, kind, content, title, max_height, collapsed "
                              "and covers", where, fname, near ? " -- did you mean `" : "",
                              near ? near : "", near ? "`?" : "");
@@ -6923,7 +6923,7 @@ static Value qt_eval_call(AstExpr *expr) {
             RecordField *f_id = record_find(v, "id");
             if (!f_id || !f_id->value || f_id->value->kind != VALUE_STRING ||
                 !f_id->value->as.string[0]) {
-                snprintf(message, sizeof(message), "qt.blocks: %s needs an `id` as "
+                snprintf(message, sizeof(message), "ui.blocks: %s needs an `id` as "
                          "text, unique among the blocks", where);
                 ok = 0;
                 break;
@@ -6932,7 +6932,7 @@ static Value qt_eval_call(AstExpr *expr) {
             snprintf(where, sizeof(where), "block `%.60s`", it->id);
             for (size_t j = 0; j < i; j++) {
                 if (strcmp(items[j].id, it->id) == 0) {
-                    snprintf(message, sizeof(message), "qt.blocks: two blocks are "
+                    snprintf(message, sizeof(message), "ui.blocks: two blocks are "
                              "called `%.60s`; an id names one block", it->id);
                     ok = 0;
                 }
@@ -6943,7 +6943,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 f_line->value->as.num.value < 1 ||
                 f_line->value->as.num.value != floor(f_line->value->as.num.value) ||
                 f_line->value->as.num.value > 100000000) {
-                snprintf(message, sizeof(message), "qt.blocks: %s needs a `line`, "
+                snprintf(message, sizeof(message), "ui.blocks: %s needs a `line`, "
                          "a whole number from 1 (line 1 is the first line)", where);
                 ok = 0;
                 break;
@@ -6958,7 +6958,7 @@ static Value qt_eval_call(AstExpr *expr) {
             }
             if (!kind_ok) {
                 const char *near = kind ? gb_nearest_word(kind, kinds) : NULL;
-                snprintf(message, sizeof(message), "qt.blocks: %s has %s%s%s as its "
+                snprintf(message, sizeof(message), "ui.blocks: %s has %s%s%s as its "
                          "kind%s%s%s; the kinds are text, table, image and markdown",
                          where, kind ? "`" : "no kind", kind ? kind : "", kind ? "`" : "",
                          near ? " -- did you mean `" : "", near ? near : "", near ? "`?" : "");
@@ -6968,7 +6968,7 @@ static Value qt_eval_call(AstExpr *expr) {
             RecordField *f_title = record_find(v, "title");
             if (f_title && f_title->value) {
                 if (f_title->value->kind != VALUE_STRING) {
-                    snprintf(message, sizeof(message), "qt.blocks: %s's `title` must be text", where);
+                    snprintf(message, sizeof(message), "ui.blocks: %s's `title` must be text", where);
                     ok = 0;
                     break;
                 }
@@ -6978,7 +6978,7 @@ static Value qt_eval_call(AstExpr *expr) {
             if (f_max && f_max->value) {
                 double m = f_max->value->kind == VALUE_NUMBER ? f_max->value->as.num.value : -1;
                 if (m < 20 || m > 2000 || m != floor(m)) {
-                    snprintf(message, sizeof(message), "qt.blocks: %s's `max_height` must "
+                    snprintf(message, sizeof(message), "ui.blocks: %s's `max_height` must "
                              "be a whole number of pixels from 20 to 2000", where);
                     ok = 0;
                     break;
@@ -6990,7 +6990,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 RecordField *fb = record_find(v, flags[k]);
                 if (fb && fb->value) {
                     if (fb->value->kind != VALUE_BOOL) {
-                        snprintf(message, sizeof(message), "qt.blocks: %s's `%s` must be "
+                        snprintf(message, sizeof(message), "ui.blocks: %s's `%s` must be "
                                  "true or false", where, flags[k]);
                         ok = 0;
                         break;
@@ -7003,13 +7003,13 @@ static Value qt_eval_call(AstExpr *expr) {
             RecordField *f_c = record_find(v, "content");
             Value *c = f_c ? f_c->value : NULL;
             if (!c) {
-                snprintf(message, sizeof(message), "qt.blocks: %s has no `content`", where);
+                snprintf(message, sizeof(message), "ui.blocks: %s has no `content`", where);
                 ok = 0;
                 break;
             }
             if (strcmp(it->kind, "text") == 0 || strcmp(it->kind, "markdown") == 0) {
                 if (c->kind != VALUE_STRING) {
-                    snprintf(message, sizeof(message), "qt.blocks: %s is %s, so its "
+                    snprintf(message, sizeof(message), "ui.blocks: %s is %s, so its "
                              "content is text", where, it->kind);
                     ok = 0;
                     break;
@@ -7025,7 +7025,7 @@ static Value qt_eval_call(AstExpr *expr) {
                     RecordField *fb = record_find(c, "bytes");
                     RecordField *ff = record_find(c, "format");
                     if (!fb || !fb->value || fb->value->kind != VALUE_STRING) {
-                        snprintf(message, sizeof(message), "qt.blocks: %s's content is a "
+                        snprintf(message, sizeof(message), "ui.blocks: %s's content is a "
                                  "record, so it needs `bytes` (and `format`: \"png\" or \"svg\")", where);
                         ok = 0;
                         break;
@@ -7037,7 +7037,7 @@ static Value qt_eval_call(AstExpr *expr) {
                         if (ff->value->kind != VALUE_STRING ||
                             (strcmp(ff->value->as.string, "png") != 0 &&
                              strcmp(ff->value->as.string, "svg") != 0)) {
-                            snprintf(message, sizeof(message), "qt.blocks: %s's `format` is "
+                            snprintf(message, sizeof(message), "ui.blocks: %s's `format` is "
                                      "\"png\" or \"svg\"", where);
                             ok = 0;
                             break;
@@ -7045,7 +7045,7 @@ static Value qt_eval_call(AstExpr *expr) {
                         it->format = ff->value->as.string;
                     }
                 } else {
-                    snprintf(message, sizeof(message), "qt.blocks: %s is an image, so its "
+                    snprintf(message, sizeof(message), "ui.blocks: %s is an image, so its "
                              "content is a path, a {file}, or { bytes, format }", where);
                     ok = 0;
                     break;
@@ -7055,7 +7055,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 RecordField *fr = c->kind == VALUE_RECORD ? record_find(c, "rows") : NULL;
                 if (!fc || !fc->value || fc->value->kind != VALUE_ARRAY ||
                     !fr || !fr->value || fr->value->kind != VALUE_ARRAY) {
-                    snprintf(message, sizeof(message), "qt.blocks: %s is a table, so its "
+                    snprintf(message, sizeof(message), "ui.blocks: %s is a table, so its "
                              "content is { columns: [...], rows: [[...], ...] }", where);
                     ok = 0;
                     break;
@@ -7064,7 +7064,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 size_t nrows = fr->value->as.array.store ? fr->value->as.array.store->count : 0;
                 size_t shown = nrows > 1000 ? 1000 : nrows;
                 if (ncols == 0 || ncols > 200) {
-                    snprintf(message, sizeof(message), "qt.blocks: %s's table has %zu "
+                    snprintf(message, sizeof(message), "ui.blocks: %s's table has %zu "
                              "columns; it takes 1 to 200", where, ncols);
                     ok = 0;
                     break;
@@ -7075,7 +7075,7 @@ static Value qt_eval_call(AstExpr *expr) {
                     Value *row = r == 0 ? fc->value : &fr->value->as.array.store->items[r - 1];
                     if (row->kind != VALUE_ARRAY ||
                         (row->as.array.store ? row->as.array.store->count : 0) != ncols) {
-                        snprintf(message, sizeof(message), "qt.blocks: %s's row %zu does not "
+                        snprintf(message, sizeof(message), "ui.blocks: %s's row %zu does not "
                                  "have %zu cells, one per column", where, r, ncols);
                         ok = 0;
                         break;
@@ -7098,7 +7098,7 @@ static Value qt_eval_call(AstExpr *expr) {
             err[0] = '\0';
             ok = gb_qt_blocks_set(root, pname, items, (int)count, err, sizeof(err));
             if (!ok) {
-                snprintf(message, sizeof(message), "qt.blocks: %s",
+                snprintf(message, sizeof(message), "ui.blocks: %s",
                          err[0] ? err : "the blocks could not be set");
             }
         }
@@ -7118,7 +7118,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * hiding the rest; with no ranges, what Qt holds now. */
     if (strcmp(verb, "fold") == 0) {
         if (argc != 2 && argc != 3) {
-            qt_raise("qt.fold expects a window and a `source`'s name, and the "
+            qt_raise("ui.fold expects a window and a `source`'s name, and the "
                      "ranges as an array of { from, to } to set them");
             return value_null();
         }
@@ -7132,7 +7132,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, verb) || which.kind != VALUE_STRING ||
             (argc == 3 && list.kind != VALUE_ARRAY)) {
             if (!error_action_pending()) {
-                qt_raise("qt.fold expects a window, a `source`'s name as text, "
+                qt_raise("ui.fold expects a window, a `source`'s name as text, "
                          "and the ranges as an array of { from, to }");
             }
             value_free(win); value_free(which); value_free(list);
@@ -7154,7 +7154,7 @@ static Value qt_eval_call(AstExpr *expr) {
             int n = gb_qt_fold_get(root, pname, from, to, 4096, err, sizeof(err));
             free(pname);
             if (n < 0) {
-                snprintf(message, sizeof(message), "qt.fold: %s", err);
+                snprintf(message, sizeof(message), "ui.fold: %s", err);
                 qt_raise(message);
                 return value_null();
             }
@@ -7169,7 +7169,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         size_t count = list.as.array.store ? list.as.array.store->count : 0;
         int ok = count <= 4096;
-        snprintf(message, sizeof(message), "qt.fold: at most 4096 ranges");
+        snprintf(message, sizeof(message), "ui.fold: at most 4096 ranges");
         for (size_t i = 0; ok && i < count; i++) {
             Value *v = &list.as.array.store->items[i];
             RecordField *ff = v->kind == VALUE_RECORD ? record_find(v, "from") : NULL;
@@ -7180,7 +7180,7 @@ static Value qt_eval_call(AstExpr *expr) {
                        ft->value->as.num.value == floor(ft->value->as.num.value) &&
                        v->as.record.count == 2;
             if (!good) {
-                snprintf(message, sizeof(message), "qt.fold: range %zu is not "
+                snprintf(message, sizeof(message), "ui.fold: range %zu is not "
                          "{ from, to }, two whole line numbers (line 1 is the "
                          "first line)", i + 1);
                 ok = 0;
@@ -7193,7 +7193,7 @@ static Value qt_eval_call(AstExpr *expr) {
             err[0] = '\0';
             ok = gb_qt_fold_set(root, pname, from, to, (int)count, err, sizeof(err));
             if (!ok) {
-                snprintf(message, sizeof(message), "qt.fold: %s",
+                snprintf(message, sizeof(message), "ui.fold: %s",
                          err[0] ? err : "the folds could not be set");
             }
         }
@@ -7210,7 +7210,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * B4): its target as text, `unknown` outside one. */
     if (strcmp(verb, "link") == 0) {
         if (argc != 0) {
-            qt_raise("qt.link takes no arguments -- it answers the link being "
+            qt_raise("ui.link takes no arguments -- it answers the link being "
                      "handled");
             return value_null();
         }
@@ -7226,7 +7226,7 @@ static Value qt_eval_call(AstExpr *expr) {
     /* A REAL PRESS ON A LINK in a `markdown` part, for a fixture. */
     if (strcmp(verb, "link_press") == 0) {
         if (argc != 3) {
-            qt_raise("qt.link_press expects a window, a `markdown` part's name "
+            qt_raise("ui.link_press expects a window, a `markdown` part's name "
                      "and the link's target");
             return value_null();
         }
@@ -7240,14 +7240,14 @@ static Value qt_eval_call(AstExpr *expr) {
             void *root = wname ? qt_window_find(wname) : NULL;
             err[0] = '\0';
             if (!root) {
-                qt_raise("qt.link_press: that window is not open");
+                qt_raise("ui.link_press: that window is not open");
             } else if (!(ok = gb_qt_link_press(root, which.as.string, tgt.as.string,
                                                err, sizeof(err)))) {
-                snprintf(message, sizeof(message), "qt.link_press: %s", err);
+                snprintf(message, sizeof(message), "ui.link_press: %s", err);
                 qt_raise(message);
             }
         } else if (!error_action_pending()) {
-            qt_raise("qt.link_press expects a window, then the part and the "
+            qt_raise("ui.link_press expects a window, then the part and the "
                      "link's target as text");
         }
         value_free(win); value_free(which); value_free(tgt);
@@ -7255,11 +7255,11 @@ static Value qt_eval_call(AstExpr *expr) {
     }
 
     /* THE `block` EVENT BEING HANDLED (§0.38 A), asked for as
-     * `qt.gutter_click` is: `{ id, action, target }`, `target` a link's
+     * `ui.gutter_click` is: `{ id, action, target }`, `target` a link's
      * address and `unknown` otherwise; `unknown` outside a handler. */
     if (strcmp(verb, "block_event") == 0) {
         if (argc != 0) {
-            qt_raise("qt.block_event takes no arguments -- it answers the "
+            qt_raise("ui.block_event takes no arguments -- it answers the "
                      "block event being handled");
             return value_null();
         }
@@ -7275,12 +7275,12 @@ static Value qt_eval_call(AstExpr *expr) {
         return out;
     }
 
-    /* DRIVING A BLOCK, as qt.gutter_press drives the margin: a real press on
+    /* DRIVING A BLOCK, as ui.gutter_press drives the margin: a real press on
      * its body, a real click on its collapse control, or a real press on a
      * link's text, so the `block` handler runs as it would for a person. */
     if (strcmp(verb, "block_press") == 0) {
         if (argc != 4 && argc != 5) {
-            qt_raise("qt.block_press expects a window, a `source`'s name, a "
+            qt_raise("ui.block_press expects a window, a `source`'s name, a "
                      "block's id, an action (click, collapse or link) and, for "
                      "a link, its target");
             return value_null();
@@ -7301,18 +7301,18 @@ static Value qt_eval_call(AstExpr *expr) {
         int ok = 0;
         if (bad) {
             if (!error_action_pending()) {
-                qt_raise("qt.block_press expects a window, then the part, the "
+                qt_raise("ui.block_press expects a window, then the part, the "
                          "block's id, the action and a link's target as text");
             }
         } else if (!root) {
-            qt_raise("qt.block_press: that window is not open");
+            qt_raise("ui.block_press: that window is not open");
         } else {
             err[0] = '\0';
             ok = gb_qt_block_press(root, a[1].as.string, a[2].as.string,
                                    a[3].as.string, argc == 5 ? a[4].as.string : NULL,
                                    err, sizeof(err));
             if (!ok) {
-                snprintf(message, sizeof(message), "qt.block_press: %s", err);
+                snprintf(message, sizeof(message), "ui.block_press: %s", err);
                 qt_raise(message);
             }
         }
@@ -7324,11 +7324,11 @@ static Value qt_eval_call(AstExpr *expr) {
 
     /* AN SVG AS A PNG (§0.38 C): figures for print. No window: what is drawn
      * is the text given. The option set is closed and refused by name, as
-     * qt.capture's is, for the same reason -- a misspelt `scale` is a figure
+     * ui.capture's is, for the same reason -- a misspelt `scale` is a figure
      * at the wrong resolution with nothing to say so. */
     if (strcmp(verb, "render_svg") == 0) {
         if (argc < 2 || argc > 3) {
-            qt_raise("qt.render_svg expects the SVG as text, the file to write "
+            qt_raise("ui.render_svg expects the SVG as text, the file to write "
                      "the PNG to, and optionally { width, height, scale }");
             return value_null();
         }
@@ -7340,22 +7340,22 @@ static Value qt_eval_call(AstExpr *expr) {
             return value_null();
         }
         if (svg.kind != VALUE_STRING) {
-            qt_raise("qt.render_svg expects the SVG as text -- read(f) for a file");
+            qt_raise("ui.render_svg expects the SVG as text -- read(f) for a file");
             value_free(svg); value_free(target); value_free(opts);
             return value_null();
         }
-        if (!file_arg_from_path("qt.render_svg", &target)) {
+        if (!file_arg_from_path("ui.render_svg", &target)) {
             value_free(svg); value_free(opts);
             return value_null();
         }
         if (target.kind != VALUE_FILE) {
-            qt_raise("qt.render_svg expects the file to write as a path string "
+            qt_raise("ui.render_svg expects the file to write as a path string "
                      "or file reference");
             value_free(svg); value_free(target); value_free(opts);
             return value_null();
         }
         if (argc == 3 && opts.kind != VALUE_RECORD) {
-            qt_raise("qt.render_svg expects its options as a record -- "
+            qt_raise("ui.render_svg expects its options as a record -- "
                      "`{ width: 800, scale: 2 }`");
             value_free(svg); value_free(target); value_free(opts);
             return value_null();
@@ -7373,7 +7373,7 @@ static Value qt_eval_call(AstExpr *expr) {
                     !(f->value->as.num.value >= 1) || f->value->as.num.value > 20000 ||
                     f->value->as.num.value != floor(f->value->as.num.value)) {
                     snprintf(message, sizeof(message),
-                             "qt.render_svg expects `%s` as a whole number of "
+                             "ui.render_svg expects `%s` as a whole number of "
                              "pixels from 1 to 20000", fname);
                     qt_raise(message);
                     value_free(svg); value_free(target); value_free(opts);
@@ -7384,7 +7384,7 @@ static Value qt_eval_call(AstExpr *expr) {
             } else if (is_s) {
                 if (!f->value || f->value->kind != VALUE_NUMBER ||
                     !(f->value->as.num.value > 0) || f->value->as.num.value > 8) {
-                    qt_raise("qt.render_svg expects `scale` as a number above 0 "
+                    qt_raise("ui.render_svg expects `scale` as a number above 0 "
                              "and at most 8");
                     value_free(svg); value_free(target); value_free(opts);
                     return value_null();
@@ -7394,11 +7394,11 @@ static Value qt_eval_call(AstExpr *expr) {
                 const char *near = gb_nearest_word(fname, svg_opts);
                 if (near) {
                     snprintf(message, sizeof(message),
-                             "qt.render_svg does not know the option `%s` -- "
+                             "ui.render_svg does not know the option `%s` -- "
                              "did you mean `%s`?", fname, near);
                 } else {
                     snprintf(message, sizeof(message),
-                             "qt.render_svg does not know the option `%s`. It "
+                             "ui.render_svg does not know the option `%s`. It "
                              "takes width, height and scale", fname);
                 }
                 qt_raise(message);
@@ -7415,7 +7415,7 @@ static Value qt_eval_call(AstExpr *expr) {
                                   &ow, &oh, err, sizeof(err));
         value_free(svg); value_free(opts);
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.render_svg: %s",
+            snprintf(message, sizeof(message), "ui.render_svg: %s",
                      err[0] ? err : "the SVG could not be drawn");
             qt_raise(message);
             value_free(target);
@@ -7438,7 +7438,7 @@ static Value qt_eval_call(AstExpr *expr) {
 
     if (strcmp(verb, "capture") == 0) {
         if (argc < 2 || argc > 3) {
-            qt_raise("qt.capture expects a window, the file to write the PNG "
+            qt_raise("ui.capture expects a window, the file to write the PNG "
                      "to, and optionally a record of options");
             return value_null();
         }
@@ -7456,19 +7456,19 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(win); value_free(target); value_free(opts);
             return value_null();
         }
-        if (!file_arg_from_path("qt.capture", &target)) {
+        if (!file_arg_from_path("ui.capture", &target)) {
             value_free(win); value_free(opts);
             return value_null();
         }
         if (target.kind != VALUE_FILE) {
-            qt_raise("qt.capture expects the file to write as a path string "
+            qt_raise("ui.capture expects the file to write as a path string "
                      "or file reference");
             value_free(win); value_free(target); value_free(opts);
             return value_null();
         }
         if (argc == 3 && opts.kind != VALUE_RECORD) {
-            qt_raise("qt.capture expects its options as a record -- "
-                     "`qt.capture(app, \"shot.png\", { part: \"results\", "
+            qt_raise("ui.capture expects its options as a record -- "
+                     "`ui.capture(app, \"shot.png\", { part: \"results\", "
                      "scale: 2 })`");
             value_free(win); value_free(target); value_free(opts);
             return value_null();
@@ -7483,7 +7483,7 @@ static Value qt_eval_call(AstExpr *expr) {
             const char *fname = f->name ? f->name : "";
             if (strcmp(fname, "part") == 0) {
                 if (!f->value || f->value->kind != VALUE_STRING) {
-                    qt_raise("qt.capture expects `part` as a part's name, as "
+                    qt_raise("ui.capture expects `part` as a part's name, as "
                              "text");
                     value_free(win); value_free(target); value_free(opts);
                     return value_null();
@@ -7496,7 +7496,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 if (!f->value || f->value->kind != VALUE_NUMBER ||
                     !(f->value->as.num.value > 0) ||
                     f->value->as.num.value > 8) {
-                    qt_raise("qt.capture expects `scale` as a number above 0 "
+                    qt_raise("ui.capture expects `scale` as a number above 0 "
                              "and at most 8");
                     value_free(win); value_free(target); value_free(opts);
                     return value_null();
@@ -7506,11 +7506,11 @@ static Value qt_eval_call(AstExpr *expr) {
                 const char *near = gb_nearest_word(fname, capture_opts);
                 if (near) {
                     snprintf(message, sizeof(message),
-                             "qt.capture does not know the option `%s` -- did "
+                             "ui.capture does not know the option `%s` -- did "
                              "you mean `%s`?", fname, near);
                 } else {
                     snprintf(message, sizeof(message),
-                             "qt.capture does not know the option `%s`. It "
+                             "ui.capture does not know the option `%s`. It "
                              "takes part and scale", fname);
                 }
                 qt_raise(message);
@@ -7535,7 +7535,7 @@ static Value qt_eval_call(AstExpr *expr) {
                                err, sizeof(err));
         value_free(win); value_free(opts);
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.capture: %s",
+            snprintf(message, sizeof(message), "ui.capture: %s",
                      err[0] ? err : "the window could not be captured");
             qt_raise(message);
             value_free(target);
@@ -7558,7 +7558,7 @@ static Value qt_eval_call(AstExpr *expr) {
 
     if (strcmp(verb, "has_icon") == 0) {
         if (argc != 2) {
-            qt_raise("qt.has_icon expects a window and a part's name");
+            qt_raise("ui.has_icon expects a window and a part's name");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -7569,7 +7569,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (!qt_window_record(&win, "has_icon") || which.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                qt_raise("qt.has_icon expects the part's name as text");
+                qt_raise("ui.has_icon expects the part's name as text");
             }
             value_free(win); value_free(which);
             return value_null();
@@ -7588,7 +7588,7 @@ static Value qt_eval_call(AstExpr *expr) {
         int ok = gb_qt_has_icon(root, which.as.string, &has, err, sizeof(err));
         value_free(win); value_free(which);
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.has_icon: %s",
+            snprintf(message, sizeof(message), "ui.has_icon: %s",
                      err[0] ? err : "that part could not be asked");
             qt_raise(message);
             return value_null();
@@ -7601,13 +7601,13 @@ static Value qt_eval_call(AstExpr *expr) {
      * query, so a count fixed when the window opened would be wrong the first
      * time anybody ran a second one. Setting it also tells Qt to re-ask for
      * everything, which is how "the data changed" is said -- there is no
-     * `qt.refresh` for an asking table because the count IS the refresh.
+     * `ui.refresh` for an asking table because the count IS the refresh.
      *
      * READ WITH NO COUNT, which is the only way to observe that a set took --
-     * the shape `qt.menus` already has. */
+     * the shape `ui.menus` already has. */
     if (strcmp(verb, "rows") == 0) {
         if (argc != 2 && argc != 3) {
-            qt_raise("qt.rows expects a window, a table's name and optionally "
+            qt_raise("ui.rows expects a window, a table's name and optionally "
                      "how many rows it now has");
             return value_null();
         }
@@ -7625,7 +7625,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 return value_null();
             }
             if (n.kind != VALUE_NUMBER) {
-                qt_raise("qt.rows expects the number of rows as a number");
+                qt_raise("ui.rows expects the number of rows as a number");
                 value_free(win); value_free(which); value_free(n);
                 return value_null();
             }
@@ -7635,7 +7635,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 /* REFUSED RATHER THAN CLAMPED: a negative count is a mistake
                  * in the program's own arithmetic, and silently showing an
                  * empty table would hide it. */
-                qt_raise("qt.rows: a table cannot have fewer than no rows");
+                qt_raise("ui.rows: a table cannot have fewer than no rows");
                 value_free(win); value_free(which);
                 return value_null();
             }
@@ -7643,7 +7643,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         if (!qt_window_record(&win, "rows") || which.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                qt_raise("qt.rows expects the table's name as text");
+                qt_raise("ui.rows expects the table's name as text");
             }
             value_free(win); value_free(which);
             return value_null();
@@ -7668,7 +7668,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         value_free(win); value_free(which);
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.rows: %s",
+            snprintf(message, sizeof(message), "ui.rows: %s",
                      err[0] ? err : "that table could not be asked");
             qt_raise(message);
             return value_null();
@@ -7681,9 +7681,9 @@ static Value qt_eval_call(AstExpr *expr) {
         size_t want = writing ? 3 : 2;
         if (argc != want) {
             qt_raise(writing
-                         ? "qt.scroll_to expects a window, a part's name and a "
+                         ? "ui.scroll_to expects a window, a part's name and a "
                            "position"
-                         : "qt.scrolled expects a window and a part's name");
+                         : "ui.scrolled expects a window and a part's name");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -7700,7 +7700,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 return value_null();
             }
             if (pos.kind != VALUE_NUMBER) {
-                qt_raise("qt.scroll_to expects the position as a number");
+                qt_raise("ui.scroll_to expects the position as a number");
                 value_free(win); value_free(which); value_free(pos);
                 return value_null();
             }
@@ -7733,7 +7733,7 @@ static Value qt_eval_call(AstExpr *expr) {
         }
         value_free(win); value_free(which);
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.%s: %s", verb,
+            snprintf(message, sizeof(message), "ui.%s: %s", verb,
                      err[0] ? err : "that part could not be reached");
             qt_raise(message);
             return value_null();
@@ -7747,11 +7747,11 @@ static Value qt_eval_call(AstExpr *expr) {
 
     /* TURN THE WHEEL, for a program driving itself -- and it answers whether
      * anything CLAIMED the event, which is the only thing that makes
-     * `qt.swallow` observable: a QPlainTextEdit has no scroll position a
+     * `ui.swallow` observable: a QPlainTextEdit has no scroll position a
      * program can read. */
     if (strcmp(verb, "scroll") == 0) {
         if (argc != 3 && argc != 4) {
-            qt_raise("qt.scroll expects a window, a part's name, how many "
+            qt_raise("ui.scroll expects a window, a part's name, how many "
                      "notches and optionally a modifier");
             return value_null();
         }
@@ -7765,7 +7765,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, "scroll") || which.kind != VALUE_STRING ||
             turn.kind != VALUE_NUMBER) {
             if (!error_action_pending()) {
-                qt_raise("qt.scroll expects the part's name as text and the "
+                qt_raise("ui.scroll expects the part's name as text and the "
                          "notches as a number");
             }
             value_free(win); value_free(which); value_free(turn);
@@ -7777,7 +7777,7 @@ static Value qt_eval_call(AstExpr *expr) {
          * to no event at all -- and "it turned by nothing" is a mistake about
          * the argument rather than a wheel that did not move. */
         if ((int)(notches * 120) == 0) {
-            qt_raise("qt.scroll: a wheel turns by at least one notch");
+            qt_raise("ui.scroll: a wheel turns by at least one notch");
             value_free(win); value_free(which);
             return value_null();
         }
@@ -7789,7 +7789,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 return value_null();
             }
             if (mv.kind != VALUE_STRING) {
-                qt_raise("qt.scroll expects the modifier as text");
+                qt_raise("ui.scroll expects the modifier as text");
                 value_free(win); value_free(which); value_free(mv);
                 return value_null();
             }
@@ -7806,7 +7806,7 @@ static Value qt_eval_call(AstExpr *expr) {
                 mods = GB_QT_MOD_ALT;
             } else {
                 snprintf(message, sizeof(message),
-                         "qt.scroll: `%s` is not a modifier -- use ctrl, "
+                         "ui.scroll: `%s` is not a modifier -- use ctrl, "
                          "shift or alt", mv.as.string);
                 qt_raise(message);
                 value_free(win); value_free(which); value_free(mv);
@@ -7827,7 +7827,7 @@ static Value qt_eval_call(AstExpr *expr) {
         err[0] = '\0';
         if (!gb_qt_scroll(root, which.as.string, notches, mods, &claimed, err,
                           sizeof(err))) {
-            snprintf(message, sizeof(message), "qt.scroll: %s",
+            snprintf(message, sizeof(message), "ui.scroll: %s",
                      err[0] ? err : "that part could not be scrolled");
             qt_raise(message);
             value_free(win); value_free(which);
@@ -7839,7 +7839,7 @@ static Value qt_eval_call(AstExpr *expr) {
 
     if (strcmp(verb, "invoke") == 0) {
         if (argc != 3) {
-            qt_raise("qt.invoke expects a window, a part's name and a method");
+            qt_raise("ui.invoke expects a window, a part's name and a method");
             return value_null();
         }
         Value win = eval_expr(expr->as.call.args.items[0]);
@@ -7854,7 +7854,7 @@ static Value qt_eval_call(AstExpr *expr) {
         if (!qt_window_record(&win, "invoke") ||
             which.kind != VALUE_STRING || method.kind != VALUE_STRING) {
             if (!error_action_pending()) {
-                qt_raise("qt.invoke expects the part's name and the method as text");
+                qt_raise("ui.invoke expects the part's name and the method as text");
             }
             value_free(win);
             value_free(which);
@@ -7879,7 +7879,7 @@ static Value qt_eval_call(AstExpr *expr) {
         value_free(which);
         value_free(method);
         if (!ok) {
-            snprintf(message, sizeof(message), "qt.invoke: %s",
+            snprintf(message, sizeof(message), "ui.invoke: %s",
                      err[0] ? err : "that method could not be invoked");
             qt_raise(message);
             return value_null();
@@ -7889,11 +7889,11 @@ static Value qt_eval_call(AstExpr *expr) {
 
     if (strcmp(verb, "run") == 0) {
         if (argc != 0) {
-            qt_raise("qt.run takes no arguments");
+            qt_raise("ui.run takes no arguments");
             return value_null();
         }
         if (!qt_begun) {
-            qt_raise("qt.run has no window to run: call qt.open first");
+            qt_raise("ui.run has no window to run: call ui.open first");
             return value_null();
         }
         /* 50 ms is gBASIC'S OWN TICK, not a number chosen here:
@@ -7909,14 +7909,14 @@ static Value qt_eval_call(AstExpr *expr) {
 
     if (strcmp(verb, "stop") == 0) {
         if (argc != 0) {
-            qt_raise("qt.stop takes no arguments");
+            qt_raise("ui.stop takes no arguments");
             return value_null();
         }
         gb_qt_stop();
         return value_bool(1);
     }
 
-    module_unknown_verb(message, sizeof(message), "qt", verb);
+    module_unknown_verb(message, sizeof(message), "ui", verb);
     qt_raise(message);
     return value_null();
 #endif

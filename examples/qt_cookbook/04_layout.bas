@@ -33,13 +33,13 @@ window shapes( title: "Layout", width: 520, height: 320 )
 end window
 
 program main(args)
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display"
         return
     end if
-    qt.open(shapes)
+    ui.open(shapes)
 
-    ' ONLY A GRID HAS COORDINATES TO REPORT, and `qt.at` asks the LAYOUT rather
+    ' ONLY A GRID HAS COORDINATES TO REPORT, and `ui.at` asks the LAYOUT rather
     ' than any record of where we put things -- so it answers where a widget
     ' REALLY is.
     at = shapes.at("code")
@@ -54,5 +54,5 @@ program main(args)
     ' A LABELLED `field` TAKES TWO CELLS: its label and itself. That is why
     ' `code` is at column 1 rather than 0, and why `note` spans 3.
     print "a labelled field takes two cells, which is why code is at column 1"
-    qt.stop()
+    ui.stop()
 end program

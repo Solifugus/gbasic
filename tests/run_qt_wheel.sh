@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# THE WHEEL (docs/qt_gui_design.md §0.21) -- `on <part>.wheel`, `qt.wheel`,
-# `qt.swallow`, and `qt.scroll` to drive it.
+# THE WHEEL (docs/qt_gui_design.md §0.21) -- `on <part>.wheel`, `ui.wheel`,
+# `ui.swallow`, and `ui.scroll` to drive it.
 #
 # `set +e` BELOW WITHOUT A MATCHING `set -e`, DELIBERATELY: this file's mode is
 # `set -uo pipefail` -- no `-e` -- so `set +e` is a no-op and a `set -e` after
@@ -25,17 +25,17 @@
 #   `font` is Q_PROPERTY 27 and       so the ZOOM NEEDS NO VERB: split the
 #   reads back as TEXT                text, change the number, write it back
 #
-# SO THERE IS NO `qt.zoom`, and that is a measurement rather than a deferral:
-# `zoomIn`/`zoomOut` take a defaulted argument so `qt.invoke` (no-argument form
+# SO THERE IS NO `ui.zoom`, and that is a measurement rather than a deferral:
+# `zoomIn`/`zoomOut` take a defaulted argument so `ui.invoke` (no-argument form
 # only) cannot reach them, and nothing needs them to -- the fixture does the
 # zoom in gBASIC arithmetic and asserts the font moved. SIXTH TIME in this
 # backend that measuring a gap before filling it found it closed.
 #
 # THE TIER TO READ FIRST IS CLAIMED, because it is the only thing that makes
-# `qt.swallow` assertable at all: a QPlainTextEdit has NO scroll position a
+# `ui.swallow` assertable at all: a QPlainTextEdit has NO scroll position a
 # program can read (`verticalScrollBar` is a method, not a property), so
-# `qt.scroll` answers whether anything CLAIMED the event -- the shape
-# `qt.popup` already has. Asserted as a DIFFERENCE, with the control that a
+# `ui.scroll` answers whether anything CLAIMED the event -- the shape
+# `ui.popup` already has. Asserted as a DIFFERENCE, with the control that a
 # part which declared no handler claims nothing, without which "it swallows" is
 # satisfied by a backend that swallows everywhere and costs every `source` and
 # `table` in the language its ordinary scrolling.
@@ -74,15 +74,15 @@ fi
 
 # ------------------------------------------------------------- NO ZOOM VERB
 # A TRIPWIRE ON A DECISION, because the decision is invisible in behaviour: the
-# zoom works today and a `qt.zoom` added later would ALSO work, so nothing
+# zoom works today and a `ui.zoom` added later would ALSO work, so nothing
 # would go red. What it would cost is a verb that only an editor wants, for an
 # arithmetic a program can already do -- and `zoomIn`/`zoomOut` cannot be
-# reached by `qt.invoke` anyway, so the verb would have to carry its own
+# reached by `ui.invoke` anyway, so the verb would have to carry its own
 # argument marshalling.
 printf 'TIER no zoom verb: the font route is the only one\n'
 zoomverbs=$(grep -c 'strcmp(verb, "zoom' src/modules/qt.c || true)
 if [ "${zoomverbs:-0}" = "0" ]; then
-    pass "no qt.zoom -- the zoom is gBASIC arithmetic over the font property"
+    pass "no ui.zoom -- the zoom is gBASIC arithmetic over the font property"
 else
     fail "a zoom verb appeared ($zoomverbs); §0.21 measured that the font property already does it, so this needs re-arguing rather than re-adding"
 fi
@@ -176,21 +176,21 @@ else
        grep -q "^ok   and a declined wheel was NOT claimed" "$work/sem.out"; then
         pass "CLAIMED: swallowing and declining, asserted as a difference"
     else
-        fail "qt.swallow was not measured both ways -- a backend that swallows everything costs every source and table its ordinary scrolling"
+        fail "ui.swallow was not measured both ways -- a backend that swallows everything costs every source and table its ordinary scrolling"
     fi
     # THE TIER A PERTURBATION FORCED, and the one to read after POLICY: the
     # check above asserts what the PROGRAM said, and a filter made to record
     # the claim and then return FALSE -- so the claim is reported while the
     # view scrolls anyway -- was caught by NOTHING. Agreement is not
     # correctness (PLAT-NUMFMT), so the claim is asserted against the VIEW,
-    # which is what `qt.scrolled` was added for.
+    # which is what `ui.scrolled` was added for.
     if grep -q "^ok   a declined wheel really scrolled the view" "$work/sem.out" &&
        grep -q "^ok   a swallowed wheel left the view alone" "$work/sem.out"; then
         pass "VIEW: swallowing really stops it, and declining really does not"
     else
-        fail "swallowing was asserted only against qt.scroll's own answer, which agrees with qt.swallow having been called whatever Qt then did"
+        fail "swallowing was asserted only against ui.scroll's own answer, which agrees with ui.swallow having been called whatever Qt then did"
     fi
-    # A SUB-NOTCH TURN, which is why `qt.scroll` takes a FRACTION: a trackpad
+    # A SUB-NOTCH TURN, which is why `ui.scroll` takes a FRACTION: a trackpad
     # sends deltas under Qt's 120-unit notch and integer division reports those
     # as zero -- in the one value whose sign is the whole of what a zoom reads.
     # Without a fraction to drive it the rounding could not be exercised at all
@@ -230,7 +230,7 @@ fi
 # ------------------------------------------------------------------ VALGRIND
 # ACCESS-ONLY, for the reason run_qt_backend.sh records. What is NEW here is an
 # event filter that READS an event and a per-dispatch record of which event is
-# in flight, which `qt.wheel` reads back from gBASIC.
+# in flight, which `ui.wheel` reads back from gBASIC.
 printf 'TIER valgrind: no invalid access across the filter and the reads\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'

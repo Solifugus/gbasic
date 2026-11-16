@@ -32,5 +32,5 @@ pc|libxcrypt|libcrypt-dev|libxcrypt-devel|libxcrypt|optional|password_hash / pas
 pc|odbc|unixodbc-dev|unixODBC-devel|unixodbc|optional|odbc.* module (any ODBC-reachable database)
 pc|ldap|libldap-dev/libldap2-dev|openldap-devel|libldap|optional|ldap.* module (bind and search)
 pc|Qt6Widgets|qt6-base-dev qt6-base-dev-tools|qt6-qtbase-devel|qt6-base|qt|the qt module and window declarations (needs moc too)
-pc|Qt6Svg|qt6-svg-dev/libqt6svg6-dev|qt6-qtsvg-devel|qt6-svg|qt|qt.render_svg (with Qt6Widgets)
+pc|Qt6Svg|qt6-svg-dev/libqt6svg6-dev|qt6-qtsvg-devel|qt6-svg|qt|ui.render_svg (with Qt6Widgets)
 dir|KF6/KSyntaxHighlighting|libkf6syntaxhighlighting-dev|kf6-syntax-highlighting-devel|syntax-highlighting|qt|the source widget's highlighting (with Qt)

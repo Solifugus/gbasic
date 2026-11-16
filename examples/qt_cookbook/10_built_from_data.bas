@@ -1,15 +1,15 @@
 ' A WINDOW BUILT FROM DATA -- the one thing a `window` block cannot write,
 ' because a declaration has no loop in it.
 '
-' THERE IS NO SECOND API. The block binds a RECORD, and `qt.open` asks only
+' THERE IS NO SECOND API. The block binds a RECORD, and `ui.open` asks only
 ' that a record carry `kind: "window"` -- so building that record is the other
-' door, and everything else (binding, handlers, properties, `qt.at`) works
+' door, and everything else (binding, handlers, properties, `ui.at`) works
 ' exactly as it does for a declared window.
 '
-' `qt.check` GIVES A BUILT WINDOW THE DECLARATION'S OWN LOAD-TIME RULES, which
+' `ui.check` GIVES A BUILT WINDOW THE DECLARATION'S OWN LOAD-TIME RULES, which
 ' is what makes building one safe: a part with no name, two parts sharing one,
 ' a misspelled word or a handler naming nothing are all refused with the same
-' sentences, and `qt.open` runs the check itself so a validator nobody called
+' sentences, and `ui.open` runs the check itself so a validator nobody called
 ' cannot be skipped.
 
 function row_for(line)
@@ -41,13 +41,13 @@ program main(args)
     invoice = invoice_for(lines)
 
     ' THE RULES APPLY BEFORE ANYTHING IS BUILT, and need no display and no Qt.
-    print "the built record passes qt.check: " + string(qt.check(invoice))
+    print "the built record passes ui.check: " + string(ui.check(invoice))
 
-    if not qt.can_display() then
+    if not ui.can_display() then
         print "no display"
         return
     end if
-    qt.open(invoice)
+    ui.open(invoice)
 
     print "it generated " + string(len(lines)) + " rows"
     print "row 0 shows:  " + invoice.read("d1")
@@ -56,14 +56,14 @@ program main(args)
     ' of where we put things.
     at = invoice.at("q3")
     print "q3 sits at row " + string(at.row) + ", column " + string(at.column)
-    qt.stop()
+    ui.stop()
 
     ' A WINDOW THE RULES REJECT IS REFUSED, in the declaration's own words.
     on error goto refused
     bad = { kind: "window", name: "bad", options: {},
             items: [ { kind: "container", word: "column", options: {},
                        items: [ { kind: "part", word: "field", options: {} } ] } ] }
-    x = qt.check(bad)
+    x = ui.check(bad)
     print "MISMATCH: a part with no name was accepted"
     return
 refused:

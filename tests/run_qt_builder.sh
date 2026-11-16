@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # THE BUILDER (§4 of docs/qt_gui_design.md) -- a window a program BUILDS, and
-# `qt.check`, the declaration's own rules over a record.
+# `ui.check`, the declaration's own rules over a record.
 #
 # §4 said the block is SUGAR OVER A BUILDER, because a declaration cannot
 # contain a loop and so cannot generate a row per invoice, and that "the
 # builder's surface is not designed here". MEASURED 2026-10-18 BEFORE ANYTHING
-# WAS DESIGNED, AND THE DOOR WAS ALREADY OPEN: `qt.open` reads the record a
+# WAS DESIGNED, AND THE DOOR WAS ALREADY OPEN: `ui.open` reads the record a
 # declaration binds and asks only that `kind` is "window", so a record a
 # program builds opens, renders, reads back and fires handlers exactly as a
 # declared one. The surface IS the record; no verb was needed. Nobody knew,
@@ -56,16 +56,16 @@
 #               neither adapter may hold a vocabulary table or a near-miss
 #               finder of its own. No behavioural check can see a second copy
 #               that currently agrees.
-#   OPEN        `qt.open` runs the check itself, because a validator nobody is
+#   OPEN        `ui.open` runs the check itself, because a validator nobody is
 #               obliged to call is necessary and not sufficient --
 #               `rules.validate` refused a malformed stack all along while
 #               `rules.evaluate` still answered `ok: true` for a string.
 #   BUILT       offscreen: a window no declaration could write. PARITY is the
 #               load-bearing part -- the same window written BOTH WAYS, every
-#               observable equal, INCLUDING the grid geometry `qt.at` reads
+#               observable equal, INCLUDING the grid geometry `ui.at` reads
 #               back from the layout, because "the builder works" is otherwise
 #               satisfied by a builder that renders something plausible.
-#   DEGRADING   `qt.check` ANSWERS on a build with no Qt, like `can_display`
+#   DEGRADING   `ui.check` ANSWERS on a build with no Qt, like `can_display`
 #               and for a stronger reason: it is a check on a DECLARATION, and
 #               the whole declarative surface was built to be provable with no
 #               toolkit.
@@ -156,7 +156,7 @@ done
 cat >> "$agree" <<EOF
 function probe(what, w)
     on error goto handle
-    ok = qt.check(w)
+    ok = ui.check(w)
     print "ok   " + what
     return 0
 handle:
@@ -228,7 +228,7 @@ code_only() {
 # run_rules.sh, which is where this helper was copied from.
 # WHAT THE RULE IS ACTUALLY FOR IS ONE MATCHER, NOT ONE SENTENCE, and the
 # first version of this scanner measured the sentence -- which went red the
-# moment §0.29 added `qt.mark`'s category near-miss, and MEASURING FIRST showed
+# moment §0.29 added `ui.mark`'s category near-miss, and MEASURING FIRST showed
 # the scanner was wrong rather than the code. `src/modules/qt.c` HAS HELD A
 # near-miss sentence since §0.16 (the chooser's option names) and this passed
 # anyway, because that one is written `"did "` + `"you mean"` ACROSS A LINE
@@ -309,7 +309,7 @@ printf 'TIER open: the check runs whether or not anybody called it\n'
 cat > "$work/at_open.bas" <<'EOF'
 program main()
     on error goto handle
-    qt.open({ kind: "window", name: "bad", options: {},
+    ui.open({ kind: "window", name: "bad", options: {},
               items: [ { kind: "container", word: "column", options: {},
                          items: [ { kind: "part", word: "field",
                                     options: {} } ] } ] })
@@ -324,12 +324,12 @@ set +e
 out=$(QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib ./gbasic "$work/at_open.bas" 2>&1 | grep -v propagateSize)
 set -e
 if printf '%s\n' "$out" | grep -q 'REFUSED.*needs a name'; then
-    pass "qt.open refuses an invalid built window in the same words"
+    pass "ui.open refuses an invalid built window in the same words"
 elif printf '%s\n' "$out" | grep -q 'Qt support is not available'; then
-    pass "SKIP qt.open (no Qt in this build) -- the refusal tier above still ran"
+    pass "SKIP ui.open (no Qt in this build) -- the refusal tier above still ran"
 else
     printf '%s\n' "$out"
-    fail "qt.open did not refuse a part with no name"
+    fail "ui.open did not refuse a part with no name"
 fi
 
 printf 'TIER built: a window no declaration could write, and PARITY with one\n'
@@ -347,7 +347,7 @@ else
     report "qt_builder_test" "$out" "$rc"
 fi
 
-printf 'TIER degrading: qt.check ANSWERS where everything else refuses\n'
+printf 'TIER degrading: ui.check ANSWERS where everything else refuses\n'
 # It needs no Qt BY DESIGN, so a build without Qt must still validate a built
 # window -- the `web.routes` property, which is what let the declaration ship
 # before any Qt existed. Asserted against THIS build's behaviour when Qt is
@@ -358,13 +358,13 @@ program main()
              items: [ { kind: "container", word: "column", options: {},
                         items: [ { kind: "part", word: "field", name: "a",
                                    options: {} } ] } ] }
-    print "check good: " + string(qt.check(good))
+    print "check good: " + string(ui.check(good))
     on error goto handle
     bad = { kind: "window", name: "w", options: {},
             items: [ { kind: "container", word: "column", options: {},
                        items: [ { kind: "part", word: "feild", name: "a",
                                   options: {} } ] } ] }
-    ok = qt.check(bad)
+    ok = ui.check(bad)
     print "ACCEPTED the typo"
     return
 handle:
@@ -377,10 +377,10 @@ out=$(GBASIC_PATH=stdlib ./gbasic "$work/degrade.bas" 2>&1)
 set -e
 if printf '%s\n' "$out" | grep -q 'check good: true' && \
    printf '%s\n' "$out" | grep -q "did you mean 'field'?"; then
-    pass "qt.check validates with no display at all"
+    pass "ui.check validates with no display at all"
 else
     printf '%s\n' "$out"
-    fail "qt.check did not answer without a display"
+    fail "ui.check did not answer without a display"
 fi
 
 printf 'TIER valgrind\n'

@@ -43,7 +43,7 @@
 # claim rather than a measurement of this increment, and says so.
 #
 # THE TIER TO READ FIRST IS `paint`, because it is the claim gBASIC CANNOT
-# MAKE: `qt.marks` answers WHAT WAS SET, deliberately (a read filtered to the
+# MAKE: `ui.marks` answers WHAT WAS SET, deliberately (a read filtered to the
 # drawable lines would disagree with the write for a reason the caller cannot
 # see), so a backend that stored five lists and painted nothing satisfies every
 # check in the fixture. A QWidget's pixels are not reachable from gBASIC at

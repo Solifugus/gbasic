@@ -1,6 +1,6 @@
 #!/bin/bash
 # SHORTCUTS, ONE OR SEVERAL, AND PRESSING A KEY -- `shortcut: [ ... ]` on a
-# menu or toolbar item, `qt.shortcuts` and `qt.key`.
+# menu or toolbar item, `ui.shortcuts` and `ui.key`.
 #
 # ASKED FOR BY gBASIC STUDIO, from a measurement made by hand on a real
 # desktop: its Bigger Text item declared `shortcut: "Ctrl++"`, and on a US
@@ -13,11 +13,11 @@
 # a branch in the one property door; a misspelled shortcut (`Ctlr+S`) became
 # Qt's Key_unknown and was accepted in silence, so every shortcut is parsed
 # and an unknown key refused; a sendEvent'd KeyPress DOES reach Qt 6's
-# shortcut map, so `qt.key` needs no Qt Test dependency; and activation is
+# shortcut map, so `ui.key` needs no Qt Test dependency; and activation is
 # asynchronous, so the window is made active synchronously rather than by
 # processing events, which would fire gBASIC's own pump inside the call.
 #
-# THE LIMIT: `qt.key` sends the key Qt delivers, not the physical keys, so it
+# THE LIMIT: `ui.key` sends the key Qt delivers, not the physical keys, so it
 # cannot reproduce a keyboard layout. Stated in the fixture and the reference.
 . "$(dirname "$0")/portable.sh"
 set -uo pipefail
@@ -65,7 +65,7 @@ else
     # and the two halves fail on opposite wrong implementations.
     for want in \
         'with ONE shortcut "Ctrl++", plain Ctrl+= does nothing (Studio'"'"'s bug)' \
-        'and with the list set by qt.set it fires' \
+        'and with the list set by ui.set it fires' \
         'a key nothing takes answers false'
     do
         if grep -qF "ok   $want" "$work/sem.out"; then
