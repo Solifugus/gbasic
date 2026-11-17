@@ -382,7 +382,7 @@ static void svc_close(void *ctx, void *cursor) {
     free(sc);
 }
 
-static const GsqlService SERVICE = { NULL, svc_writes, svc_run, svc_fetch, svc_close, NULL, NULL };
+static const GsqlService SERVICE = { NULL, svc_writes, svc_run, svc_fetch, svc_close, NULL, NULL, NULL };
 
 static uint32_t env_ms(const char *name) {
     const char *v = getenv(name);

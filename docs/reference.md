@@ -3121,6 +3121,57 @@ that file before anything runs (`docs/gsql_library_blocks_design.md`).
 
 On Windows, `load gsql` answers that G-SQL is not yet available there.
 
+### Paths (*increment 1*)
+
+A table can be read by **path** instead of SQL: dots name tables, a bracket is
+a key or filters, and `.name` inside a bracket is a column
+(`docs/gsql_paths_design.md`). A path is one SQL statement, which the owner
+writes from the catalog and runs as it would any other, so every G-SQL rule
+applies to it. Only one table is read so far: steps between tables, writes and
+columns in braces come in later increments.
+
+```basic
+load gsql
+shop = gsql.connect("shop.gsql")
+
+c = shop.customer[3]                         ' the row's record, or unknown
+print c.name
+print (shop.line[17, 2]).item                ' a key of two columns, in its order
+for each r in shop.customer[.city = "Rome", .active]
+    print r.name
+next
+rome = shop.customer[.city = "Rome"]         ' a result: nothing read yet
+print rome.count()
+print rome[is_unknown(.email)].sql()         ' the statement, nothing run
+```
+
+| written | means |
+|---|---|
+| `shop.customer` | every row, a **result** |
+| `shop.customer[3]`, `shop.line[17, 2]` | the row with that primary key, values in the key's order: a record, or `unknown`. Read where the path ends |
+| `shop.customer[.city = x, .active]` | the rows matching, a result; `,` is `and` |
+| `path.query()` | the rows, an array of records |
+| `path.count()` | how many rows, counted by the owner |
+| `path.sql()` | the statement and its parameters as text; nothing is run |
+| `for each r in path` | the rows, a batch at a time |
+
+- **A result runs when it is used, each time**, against the data as it is
+  then. It goes on being a path: `t = shop.customer` then `t[3]` is customer 3.
+- **Rows come in primary key order.**
+- **In a filter**, a column is `.name`; everything else is the program's,
+  evaluated where the path is written and sent as a parameter. A column may be
+  compared (`= != < > <= >=`), combined (`and`, `or`, `not`), used in
+  arithmetic (`+ - * /`) and tested with `is_unknown(.email)`. `.email =
+  unknown` matches no row, as SQL's `= NULL` does.
+- **A dot after a path is a step to another table**, so a row's field is read
+  from the record: `(shop.customer[3]).name`, or `c = shop.customer[3]`.
+- **Names** match as an unquoted SQL name does, folded to lower case. A name
+  after a connection other than `max_recursion` is a table.
+- **Refusals** are `NOT_FOUND` for a table or column that is not there, with
+  the nearest name; `SYNTAX` for a key with the wrong number of values.
+- `gsql.count(path)` and `gsql.sql(path)` are the same calls. `sql()` of an
+  `sql` block answers its text.
+
 ## PostgreSQL Module
 
 PostgreSQL support is available when gBASIC is built with libpq. Load the

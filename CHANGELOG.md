@@ -18,6 +18,11 @@ reader sees.
 
 ### What a program written for 0.11.0 sees differently
 
+- **A name after a G-SQL connection is a table.** `db.timeout` used to be
+  refused as an attribute that is not there; it is now a path to a table
+  called `timeout`, refused when used if there is none (`max_recursion` is
+  still the connection's attribute).
+
 - **The GUI module is called `ui`, not `qt`.** Every `qt.` verb is now
   `ui.` (`ui.open`, `ui.read`, `ui.run`, …), `--capabilities` lists `ui`,
   and a window handle's methods are `ui`'s. The name says what the module is
@@ -46,6 +51,15 @@ reader sees.
   still takes a Qt stylesheet, as Qt's own, and a part is `#name` in it.
 
 ### What was added
+
+- **G-SQL paths, increment 1: a table read by path** (docs/gsql_paths_design.md).
+  `shop.customer[3]` is the row's record or `unknown`; `shop.line[17, 2]` a
+  key of two columns; `shop.customer[.city = "Rome", .active]` a result like an
+  `sql` block's select, run when used, with `for each`, `query()`, `count()` and
+  `sql()` (the statement it is, nothing run). A path is one SQL statement the
+  owner writes from the catalog, every program value a parameter, rows in
+  primary key order. Two pieces of grammar: `.name`, a column inside a path's
+  brackets, and a list in brackets, `[a, b]`; each is refused elsewhere.
 
 - New words where a program needed one: `secret` (a password field),
   `default` (the button Enter presses), `clear`, `select_all`, `fit_columns`,

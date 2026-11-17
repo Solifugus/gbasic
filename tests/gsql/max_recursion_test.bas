@@ -95,11 +95,14 @@ if error then
 else
     check("another attribute name is refused", false, true)
 end if
-y = bank.timeout
+' any other name after a connection is a TABLE, the start of a G-SQL path
+' (docs/gsql_paths_design.md §3.1, from 2026-11-16): reading it runs nothing,
+' and using it is refused for the table that is not there
+y = bank.timeout.count()
 if error then
-    check("reading another attribute is refused", contains(error.message, "its one attribute is max_recursion"), true)
+    check("another name is a table, refused when used", contains(error.message, "has no table `timeout`"), true)
 else
-    check("reading another attribute is refused", false, true)
+    check("another name is a table, refused when used", false, true)
 end if
 check("a refused setting left it unchanged", bank.max_recursion, 1000000)
 

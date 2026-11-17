@@ -1,6 +1,6 @@
 # Paths over G-SQL: reading and writing tables by path
 
-**Status:** design note, 2026-11-16, revised the same day with Matthew's rulings on its first draft (§10). Nothing here is built.
+**Status:** design note, 2026-11-16, revised the same day with Matthew's rulings on its first draft (§10). **Increment 1 is built** (one table read by path; §8.1 records where the build departed from this text). Increments 2 to 5 are not.
 
 ## 1. What it is, and what it is not
 
@@ -68,13 +68,13 @@ That is what "in harmony" comes to: a path is a SQL statement written shorter, o
 | root | `shop` | a connection: a `database` block, or `gsql.connect(...)`'s answer (§10 A9) |
 | table | `shop.customer` | every row of the table |
 | key | `shop.customer[3]`, `shop.customer[n + 1]` | the row whose primary key is that value |
-| filter | `shop.customer[.city = "Rome", .email = unknown]` | the rows matching; `,` is `and`, `or` is written; `(...)` groups |
+| filter | `shop.customer[.city = "Rome", is_unknown(.email)]` | the rows matching; `,` is `and`, `or` is written; `(...)` groups |
 | step | `shop.invoice[17].customer`, `shop.customer[3].invoice` | to another table across the one foreign key joining the two, in whichever direction it points |
 | columns | `...{ name, email }` | only these columns of the table just before it, as fields in this order; at the end of the path, or after any table along it (§3.5) |
 
-**Inside a bracket, a column is written with a leading dot and everything else is an ordinary gBASIC expression** (§10 A3), evaluated where the path is written and sent as a parameter: `[.city = wanted]`, `[.total > limit * 2]`, `[.paid < .total]`, `[len(.name) > 20]`. The dot also shows the column belongs to the table to the left of the bracket.
+**Inside a bracket, a column is written with a leading dot and everything else is an ordinary gBASIC expression** (§10 A3), evaluated where the path is written and sent as a parameter: `[.city = wanted]`, `[.total > limit * 2]`, `[.paid < .total]`. (As built, a column may be compared, combined, used in arithmetic and tested with `is_unknown()`, but not handed to a function: §8.1.) The dot also shows the column belongs to the table to the left of the bracket.
 
-**A bracket with no column in it is a key**, for a table whose primary key is one column: `[3]`, `[n]`. **A filter that fixes every primary key column with `=`, and nothing else, is also a key**, so a composite key is written by naming its columns, `shop.line[.invoice = 17, .n = 2]`. Part of a composite key is a filter, `shop.line[.invoice = 17]`.
+**A bracket with no column in it is a key**: `[3]`, `[n]`, and for a primary key of several columns their values in the key's order, `shop.line[17, 2]`. Part of a composite key is a filter, `shop.line[.invoice = 17]`, and so is a filter naming every key column, `shop.line[.invoice = 17, .n = 2]`: many, holding at most one row. (Built so; the first text made that filter a key, §8.1.)
 
 **A step goes across a foreign key, by the other table's name.** The direction is the key's own: from `invoice` to `customer` is child to parent (each invoice's one customer), from `customer` to `invoice` is parent to children (each customer's invoices). Two tables joined by no foreign key, or by more than one, cannot be stepped between; §5 says what is written instead.
 
@@ -107,8 +107,8 @@ for each c in rome                          ' runs now, a batch at a time
 next
 all = rome.query()                          ' runs again: an array of records
 n = rome.count()                            ' select count(*) ... : a number
-print rome[.email = unknown].sql()          ' a result goes on being a path
-first = rome[.name = "Ana"]                 ' ...including to one row: read now
+print rome[is_unknown(.email)].sql()       ' a result goes on being a path
+ana = rome[1]                               ' ...including to one row by its key: read now
 ```
 
 - **`for each` streams it** a batch at a time, so `for each c in shop.customer` never holds the table.
@@ -273,6 +273,21 @@ Each change below is held to **zero new conflicts** and to every existing test o
 3. **Writes:** a record to a key or a filter, `insert`, `delete`, inserting through a step.
 4. **Columns in braces**, at the end and along the path (§3.5), after the lexer's cost is measured (§6).
 5. **The cookbook and reference**: `docs/gsql_cookbook.md` gains a paths chapter, every recipe run by the gate, each beside the `sql` block it equals.
+
+### 8.1 As built: increment 1 (2026-11-16)
+
+`src/gsql/sql_path.c` (the compiler, in the owner), the `path` field of a QUERY (`src/gsql/owner.c`), the module's half in `src/modules/gsql.c`, and `tests/run_gsql_paths.sh`. Where the build departed from the text above, and why:
+
+- **A composite key is its values in order, `shop.line[17, 2]`.** The first text made a filter naming every key column a key, because a comma in brackets did not parse. It parses at zero new conflicts (measured), and then whether a bracket is one or many is decided by how it is written, which the client can see without asking the catalog. That matters because the client must know before anything is sent whether to read the row now or hand back a result (§3.3). A filter naming every key column is a filter: many, holding at most one row.
+- **A column is compared, combined (`and`, `or`, `not`), used in `+ - * /` and tested with `is_unknown()`; nothing else takes one.** `[len(.name) > 20]` is refused, saying a `sql` block does more. Program values are free expressions (`[.name = left(x, 2)]`). Passing a column to a function needs a decision about which gBASIC functions have a G-SQL function of the same meaning; that is for an increment that wants it.
+- **`.email = unknown` matches no row**, as SQL's `= NULL` does and gBASIC's three-valued `=` says. `is_unknown(.email)` is the test, compiled to `IS NULL`. The first text's example was wrong and is corrected above.
+- **Parentheses end a path**: `(shop.customer[3]).name` reads the record's field. The parser marks a parenthesized expression, since parentheses leave no node.
+- **A name after a connection is a table**, except `max_recursion`. `db.timeout` was refused as an unknown attribute; it is now a path, refused when used. `tests/gsql/max_recursion_test.bas` asserted the old refusal and was rebaselined to the new one, and CHANGELOG lists it.
+- **How it reaches the owner:** a QUERY carrying `path` (table, the key's parameter numbers, the filter tree, a mode: rows, count or sql) in place of `statement`. The owner compiles it in the connection's transaction, or in a snapshot of its own taken and dropped at once, then runs the text exactly as a QUERY's. Nothing else runs between the two, so the statement sees the catalog the compiler saw. A path of many is an `sql` block value (`GsqlStatementValue`, `is_path`), so `for each`, `query` and the batches are a block's own code.
+- **`.sql()` shows the parameters** as print shows them inside an array, `$1 = "Rome"`, `$2 = 10`.
+- **Measured:** the semantics fixture (93 checks by hand), five differential seeds of 120 paths each (43 to 89 answering rows), valgrind clean. Five perturbations, each red: `!=` compiled as `=`, the order reversed, a composite key's `AND` made `OR`, a key's row never read, `IS NULL` made `IS NOT NULL`.
+
+**Open, for increment 2.** Whether a step is one or many depends on which way its foreign key points, and only the catalog knows that, while the client must know before it sends anything whether to read now. Either the client holds each connection's foreign keys, fetched once and refreshed when the owner says the catalog has changed, or a step from one is always a result and `shop.invoice[17].customer` is read with `.query()`. The first keeps §3.2 as written and costs a cache that can go stale. The second costs the reader a call. To be decided, with Matthew, before increment 2.
 
 ## 9. Not in this note
 

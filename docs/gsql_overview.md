@@ -58,6 +58,7 @@ The text `"0.50"` and the number `3.25` are stored as money, and the text `"2026
 | **A database chosen at run time** | `database tenant()`, with no `file:`, is a role. Its blocks are given a connection when used: `db.exec(add)`, `db.query(items)`, or `db.on(items)` for a `for each`. | `gsql_block_connection_design.md` |
 | **Refusals are codes** | Every refusal raises with `error.details.code` naming G-SQL's code (`DUPLICATE`, `NOT_NULL`, `FOREIGN_KEY`, `LOST`, ...) and a position where the statement has one. | `gsql_module_design.md` |
 | **Warnings are gBASIC warnings** | A warning raised inside SQL reaches the call that ran it, so `on warning` applies; under `stop` inside a transaction it becomes an error before anything is committed. | `gsql_warning_design.md` |
+| **Paths** | A table can be read by path as well as by SQL: `shop.customer[3]` is the row's record or `unknown`, `shop.customer[.city = "Rome"]` a result run when used, `.count()` and `.sql()` on either. A path is one SQL statement the owner writes from the catalog, so every rule here applies to it. One table so far; steps between tables, writes and columns in braces are to come. | `gsql_paths_design.md` |
 | **A lost owner is not retried** | If the owner exits, the request in flight fails with `LOST` and nothing is retried; the next call starts a new owner. | `gsql_module_design.md` |
 
 ## 4. The SQL
