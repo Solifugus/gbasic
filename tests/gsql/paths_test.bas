@@ -235,7 +235,7 @@ check("a list in an array's brackets", message_has(refusal(array_list), "an arra
 function stepped()
     return shop.customer[3].name
 end function
-check("a dot after a key is a step to a table", message_has(refusal(stepped), "a step from one table to another"), true)
+check("a dot after a key is a step to a table", message_has(refusal(stepped), "has no table `name`"), true)
 
 function counted_block()
     return make.count()

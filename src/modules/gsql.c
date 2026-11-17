@@ -1286,11 +1286,21 @@ static void gsql_cursor_close_quiet(GsqlConnectionValue *c, Value cursor) {
 
 /* Runs the statement in `body` and answers its rows, or NULL with a raise.
  * `sql` is taken; `remedy` says what to use when it returns no rows. */
+static struct GsqlRows *gsql_rows_begin_ex(GsqlConnectionValue *c, const char *who, char *sql, Value body,
+                                           const char *remedy, Value *refused);
+
 static struct GsqlRows *gsql_rows_begin(GsqlConnectionValue *c, const char *who, char *sql, Value body,
                                         const char *remedy) {
+    return gsql_rows_begin_ex(c, who, sql, body, remedy, NULL);
+}
+
+/* ...or, given `refused`, the owner's refusal handed back there rather than
+   raised */
+static struct GsqlRows *gsql_rows_begin_ex(GsqlConnectionValue *c, const char *who, char *sql, Value body,
+                                           const char *remedy, Value *refused) {
     Value reply;
     unsigned type;
-    if (!gsql_request(c, GSQL_M_QUERY, body, who, sql, &reply, &type)) {
+    if (!gsql_request_ex(c, GSQL_M_QUERY, body, who, sql, &reply, &type, refused)) {
         free(sql);
         return NULL;
     }
@@ -3165,15 +3175,30 @@ static Value gsql_eval_space(AstExpr *expr) {
 
 /* ==== paths (docs/gsql_paths_design.md) ==================================
  *
- * `shop.customer[.city = "Rome"]`: a path is an sql block whose statement the
- * owner writes. It is held as a GsqlStatementValue with `is_path` set, bound to
- * its connection, so `for each`, `query` and the batches a large result comes
- * in are a block's own. Each bracket or step makes a new value; none is
- * changed after it is made. What the request carries: the table, the key's
- * parameter numbers, a filter tree whose program values are parameters, and a
- * mode. The owner resolves every name (sql_path.c). */
+ * `shop.customer[3].invoice[.paid = false]`: a path is an sql block whose
+ * statement the owner writes. It is held as a GsqlStatementValue with
+ * `is_path` set, bound to its connection, so `for each`, `query` and the
+ * batches a large result comes in are a block's own. It is a list of LEVELS,
+ * one table each, every level after the first a step across the one foreign
+ * key joining it to the one before. Each bracket or step makes a new value;
+ * none is changed after it is made. The owner resolves every name
+ * (src/gsql/sql_path.c).
+ *
+ * ONE OR MANY is decided here, before anything is sent, because a row is read
+ * where its path ends and a result is not read at all (§3.2, §3.3). A step's
+ * direction is the foreign key's, which only the catalog knows, so the
+ * connection holds the database's foreign keys. Every request says what was
+ * decided; the owner works it out again from its own catalog and refuses a
+ * one that is now many (STALE), and the keys are fetched again. So keys held
+ * here that have gone stale cost a round trip, never a wrong answer (§8.2). */
 
-static GsqlStatementValue *gsql_path_alloc(Value connection, const char *table) {
+static Value path_level(const char *table) {
+    Value lv = value_record(NULL, 0);
+    record_set(&lv, "table", value_string(table));
+    return lv;
+}
+
+static GsqlStatementValue *gsql_path_alloc(Value connection, Value levels, const char *table) {
     GsqlStatementValue *st = calloc(1, sizeof *st);
     if (!st) {
         abort();
@@ -3193,8 +3218,7 @@ static GsqlStatementValue *gsql_path_alloc(Value connection, const char *table) 
     st->nstmts = 1;
     st->last_rows = 1;
     st->bound = connection;
-    st->path_key = value_null();
-    st->path_filter = value_null();
+    st->path_levels = levels;
     st->path_params = value_array(NULL, 0);
     return st;
 }
@@ -3212,20 +3236,46 @@ static Value gsql_path_table(Value connection, const char *table) {
         runtime_error_raise(msg, GSQL_ERROR_CODE, "gsql");
         return value_null();
     }
-    return value_gsql_statement(gsql_path_alloc(connection, table));
+    Value levels = value_array(NULL, 0);
+    Value grown = append_to_array_ref(&levels, path_level(table), 0);
+    value_free(grown);
+    return value_gsql_statement(gsql_path_alloc(connection, levels, table));
 }
 
 static GsqlStatementValue *gsql_path_extend(const GsqlStatementValue *from) {
-    GsqlStatementValue *st = gsql_path_alloc(value_copy(from->bound), from->path_table);
+    GsqlStatementValue *st = gsql_path_alloc(value_copy(from->bound), value_copy(from->path_levels),
+                                             from->path_table);
     value_free(st->path_params);
-    st->path_key = value_copy(from->path_key);
-    st->path_filter = value_copy(from->path_filter);
     st->path_params = value_copy(from->path_params);
+    st->path_one = from->path_one;
     return st;
 }
 
 static int gsql_is_path(const Value *v) {
     return v->kind == VALUE_GSQL_STATEMENT && v->as.gsql_statement->is_path;
+}
+
+/* the last level, to read */
+static Value *path_last(GsqlStatementValue *st) {
+    ArrayStorage *a = st->path_levels.as.array.store;
+    return &a->items[a->count - 1];
+}
+
+/* the last level with `field` set: a new levels array, since the old one may
+   be shared by the value this one was made from */
+static void path_last_set(GsqlStatementValue *st, const char *field, Value v) {
+    ArrayStorage *a = st->path_levels.as.array.store;
+    Value levels = value_array(NULL, 0);
+    for (size_t i = 0; i < a->count; i++) {
+        Value item = value_copy(a->items[i]);
+        if (i + 1 == a->count) {
+            record_set(&item, field, v);
+        }
+        Value grown = append_to_array_ref(&levels, item, 0);
+        value_free(grown);
+    }
+    value_free(st->path_levels);
+    st->path_levels = levels;
 }
 
 static int path_has_column(const AstExpr *e) {
@@ -3362,8 +3412,9 @@ static Value path_and(Value a, Value b) {
 
 static Value gsql_path_one(GsqlStatementValue *st);
 
-/* `path[...]`: a key or a filter (docs/gsql_paths_design.md §3.1). A key
- * names one row, which is read here unless the path goes on (`keep`). */
+/* `path[...]`: a key or a filter (docs/gsql_paths_design.md §3.1), on the
+ * last table of the path. A key makes it one row, which is read here unless
+ * the path goes on (`keep`). */
 static Value gsql_path_bracket(Value base, AstExpr *expr, int keep) {
     GsqlStatementValue *from = base.as.gsql_statement;
     AstExpr *in = expr->as.index.index;
@@ -3379,7 +3430,8 @@ static Value gsql_path_bracket(Value base, AstExpr *expr, int keep) {
                              "a column (`[.city = \"Rome\", .active]`); this one mixes the two");
         return value_null();
     }
-    if (!with_column && from->path_key.kind != VALUE_NULL) {
+    Value *last = path_last(from);
+    if (!with_column && record_find(last, "key")) {
         value_free(base);
         path_refuse_at(expr, "this path already names one row by its key; a second key has nothing to choose "
                              "from -- a filter after it is written with a column, `[.paid = true]`");
@@ -3399,54 +3451,188 @@ static Value gsql_path_bracket(Value base, AstExpr *expr, int keep) {
             Value grown = append_to_array_ref(&key, value_number_exact(k), 0);
             value_free(grown);
         }
-        st->path_key = key;
-        if (keep) {
-            return value_gsql_statement(st);
+        path_last_set(st, "key", key);
+        st->path_one = 1;
+    } else {
+        RecordField *had = record_find(path_last(st), "filter");
+        Value filter = had ? value_copy(*had->value) : value_null();
+        for (size_t i = 0; i < n; i++) {
+            Value tree;
+            if (!path_tree(items[i], &st->path_params, &tree)) {
+                value_free(filter);
+                value_free(value_gsql_statement(st));
+                return value_null();
+            }
+            filter = path_and(filter, tree);
         }
-        Value row = gsql_path_one(st);
-        value_free(value_gsql_statement(st));
-        return row;
+        path_last_set(st, "filter", filter);
     }
-    for (size_t i = 0; i < n; i++) {
-        Value tree;
-        if (!path_tree(items[i], &st->path_params, &tree)) {
-            value_free(value_gsql_statement(st));
-            return value_null();
-        }
-        st->path_filter = path_and(st->path_filter, tree);
-    }
-    if (!keep && st->path_key.kind != VALUE_NULL) {
-        /* a filter after the key: still one row */
-        Value row = gsql_path_one(st);
-        value_free(value_gsql_statement(st));
-        return row;
+    if (!keep && st->path_one) {
+        return gsql_path_one(st);
     }
     return value_gsql_statement(st);
 }
 
-/* `path.name`: a step to another table (docs/gsql_paths_design.md §3.1),
- * increment 2. */
-static Value gsql_path_step(Value base, const AstExpr *expr) {
-    char msg[400];
-    snprintf(msg, sizeof msg, "`%s.%s`: a step from one table to another is not built yet (docs/gsql_paths_design.md "
-             "§8, increment 2); a column is chosen with a bracket's `.%s` or a record's field",
-             base.as.gsql_statement->path_table, expr->as.field.field, expr->as.field.field);
+/* ---- the foreign keys this connection holds -------------------------- */
+
+static struct GsqlRows *gsql_rows_begin_ex(GsqlConnectionValue *c, const char *who, char *sql, Value body,
+                                           const char *remedy, Value *refused);
+
+/* the database's foreign keys, fetched again: 1, or 0 with a raise */
+static int path_fkeys_fetch(GsqlConnectionValue *c, const char *who) {
+    Value path = value_record(NULL, 0);
+    record_set(&path, "mode", value_string("fkeys"));
+    Value body = value_record(NULL, 0);
+    record_set(&body, "path", path);
+    record_set(&body, "batch", value_number_exact(GSQL_MODULE_BATCH));
+    struct GsqlRows *r = gsql_rows_begin_ex(c, who, copy_string(""), body, "a sql block", NULL);
+    if (!r) {
+        return 0;
+    }
+    Value keys = value_array(NULL, 0), row;
+    while (gsql_rows_next(r, &row)) {
+        Value grown = append_to_array_ref(&keys, row, 0);
+        value_free(grown);
+    }
+    gsql_rows_end(r);
+    if (error_action_pending()) {
+        value_free(keys);
+        return 0;
+    }
+    value_free(c->path_fkeys);
+    c->path_fkeys = keys;
+    c->path_fkeys_known = 1;
+    return 1;
+}
+
+static const char *rec_text(Value *rec, const char *name) {
+    Value *v = gsql_field(rec, name);
+    return v && v->kind == VALUE_STRING ? v->as.string : "";
+}
+
+/* names as an unquoted SQL name is: folded to lower case */
+static int path_same_name(const char *a, const char *b) {
+    for (; *a && *b; a++, b++) {
+        if (tolower((unsigned char)*a) != tolower((unsigned char)*b)) {
+            return 0;
+        }
+    }
+    return *a == *b;
+}
+
+/* the one bound foreign key joining `from` and `to`, by the keys held: 1 with
+   `up` (child to parent), 0 when none, several, or a table joined to itself */
+static int path_direction(GsqlConnectionValue *c, const char *from, const char *to, int *up) {
+    if (path_same_name(from, to)) {
+        return 0;
+    }
+    int found = 0;
+    ArrayStorage *a = c->path_fkeys.kind == VALUE_ARRAY ? c->path_fkeys.as.array.store : NULL;
+    for (size_t i = 0; a && i < a->count; i++) {
+        Value *k = &a->items[i];
+        Value *bound = gsql_field(k, "bound");
+        if (!bound || bound->kind != VALUE_BOOL || !bound->as.boolean) {
+            continue;
+        }
+        const char *child = rec_text(k, "child"), *parent = rec_text(k, "parent");
+        if (path_same_name(child, from) && path_same_name(parent, to)) {
+            *up = 1;
+            found++;
+        } else if (path_same_name(child, to) && path_same_name(parent, from)) {
+            *up = 0;
+            found++;
+        }
+    }
+    return found == 1;
+}
+
+/* Whether a path is one row, from its levels and the keys held: 1 one, 0
+   many, -1 a step the keys held cannot take. */
+static int path_shape(GsqlConnectionValue *c, GsqlStatementValue *st) {
+    ArrayStorage *a = st->path_levels.as.array.store;
+    int one = 0;
+    for (size_t i = 0; i < a->count; i++) {
+        Value *lv = &a->items[i];
+        int keyed = record_find(lv, "key") != NULL;
+        if (i == 0) {
+            one = keyed;
+            continue;
+        }
+        int up = 0;
+        if (!path_direction(c, rec_text(&a->items[i - 1], "table"), rec_text(lv, "table"), &up)) {
+            return -1;
+        }
+        one = keyed || (up && one);
+    }
+    return one;
+}
+
+static void gsql_path_body(const GsqlStatementValue *st, const char *mode, Value *body);
+
+/* `path.name`: a step to the table `name`, across the one foreign key joining
+ * it to the path's last table (docs/gsql_paths_design.md §3.1). One step from
+ * one row up to its parent is one row, and read here unless the path goes on. */
+static Value gsql_path_step(Value base, const AstExpr *expr, int keep) {
+    GsqlStatementValue *st = gsql_path_extend(base.as.gsql_statement);
     value_free(base);
-    path_refuse_at(expr, msg);
-    return value_null();
+    char who[300];
+    gsql_who(st, who, sizeof who);
+    GsqlConnectionValue *c = gsql_connection_of(value_copy(st->bound), who);
+    if (!c) {
+        value_free(value_gsql_statement(st));
+        return value_null();
+    }
+    Value levels = value_copy(st->path_levels);
+    Value grown = append_to_array_ref(&levels, path_level(expr->as.field.field), 0);
+    value_free(grown);
+    value_free(st->path_levels);
+    st->path_levels = levels;
+    free(st->path_table);
+    st->path_table = copy_string(expr->as.field.field);
+    free(st->name);
+    st->name = copy_string(expr->as.field.field);
+    if (!c->path_fkeys_known && !path_fkeys_fetch(c, who)) {
+        value_free(value_gsql_statement(st));
+        return value_null();
+    }
+    int shape = path_shape(c, st);
+    if (shape < 0) {
+        /* the keys held cannot take it: fetched again, in case they are
+           stale, and if they still cannot, the owner says why */
+        if (!path_fkeys_fetch(c, who)) {
+            value_free(value_gsql_statement(st));
+            return value_null();
+        }
+        shape = path_shape(c, st);
+    }
+    if (shape < 0) {
+        Value body;
+        gsql_path_body(st, "sql", &body);
+        Value reply;
+        unsigned type;
+        if (gsql_request(c, GSQL_M_QUERY, body, who, "", &reply, &type)) {
+            /* the owner took it, so the keys held were wrong even fresh: a
+               race with a change; as many, which is never wrong to read */
+            value_free(reply);   /* one row of text, no cursor left open */
+            shape = 0;
+        } else {
+            value_free(value_gsql_statement(st));
+            return value_null();
+        }
+    }
+    st->path_one = shape;
+    if (!keep && st->path_one) {
+        return gsql_path_one(st);
+    }
+    return value_gsql_statement(st);
 }
 
 /* The request for a path, in one of its modes. */
 static void gsql_path_body(const GsqlStatementValue *st, const char *mode, Value *body) {
     Value path = value_record(NULL, 0);
-    record_set(&path, "table", value_string(st->path_table));
-    if (st->path_key.kind != VALUE_NULL) {
-        record_set(&path, "key", value_copy(st->path_key));
-    }
-    if (st->path_filter.kind != VALUE_NULL) {
-        record_set(&path, "filter", value_copy(st->path_filter));
-    }
+    record_set(&path, "levels", value_copy(st->path_levels));
     record_set(&path, "mode", value_string(mode));
+    record_set(&path, "expect", value_string(st->path_one ? "one" : "many"));
     *body = value_record(NULL, 0);
     record_set(body, "path", path);
     if (st->path_params.as.array.store->count) {
@@ -3456,8 +3642,9 @@ static void gsql_path_body(const GsqlStatementValue *st, const char *mode, Value
 }
 
 /* The rows a path answers in `mode`, through the same stream a block's rows
- * come by. NULL with a raise. */
-static struct GsqlRows *gsql_path_rows(GsqlStatementValue *st, const char *mode) {
+ * come by. NULL with a raise, or with `refused` set to the owner's refusal
+ * when it was given. */
+static struct GsqlRows *gsql_path_rows_ex(GsqlStatementValue *st, const char *mode, Value *refused) {
     char who[300];
     gsql_who(st, who, sizeof who);
     GsqlConnectionValue *c = gsql_connection_of(value_copy(st->bound), who);
@@ -3466,32 +3653,75 @@ static struct GsqlRows *gsql_path_rows(GsqlStatementValue *st, const char *mode)
     }
     Value body;
     gsql_path_body(st, mode, &body);
-    return gsql_rows_begin(c, who, copy_string(st->sql), body, "a sql block");
+    return gsql_rows_begin_ex(c, who, copy_string(st->sql), body, "a sql block", refused);
 }
 
-/* A path of one, read: the row's record, or unknown when there is none. */
+static struct GsqlRows *gsql_path_rows(GsqlStatementValue *st, const char *mode) {
+    return gsql_path_rows_ex(st, mode, NULL);
+}
+
+/* A path of one, read: the row's record, or unknown when there is none. A
+ * STALE refusal -- the keys held said one, the owner's say many -- fetches the
+ * keys again and decides again: one is read once more, many is answered as a
+ * result. `st` is borrowed; it is freed here. */
 static Value gsql_path_one(GsqlStatementValue *st) {
-    struct GsqlRows *r = gsql_path_rows(st, "rows");
-    if (!r) {
-        return value_null();
-    }
-    Value row, first = value_unknown();
-    int got = 0;
-    while (gsql_rows_next(r, &row)) {
-        if (!got) {
-            value_free(first);
-            first = row;
-            got = 1;
-        } else {
-            value_free(row);
+    for (int attempt = 0;; attempt++) {
+        Value refused = value_null();
+        struct GsqlRows *r = gsql_path_rows_ex(st, "rows", attempt == 0 ? &refused : NULL);
+        if (!r && refused.kind == VALUE_RECORD) {
+            Value *code = gsql_field(&refused, "code");
+            int stale = code && code->kind == VALUE_STRING && strcmp(code->as.string, "STALE") == 0;
+            if (!stale) {
+                /* any other refusal is raised as the request would have */
+                Value *message = gsql_field(&refused, "message");
+                char who[300];
+                gsql_who(st, who, sizeof who);
+                gsql_module_raise_about(who, code && code->kind == VALUE_STRING ? code->as.string : "?",
+                                        message && message->kind == VALUE_STRING ? message->as.string : "",
+                                        0, NULL, &refused);
+                value_free(refused);
+                value_free(value_gsql_statement(st));
+                return value_null();
+            }
+            value_free(refused);
+            char who[300];
+            gsql_who(st, who, sizeof who);
+            GsqlConnectionValue *c = gsql_connection_of(value_copy(st->bound), who);
+            if (!c || !path_fkeys_fetch(c, who)) {
+                value_free(value_gsql_statement(st));
+                return value_null();
+            }
+            int shape = path_shape(c, st);
+            if (shape != 1) {
+                st->path_one = 0;
+                return value_gsql_statement(st);
+            }
+            continue;
         }
+        value_free(refused);
+        if (!r) {
+            value_free(value_gsql_statement(st));
+            return value_null();
+        }
+        Value row, first = value_unknown();
+        int got = 0;
+        while (gsql_rows_next(r, &row)) {
+            if (!got) {
+                value_free(first);
+                first = row;
+                got = 1;
+            } else {
+                value_free(row);
+            }
+        }
+        gsql_rows_end(r);
+        value_free(value_gsql_statement(st));
+        if (error_action_pending()) {
+            value_free(first);
+            return value_null();
+        }
+        return first;
     }
-    gsql_rows_end(r);
-    if (error_action_pending()) {
-        value_free(first);
-        return value_null();
-    }
-    return first;
 }
 
 /* One field of a path's single answering row: `count` or `sql`. */

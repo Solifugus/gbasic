@@ -488,6 +488,12 @@ struct GsqlConnectionValue {
     /* `bank.max_recursion = n`: WITH RECURSIVE's round limit for every
      * statement run on it; 0, the owner's default (docs/gsql_recursive_design.md §3) */
     uint64_t max_recursion;
+    /* the database's foreign keys, [{ name, child, parent, bound }], which a
+     * G-SQL path decides one or many from before it sends anything; fetched
+     * on first use and again whenever the owner says they have changed
+     * (docs/gsql_paths_design.md §8.2) */
+    Value path_fkeys;
+    int path_fkeys_known;
 };
 
 /* An `sql` block: its statement, the database it is on (by NAME, looked up in
@@ -514,10 +520,10 @@ struct GsqlStatementValue {
      * statement from the table, the key's parameter numbers, the filter tree
      * and the parameters, and `bound` is its connection. */
     int is_path;
-    char *path_table;
-    Value path_key;      /* an array of parameter numbers, or null */
-    Value path_filter;   /* a filter tree, or null */
+    char *path_table;    /* the last level's table, for messages */
+    Value path_levels;   /* [{ table, key: [n, ...], filter: tree }, ...] */
     Value path_params;   /* an array: $1, $2, ... */
+    int path_one;        /* one row, as the client decided it (§8.2) */
 };
 
 struct LdapConnectionValue {
@@ -3914,7 +3920,7 @@ static char **gsql_statement_params(const char *sql, size_t *count);
 static void gsql_block_split(GsqlStatementValue *st);
 static Value gsql_path_table(Value connection, const char *table);
 static Value gsql_path_bracket(Value base, AstExpr *expr, int keep);
-static Value gsql_path_step(Value base, const AstExpr *expr);
+static Value gsql_path_step(Value base, const AstExpr *expr, int keep);
 static int gsql_is_path(const Value *v);
 #endif
 
@@ -4905,6 +4911,7 @@ static void value_free(Value value) {
             gsql_connection_shut(connection);
 #endif
             free(connection->role);
+            value_free(connection->path_fkeys);
             free(connection->path);
             free(connection->exe);
             free(connection);
@@ -4926,8 +4933,7 @@ static void value_free(Value value) {
             value_free(statement->bound);
             if (statement->is_path) {
                 free(statement->path_table);
-                value_free(statement->path_key);
-                value_free(statement->path_filter);
+                value_free(statement->path_levels);
                 value_free(statement->path_params);
             }
             free(statement);
@@ -42888,7 +42894,7 @@ static Value eval_expr(AstExpr *expr) {
         }
 #if GBASIC_GSQL
         if (gsql_is_path(&object)) {
-            return gsql_path_step(object, expr);
+            return gsql_path_step(object, expr, path_keep && !expr->parenthesized);
         }
 #endif
         /* §3 of docs/datetime_design.md: datetimes and durations answer dot

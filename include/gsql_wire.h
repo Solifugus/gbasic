@@ -70,7 +70,9 @@ typedef enum {
     GSQL_CHECK,         /* a row a CHECK constraint refuses (docs/gsql_check_design.md) */
     GSQL_SERIAL,        /* a serial that cannot number a row (docs/gsql_generated_design.md) */
     GSQL_ELSEWHERE,     /* client side: the database is open on another machine (docs/gsql_lease_design.md) */
-    GSQL_CODE_LAST = GSQL_ELSEWHERE
+    GSQL_STALE,         /* a path read as one row that the catalog now makes many: the client decided
+                           from foreign keys it holds, which have changed (docs/gsql_paths_design.md §8.2) */
+    GSQL_CODE_LAST = GSQL_STALE
 } GsqlWireCode;
 
 /* Any code's name, the table layer's included; "?" for none. And back:

@@ -1,7 +1,8 @@
 #!/bin/bash
-# G-SQL PATHS (docs/gsql_paths_design.md), increment 1: one table read by path
-# -- `shop.customer[3]`, `shop.customer[.city = "Rome"]`, a result run when it
-# is used, `count()` and `sql()`. A path compiles in the owner to one SQL
+# G-SQL PATHS (docs/gsql_paths_design.md), increments 1 and 2: tables read by
+# path -- `shop.customer[3]`, `shop.customer[.city = "Rome"]`, a result run when
+# it is used, `count()` and `sql()` -- and STEPS between them across foreign
+# keys, `shop.customer[3].invoice`, `shop.invoice[11].customer`. A path compiles in the owner to one SQL
 # statement (src/gsql/sql_path.c) and runs by the protocol every statement
 # does, so the oracle for what it answers is the SQL it means.
 #
@@ -13,12 +14,22 @@
 #                 a transaction, values never becoming SQL, sql()'s text, and
 #                 every refusal beside the path that is allowed; every answer
 #                 by hand
+#   steps         tests/gsql/paths_steps_test.bas: steps down (many) and up
+#                 (one from one), keys and filters on a step, a two-column
+#                 foreign key, the refusals (two keys, a table joined to itself,
+#                 none, a misspelling), and keys this connection holds going
+#                 stale under a second connection: a round trip, never a wrong
+#                 answer (§8.2); every answer by hand
 #   differential  random tables, rows and paths (tests/gsql/gen_paths_diff.py):
 #                 each path's rows against the SQL the GENERATOR writes for it
 #                 from its own model of the rules, never from sql(); a floor on
 #                 the cases answering rows, so an empty tier cannot pass. Skips
 #                 without python3
-#   valgrind      the semantics fixture, no invalid access, no definite leak
+#   stepdiff      random chains of tables and paths walking up and down them,
+#                 against nested IN subqueries the generator writes from its own
+#                 model of one and many -- a different SQL form from the
+#                 compiler's scalar and EXISTS ones
+#   valgrind      both fixtures, no invalid access, no definite leak
 #   leftovers     no owner outlives the suite
 . "$(dirname "$0")/portable.sh"
 . "$(dirname "$0")/valgrind_tier.sh"
@@ -106,6 +117,15 @@ if [ -s "$work/main.err" ]; then
     fail "semantics: the fixture wrote to stderr"
 fi
 
+printf 'TIER steps: across foreign keys, every answer by hand\n'
+mkdir -p "$work/steps"
+GSQL_DIR="$work/steps" timeout -k 5 120 ./gbasic tests/gsql/paths_steps_test.bas >"$work/steps.out" 2>"$work/steps.err"
+verdict steps "$work/steps.out" $? 35
+if [ -s "$work/steps.err" ]; then
+    sed 's/^/       /' "$work/steps.err" | head -5
+    fail "steps: the fixture wrote to stderr"
+fi
+
 printf 'TIER differential: random paths against the SQL a model of the rules writes for them\n'
 if ! command -v python3 >/dev/null 2>&1; then
     printf '  SKIP (no python3 -- the differential tier was NOT measured)\n'
@@ -130,6 +150,30 @@ else
     done
 fi
 
+printf 'TIER stepdiff: random walks along a chain of tables, against nested IN subqueries\n'
+if ! command -v python3 >/dev/null 2>&1; then
+    printf '  SKIP (no python3 -- the stepdiff tier was NOT measured)\n'
+else
+    for seed in 1 2 3 4 5; do
+        mkdir -p "$work/sdiff$seed"
+        if ! python3 tests/gsql/gen_paths_diff.py "$seed" "$work/sdiff$seed/db" steps > "$work/sdiff$seed.bas"; then
+            fail "stepdiff seed $seed: the generator failed"
+            continue
+        fi
+        timeout -k 5 300 ./gbasic "$work/sdiff$seed.bas" >"$work/sdiff$seed.out" 2>"$work/sdiff$seed.err"
+        rc=$?
+        verdict "stepdiff seed $seed" "$work/sdiff$seed.out" $rc 100
+        rows=$(sed -n 's/^answered \([0-9]*\) of .*/\1/p' "$work/sdiff$seed.out")
+        if [ "$rc" = 0 ] && [ "${rows:-0}" -lt 15 ]; then
+            fail "stepdiff seed $seed: only ${rows:-0} cases answered rows, under the floor of 15"
+        fi
+        if [ -s "$work/sdiff$seed.err" ]; then
+            sed 's/^/       /' "$work/sdiff$seed.err" | head -5
+            fail "stepdiff seed $seed: the program wrote to stderr"
+        fi
+    done
+fi
+
 vg_program_stderr() { grep -v '^==[0-9]*==' "$1" | tail -5 | sed 's/^/       stderr: /'; }
 printf 'TIER valgrind: the semantics fixture, no invalid access, no definite leak\n'
 if vg_available; then
@@ -145,6 +189,19 @@ if vg_available; then
         tail -3 "$work/vg.out"
         vg_program_stderr "$work/vg.err"
         fail "valgrind: the fixture did not pass under valgrind (exit $vgst)"
+    fi
+    mkdir -p "$work/vgs"
+    GSQL_DIR="$work/vgs" vg_run ./gbasic tests/gsql/paths_steps_test.bas >"$work/vgs.out" 2>"$work/vgs.err"
+    vgst=$?
+    if [ "$vgst" = 0 ] && tail -1 "$work/vgs.out" | grep -q ' 0 mismatches$'; then
+        pass "valgrind: steps clean over $(tail -1 "$work/vgs.out" | sed 's/^ok //')"
+    elif [ "$vgst" = "$VG_EXIT" ]; then
+        grep -m8 'Invalid\|definitely lost\|uninitialised' "$work/vgs.err"
+        fail "valgrind objected to the steps fixture"
+    else
+        tail -3 "$work/vgs.out"
+        vg_program_stderr "$work/vgs.err"
+        fail "valgrind: the steps fixture did not pass under valgrind (exit $vgst)"
     fi
 else
     printf '  SKIP (no valgrind -- memory was NOT measured)\n'
