@@ -3121,14 +3121,14 @@ that file before anything runs (`docs/gsql_library_blocks_design.md`).
 
 On Windows, `load gsql` answers that G-SQL is not yet available there.
 
-### Paths (*increment 1*)
+### Paths
 
 A table can be read by **path** instead of SQL: dots name tables, a bracket is
 a key or filters, and `.name` inside a bracket is a column
 (`docs/gsql_paths_design.md`). A path is one SQL statement, which the owner
 writes from the catalog and runs as it would any other, so every G-SQL rule
-applies to it. Only one table is read so far: steps between tables, writes and
-columns in braces come in later increments.
+applies to it. A dot after a path steps to another table across the foreign
+key joining them. Writes and columns in braces come in later increments.
 
 ```basic
 load gsql
@@ -3143,6 +3143,10 @@ next
 rome = shop.customer[.city = "Rome"]         ' a result: nothing read yet
 print rome.count()
 print rome[is_unknown(.email)].sql()         ' the statement, nothing run
+for each inv in shop.customer[3].invoice     ' a parent's children: a result
+    print inv.total
+next
+print (shop.invoice[11].customer).name       ' a child's parent: one row
 ```
 
 | written | means |
@@ -3154,6 +3158,7 @@ print rome[is_unknown(.email)].sql()         ' the statement, nothing run
 | `path.count()` | how many rows, counted by the owner |
 | `path.sql()` | the statement and its parameters as text; nothing is run |
 | `for each r in path` | the rows, a batch at a time |
+| `path.table` | a **step** to `table` across the one foreign key joining it to the path's last table: from a parent to its children is many, from a child to its parent is one when the path was one |
 
 - **A result runs when it is used, each time**, against the data as it is
   then. It goes on being a path: `t = shop.customer` then `t[3]` is customer 3.
@@ -3165,6 +3170,15 @@ print rome[is_unknown(.email)].sql()         ' the statement, nothing run
   unknown` matches no row, as SQL's `= NULL` does.
 - **A dot after a path is a step to another table**, so a row's field is read
   from the record: `(shop.customer[3]).name`, or `c = shop.customer[3]`.
+- **A step crosses one foreign key.** Two tables joined by two keys, or a
+  table joined to itself, cannot be stepped between: filter by the key's
+  column instead, `shop.invoice[.bill_to = 3]`, `shop.employee[.boss = 7]`.
+  The refusal says which.
+- **One or many is decided from the foreign keys the connection holds**, and
+  the owner checks it on every request. If they have changed since they were
+  fetched, the owner refuses a path read as one that is now many (`STALE`),
+  the keys are fetched again, and the path is answered as a result. It costs
+  a round trip, never a wrong answer.
 - **Names** match as an unquoted SQL name does, folded to lower case. A name
   after a connection other than `max_recursion` is a table.
 - **Refusals** are `NOT_FOUND` for a table or column that is not there, with

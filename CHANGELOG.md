@@ -60,6 +60,12 @@ reader sees.
   owner writes from the catalog, every program value a parameter, rows in
   primary key order. Two pieces of grammar: `.name`, a column inside a path's
   brackets, and a list in brackets, `[a, b]`; each is refused elsewhere.
+- **G-SQL paths, increment 2: steps across foreign keys.**
+  `shop.customer[3].invoice` is a customer's invoices; `shop.invoice[11].customer`
+  the invoice's customer, read as a record. A path is still one statement.
+  One or many is decided from the foreign keys the connection holds and
+  checked by the owner on every request, so keys that have gone stale cost a
+  round trip (the new code `STALE`, handled for you), never a wrong answer.
 
 - New words where a program needed one: `secret` (a password field),
   `default` (the button Enter presses), `clear`, `select_all`, `fit_columns`,
