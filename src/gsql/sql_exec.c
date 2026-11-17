@@ -10406,7 +10406,7 @@ void gsql_sql_free(GsqlSql *q) {
 }
 
 GsqlService gsql_sql_service(GsqlSql *q) {
-    GsqlService s = { q, svc_writes, svc_run, svc_fetch, svc_close, svc_prepare, svc_resume };
+    GsqlService s = { q, svc_writes, svc_run, svc_fetch, svc_close, svc_prepare, svc_resume, gsql_path_compile };
     return s;
 }
 

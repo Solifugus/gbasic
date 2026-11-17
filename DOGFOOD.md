@@ -13942,3 +13942,17 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   `load` and which refuse one.
 - **Workaround:** dropped the line. A fix would make `load xlsx` either accepted
   as a no-op or refused saying xlsx is built in and needs no `load`.
+
+## 2026-11-16 — CC — while: G-SQL paths increment 1, the fixture's refusal helper
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** the 2026-11-05 entry's third trap, again, in a new fixture: a helper
+  `refusal(f)` written as `on error goto refused` ... `refused: e = error` read
+  `e` as `false`, and `e.details` raised "field access expects a record", so
+  the first refusal ended the run. Then `on error goto next` caught one gsql
+  refusal and let the next statement's one end the program, until each was put
+  in a function of its own. Recorded as a recurrence: the snapshot idiom is
+  the one a test helper reaches for first, and it is wrong only after a jump.
+- **Workaround:** `on error goto next`, then `e = error` on the next line, the
+  shape tests/gsql/insert_test.bas uses; one refusal per function. Documented
+  behaviour, so no ledger row.

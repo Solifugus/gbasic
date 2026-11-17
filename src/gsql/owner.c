@@ -684,11 +684,50 @@ static void storage_failed(Owner *o, Conn *c, const char *what) {
     txn_failed(o, c, why);
 }
 
+static int run_query(Owner *o, Conn *c, Req *r, GsqlStatement *sp);
+
+/* A path's SQL (docs/gsql_paths_design.md §2), its names resolved in the
+ * connection's transaction, or in a snapshot of its own taken and dropped at
+ * once -- the owner runs nothing between this and the statement, so the
+ * statement sees the catalog this saw. The text, as the v3 string a QUERY's
+ * `statement` is, in `out`. */
+static int path_statement(Owner *o, Conn *c, Req *r, const V3Field *path, GsqlBuf *out, int *uses) {
+    if (!o->svc->path) {
+        send_error(c, r->id, GSQL_UNSUPPORTED, "this owner's SQL layer reads no paths");
+        return 0;
+    }
+    GsTxn *t = c->tx != TX_NONE ? c->txn : NULL;
+    int own = !t;
+    if (own) {
+        int rc = o->e->begin_read(o->db, &t);
+        if (rc) {
+            send_errorf(c, r->id, GSQL_STORAGE, "a snapshot could not be taken: the engine answered %s",
+                        gs_status_name(rc));
+            return 0;
+        }
+    }
+    GsqlBuf sql = {0};
+    GsqlError err = { GSQL_OK, "", 0, 0, "", "", "", 0 };
+    int rc = o->svc->path(o->e, t, path->v, path->vlen, &sql, uses, &err);
+    if (own) {
+        o->e->abort(t);
+    }
+    if (rc != GSQL_OK) {
+        gsql_buf_free(&sql);
+        send_error_about(c, r->id, rc, err.message, 0, &err);
+        return 0;
+    }
+    v3_w_text(out, (const char *)sql.bytes);
+    gsql_buf_free(&sql);
+    return 1;
+}
+
 static int do_query(Owner *o, Conn *c, Req *r) {
     V3Field f[MAX_FIELDS];
     long nf = body_fields(r->body, r->length, f);
     const V3Field *stmt = nf >= 0 ? v3_field_named(f, nf, "statement") : NULL;
-    if (!stmt) {
+    const V3Field *path = nf >= 0 && !stmt ? v3_field_named(f, nf, "path") : NULL;
+    if (!stmt && !path) {
         send_error(c, r->id, GSQL_PROTOCOL, "a QUERY needs a `statement` field");
         return DONE_REQ;
     }
@@ -701,10 +740,20 @@ static int do_query(Owner *o, Conn *c, Req *r) {
     }
     GsqlStatement s;
     memset(&s, 0, sizeof s);
-    s.statement = stmt->v;
-    s.statement_length = stmt->vlen;
+    GsqlBuf compiled = {0};
+    int uses = 1;
+    if (path) {
+        if (!path_statement(o, c, r, path, &compiled, &uses)) {
+            return DONE_REQ;
+        }
+        s.statement = compiled.bytes;
+        s.statement_length = compiled.length;
+    } else {
+        s.statement = stmt->v;
+        s.statement_length = stmt->vlen;
+    }
     const V3Field *x = v3_field_named(f, nf, "parameters");
-    if (x) {
+    if (x && uses) {
         s.parameters = x->v;
         s.parameters_length = x->vlen;
     }
@@ -722,7 +771,13 @@ static int do_query(Owner *o, Conn *c, Req *r) {
     if (dx && !v3_read_bool(dx->v, dx->vlen, &s.describe)) {
         s.describe = 0;
     }
+    int done = run_query(o, c, r, &s);
+    gsql_buf_free(&compiled);
+    return done;
+}
 
+static int run_query(Owner *o, Conn *c, Req *r, GsqlStatement *sp) {
+    GsqlStatement s = *sp;
     GsqlError err = { GSQL_OK, "", 0, 0, "", "", "", 0 };
     int w = o->svc->writes(o->svc->ctx, &s, &err);
     /* a statement only described runs nothing, so it writes nothing: it

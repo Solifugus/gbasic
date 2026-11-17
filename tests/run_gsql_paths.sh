@@ -1,0 +1,167 @@
+#!/bin/bash
+# G-SQL PATHS (docs/gsql_paths_design.md), increment 1: one table read by path
+# -- `shop.customer[3]`, `shop.customer[.city = "Rome"]`, a result run when it
+# is used, `count()` and `sql()`. A path compiles in the owner to one SQL
+# statement (src/gsql/sql_path.c) and runs by the protocol every statement
+# does, so the oracle for what it answers is the SQL it means.
+#
+# TIERS:
+#   grammar       the two forms the grammar gained, `.column` and a list in
+#                 brackets, in --ast; and each refused outside a path
+#   semantics     tests/gsql/paths_test.bas: keys, filters, three-valued
+#                 unknown, primary key order, a result run when used, a path in
+#                 a transaction, values never becoming SQL, sql()'s text, and
+#                 every refusal beside the path that is allowed; every answer
+#                 by hand
+#   differential  random tables, rows and paths (tests/gsql/gen_paths_diff.py):
+#                 each path's rows against the SQL the GENERATOR writes for it
+#                 from its own model of the rules, never from sql(); a floor on
+#                 the cases answering rows, so an empty tier cannot pass. Skips
+#                 without python3
+#   valgrind      the semantics fixture, no invalid access, no definite leak
+#   leftovers     no owner outlives the suite
+. "$(dirname "$0")/portable.sh"
+. "$(dirname "$0")/valgrind_tier.sh"
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+work="$(mktemp -d)"
+cleanup() {
+    rm -rf "$work"
+}
+trap cleanup EXIT
+status=0
+pass() { printf '  ok   %s\n' "$1"; }
+fail() { printf '  FAIL %s\n' "$1"; status=1; }
+
+if ! make -s gbasic >"$work/make.out" 2>&1; then
+    tail -20 "$work/make.out"
+    printf 'run_gsql_paths: FAILED (./gbasic did not build)\n'
+    exit 1
+fi
+printf 'load gsql\nprint "loaded"\n' > "$work/probe.bas"
+if ! probe=$(./gbasic "$work/probe.bas" 2>&1) || [ "$probe" != loaded ]; then
+    printf 'SKIP run_gsql_paths (this build has no G-SQL: %s -- paths were NOT measured)\n' "$probe"
+    exit 0
+fi
+export GBASIC_PATH=stdlib
+
+# the fixture's verdict: its last line, and a floor on how many checks ran
+verdict() {
+    local name=$1 file=$2 rc=$3 floor=$4
+    grep MISMATCH "$file" | head -12
+    local last n
+    last=$(tail -1 "$file")
+    n=$(printf '%s\n' "$last" | sed -n 's/^ok \([0-9]*\) checks, 0 mismatches$/\1/p')
+    if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
+        fail "$name: did not finish -- a hang, reported as one"
+    elif [ "$rc" != 0 ]; then
+        grep -m3 'runtime error\|parse error' "$file"
+        fail "$name: the fixture exited $rc (${last:-no verdict})"
+    elif [ -z "$n" ]; then
+        fail "$name: ${last:-no verdict}"
+    elif [ "$n" -lt "$floor" ]; then
+        fail "$name: only $n checks ran, under the floor of $floor"
+    else
+        pass "$name: $last"
+    fi
+}
+
+printf 'TIER grammar: `.column` and a list in brackets, and each refused outside a path\n'
+printf 'x = db.t[.a = 1, 2]\n' > "$work/ast.bas"
+ast=$(./gbasic --ast "$work/ast.bas" 2>&1)
+if printf '%s\n' "$ast" | grep -q 'Column a' && printf '%s\n' "$ast" | grep -q 'Subscripts'; then
+    pass "grammar: --ast shows the column and the list"
+else
+    printf '%s\n' "$ast" | head -20
+    fail "grammar: --ast did not show Column and Subscripts"
+fi
+printf 'x = .a\n' > "$work/col.bas"
+out=$(./gbasic "$work/col.bas" 2>&1)
+case "$out" in
+    *'`.a` names a column, and is read only inside a G-SQL path'*) pass "grammar: a column outside a path is refused, saying where it belongs" ;;
+    *) printf '       %s\n' "$out"; fail "grammar: a column outside a path" ;;
+esac
+printf 'a = [1, 2]\nprint a[0, 1]\n' > "$work/list.bas"
+out=$(./gbasic "$work/list.bas" 2>&1)
+case "$out" in
+    *'an array or a record takes one index'*) pass "grammar: a list in an array's brackets is refused" ;;
+    *) printf '       %s\n' "$out"; fail "grammar: a list in an array's brackets" ;;
+esac
+printf 'a = [10, 20]\nprint a[1]\nprint (a)[0]\n' > "$work/plain.bas"
+out=$(./gbasic "$work/plain.bas" 2>&1)
+if [ "$out" = "$(printf '20\n10')" ]; then
+    pass "grammar: an array's one index is unchanged, parenthesized too"
+else
+    printf '       %s\n' "$out"
+    fail "grammar: an array's one index changed"
+fi
+
+printf 'TIER semantics: one table by path, every answer by hand\n'
+mkdir -p "$work/main"
+GSQL_DIR="$work/main" timeout -k 5 120 ./gbasic tests/gsql/paths_test.bas >"$work/main.out" 2>"$work/main.err"
+verdict semantics "$work/main.out" $? 90
+if [ -s "$work/main.err" ]; then
+    sed 's/^/       /' "$work/main.err" | head -5
+    fail "semantics: the fixture wrote to stderr"
+fi
+
+printf 'TIER differential: random paths against the SQL a model of the rules writes for them\n'
+if ! command -v python3 >/dev/null 2>&1; then
+    printf '  SKIP (no python3 -- the differential tier was NOT measured)\n'
+else
+    for seed in 1 2 3 4 5; do
+        mkdir -p "$work/diff$seed"
+        if ! python3 tests/gsql/gen_paths_diff.py "$seed" "$work/diff$seed/db" > "$work/diff$seed.bas"; then
+            fail "differential seed $seed: the generator failed"
+            continue
+        fi
+        timeout -k 5 300 ./gbasic "$work/diff$seed.bas" >"$work/diff$seed.out" 2>"$work/diff$seed.err"
+        rc=$?
+        verdict "differential seed $seed" "$work/diff$seed.out" $rc 120
+        rows=$(sed -n 's/^answered \([0-9]*\) of .*/\1/p' "$work/diff$seed.out")
+        if [ "$rc" = 0 ] && [ "${rows:-0}" -lt 30 ]; then
+            fail "differential seed $seed: only ${rows:-0} cases answered rows, under the floor of 30"
+        fi
+        if [ -s "$work/diff$seed.err" ]; then
+            sed 's/^/       /' "$work/diff$seed.err" | head -5
+            fail "differential seed $seed: the program wrote to stderr"
+        fi
+    done
+fi
+
+vg_program_stderr() { grep -v '^==[0-9]*==' "$1" | tail -5 | sed 's/^/       stderr: /'; }
+printf 'TIER valgrind: the semantics fixture, no invalid access, no definite leak\n'
+if vg_available; then
+    mkdir -p "$work/vg"
+    GSQL_DIR="$work/vg" vg_run ./gbasic tests/gsql/paths_test.bas >"$work/vg.out" 2>"$work/vg.err"
+    vgst=$?
+    if [ "$vgst" = 0 ] && tail -1 "$work/vg.out" | grep -q ' 0 mismatches$'; then
+        pass "valgrind: clean over $(tail -1 "$work/vg.out" | sed 's/^ok //')"
+    elif [ "$vgst" = "$VG_EXIT" ]; then
+        grep -m8 'Invalid\|definitely lost\|uninitialised' "$work/vg.err"
+        fail "valgrind objected"
+    else
+        tail -3 "$work/vg.out"
+        vg_program_stderr "$work/vg.err"
+        fail "valgrind: the fixture did not pass under valgrind (exit $vgst)"
+    fi
+else
+    printf '  SKIP (no valgrind -- memory was NOT measured)\n'
+fi
+
+printf 'TIER leftovers: no owner outlives the suite\n'
+sleep 1
+if pgrep -f -- "--gsql-owner $work" >/dev/null 2>&1; then
+    pgrep -af -- "--gsql-owner $work" | head -3
+    fail "leftovers: an owner of this suite's databases is still running"
+else
+    pass "leftovers: none"
+fi
+
+if [ "$status" = 0 ]; then
+    printf 'PASS run_gsql_paths\n'
+else
+    printf 'FAIL run_gsql_paths\n'
+fi
+exit "$status"

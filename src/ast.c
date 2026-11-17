@@ -125,9 +125,8 @@ AstNameList ast_name_list_append_default(AstNameList list, char *name,
 
 static AstExpr *ast_expr_new(AstExprKind kind) {
     AstExpr *expr = xmalloc(sizeof(*expr));
+    memset(expr, 0, sizeof *expr);   /* every flag a kind does not set is off */
     expr->kind = kind;
-    expr->line = 0;
-    expr->column = 0;
     return expr;
 }
 
@@ -190,6 +189,18 @@ AstExpr *ast_index(AstExpr *array, AstExpr *index) {
     AstExpr *expr = ast_expr_new(AST_EXPR_INDEX);
     expr->as.index.array = array;
     expr->as.index.index = index;
+    return expr;
+}
+
+AstExpr *ast_index_list(AstExpr *array, AstExprList items) {
+    AstExpr *expr = ast_index(array, ast_array(items));
+    expr->as.index.list = 1;
+    return expr;
+}
+
+AstExpr *ast_column(char *name) {
+    AstExpr *expr = ast_expr_new(AST_EXPR_COLUMN);
+    expr->as.ident = name;
     return expr;
 }
 
@@ -945,8 +956,11 @@ static void dump_expr(AstExpr *expr, int indent) {
         printf("Array\n");
         dump_expr(expr->as.index.array, indent + 2);
         dump_indent(indent + 1);
-        printf("Subscript\n");
+        printf(expr->as.index.list ? "Subscripts\n" : "Subscript\n");
         dump_expr(expr->as.index.index, indent + 2);
+        break;
+    case AST_EXPR_COLUMN:
+        printf("Column %s\n", expr->as.ident);
         break;
     case AST_EXPR_FIELD:
         printf("FieldAccess %s\n", expr->as.field.field);
@@ -1487,6 +1501,9 @@ static void free_expr(AstExpr *expr) {
     case AST_EXPR_INDEX:
         free_expr(expr->as.index.array);
         free_expr(expr->as.index.index);
+        break;
+    case AST_EXPR_COLUMN:
+        free(expr->as.ident);
         break;
     case AST_EXPR_FIELD:
         free_expr(expr->as.field.object);

@@ -648,6 +648,7 @@ static void analyze_expr(AddUsesContext *ctx, AstExpr *expr) {
         analyze_expr(ctx, expr->as.unary.expr);
         break;
     case AST_EXPR_HELD:
+    case AST_EXPR_COLUMN:
         break;
     case AST_EXPR_MODIFIER_APPLY:
         analyze_expr(ctx, expr->as.modifier_apply.value);

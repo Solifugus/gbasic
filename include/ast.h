@@ -77,7 +77,11 @@ typedef enum {
      * the interpreter builds one for `h.verb(args)`, which hands the receiver
      * to `module.verb` as its first argument without evaluating it twice
      * (docs/handle_methods_design.md). Points at a Value it does not own. */
-    AST_EXPR_HELD
+    AST_EXPR_HELD,
+    /* `.city` inside a G-SQL path's brackets: a column of the table to the
+     * left of the bracket (docs/gsql_paths_design.md §3.1). Its name is in
+     * `ident`. Anywhere else it is refused. */
+    AST_EXPR_COLUMN
 } AstExprKind;
 
 typedef struct AstExpr AstExpr;
@@ -283,6 +287,9 @@ struct AstExpr {
     AstExprKind kind;
     int line;
     int column;
+    /* written in parentheses: `(shop.customer[3]).name` ends a G-SQL path
+       there, so `.name` is the row's field (docs/gsql_paths_design.md §3.2) */
+    int parenthesized;
     union {
         /* A NUMBER LITERAL, with the exactness the lexer determined. The literal
          * is where exactness ORIGINATES, so it has to survive the parse: an
@@ -303,6 +310,10 @@ struct AstExpr {
         struct {
             AstExpr *array;
             AstExpr *index;
+            /* `a[x, y]`: `index` is an AST_EXPR_ARRAY of every expression the
+               brackets held -- a G-SQL path's key or filter list
+               (docs/gsql_paths_design.md §3.1); refused on anything else */
+            int list;
         } index;
         struct {
             AstExpr *object;
@@ -604,6 +615,8 @@ AstExpr *ast_array(AstExprList items);
 AstExpr *ast_record(AstRecordFieldList fields);
 AstExpr *ast_duration(AstDuration duration);
 AstExpr *ast_index(AstExpr *array, AstExpr *index);
+AstExpr *ast_index_list(AstExpr *array, AstExprList items);
+AstExpr *ast_column(char *name);
 AstExpr *ast_field(AstExpr *object, char *field);
 AstExpr *ast_call(char *name, AstExprList args);
 AstExpr *ast_qualified_call(char *library, char *name, AstExprList args);

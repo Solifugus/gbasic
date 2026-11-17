@@ -510,6 +510,14 @@ struct GsqlStatementValue {
     char **stmts;
     size_t nstmts;
     int last_rows;
+    /* A G-SQL PATH (docs/gsql_paths_design.md): the owner writes the
+     * statement from the table, the key's parameter numbers, the filter tree
+     * and the parameters, and `bound` is its connection. */
+    int is_path;
+    char *path_table;
+    Value path_key;      /* an array of parameter numbers, or null */
+    Value path_filter;   /* a filter tree, or null */
+    Value path_params;   /* an array: $1, $2, ... */
 };
 
 struct LdapConnectionValue {
@@ -3883,6 +3891,14 @@ static int eval_result_exits_block(EvalResult result) {
            result.did_raise;
 }
 
+/* SET BY A POSTFIX EXPRESSION JUST BEFORE IT EVALUATES ITS OWN BASE, and read
+ * and cleared by whatever eval_expr call comes next: 1 tells a G-SQL path
+ * that the chain goes on (`shop.customer[3].sql()`), so a key's row is not
+ * read yet (docs/gsql_paths_design.md §3.2). Cleared on entry to EVERY
+ * evaluation, so it reaches the base and nothing the base evaluates in turn
+ * (`f(shop.customer[3]).x` reads the row before f sees it). */
+static int g_path_keep;
+
 static Value value_copy(Value value);
 static void value_free(Value value);
 #if GBASIC_GSQL
@@ -3896,6 +3912,10 @@ static int gsql_rows_next(struct GsqlRows *r, Value *row);
 static void gsql_rows_end(struct GsqlRows *r);
 static char **gsql_statement_params(const char *sql, size_t *count);
 static void gsql_block_split(GsqlStatementValue *st);
+static Value gsql_path_table(Value connection, const char *table);
+static Value gsql_path_bracket(Value base, AstExpr *expr, int keep);
+static Value gsql_path_step(Value base, const AstExpr *expr);
+static int gsql_is_path(const Value *v);
 #endif
 
 /* --- PLAT-HTTP: handle registry and release ------------------------------
@@ -4904,6 +4924,12 @@ static void value_free(Value value) {
             }
             free(statement->stmts);
             value_free(statement->bound);
+            if (statement->is_path) {
+                free(statement->path_table);
+                value_free(statement->path_key);
+                value_free(statement->path_filter);
+                value_free(statement->path_params);
+            }
             free(statement);
         }
     } else if (value.kind == VALUE_LDAP_CONNECTION) {
@@ -31940,6 +31966,27 @@ static Value handle_method_call(AstExpr *expr, const char *module, Value *receiv
     return out;
 }
 
+#if GBASIC_GSQL
+/* `shop.customer.count()`, `t[3].sql()`: a receiver that is a G-SQL path, by
+ * the variable the chain starts from, which is read and not evaluated, so
+ * asking costs nothing and runs nothing. A path is a value, not a place, so
+ * it is evaluated rather than resolved as an lvalue. */
+static int receiver_is_path(const AstExpr *recv) {
+    if (recv->kind != AST_EXPR_FIELD && recv->kind != AST_EXPR_INDEX) {
+        return 0;
+    }
+    const AstExpr *e = recv;
+    while (e->kind == AST_EXPR_FIELD || e->kind == AST_EXPR_INDEX) {
+        e = e->kind == AST_EXPR_FIELD ? e->as.field.object : e->as.index.array;
+    }
+    if (e->kind != AST_EXPR_IDENT) {
+        return 0;
+    }
+    Symbol *sym = env_find(e->as.ident);
+    return sym && (sym->value.kind == VALUE_GSQL_CONNECTION || gsql_is_path(&sym->value));
+}
+#endif
+
 static Value eval_method_call(AstExpr *expr) {
     AstExpr *recv = expr->as.call.receiver;
     const char *method = expr->as.call.name;
@@ -31956,6 +32003,19 @@ static Value eval_method_call(AstExpr *expr) {
     int library_block = recv->kind == AST_EXPR_FIELD && recv->as.field.object->kind == AST_EXPR_IDENT &&
                         !env_lookup_exists(recv->as.field.object->as.ident) &&
                         library_frame_find(recv->as.field.object->as.ident);
+#if GBASIC_GSQL
+    if (!library_block && receiver_is_path(recv)) {
+        g_path_keep = 1;
+        temp = eval_expr(recv);
+        g_path_keep = 0;
+        if (error_action_pending()) {
+            value_free(temp);
+            return value_null();
+        }
+        ref = &temp;
+        have_temp = 1;
+    } else
+#endif
     if (!library_block && (recv->kind == AST_EXPR_IDENT || recv->kind == AST_EXPR_FIELD ||
         recv->kind == AST_EXPR_INDEX)) {
         ref = resolve_lvalue_ref(recv);   /* evaluates index subexprs once; raises on error */
@@ -42506,7 +42566,11 @@ static Value derive_record(Value proto) {
 
 static Value apply_assignment_modifier(AstModifierUse modifier, Value value);
 
+
 static Value eval_expr(AstExpr *expr) {
+    int path_keep = g_path_keep;
+    g_path_keep = 0;
+    (void)path_keep;
     switch (expr->kind) {
     case AST_EXPR_NUMBER:
         /* The literal carries the exactness the lexer determined from its digits.
@@ -42635,7 +42699,21 @@ static Value eval_expr(AstExpr *expr) {
         return instance;
     }
     case AST_EXPR_INDEX: {
+        g_path_keep = 1;
         Value array = eval_expr(expr->as.index.array);
+        g_path_keep = 0;
+#if GBASIC_GSQL
+        if (!error_action_pending() && gsql_is_path(&array)) {
+            return gsql_path_bracket(array, expr, path_keep && !expr->parenthesized);
+        }
+#endif
+        if (expr->as.index.list) {
+            value_free(array);
+            runtime_error_raise_at("a list in brackets is a G-SQL path's key or filters (`shop.line[17, 2]`); "
+                                   "an array or a record takes one index", 1003, "indexing",
+                                   expr->line, expr->column);
+            return value_null();
+        }
         Value index = eval_expr(expr->as.index.index);
         if (error_action_pending()) {
             value_free(array);
@@ -42801,11 +42879,18 @@ static Value eval_expr(AstExpr *expr) {
                 }
             }
         }
+        g_path_keep = 1;
         Value object = eval_expr(expr->as.field.object);
+        g_path_keep = 0;
         if (error_action_pending()) {
             value_free(object);
             return value_null();
         }
+#if GBASIC_GSQL
+        if (gsql_is_path(&object)) {
+            return gsql_path_step(object, expr);
+        }
+#endif
         /* §3 of docs/datetime_design.md: datetimes and durations answer dot
          * fields (d.year, d.weekday, dur.total_seconds), keeping extraction out
          * of the global namespace -- the lenses truncate, the fields extract. */
@@ -42959,6 +43044,11 @@ static Value eval_expr(AstExpr *expr) {
             return value_array(items, n);
         }
 #if GBASIC_GSQL
+        if (object.kind == VALUE_GSQL_CONNECTION && strcmp(expr->as.field.field, "max_recursion") != 0) {
+            /* `shop.customer`: a table, the start of a path
+               (docs/gsql_paths_design.md §3.1) */
+            return gsql_path_table(object, expr->as.field.field);
+        }
         if (object.kind == VALUE_GSQL_CONNECTION) {
             /* a connection's attribute, `bank.max_recursion` */
             Value got;
@@ -43001,6 +43091,13 @@ static Value eval_expr(AstExpr *expr) {
         return eval_binary(expr);
     case AST_EXPR_HELD:
         return value_copy(*(Value *)expr->as.held.value);
+    case AST_EXPR_COLUMN: {
+        char message[300];
+        snprintf(message, sizeof message, "`.%s` names a column, and is read only inside a G-SQL path's brackets "
+                 "(`shop.customer[.%s = ...]`)", expr->as.ident, expr->as.ident);
+        runtime_error_raise_at(message, 1003, "path", expr->line, expr->column);
+        return value_null();
+    }
     case AST_EXPR_MODIFIER_APPLY: {
         /* The inline form of the assignment clause, and DELIBERATELY the same
          * function: `{USD}x` and `x {USD}= ...` must not be able to disagree

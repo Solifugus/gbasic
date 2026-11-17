@@ -83,6 +83,12 @@ typedef struct {
      * a working statement, `budget` rows (0: the service's own); answers as
      * `run` does, `working` again while it is not ready. */
     int (*resume)(void *ctx, void *cursor, uint64_t budget, GsqlResult *out, GsqlError *err);
+    /* May be NULL: a QUERY carrying a `path` then answers UNSUPPORTED. The SQL
+     * a path means (docs/gsql_paths_design.md §2), its names resolved in `t`;
+     * NUL-terminated. `uses_parameters` 0: the text needs none of the
+     * request's parameters, which are then not sent on. */
+    int (*path)(const GsEngine *e, GsTxn *t, const unsigned char *path, size_t n, GsqlBuf *sql,
+                int *uses_parameters, GsqlError *err);
 } GsqlService;
 
 typedef struct {

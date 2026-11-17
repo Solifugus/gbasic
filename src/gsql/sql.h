@@ -394,6 +394,11 @@ typedef struct SqlParsed {
 /* Parses ONE statement (a trailing `;` is allowed). On failure answers
  * GSQL_SYNTAX with err->position set; *out is then empty and needs no free. */
 int sql_parse(const char *text, size_t length, SqlParsed *out, GsqlError *err);
+
+/* A G-SQL path's SQL (sql_path.c, docs/gsql_paths_design.md §2): the
+ * service's `path`. */
+int gsql_path_compile(const GsEngine *e, GsTxn *t, const unsigned char *path, size_t n, GsqlBuf *sql,
+                      int *uses_parameters, GsqlError *err);
 void sql_parsed_free(SqlParsed *p);
 /* Where one statement ends in a stream of them: 1 past its `;`, 0 the text
  * ended first (*empty: it held no token), -1 inside a string or comment. */

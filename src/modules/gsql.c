@@ -16,6 +16,7 @@
 
 #include "gsql_sql.h"
 #include "../gsql/sql.h"
+#include "../gsql/v3.h"
 
 struct GsqlHv {
     Value v;
@@ -717,7 +718,7 @@ static void gsql_module_raise_about(const char *verb, const char *code, const ch
     }
     char text[1024];
     /* a verb is `query`, said as gsql.query; an sql block names itself, `sql cheap` */
-    const char *dot = strncmp(verb, "sql ", 4) == 0 ? "" : "gsql.";
+    const char *dot = strncmp(verb, "sql ", 4) == 0 || strncmp(verb, "path ", 5) == 0 ? "" : "gsql.";
     if (position > 0) {
         snprintf(text, sizeof text, "%s%s: %s [%s at character %ld]", dot, verb, message, code, position);
     } else {
@@ -1551,7 +1552,14 @@ static GsqlConnectionValue *gsql_block_connection(const GsqlStatementValue *st, 
  * NULL when the call gave none. */
 static Value *g_block_with;
 
+static void gsql_path_body(const GsqlStatementValue *st, const char *mode, Value *body);
+
 static int gsql_piece_body(const GsqlStatementValue *st, size_t piece, const char *who, Value *body) {
+    if (st->is_path) {
+        /* a path's rows, the statement the owner writes from it */
+        gsql_path_body(st, "rows", body);
+        return 1;
+    }
     const char *text = st->stmts[piece];
     size_t np = 0;
     char **names = st->nstmts == 1 ? st->params : gsql_statement_params(text, &np);
@@ -1774,9 +1782,15 @@ static int gsql_block_start(const GsqlStatementValue *st, GsqlConnectionValue *o
 }
 
 /* `for each row in block`: the block's rows, or NULL with a raise. */
+/* What a refusal names a block by: `sql cheap`, or for a path the table it
+ * starts from, `path customer`. */
+static void gsql_who(const GsqlStatementValue *st, char *who, size_t cap) {
+    snprintf(who, cap, "%s %s", st->is_path ? "path" : "sql", st->name);
+}
+
 static struct GsqlRows *gsql_block_rows(const GsqlStatementValue *st) {
     char who[160];
-    snprintf(who, sizeof who, "sql %s", st->name);
+    gsql_who(st, who, sizeof who);
     GsqlConnectionValue *c;
     char *sql;
     Value body;
@@ -1844,7 +1858,7 @@ static int gsql_call_target(AstExpr *expr, const char *verb, GsqlConnectionValue
             value_free(v);
             return 0;
         }
-        snprintf(who, who_cap, "sql %s", st->name);
+        gsql_who(st, who, who_cap);
         g_block_with = argc == 2 ? &with : NULL;
         int ok = gsql_block_start(st, NULL, who, answers_rows, c, sql, body, run);
         g_block_with = NULL;
@@ -1872,7 +1886,7 @@ static int gsql_call_target(AstExpr *expr, const char *verb, GsqlConnectionValue
        (docs/gsql_block_connection_design.md) */
     if (second.kind == VALUE_GSQL_STATEMENT) {
         GsqlStatementValue *st = second.as.gsql_statement;
-        snprintf(who, who_cap, "sql %s", st->name);
+        gsql_who(st, who, who_cap);
         Value with = value_null();
         if (argc == 3 && !gsql_with_arg(expr, 2, verb, st->name, &with)) {
             value_free(second);
@@ -3149,6 +3163,444 @@ static Value gsql_eval_space(AstExpr *expr) {
     return out;
 }
 
+/* ==== paths (docs/gsql_paths_design.md) ==================================
+ *
+ * `shop.customer[.city = "Rome"]`: a path is an sql block whose statement the
+ * owner writes. It is held as a GsqlStatementValue with `is_path` set, bound to
+ * its connection, so `for each`, `query` and the batches a large result comes
+ * in are a block's own. Each bracket or step makes a new value; none is
+ * changed after it is made. What the request carries: the table, the key's
+ * parameter numbers, a filter tree whose program values are parameters, and a
+ * mode. The owner resolves every name (sql_path.c). */
+
+static GsqlStatementValue *gsql_path_alloc(Value connection, const char *table) {
+    GsqlStatementValue *st = calloc(1, sizeof *st);
+    if (!st) {
+        abort();
+    }
+    st->ref_count = 1;
+    st->is_path = 1;
+    st->path_table = copy_string(table);
+    st->name = copy_string(table);
+    st->database = copy_string("");
+    /* no text of its own: the owner writes it, and .sql() shows it */
+    st->sql = copy_string("");
+    st->stmts = malloc(sizeof *st->stmts);
+    if (!st->stmts) {
+        abort();
+    }
+    st->stmts[0] = copy_string("");
+    st->nstmts = 1;
+    st->last_rows = 1;
+    st->bound = connection;
+    st->path_key = value_null();
+    st->path_filter = value_null();
+    st->path_params = value_array(NULL, 0);
+    return st;
+}
+
+/* `shop.customer`: every row of the table, a path of many. */
+static Value gsql_path_table(Value connection, const char *table) {
+    GsqlConnectionValue *c = connection.as.gsql_connection;
+    if (c->role) {
+        /* a `database` with no file has no tables until it is given a
+           connection (docs/gsql_paths_design.md §10 A9) */
+        char msg[400];
+        snprintf(msg, sizeof msg, "`%s.%s`: `%s` is a database chosen at run time, so it has no tables of its own; "
+                 "start the path from the connection, `db.%s`", c->role, table, c->role, table);
+        value_free(connection);
+        runtime_error_raise(msg, GSQL_ERROR_CODE, "gsql");
+        return value_null();
+    }
+    return value_gsql_statement(gsql_path_alloc(connection, table));
+}
+
+static GsqlStatementValue *gsql_path_extend(const GsqlStatementValue *from) {
+    GsqlStatementValue *st = gsql_path_alloc(value_copy(from->bound), from->path_table);
+    value_free(st->path_params);
+    st->path_key = value_copy(from->path_key);
+    st->path_filter = value_copy(from->path_filter);
+    st->path_params = value_copy(from->path_params);
+    return st;
+}
+
+static int gsql_is_path(const Value *v) {
+    return v->kind == VALUE_GSQL_STATEMENT && v->as.gsql_statement->is_path;
+}
+
+static int path_has_column(const AstExpr *e) {
+    if (!e) {
+        return 0;
+    }
+    switch (e->kind) {
+    case AST_EXPR_COLUMN:
+        return 1;
+    case AST_EXPR_ARRAY:
+        for (size_t i = 0; i < e->as.array.count; i++) {
+            if (path_has_column(e->as.array.items[i])) return 1;
+        }
+        return 0;
+    case AST_EXPR_RECORD:
+        for (size_t i = 0; i < e->as.record.count; i++) {
+            if (path_has_column(e->as.record.items[i].value)) return 1;
+        }
+        return 0;
+    case AST_EXPR_INDEX:
+        return path_has_column(e->as.index.array) || path_has_column(e->as.index.index);
+    case AST_EXPR_FIELD:
+        return path_has_column(e->as.field.object);
+    case AST_EXPR_CALL:
+    case AST_EXPR_SPAWN:
+        for (size_t i = 0; i < e->as.call.args.count; i++) {
+            if (path_has_column(e->as.call.args.items[i])) return 1;
+        }
+        return path_has_column(e->as.call.receiver);
+    case AST_EXPR_BINARY:
+        return path_has_column(e->as.binary.left) || path_has_column(e->as.binary.right);
+    case AST_EXPR_UNARY:
+        return path_has_column(e->as.unary.expr);
+    case AST_EXPR_MODIFIER_APPLY:
+        return path_has_column(e->as.modifier_apply.value);
+    case AST_EXPR_NEW:
+        return path_has_column(e->as.derive.proto) || path_has_column(e->as.derive.with);
+    default:
+        return 0;
+    }
+}
+
+/* A program value, evaluated here and sent as the next parameter: its
+ * number, or 0 with a raise. */
+static long path_param(AstExpr *e, Value *params) {
+    Value v = eval_expr(e);
+    if (error_action_pending()) {
+        value_free(v);
+        return 0;
+    }
+    Value grown = append_to_array_ref(params, v, 0);
+    value_free(grown);
+    return (long)params->as.array.store->count;
+}
+
+static void path_refuse_at(const AstExpr *e, const char *message) {
+    runtime_error_raise_at(message, GSQL_ERROR_CODE, "gsql", e->line, e->column);
+}
+
+/* A filter's expression as the tree the owner compiles: 1, or 0 with a raise.
+ * A part with no column in it is the program's, evaluated now. */
+static int path_tree(AstExpr *e, Value *params, Value *out) {
+    if (!path_has_column(e)) {
+        long n = path_param(e, params);
+        if (!n) {
+            return 0;
+        }
+        *out = value_record(NULL, 0);
+        record_set(out, "param", value_number_exact(n));
+        return 1;
+    }
+    if (e->kind == AST_EXPR_COLUMN) {
+        *out = value_record(NULL, 0);
+        record_set(out, "col", value_string(e->as.ident));
+        return 1;
+    }
+    if (e->kind == AST_EXPR_BINARY && !e->as.binary.modifier.name) {
+        static const char *const ops[] = { "=", "!=", "<", ">", "<=", ">=", "and", "or", "+", "-", "*", "/" };
+        int known = 0;
+        for (size_t i = 0; i < sizeof ops / sizeof ops[0]; i++) {
+            known |= strcmp(e->as.binary.op, ops[i]) == 0;
+        }
+        if (known) {
+            Value l, r;
+            if (!path_tree(e->as.binary.left, params, &l)) {
+                return 0;
+            }
+            if (!path_tree(e->as.binary.right, params, &r)) {
+                value_free(l);
+                return 0;
+            }
+            *out = value_record(NULL, 0);
+            record_set(out, "op", value_string(e->as.binary.op));
+            record_set(out, "left", l);
+            record_set(out, "right", r);
+            return 1;
+        }
+    }
+    const char *unary = NULL;
+    AstExpr *arg = NULL;
+    if (e->kind == AST_EXPR_UNARY && (strcmp(e->as.unary.op, "not") == 0 || strcmp(e->as.unary.op, "-") == 0)) {
+        unary = strcmp(e->as.unary.op, "not") == 0 ? "not" : "neg";
+        arg = e->as.unary.expr;
+    } else if (e->kind == AST_EXPR_CALL && !e->as.call.library && !e->as.call.receiver &&
+               strcmp(e->as.call.name, "is_unknown") == 0 && e->as.call.args.count == 1) {
+        unary = "is_unknown";
+        arg = e->as.call.args.items[0];
+    }
+    if (unary) {
+        Value a;
+        if (!path_tree(arg, params, &a)) {
+            return 0;
+        }
+        *out = value_record(NULL, 0);
+        record_set(out, "op", value_string(unary));
+        record_set(out, "arg", a);
+        return 1;
+    }
+    path_refuse_at(e, "in a path's filter a column may be compared (= != < > <= >=), combined (and, or, not), "
+                      "used in arithmetic (+ - * /) and tested with is_unknown(); anything more is a sql block's");
+    return 0;
+}
+
+static Value path_and(Value a, Value b) {
+    if (a.kind == VALUE_NULL) {
+        return b;
+    }
+    Value both = value_record(NULL, 0);
+    record_set(&both, "op", value_string("and"));
+    record_set(&both, "left", a);
+    record_set(&both, "right", b);
+    return both;
+}
+
+static Value gsql_path_one(GsqlStatementValue *st);
+
+/* `path[...]`: a key or a filter (docs/gsql_paths_design.md §3.1). A key
+ * names one row, which is read here unless the path goes on (`keep`). */
+static Value gsql_path_bracket(Value base, AstExpr *expr, int keep) {
+    GsqlStatementValue *from = base.as.gsql_statement;
+    AstExpr *in = expr->as.index.index;
+    size_t n = expr->as.index.list ? in->as.array.count : 1;
+    AstExpr **items = expr->as.index.list ? in->as.array.items : &in;
+    size_t with_column = 0;
+    for (size_t i = 0; i < n; i++) {
+        with_column += path_has_column(items[i]) ? 1 : 0;
+    }
+    if (with_column && with_column != n) {
+        value_free(base);
+        path_refuse_at(expr, "a path's bracket is a key, values only (`[3]`, `[17, 2]`), or filters, each naming "
+                             "a column (`[.city = \"Rome\", .active]`); this one mixes the two");
+        return value_null();
+    }
+    if (!with_column && from->path_key.kind != VALUE_NULL) {
+        value_free(base);
+        path_refuse_at(expr, "this path already names one row by its key; a second key has nothing to choose "
+                             "from -- a filter after it is written with a column, `[.paid = true]`");
+        return value_null();
+    }
+    GsqlStatementValue *st = gsql_path_extend(from);
+    value_free(base);
+    if (!with_column) {
+        Value key = value_array(NULL, 0);
+        for (size_t i = 0; i < n; i++) {
+            long k = path_param(items[i], &st->path_params);
+            if (!k) {
+                value_free(key);
+                value_free(value_gsql_statement(st));
+                return value_null();
+            }
+            Value grown = append_to_array_ref(&key, value_number_exact(k), 0);
+            value_free(grown);
+        }
+        st->path_key = key;
+        if (keep) {
+            return value_gsql_statement(st);
+        }
+        Value row = gsql_path_one(st);
+        value_free(value_gsql_statement(st));
+        return row;
+    }
+    for (size_t i = 0; i < n; i++) {
+        Value tree;
+        if (!path_tree(items[i], &st->path_params, &tree)) {
+            value_free(value_gsql_statement(st));
+            return value_null();
+        }
+        st->path_filter = path_and(st->path_filter, tree);
+    }
+    if (!keep && st->path_key.kind != VALUE_NULL) {
+        /* a filter after the key: still one row */
+        Value row = gsql_path_one(st);
+        value_free(value_gsql_statement(st));
+        return row;
+    }
+    return value_gsql_statement(st);
+}
+
+/* `path.name`: a step to another table (docs/gsql_paths_design.md §3.1),
+ * increment 2. */
+static Value gsql_path_step(Value base, const AstExpr *expr) {
+    char msg[400];
+    snprintf(msg, sizeof msg, "`%s.%s`: a step from one table to another is not built yet (docs/gsql_paths_design.md "
+             "§8, increment 2); a column is chosen with a bracket's `.%s` or a record's field",
+             base.as.gsql_statement->path_table, expr->as.field.field, expr->as.field.field);
+    value_free(base);
+    path_refuse_at(expr, msg);
+    return value_null();
+}
+
+/* The request for a path, in one of its modes. */
+static void gsql_path_body(const GsqlStatementValue *st, const char *mode, Value *body) {
+    Value path = value_record(NULL, 0);
+    record_set(&path, "table", value_string(st->path_table));
+    if (st->path_key.kind != VALUE_NULL) {
+        record_set(&path, "key", value_copy(st->path_key));
+    }
+    if (st->path_filter.kind != VALUE_NULL) {
+        record_set(&path, "filter", value_copy(st->path_filter));
+    }
+    record_set(&path, "mode", value_string(mode));
+    *body = value_record(NULL, 0);
+    record_set(body, "path", path);
+    if (st->path_params.as.array.store->count) {
+        record_set(body, "parameters", value_copy(st->path_params));
+    }
+    record_set(body, "batch", value_number_exact(GSQL_MODULE_BATCH));
+}
+
+/* The rows a path answers in `mode`, through the same stream a block's rows
+ * come by. NULL with a raise. */
+static struct GsqlRows *gsql_path_rows(GsqlStatementValue *st, const char *mode) {
+    char who[300];
+    gsql_who(st, who, sizeof who);
+    GsqlConnectionValue *c = gsql_connection_of(value_copy(st->bound), who);
+    if (!c) {
+        return NULL;
+    }
+    Value body;
+    gsql_path_body(st, mode, &body);
+    return gsql_rows_begin(c, who, copy_string(st->sql), body, "a sql block");
+}
+
+/* A path of one, read: the row's record, or unknown when there is none. */
+static Value gsql_path_one(GsqlStatementValue *st) {
+    struct GsqlRows *r = gsql_path_rows(st, "rows");
+    if (!r) {
+        return value_null();
+    }
+    Value row, first = value_unknown();
+    int got = 0;
+    while (gsql_rows_next(r, &row)) {
+        if (!got) {
+            value_free(first);
+            first = row;
+            got = 1;
+        } else {
+            value_free(row);
+        }
+    }
+    gsql_rows_end(r);
+    if (error_action_pending()) {
+        value_free(first);
+        return value_null();
+    }
+    return first;
+}
+
+/* One field of a path's single answering row: `count` or `sql`. */
+static Value gsql_path_scalar(GsqlStatementValue *st, const char *mode) {
+    struct GsqlRows *r = gsql_path_rows(st, mode);
+    if (!r) {
+        return value_null();
+    }
+    Value row, out = value_null();
+    while (gsql_rows_next(r, &row)) {
+        Value *f = row.kind == VALUE_RECORD ? gsql_field(&row, mode) : NULL;
+        if (f && out.kind == VALUE_NULL) {
+            out = value_copy(*f);
+        }
+        value_free(row);
+    }
+    gsql_rows_end(r);
+    if (error_action_pending()) {
+        value_free(out);
+        return value_null();
+    }
+    return out;
+}
+
+static GsqlStatementValue *gsql_path_arg(AstExpr *expr, const char *verb, Value *held) {
+    if (expr->as.call.args.count != 1) {
+        char msg[200];
+        snprintf(msg, sizeof msg, "gsql.%s takes a path, as path.%s()", verb, verb);
+        gsql_module_refuse(msg);
+        return NULL;
+    }
+    *held = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(*held);
+        return NULL;
+    }
+    if (held->kind != VALUE_GSQL_STATEMENT) {
+        char msg[240];
+        snprintf(msg, sizeof msg, "gsql.%s takes a path (`shop.customer[.city = \"Rome\"].%s()`) or an sql block, "
+                 "not %s", verb, verb, value_kind_name(held->kind));
+        value_free(*held);
+        gsql_module_refuse(msg);
+        return NULL;
+    }
+    return held->as.gsql_statement;
+}
+
+/* path.count(): how many rows it gives, counted by the owner. */
+static Value gsql_eval_count(AstExpr *expr) {
+    Value held;
+    GsqlStatementValue *st = gsql_path_arg(expr, "count", &held);
+    if (!st) {
+        return value_null();
+    }
+    if (!st->is_path) {
+        char msg[300];
+        snprintf(msg, sizeof msg, "gsql.count counts a path's rows; for sql %s, count in its SQL (`select count(*) "
+                 "...`)", st->name);
+        value_free(held);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    Value n = gsql_path_scalar(st, "count");
+    value_free(held);
+    return n;
+}
+
+/* path.sql(): the statement a path is, nothing run; a block's own text. */
+static Value gsql_eval_sql(AstExpr *expr) {
+    Value held;
+    GsqlStatementValue *st = gsql_path_arg(expr, "sql", &held);
+    if (!st) {
+        return value_null();
+    }
+    if (!st->is_path) {
+        Value text = value_string(st->sql);
+        value_free(held);
+        return text;
+    }
+    Value text = gsql_path_scalar(st, "sql");
+    if (text.kind == VALUE_STRING) {
+        /* each parameter after the text, as quote() writes it */
+        GsqlBuf out = {0};
+        v3_put(&out, text.as.string, string_length(text.as.string));
+        size_t np = st->path_params.as.array.store->count;
+        for (size_t i = 0; i < np; i++) {
+            /* as print shows it inside an array, text quoted and a number
+               bare: the one renderer, with the brackets taken off */
+            Value one = value_array(NULL, 0);
+            Value grown = append_to_array_ref(&one, value_copy(st->path_params.as.array.store->items[i]), 0);
+            value_free(grown);
+            Value shown = builtin_string_value(one);
+            char head[40];
+            snprintf(head, sizeof head, "\n$%zu = ", i + 1);
+            v3_put(&out, head, strlen(head));
+            size_t len = shown.kind == VALUE_STRING ? string_length(shown.as.string) : 0;
+            if (len >= 2) {
+                v3_put(&out, shown.as.string + 1, len - 2);
+            }
+            value_free(shown);
+        }
+        value_free(text);
+        text = value_string_n(out.bytes ? (const char *)out.bytes : "", out.length);
+        gsql_buf_free(&out);
+    }
+    value_free(held);
+    return text;
+}
+
 static Value gsql_eval_call(AstExpr *expr) {
     const char *fn = expr->as.call.name;
     if (strcmp(fn, "connect") == 0) return gsql_eval_connect(expr);
@@ -3166,6 +3618,8 @@ static Value gsql_eval_call(AstExpr *expr) {
     if (strcmp(fn, "dump") == 0) return gsql_eval_dump(expr);
     if (strcmp(fn, "restore") == 0) return gsql_eval_restore(expr);
     if (strcmp(fn, "space") == 0) return gsql_eval_space(expr);
+    if (strcmp(fn, "count") == 0) return gsql_eval_count(expr);
+    if (strcmp(fn, "sql") == 0) return gsql_eval_sql(expr);
     char message[256];
     module_unknown_verb(message, sizeof(message), "gsql", fn);
     gsql_module_refuse(message);

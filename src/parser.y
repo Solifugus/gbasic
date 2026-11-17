@@ -1898,6 +1898,17 @@ unary_expression
 postfix_expression
     : primary { $$ = $1; }
     | postfix_expression LBRACKET expression RBRACKET { $$ = expr_at(ast_index($1, $3), @2.first_line, @2.first_column); }
+    /* `shop.line[17, 2]`, `shop.customer[.city = "Rome", .active]`: a G-SQL
+     * path's key or filters (docs/gsql_paths_design.md §3.1), refused at run
+     * time on anything else. Measured 2026-11-16: 0 new conflicts. */
+    | postfix_expression LBRACKET expression COMMA argument_list RBRACKET {
+        AstExprList items = ast_expr_list_append(ast_expr_list_empty(), $3);
+        for (size_t i = 0; i < $5.count; i++) {
+            items = ast_expr_list_append(items, $5.items[i]);
+        }
+        free($5.items);
+        $$ = expr_at(ast_index_list($1, items), @2.first_line, @2.first_column);
+      }
     | postfix_expression DOT dot_field_name { $$ = expr_at(ast_field($1, $3), @2.first_line, @2.first_column); }
     | postfix_expression DOT IDENT LPAREN argument_list_opt RPAREN {
         /* Method call on an expression receiver where the method name is a bare
@@ -1949,6 +1960,10 @@ primary
         }
         $$ = expr_at(ast_string($1), @1.first_line, @1.first_column);
       }
+    /* `.city`: a column, inside a G-SQL path's brackets
+     * (docs/gsql_paths_design.md §3.1). Nothing else starts an expression
+     * with a dot, `.5` included. Measured 2026-11-16: 0 new conflicts. */
+    | DOT dot_field_name { $$ = expr_at(ast_column($2), @1.first_line, @1.first_column); }
     | NUMBER { $$ = expr_at(ast_number($1.value, $1.exact, $1.is_exact, $1.scale), @1.first_line, @1.first_column); }
     | WATCHERS LPAREN RPAREN { $$ = expr_at(ast_call(copy_const("watchers"), ast_expr_list_empty()), @1.first_line, @1.first_column); }
     | duration_terms { $$ = expr_at(ast_duration($1), @1.first_line, @1.first_column); }
@@ -1981,7 +1996,7 @@ primary
     | FALSE { $$ = expr_at(ast_bool(0), @1.first_line, @1.first_column); }
     | NOTHING { $$ = expr_at(ast_null(), @1.first_line, @1.first_column); }
     | UNKNOWN_VALUE { $$ = expr_at(ast_unknown(), @1.first_line, @1.first_column); }
-    | LPAREN expression RPAREN { $$ = $2; }
+    | LPAREN expression RPAREN { $$ = $2; $$->parenthesized = 1; }
     | LBRACKET optional_newlines RBRACKET { $$ = expr_at(ast_array(ast_expr_list_empty()), @1.first_line, @1.first_column); }
     | LBRACKET optional_newlines array_argument_list optional_newlines RBRACKET { $$ = expr_at(ast_array($3), @1.first_line, @1.first_column); }
     | record_literal { $$ = $1; }
