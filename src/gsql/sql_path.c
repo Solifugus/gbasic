@@ -11,7 +11,10 @@
  *
  * The path record:
  *   { levels: [{ table, key: [n, ...], filter: tree }, ...],
- *     mode: "rows" | "count" | "sql" | "fkeys", expect: "one" | "many" }
+ *     mode: "rows" | "count" | "sql" | "fkeys" | "update" | "upsert" |
+ *           "insert" | "delete", expect: "one" | "many",
+ *     set: [{ col, param }, ...],            -- update and upsert
+ *     rows: [[{ col, param }, ...], ...] }   -- insert
  * A level is a table; each after the first is a STEP to it across the one
  * foreign key joining it to the level before. `key` holds the parameter
  * numbers of the primary key's values, in the key's column order. `expect` is
@@ -586,6 +589,295 @@ static int level_cond(const PathPlan *pp, size_t i, GsqlBuf *b, int *any, GsqlEr
     return GSQL_OK;
 }
 
+/* ---- writing ------------------------------------------------------- */
+
+#define PATH_MAX_SET 256
+
+typedef struct {
+    const char *col;   /* the catalog's name */
+    uint64_t param;
+} PathSet;
+
+/* a list of { col, param } as the catalog's columns of `tb`: the count, or -1
+   with the refusal. A key column is refused when `no_key`. */
+static long set_list(const GsqlTable *tb, const unsigned char *p, size_t n, int no_key, PathSet *out,
+                     GsqlError *err) {
+    GsBytes items[PATH_MAX_SET];
+    long m = v3_array_items(p, n, items, PATH_MAX_SET);
+    if (m < 0) {
+        pfail(err, GSQL_PROTOCOL, "a path's columns to write are an array of { col, param }");
+        return -1;
+    }
+    for (long i = 0; i < m; i++) {
+        V3Field f[4];
+        long nf = v3_record_fields(items[i].p, items[i].n, f, 4);
+        char *col = nf > 0 ? field_text(f, nf, "col") : NULL;
+        const V3Field *pf = nf > 0 ? v3_field_named(f, nf, "param") : NULL;
+        if (!col || !pf || !v3_read_u64(pf->v, pf->vlen, &out[i].param)) {
+            free(col);
+            pfail(err, GSQL_PROTOCOL, "a path's column to write is { col, param }");
+            return -1;
+        }
+        out[i].col = column_named(tb, col, err);
+        free(col);
+        if (!out[i].col) {
+            return -1;
+        }
+        for (size_t k = 0; no_key && k < gsql_table_nkey(tb); k++) {
+            if (strcmp(gsql_table_col(tb, gsql_table_key_cols(tb)[k])->name, out[i].col) == 0) {
+                pfail(err, GSQL_SYNTAX, "`%s` is `%s`'s key, which a path names and does not change -- a key is "
+                      "changed by a sql block", out[i].col, gsql_table_name(tb));
+                snprintf(err->table, sizeof err->table, "%s", gsql_table_name(tb));
+                snprintf(err->column, sizeof err->column, "%s", out[i].col);
+                return -1;
+            }
+        }
+        for (long j = 0; j < i; j++) {
+            if (strcmp(out[j].col, out[i].col) == 0) {
+                pfail(err, GSQL_SYNTAX, "`%s` is written twice", out[i].col);
+                return -1;
+            }
+        }
+    }
+    return m;
+}
+
+static int path_write_sql(const PathPlan *pp, const V3Field *f, long nf, char mode, GsqlBuf *b, GsqlError *err) {
+    size_t n = pp->n;
+    const PathLevel *last = &pp->lv[n - 1];
+    const char *table = gsql_table_name(last->tb);
+    PathSet *set = calloc(PATH_MAX_SET, sizeof *set);
+    if (!set) {
+        abort();
+    }
+    int rc = GSQL_OK;
+    long nset = 0;
+    if (mode == 'u' || mode == 'p') {
+        const V3Field *sf = v3_field_named(f, nf, "set");
+        nset = sf ? set_list(last->tb, sf->v, sf->vlen, 1, set, err) : 0;
+        if (nset < 0) {
+            rc = err->code;
+            goto out;
+        }
+        if (nset == 0) {
+            rc = pfail(err, GSQL_SYNTAX, "a record written to a path names a column of `%s`", table);
+            goto out;
+        }
+    }
+    if (mode == 'd' || mode == 'u') {
+        put(b, mode == 'd' ? "DELETE FROM " : "UPDATE ");
+        put_name(b, table);
+        if (pp->aliased) {
+            put(b, " AS ");
+            put_name(b, last->alias);
+        }
+        for (long i = 0; mode == 'u' && i < nset; i++) {
+            put(b, i ? ", " : " SET ");
+            put_name(b, set[i].col);
+            put(b, " = ");
+            put_param(b, set[i].param);
+        }
+        GsqlBuf w = {0};
+        int any = 0;
+        rc = level_cond(pp, n - 1, &w, &any, err);
+        if (rc == GSQL_OK && any) {
+            put(b, " WHERE ");
+            v3_put(b, w.bytes, w.length);
+        }
+        gsql_buf_free(&w);
+        goto out;
+    }
+    if (mode == 'p') {
+        /* a key path of one table: the row is there, its fields change;
+           not there, it is inserted by INSERT's rules (§10 A2) */
+        if (n != 1 || !last->key) {
+            rc = pfail(err, GSQL_PROTOCOL, "only a key path of one table is written as an upsert");
+            goto out;
+        }
+        GsBytes items[PATH_MAX_KEY];
+        long nk = v3_array_items(last->key->v, last->key->vlen, items, PATH_MAX_KEY);
+        size_t want = gsql_table_nkey(last->tb);
+        const unsigned *cols = gsql_table_key_cols(last->tb);
+        GsqlBuf check = {0};
+        int any = 0;
+        rc = level_cond(pp, 0, &check, &any, err);   /* the key's count, refused as a read refuses it */
+        gsql_buf_free(&check);
+        if (rc != GSQL_OK) {
+            goto out;
+        }
+        put(b, "INSERT INTO ");
+        put_name(b, table);
+        put(b, " (");
+        for (size_t k = 0; k < want; k++) {
+            put(b, k ? ", " : "");
+            put_name(b, gsql_table_col(last->tb, cols[k])->name);
+        }
+        for (long i = 0; i < nset; i++) {
+            put(b, ", ");
+            put_name(b, set[i].col);
+        }
+        put(b, ") VALUES (");
+        for (long k = 0; k < nk; k++) {
+            uint64_t pn = 0;
+            v3_read_u64(items[k].p, items[k].n, &pn);
+            put(b, k ? ", " : "");
+            put_param(b, pn);
+        }
+        for (long i = 0; i < nset; i++) {
+            put(b, ", ");
+            put_param(b, set[i].param);
+        }
+        put(b, ") ON CONFLICT (");
+        for (size_t k = 0; k < want; k++) {
+            put(b, k ? ", " : "");
+            put_name(b, gsql_table_col(last->tb, cols[k])->name);
+        }
+        put(b, ") DO UPDATE SET ");
+        for (long i = 0; i < nset; i++) {
+            put(b, i ? ", " : "");
+            put_name(b, set[i].col);
+            put(b, " = excluded.");
+            put_name(b, set[i].col);
+        }
+        goto out;
+    }
+    /* insert */
+    if (last->key || last->filter) {
+        rc = pfail(err, GSQL_SYNTAX, "insert adds rows to a table, and this path names rows of `%s` by a %s: "
+                   "insert through the table, `.%s.insert(...)`", table, last->key ? "key" : "filter", table);
+        goto out;
+    }
+    const PathFk *k = NULL;
+    const PathLevel *prev = n > 1 ? &pp->lv[n - 2] : NULL;
+    if (prev) {
+        k = &pp->fks.k[last->fk];
+        if (last->up) {
+            rc = pfail(err, GSQL_SYNTAX, "a step from `%s` up to `%s` inserts nothing: insert into `%s` itself",
+                       gsql_table_name(prev->tb), table, table);
+            goto out;
+        }
+        if (!prev->one) {
+            rc = pfail(err, GSQL_SYNTAX, "a step from many rows of `%s` inserts nothing, since it would not say "
+                       "which one the new rows of `%s` belong to: name one by its key first",
+                       gsql_table_name(prev->tb), table);
+            goto out;
+        }
+    }
+    const V3Field *rf = v3_field_named(f, nf, "rows");
+    GsBytes rows[PATH_MAX_SET];
+    long nrows = rf ? v3_array_items(rf->v, rf->vlen, rows, PATH_MAX_SET) : -1;
+    if (nrows < 1) {
+        rc = pfail(err, GSQL_PROTOCOL, "an insert by path carries `rows`, at least one, at most %d", PATH_MAX_SET);
+        goto out;
+    }
+    /* every column any row names, in the order first named */
+    const char *cols[PATH_MAX_SET];
+    size_t ncols = 0;
+    PathSet *each = calloc((size_t)nrows * PATH_MAX_SET, sizeof *each);
+    long *counts = calloc((size_t)nrows, sizeof *counts);
+    if (!each || !counts) {
+        abort();
+    }
+    for (long r = 0; r < nrows && rc == GSQL_OK; r++) {
+        counts[r] = set_list(last->tb, rows[r].p, rows[r].n, 0, each + r * PATH_MAX_SET, err);
+        if (counts[r] < 0) {
+            rc = err->code;
+            break;
+        }
+        for (long i = 0; i < counts[r]; i++) {
+            const char *c = each[r * PATH_MAX_SET + i].col;
+            for (size_t j = 0; k && j < k->ncols; j++) {
+                if (strcmp(k->cols[j], c) == 0) {
+                    rc = pfail(err, GSQL_SYNTAX, "`%s` comes from the path, which names the `%s` the new row "
+                               "belongs to; leave it out of the record", c, gsql_table_name(prev->tb));
+                    snprintf(err->column, sizeof err->column, "%s", c);
+                }
+            }
+            size_t at = 0;
+            while (at < ncols && strcmp(cols[at], c) != 0) {
+                at++;
+            }
+            if (at == ncols && ncols < PATH_MAX_SET) {
+                cols[ncols++] = c;
+            }
+        }
+    }
+    if (rc == GSQL_OK && ncols == 0 && !k) {
+        rc = pfail(err, GSQL_SYNTAX, "a record inserted by path names a column of `%s`", table);
+    }
+    if (rc == GSQL_OK && k) {
+        for (long r = 0; r < nrows && rc == GSQL_OK; r++) {
+            if ((size_t)counts[r] != ncols) {
+                rc = pfail(err, GSQL_SYNTAX, "rows inserted through a step name the same columns; row %ld names "
+                           "%ld of the %zu", r + 1, counts[r], ncols);
+            }
+        }
+    }
+    if (rc == GSQL_OK) {
+        put(b, "INSERT INTO ");
+        put_name(b, table);
+        put(b, " (");
+        for (size_t j = 0; j < ncols; j++) {
+            put(b, j ? ", " : "");
+            put_name(b, cols[j]);
+        }
+        for (size_t j = 0; k && j < k->ncols; j++) {
+            put(b, ncols || j ? ", " : "");
+            put_name(b, k->cols[j]);
+        }
+        put(b, ")");
+        for (long r = 0; r < nrows && rc == GSQL_OK; r++) {
+            if (!k) {
+                put(b, r ? ", (" : " VALUES (");
+            } else {
+                put(b, r ? " UNION ALL SELECT " : " SELECT ");
+            }
+            for (size_t j = 0; j < ncols; j++) {
+                put(b, j ? ", " : "");
+                long hit = -1;
+                for (long i = 0; i < counts[r]; i++) {
+                    if (strcmp(each[r * PATH_MAX_SET + i].col, cols[j]) == 0) {
+                        hit = i;
+                    }
+                }
+                if (hit >= 0) {
+                    put_param(b, each[r * PATH_MAX_SET + hit].param);
+                } else {
+                    put(b, "DEFAULT");
+                }
+            }
+            if (!k) {
+                put(b, ")");
+                continue;
+            }
+            /* the parent's key, read from the row the step came from */
+            const GsqlTable *parent = prev->tb;
+            for (size_t j = 0; j < k->ncols; j++) {
+                put(b, ncols || j ? ", " : "");
+                put_col(b, prev->alias, parent_col(k, parent, j));
+            }
+            put(b, " FROM ");
+            put_name(b, gsql_table_name(prev->tb));
+            put(b, " AS ");
+            put_name(b, prev->alias);
+            GsqlBuf w = {0};
+            int any = 0;
+            rc = level_cond(pp, n - 2, &w, &any, err);
+            if (rc == GSQL_OK && any) {
+                put(b, " WHERE ");
+                v3_put(b, w.bytes, w.length);
+            }
+            gsql_buf_free(&w);
+        }
+        put(b, " RETURNING *");
+    }
+    free(each);
+    free(counts);
+out:
+    free(set);
+    return rc;
+}
+
 int gsql_path_compile(const GsEngine *e, GsTxn *t, const unsigned char *p, size_t n, GsqlBuf *sql,
                       int *uses_parameters, GsqlError *err) {
     *uses_parameters = 1;
@@ -599,10 +891,12 @@ int gsql_path_compile(const GsEngine *e, GsTxn *t, const unsigned char *p, size_
         return pfail(err, GSQL_PROTOCOL, "a path needs a `mode`");
     }
     int rows = strcmp(mode, "rows") == 0, count = strcmp(mode, "count") == 0, text = strcmp(mode, "sql") == 0,
-        fkeys = strcmp(mode, "fkeys") == 0;
+        fkeys = strcmp(mode, "fkeys") == 0, update = strcmp(mode, "update") == 0,
+        upsert = strcmp(mode, "upsert") == 0, insert = strcmp(mode, "insert") == 0,
+        del = strcmp(mode, "delete") == 0;
     free(mode);
-    if (!rows && !count && !text && !fkeys) {
-        return pfail(err, GSQL_PROTOCOL, "a path's mode is rows, count, sql or fkeys");
+    if (!rows && !count && !text && !fkeys && !update && !upsert && !insert && !del) {
+        return pfail(err, GSQL_PROTOCOL, "a path's mode is rows, count, sql, fkeys, update, upsert, insert or delete");
     }
     PathPlan *pp = calloc(1, sizeof *pp);
     if (!pp) {
@@ -662,6 +956,13 @@ int gsql_path_compile(const GsEngine *e, GsTxn *t, const unsigned char *p, size_
         goto out;
     }
     const PathLevel *last = &pp->lv[nl - 1];
+    if (update || upsert || insert || del) {
+        rc = path_write_sql(pp, f, nf, update ? 'u' : upsert ? 'p' : insert ? 'i' : 'd', &b, err);
+        if (rc != GSQL_OK) {
+            goto out;
+        }
+        goto done;
+    }
     put(&b, count ? "SELECT count(*) AS \"count\" FROM " : "SELECT * FROM ");
     put_name(&b, gsql_table_name(last->tb));
     if (pp->aliased) {

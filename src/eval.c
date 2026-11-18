@@ -3922,6 +3922,7 @@ static Value gsql_path_table(Value connection, const char *table);
 static Value gsql_path_bracket(Value base, AstExpr *expr, int keep);
 static Value gsql_path_step(Value base, const AstExpr *expr, int keep);
 static int gsql_is_path(const Value *v);
+static int gsql_path_assign_stmt(AstStmt *stmt);
 #endif
 
 /* --- PLAT-HTTP: handle registry and release ------------------------------
@@ -31993,6 +31994,21 @@ static int receiver_is_path(const AstExpr *recv) {
 }
 #endif
 
+#if GBASIC_GSQL
+/* An assignment's target that is a G-SQL path, by the same test: anything
+ * after a connection but its one attribute, `bank.max_recursion = 2000`. */
+static int assign_target_is_path(const AstExpr *target) {
+    if (target->kind == AST_EXPR_FIELD && strcmp(target->as.field.field, "max_recursion") == 0 &&
+        target->as.field.object->kind == AST_EXPR_IDENT) {
+        Symbol *sym = env_find(target->as.field.object->as.ident);
+        if (sym && sym->value.kind == VALUE_GSQL_CONNECTION) {
+            return 0;
+        }
+    }
+    return receiver_is_path(target);
+}
+#endif
+
 static Value eval_method_call(AstExpr *expr) {
     AstExpr *recv = expr->as.call.receiver;
     const char *method = expr->as.call.name;
@@ -45945,6 +45961,18 @@ static EvalResult eval_stmt(AstStmt *stmt) {
 
     switch (stmt->kind) {
     case AST_STMT_ASSIGN: {
+#if GBASIC_GSQL
+        /* `shop.customer[3] = { email: v }`: a write to the database by path
+           (docs/gsql_paths_design.md §4), not to a variable */
+        if (assign_target_is_path(stmt->as.assign.target)) {
+            if (!gsql_path_assign_stmt(stmt)) {
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+            break;
+        }
+#endif
         int before_error = error_generation;
         Value value;
         /* THE LOCK IN FORCE (docs/typed_variables_design.md): the one this

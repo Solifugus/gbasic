@@ -1004,6 +1004,17 @@ compound_op
 lvalue
     : variable_name %prec NO_DOT { $$ = expr_at(ast_ident($1), @1.first_line, @1.first_column); }
     | lvalue LBRACKET expression RBRACKET %prec NO_DOT { $$ = expr_at(ast_index($1, $3), @2.first_line, @2.first_column); }
+    /* `shop.line[17, 2] = { item: "pad" }`: a G-SQL path's key written
+     * through (docs/gsql_paths_design.md §4). Measured 2026-11-17: 0 new
+     * conflicts. */
+    | lvalue LBRACKET expression COMMA argument_list RBRACKET %prec NO_DOT {
+        AstExprList items = ast_expr_list_append(ast_expr_list_empty(), $3);
+        for (size_t i = 0; i < $5.count; i++) {
+            items = ast_expr_list_append(items, $5.items[i]);
+        }
+        free($5.items);
+        $$ = expr_at(ast_index_list($1, items), @2.first_line, @2.first_column);
+      }
     | lvalue DOT dot_field_name %prec NO_DOT { $$ = expr_at(ast_field($1, $3), @2.first_line, @2.first_column); }
     ;
 

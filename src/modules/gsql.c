@@ -2297,7 +2297,27 @@ static void gsql_insert_free_args(char **cols, Value *rows, char *table) {
     free(table);
 }
 
+static Value gsql_path_insert(Value target, Value rows);
+
 static Value gsql_eval_insert(AstExpr *expr) {
+    if (expr->as.call.args.count == 2) {
+        /* path.insert(rows) (docs/gsql_paths_design.md §4) */
+        Value target = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(target);
+            return value_null();
+        }
+        if (gsql_is_path(&target)) {
+            Value rows = eval_expr(expr->as.call.args.items[1]);
+            if (error_action_pending()) {
+                value_free(target);
+                value_free(rows);
+                return value_null();
+            }
+            return gsql_path_insert(target, rows);
+        }
+        value_free(target);
+    }
     if (expr->as.call.args.count != 3) {
         gsql_module_refuse("gsql.insert expects a connection, a table's name and the rows, an array of records");
         return value_null();
@@ -3628,10 +3648,14 @@ static Value gsql_path_step(Value base, const AstExpr *expr, int keep) {
 }
 
 /* The request for a path, in one of its modes. */
-static void gsql_path_body(const GsqlStatementValue *st, const char *mode, Value *body) {
+static void gsql_path_body_with(const GsqlStatementValue *st, const char *mode, const char *extra_name, Value extra,
+                                Value *body) {
     Value path = value_record(NULL, 0);
     record_set(&path, "levels", value_copy(st->path_levels));
     record_set(&path, "mode", value_string(mode));
+    if (extra_name) {
+        record_set(&path, extra_name, extra);
+    }
     record_set(&path, "expect", value_string(st->path_one ? "one" : "many"));
     *body = value_record(NULL, 0);
     record_set(body, "path", path);
@@ -3639,6 +3663,10 @@ static void gsql_path_body(const GsqlStatementValue *st, const char *mode, Value
         record_set(body, "parameters", value_copy(st->path_params));
     }
     record_set(body, "batch", value_number_exact(GSQL_MODULE_BATCH));
+}
+
+static void gsql_path_body(const GsqlStatementValue *st, const char *mode, Value *body) {
+    gsql_path_body_with(st, mode, NULL, value_null(), body);
 }
 
 /* The rows a path answers in `mode`, through the same stream a block's rows
@@ -3746,6 +3774,232 @@ static Value gsql_path_scalar(GsqlStatementValue *st, const char *mode) {
     return out;
 }
 
+/* ---- writing by path (docs/gsql_paths_design.md §4) ------------------ */
+
+/* a record's fields as the columns a write sets, each value the next
+   parameter: [{ col, param }, ...] */
+static Value path_columns(const Value *rec, Value *params) {
+    Value out = value_array(NULL, 0);
+    for (size_t i = 0; i < rec->as.record.count; i++) {
+        const RecordField *f = &rec->as.record.fields[i];
+        Value grown = append_to_array_ref(params, value_copy(*f->value), 0);
+        value_free(grown);
+        Value one = value_record(NULL, 0);
+        record_set(&one, "col", value_string(f->name));
+        record_set(&one, "param", value_number_exact((long long)params->as.array.store->count));
+        grown = append_to_array_ref(&out, one, 0);
+        value_free(grown);
+    }
+    return out;
+}
+
+/* An update, upsert or delete: the rows it changed, or -1 with a raise. A
+ * STALE refusal fetches the keys again and runs once more, decided afresh. */
+static long gsql_path_change(GsqlStatementValue *st, const char *mode, const char *extra_name, Value extra) {
+    char who[300];
+    gsql_who(st, who, sizeof who);
+    for (int attempt = 0;; attempt++) {
+        GsqlConnectionValue *c = gsql_connection_of(value_copy(st->bound), who);
+        if (!c) {
+            value_free(extra);
+            return -1;
+        }
+        Value body, reply, refused = value_null();
+        unsigned type;
+        gsql_path_body_with(st, mode, extra_name, extra_name ? value_copy(extra) : value_null(), &body);
+        if (gsql_request_ex(c, GSQL_M_QUERY, body, who, "", &reply, &type, attempt == 0 ? &refused : NULL)) {
+            Value *n = gsql_field(&reply, "rows");
+            long count = n && n->kind == VALUE_NUMBER ? (long)n->as.num.value : 0;
+            value_free(reply);
+            value_free(extra);
+            return count;
+        }
+        if (refused.kind != VALUE_RECORD) {
+            value_free(extra);
+            return -1;
+        }
+        Value *code = gsql_field(&refused, "code");
+        if (!(code && code->kind == VALUE_STRING && strcmp(code->as.string, "STALE") == 0)) {
+            Value *message = gsql_field(&refused, "message");
+            gsql_module_raise_about(who, code && code->kind == VALUE_STRING ? code->as.string : "?",
+                                    message && message->kind == VALUE_STRING ? message->as.string : "", 0, NULL,
+                                    &refused);
+            value_free(refused);
+            value_free(extra);
+            return -1;
+        }
+        value_free(refused);
+        if (!path_fkeys_fetch(c, who)) {
+            value_free(extra);
+            return -1;
+        }
+        int shape = path_shape(c, st);
+        st->path_one = shape == 1;
+    }
+}
+
+/* `path = { ... }`: the record's fields written to the rows the path names.
+ * A key of one table names a row that is inserted, by INSERT's rules, when it
+ * is not there (§10 A2); any other path of one row is refused when its row is
+ * not there; a path of many writes the rows it has, none included. 1, or 0
+ * with a raise. */
+static int gsql_path_assign(Value target, Value rec) {
+    GsqlStatementValue *st = target.as.gsql_statement;
+    char who[300];
+    gsql_who(st, who, sizeof who);
+    if (rec.kind != VALUE_RECORD) {
+        char msg[300];
+        snprintf(msg, sizeof msg, "a path is written with a record of its columns, `= { email: v }`, not %s",
+                 value_kind_name(rec.kind));
+        value_free(target);
+        value_free(rec);
+        gsql_module_raise(who, "TYPE", msg, 0, NULL);
+        return 0;
+    }
+    GsqlStatementValue *w = gsql_path_extend(st);
+    value_free(target);
+    ArrayStorage *levels = w->path_levels.as.array.store;
+    int upsert = levels->count == 1 && record_find(&levels->items[0], "key") != NULL;
+    Value set = path_columns(&rec, &w->path_params);
+    value_free(rec);
+    int one = w->path_one;
+    long n = gsql_path_change(w, upsert ? "upsert" : "update", "set", set);
+    int ok = n >= 0;
+    if (ok && !upsert && one && w->path_one && n == 0) {
+        gsql_module_raise(who, "NOT_FOUND", "the row this path names is not there, so nothing was written (a key "
+                          "of one table is inserted when it is missing; a row reached by a step is not)", 0, NULL);
+        ok = 0;
+    }
+    value_free(value_gsql_statement(w));
+    return ok;
+}
+
+/* path.delete(): the rows the path names, removed (cascading as their keys
+ * say); answers how many. */
+static Value gsql_eval_delete(AstExpr *expr) {
+    if (expr->as.call.args.count != 1) {
+        gsql_module_refuse("gsql.delete takes a path, as path.delete()");
+        return value_null();
+    }
+    Value held = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(held);
+        return value_null();
+    }
+    if (!gsql_is_path(&held)) {
+        char msg[300];
+        snprintf(msg, sizeof msg, "gsql.delete takes a path (`shop.invoice[17].delete()`), not %s; rows are "
+                 "deleted by SQL otherwise", value_kind_name(held.kind));
+        value_free(held);
+        gsql_module_refuse(msg);
+        return value_null();
+    }
+    long n = gsql_path_change(held.as.gsql_statement, "delete", NULL, value_null());
+    value_free(held);
+    return n < 0 ? value_null() : value_number_exact(n);
+}
+
+/* path.insert(record) or path.insert([records]): new rows of the path's last
+ * table, all or none, answered as stored (keys, SERIAL and defaults filled
+ * in): a record for a record, an array for an array. Through a step from one
+ * row the key's columns are that row's. */
+static Value gsql_path_insert(Value target, Value rows) {
+    GsqlStatementValue *st = target.as.gsql_statement;
+    char who[300];
+    gsql_who(st, who, sizeof who);
+    int single = rows.kind == VALUE_RECORD;
+    int fine = single;
+    if (rows.kind == VALUE_ARRAY) {
+        fine = rows.as.array.store->count > 0;
+        for (size_t i = 0; fine && i < rows.as.array.store->count; i++) {
+            fine = rows.as.array.store->items[i].kind == VALUE_RECORD;
+        }
+    }
+    if (!fine) {
+        value_free(target);
+        value_free(rows);
+        gsql_module_raise(who, "TYPE", "insert takes a record, or an array of records, one per row", 0, NULL);
+        return value_null();
+    }
+    GsqlStatementValue *w = gsql_path_extend(st);
+    value_free(target);
+    Value each = value_array(NULL, 0);
+    size_t count = single ? 1 : rows.as.array.store->count;
+    for (size_t i = 0; i < count; i++) {
+        const Value *rec = single ? &rows : &rows.as.array.store->items[i];
+        Value grown = append_to_array_ref(&each, path_columns(rec, &w->path_params), 0);
+        value_free(grown);
+    }
+    value_free(rows);
+    GsqlConnectionValue *c = gsql_connection_of(value_copy(w->bound), who);
+    if (!c) {
+        value_free(each);
+        value_free(value_gsql_statement(w));
+        return value_null();
+    }
+    Value body;
+    gsql_path_body_with(w, "insert", "rows", each, &body);
+    struct GsqlRows *r = gsql_rows_begin_ex(c, who, copy_string(""), body, "a sql block", NULL);
+    if (!r) {
+        value_free(value_gsql_statement(w));
+        return value_null();
+    }
+    Value out = value_array(NULL, 0), row;
+    while (gsql_rows_next(r, &row)) {
+        Value grown = append_to_array_ref(&out, row, 0);
+        value_free(grown);
+    }
+    gsql_rows_end(r);
+    int stepped = w->path_levels.as.array.store->count > 1;
+    value_free(value_gsql_statement(w));
+    if (error_action_pending()) {
+        value_free(out);
+        return value_null();
+    }
+    if (stepped && out.as.array.store->count == 0) {
+        value_free(out);
+        gsql_module_raise(who, "NOT_FOUND", "the row this path steps from is not there, so nothing was inserted", 0,
+                          NULL);
+        return value_null();
+    }
+    if (single) {
+        Value one = value_copy(out.as.array.store->items[0]);
+        value_free(out);
+        return one;
+    }
+    return out;
+}
+
+/* `shop.customer[3] = { email: v }`: an assignment whose target is a path */
+static int gsql_path_assign_stmt(AstStmt *stmt) {
+    if (stmt->as.assign.op || stmt->as.assign.modifier.name) {
+        runtime_error_raise(stmt->as.assign.op
+                                ? "a path is written with `=` and a record of its columns, not a compound assignment"
+                                : "a path is written with `=` and a record of its columns, with no modifier clause",
+                            GSQL_ERROR_CODE, "gsql");
+        return 0;
+    }
+    g_path_keep = 1;
+    Value target = eval_expr(stmt->as.assign.target);
+    g_path_keep = 0;
+    if (error_action_pending()) {
+        value_free(target);
+        return 0;
+    }
+    if (!gsql_is_path(&target)) {
+        value_free(target);
+        runtime_error_raise("this assignment's target is not a path", GSQL_ERROR_CODE, "gsql");
+        return 0;
+    }
+    Value rec = eval_expr(stmt->as.assign.value);
+    if (error_action_pending()) {
+        value_free(target);
+        value_free(rec);
+        return 0;
+    }
+    return gsql_path_assign(target, rec);
+}
+
 static GsqlStatementValue *gsql_path_arg(AstExpr *expr, const char *verb, Value *held) {
     if (expr->as.call.args.count != 1) {
         char msg[200];
@@ -3850,6 +4104,7 @@ static Value gsql_eval_call(AstExpr *expr) {
     if (strcmp(fn, "space") == 0) return gsql_eval_space(expr);
     if (strcmp(fn, "count") == 0) return gsql_eval_count(expr);
     if (strcmp(fn, "sql") == 0) return gsql_eval_sql(expr);
+    if (strcmp(fn, "delete") == 0) return gsql_eval_delete(expr);
     char message[256];
     module_unknown_verb(message, sizeof(message), "gsql", fn);
     gsql_module_refuse(message);
