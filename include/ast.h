@@ -81,7 +81,10 @@ typedef enum {
     /* `.city` inside a G-SQL path's brackets: a column of the table to the
      * left of the bracket (docs/gsql_paths_design.md §3.1). Its name is in
      * `ident`. Anywhere else it is refused. */
-    AST_EXPR_COLUMN
+    AST_EXPR_COLUMN,
+    /* `path{ name, email }`: the columns a G-SQL path reads of the table
+     * before the braces (docs/gsql_paths_design.md §3.5). */
+    AST_EXPR_PROJECT
 } AstExprKind;
 
 typedef struct AstExpr AstExpr;
@@ -319,6 +322,10 @@ struct AstExpr {
             AstExpr *object;
             char *field;
         } field;
+        struct {
+            AstExpr *object;
+            AstNameList names;
+        } project;
         struct {
             char *library;    /* library/receiver-variable name, or NULL */
             char *name;       /* function / method name */
@@ -617,6 +624,7 @@ AstExpr *ast_duration(AstDuration duration);
 AstExpr *ast_index(AstExpr *array, AstExpr *index);
 AstExpr *ast_index_list(AstExpr *array, AstExprList items);
 AstExpr *ast_column(char *name);
+AstExpr *ast_project(AstExpr *object, AstNameList names);
 AstExpr *ast_field(AstExpr *object, char *field);
 AstExpr *ast_call(char *name, AstExprList args);
 AstExpr *ast_qualified_call(char *library, char *name, AstExprList args);

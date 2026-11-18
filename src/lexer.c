@@ -666,6 +666,7 @@ void lexer_init_at(Lexer *lexer, const char *source, int first_line) {
     lexer->bracket_depth = 0;
     lexer->sql_body_pending = 0;
     lexer->sql_open_line = 0;
+    lexer->last_type = -1;
 }
 
 static void bracket_open(Lexer *lexer, char ch, int line) {
@@ -692,7 +693,40 @@ static void bracket_close(Lexer *lexer) {
     }
 }
 
+static Token lexer_scan(Lexer *lexer);
+
 Token lexer_next(Lexer *lexer) {
+    Token t = lexer_scan(lexer);
+    lexer->last_type = (int)t.type;
+    return t;
+}
+
+/* After the `{` at `p`: does its group close on this line and have `=`, a
+ * compound assignment or a comparison next? Then it is an assignment clause,
+ * `x {date}= s`, `r{join ","} = list`, `name{upper} += "cd"`, or a
+ * comparison's lens, `a {caseless} < b`. */
+static int brace_clause_follows(const char *p) {
+    int depth = 0, in_string = 0, escape = 0;
+    for (; *p && *p != '\n'; p++) {
+        if (escape) { escape = 0; continue; }
+        if (*p == '\\' && in_string) { escape = 1; continue; }
+        if (*p == '"') { in_string = !in_string; continue; }
+        if (in_string) continue;
+        if (*p == '{') depth++;
+        else if (*p == '}') {
+            if (depth == 0) {
+                p++;
+                while (*p == ' ' || *p == '\t') p++;
+                return *p == '=' || *p == '<' || *p == '>' || *p == '!' ||
+                       ((*p == '+' || *p == '-' || *p == '*' || *p == '/') && p[1] == '=');
+            }
+            depth--;
+        }
+    }
+    return 0;
+}
+
+static Token lexer_scan(Lexer *lexer) {
     if (lexer->lens_content_mode) {
         return lens_content_token(lexer);
     }
@@ -805,6 +839,17 @@ Token lexer_next(Lexer *lexer) {
     case '[': bracket_open(lexer, '[', line); return make_token(lexer, TOKEN_LBRACKET, start, line, column);
     case ']': bracket_close(lexer); return make_token(lexer, TOKEN_RBRACKET, start, line, column);
     case '{': {
+        /* A PATH'S BRACES, `shop.customer[3]{ name, email }`
+         * (docs/gsql_paths_design.md §3.5): right after a name or a `]`, and
+         * not an assignment clause, which always has `=` after its `}`
+         * (`x {date}= s`). A keyword is not a name, so `return {USD}"1"` and
+         * `print {date}s` are untouched. Measured 2026-11-17 over every .bas
+         * in the tree: no program had this shape. */
+        if ((lexer->last_type == TOKEN_IDENT || lexer->last_type == TOKEN_QUALIFIED_IDENT ||
+             lexer->last_type == TOKEN_RBRACKET) && !brace_clause_follows(lexer->current)) {
+            bracket_open(lexer, '{', line);
+            return make_token(lexer, TOKEN_PATH_LBRACE, start, line, column);
+        }
         /* `{ IDENT }` EXACTLY -- an inline type modifier, recognised HERE
          * rather than in the grammar. `{a}` and `{a: 1}` differ only at their
          * THIRD token, which LALR(1) cannot see from the brace: adding the
@@ -1092,6 +1137,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_SQL_OPEN: return "SQL_OPEN";
     case TOKEN_SQL_TEXT: return "SQL_TEXT";
     case TOKEN_LBRACE: return "LBRACE";
+    case TOKEN_PATH_LBRACE: return "PATH_LBRACE";
     case TOKEN_RBRACE: return "RBRACE";
     case TOKEN_COMMA: return "COMMA";
     case TOKEN_DOT: return "DOT";

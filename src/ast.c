@@ -204,6 +204,13 @@ AstExpr *ast_column(char *name) {
     return expr;
 }
 
+AstExpr *ast_project(AstExpr *object, AstNameList names) {
+    AstExpr *expr = ast_expr_new(AST_EXPR_PROJECT);
+    expr->as.project.object = object;
+    expr->as.project.names = names;
+    return expr;
+}
+
 AstExpr *ast_field(AstExpr *object, char *field) {
     AstExpr *expr = ast_expr_new(AST_EXPR_FIELD);
     expr->as.field.object = object;
@@ -962,6 +969,14 @@ static void dump_expr(AstExpr *expr, int indent) {
     case AST_EXPR_COLUMN:
         printf("Column %s\n", expr->as.ident);
         break;
+    case AST_EXPR_PROJECT:
+        printf("Project");
+        for (size_t i = 0; i < expr->as.project.names.count; i++) {
+            printf("%s%s", i ? ", " : " ", expr->as.project.names.items[i]);
+        }
+        printf("\n");
+        dump_expr(expr->as.project.object, indent + 1);
+        break;
     case AST_EXPR_FIELD:
         printf("FieldAccess %s\n", expr->as.field.field);
         dump_expr(expr->as.field.object, indent + 1);
@@ -1504,6 +1519,10 @@ static void free_expr(AstExpr *expr) {
         break;
     case AST_EXPR_COLUMN:
         free(expr->as.ident);
+        break;
+    case AST_EXPR_PROJECT:
+        free_expr(expr->as.project.object);
+        ast_free_name_list(expr->as.project.names);
         break;
     case AST_EXPR_FIELD:
         free_expr(expr->as.field.object);

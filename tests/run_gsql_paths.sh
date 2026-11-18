@@ -1,9 +1,10 @@
 #!/bin/bash
-# G-SQL PATHS (docs/gsql_paths_design.md), increments 1 to 3: tables read by
+# G-SQL PATHS (docs/gsql_paths_design.md), increments 1 to 4: tables read by
 # path -- `shop.customer[3]`, `shop.customer[.city = "Rome"]`, a result run when
 # it is used, `count()` and `sql()` -- STEPS between them across foreign keys,
 # `shop.customer[3].invoice`, `shop.invoice[11].customer`, and WRITES:
-# `shop.customer[3] = { email: v }`, `.insert(...)`, `.delete()`. A path compiles in the owner to one SQL
+# `shop.customer[3] = { email: v }`, `.insert(...)`, `.delete()` -- and the
+# columns a path reads in BRACES, `shop.customer[3]{ name }.purchases{ item }`. A path compiles in the owner to one SQL
 # statement (src/gsql/sql_path.c) and runs by the protocol every statement
 # does, so the oracle for what it answers is the SQL it means.
 #
@@ -26,15 +27,20 @@
 #                 missing one inserted by INSERT's rules), to a filter and
 #                 through steps, delete with its cascade, a transaction, keys
 #                 held going stale under a write; each read back by SQL
+#   braces        tests/gsql/paths_braces_test.bas: braces on one table, a join
+#                 from braces before a step (inner, one row per row reached), the
+#                 refusals, and the forms `{` already had -- modifier clause,
+#                 inline modifier, record literal -- unchanged; by hand
 #   differential  random tables, rows and paths (tests/gsql/gen_paths_diff.py):
 #                 each path's rows against the SQL the GENERATOR writes for it
 #                 from its own model of the rules, never from sql(); a floor on
 #                 the cases answering rows, so an empty tier cannot pass. Skips
 #                 without python3
 #   stepdiff      random chains of tables and paths walking up and down them,
-#                 against nested IN subqueries the generator writes from its own
-#                 model of one and many -- a different SQL form from the
-#                 compiler's scalar and EXISTS ones
+#                 some with braces, against nested IN subqueries and comma
+#                 joins the generator writes from its own model of one and many
+#                 -- different SQL forms from the compiler's scalar, EXISTS and
+#                 JOIN ... ON
 #   writediff     two databases made alike, random writes by path to one and
 #                 by the generator's own SQL to the other; after each, every
 #                 table equal row for row and the same refusal on both sides,
@@ -145,6 +151,15 @@ if [ -s "$work/writes.err" ]; then
     fail "writes: the fixture wrote to stderr"
 fi
 
+printf 'TIER braces: the columns a path reads, and joins, every answer by hand\n'
+mkdir -p "$work/braces"
+GSQL_DIR="$work/braces" timeout -k 5 120 ./gbasic tests/gsql/paths_braces_test.bas >"$work/braces.out" 2>"$work/braces.err"
+verdict braces "$work/braces.out" $? 30
+if [ -s "$work/braces.err" ]; then
+    sed 's/^/       /' "$work/braces.err" | head -5
+    fail "braces: the fixture wrote to stderr"
+fi
+
 printf 'TIER differential: random paths against the SQL a model of the rules writes for them\n'
 if ! command -v python3 >/dev/null 2>&1; then
     printf '  SKIP (no python3 -- the differential tier was NOT measured)\n'
@@ -232,6 +247,19 @@ if vg_available; then
         tail -3 "$work/vg.out"
         vg_program_stderr "$work/vg.err"
         fail "valgrind: the fixture did not pass under valgrind (exit $vgst)"
+    fi
+    mkdir -p "$work/vgb"
+    GSQL_DIR="$work/vgb" vg_run ./gbasic tests/gsql/paths_braces_test.bas >"$work/vgb.out" 2>"$work/vgb.err"
+    vgst=$?
+    if [ "$vgst" = 0 ] && tail -1 "$work/vgb.out" | grep -q ' 0 mismatches$'; then
+        pass "valgrind: braces clean over $(tail -1 "$work/vgb.out" | sed 's/^ok //')"
+    elif [ "$vgst" = "$VG_EXIT" ]; then
+        grep -m8 'Invalid\|definitely lost\|uninitialised' "$work/vgb.err"
+        fail "valgrind objected to the braces fixture"
+    else
+        tail -3 "$work/vgb.out"
+        vg_program_stderr "$work/vgb.err"
+        fail "valgrind: the braces fixture did not pass under valgrind (exit $vgst)"
     fi
     mkdir -p "$work/vgw"
     GSQL_DIR="$work/vgw" vg_run ./gbasic tests/gsql/paths_writes_test.bas >"$work/vgw.out" 2>"$work/vgw.err"

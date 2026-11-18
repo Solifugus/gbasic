@@ -650,6 +650,9 @@ static void analyze_expr(AddUsesContext *ctx, AstExpr *expr) {
     case AST_EXPR_HELD:
     case AST_EXPR_COLUMN:
         break;
+    case AST_EXPR_PROJECT:
+        analyze_expr(ctx, expr->as.project.object);
+        break;
     case AST_EXPR_MODIFIER_APPLY:
         analyze_expr(ctx, expr->as.modifier_apply.value);
         analyze_modifier(ctx, expr->as.modifier_apply.modifier, "assign");

@@ -3275,6 +3275,8 @@ static int gsql_is_path(const Value *v) {
     return v->kind == VALUE_GSQL_STATEMENT && v->as.gsql_statement->is_path;
 }
 
+static int path_shape(GsqlConnectionValue *c, GsqlStatementValue *st);
+
 /* the last level, to read */
 static Value *path_last(GsqlStatementValue *st) {
     ArrayStorage *a = st->path_levels.as.array.store;
@@ -3473,6 +3475,13 @@ static Value gsql_path_bracket(Value base, AstExpr *expr, int keep) {
         }
         path_last_set(st, "key", key);
         st->path_one = 1;
+        if (st->path_levels.as.array.store->count > 1) {
+            char who[300];
+            gsql_who(st, who, sizeof who);
+            GsqlConnectionValue *c = gsql_connection_of(value_copy(st->bound), who);
+            int shape = c ? path_shape(c, st) : -1;
+            st->path_one = shape == 1;
+        }
     } else {
         RecordField *had = record_find(path_last(st), "filter");
         Value filter = had ? value_copy(*had->value) : value_null();
@@ -3486,6 +3495,46 @@ static Value gsql_path_bracket(Value base, AstExpr *expr, int keep) {
             filter = path_and(filter, tree);
         }
         path_last_set(st, "filter", filter);
+    }
+    if (!keep && st->path_one) {
+        return gsql_path_one(st);
+    }
+    return value_gsql_statement(st);
+}
+
+static int path_has_braces(GsqlStatementValue *st) {
+    ArrayStorage *a = st->path_levels.as.array.store;
+    for (size_t i = 0; i < a->count; i++) {
+        if (record_find(&a->items[i], "cols")) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* `path{ name, email }`: the columns read of the path's last table
+ * (docs/gsql_paths_design.md §3.5). Braces before a step join from there. */
+static Value gsql_path_project(Value base, AstExpr *expr, int keep) {
+    GsqlStatementValue *from = base.as.gsql_statement;
+    if (record_find(path_last(from), "cols")) {
+        value_free(base);
+        path_refuse_at(expr, "this table's columns are already chosen; name them all in one pair of braces");
+        return value_null();
+    }
+    GsqlStatementValue *st = gsql_path_extend(from);
+    value_free(base);
+    Value names = value_array(NULL, 0);
+    for (size_t i = 0; i < expr->as.project.names.count; i++) {
+        Value grown = append_to_array_ref(&names, value_string(expr->as.project.names.items[i]), 0);
+        value_free(grown);
+    }
+    path_last_set(st, "cols", names);
+    if (st->path_levels.as.array.store->count > 1) {
+        char who[300];
+        gsql_who(st, who, sizeof who);
+        GsqlConnectionValue *c = gsql_connection_of(value_copy(st->bound), who);
+        int shape = c ? path_shape(c, st) : -1;
+        st->path_one = shape == 1;
     }
     if (!keep && st->path_one) {
         return gsql_path_one(st);
@@ -3570,19 +3619,31 @@ static int path_direction(GsqlConnectionValue *c, const char *from, const char *
    many, -1 a step the keys held cannot take. */
 static int path_shape(GsqlConnectionValue *c, GsqlStatementValue *st) {
     ArrayStorage *a = st->path_levels.as.array.store;
-    int one = 0;
+    int one = 0, braced_one = 1;
+    long first_braced = -1;
     for (size_t i = 0; i < a->count; i++) {
         Value *lv = &a->items[i];
         int keyed = record_find(lv, "key") != NULL;
         if (i == 0) {
             one = keyed;
-            continue;
+        } else {
+            int up = 0;
+            if (!path_direction(c, rec_text(&a->items[i - 1], "table"), rec_text(lv, "table"), &up)) {
+                return -1;
+            }
+            one = keyed || (up && one);
         }
-        int up = 0;
-        if (!path_direction(c, rec_text(&a->items[i - 1], "table"), rec_text(lv, "table"), &up)) {
-            return -1;
+        if (first_braced < 0 && record_find(lv, "cols")) {
+            first_braced = (long)i;
         }
-        one = keyed || (up && one);
+        if (first_braced >= 0) {
+            braced_one = braced_one && one;
+        }
+    }
+    /* braces before the last table join from there: one row only when every
+       table from the first braced to the last is one (§3.5) */
+    if (first_braced >= 0 && (size_t)first_braced + 1 < a->count) {
+        return braced_one;
     }
     return one;
 }
@@ -3859,6 +3920,13 @@ static int gsql_path_assign(Value target, Value rec) {
         gsql_module_raise(who, "TYPE", msg, 0, NULL);
         return 0;
     }
+    if (path_has_braces(st)) {
+        value_free(target);
+        value_free(rec);
+        gsql_module_raise(who, "SYNTAX", "a path with braces chooses columns to read; write through the path "
+                          "without them", 0, NULL);
+        return 0;
+    }
     GsqlStatementValue *w = gsql_path_extend(st);
     value_free(target);
     ArrayStorage *levels = w->path_levels.as.array.store;
@@ -3897,6 +3965,11 @@ static Value gsql_eval_delete(AstExpr *expr) {
         gsql_module_refuse(msg);
         return value_null();
     }
+    if (path_has_braces(held.as.gsql_statement)) {
+        value_free(held);
+        gsql_module_refuse("a path with braces chooses columns to read; delete through the path without them");
+        return value_null();
+    }
     long n = gsql_path_change(held.as.gsql_statement, "delete", NULL, value_null());
     value_free(held);
     return n < 0 ? value_null() : value_number_exact(n);
@@ -3922,6 +3995,13 @@ static Value gsql_path_insert(Value target, Value rows) {
         value_free(target);
         value_free(rows);
         gsql_module_raise(who, "TYPE", "insert takes a record, or an array of records, one per row", 0, NULL);
+        return value_null();
+    }
+    if (path_has_braces(st)) {
+        value_free(target);
+        value_free(rows);
+        gsql_module_raise(who, "SYNTAX", "a path with braces chooses columns to read; insert through the path "
+                          "without them", 0, NULL);
         return value_null();
     }
     GsqlStatementValue *w = gsql_path_extend(st);

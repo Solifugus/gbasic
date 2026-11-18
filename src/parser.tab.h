@@ -172,9 +172,10 @@ typedef struct {
     COMMA = 346,                   /* COMMA  */
     COLON = 347,                   /* COLON  */
     NEWLINE = 348,                 /* NEWLINE  */
-    IF_WITHOUT_ELSE = 349,         /* IF_WITHOUT_ELSE  */
-    NO_DOT = 350,                  /* NO_DOT  */
-    DOT = 351                      /* DOT  */
+    PATH_LBRACE = 349,             /* PATH_LBRACE  */
+    IF_WITHOUT_ELSE = 350,         /* IF_WITHOUT_ELSE  */
+    NO_DOT = 351,                  /* NO_DOT  */
+    DOT = 352                      /* DOT  */
   };
   typedef enum yytokentype yytoken_kind_t;
 #endif
@@ -209,7 +210,7 @@ union YYSTYPE
     AstWindowItemList window_item_list;
     AstTypeLock type_lock;
 
-#line 213 "src/parser.tab.h"
+#line 214 "src/parser.tab.h"
 
 };
 typedef union YYSTYPE YYSTYPE;

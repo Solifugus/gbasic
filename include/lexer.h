@@ -128,6 +128,10 @@ typedef enum {
     TOKEN_DOT,
     TOKEN_COLON,
     TOKEN_NEWLINE,
+    /* the `{` of a G-SQL path's columns, `shop.customer[3]{ name }`: told
+       from a modifier and a record by the lexer (lexer.c, `case '{'`), so the
+       grammar never has to (docs/gsql_paths_design.md §6) */
+    TOKEN_PATH_LBRACE,
     TOKEN_ERROR
 } TokenType;
 
@@ -163,6 +167,10 @@ typedef struct {
      * ended, when the next token is the raw body. */
     int sql_body_pending;
     int sql_open_line;
+    /* the type of the token last returned: a `{` after a name or `]` that no
+       `=` follows is a G-SQL path's braces, not a modifier
+       (docs/gsql_paths_design.md §6) */
+    int last_type;
 } Lexer;
 
 void lexer_init(Lexer *lexer, const char *source);

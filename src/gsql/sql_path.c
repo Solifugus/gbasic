@@ -10,7 +10,7 @@
  * reads can become SQL.
  *
  * The path record:
- *   { levels: [{ table, key: [n, ...], filter: tree }, ...],
+ *   { levels: [{ table, key: [n, ...], filter: tree, cols: [name, ...] }, ...],
  *     mode: "rows" | "count" | "sql" | "fkeys" | "update" | "upsert" |
  *           "insert" | "delete", expect: "one" | "many",
  *     set: [{ col, param }, ...],            -- update and upsert
@@ -39,6 +39,7 @@
 #define PATH_MAX_FIELDS 16
 #define PATH_MAX_KEY 32
 #define PATH_MAX_DEPTH 64
+#define PATH_MAX_SET 256
 
 static int pfail(GsqlError *err, int code, const char *fmt, ...) {
     memset(err, 0, sizeof *err);
@@ -466,6 +467,7 @@ typedef struct {
     char alias[16];
     const V3Field *key;
     const V3Field *filter;
+    const V3Field *cols;   /* the columns its braces choose, or NULL */
     long fk;        /* the step INTO this level, from the one before: -1 for the first */
     int up;         /* that step runs from child to parent */
     int one;        /* this level is one row */
@@ -539,7 +541,18 @@ static int level_link(const PathPlan *pp, size_t i, GsqlBuf *b, int *any, GsqlEr
 
 /* level i's own conditions -- its key, its filter, its link to what came
  * before -- each joined to what `b` holds by AND */
+static int level_own(const PathPlan *pp, size_t i, GsqlBuf *b, int *any, GsqlError *err);
+
 static int level_cond(const PathPlan *pp, size_t i, GsqlBuf *b, int *any, GsqlError *err) {
+    int rc = level_own(pp, i, b, any, err);
+    if (rc == GSQL_OK && i > 0) {
+        rc = level_link(pp, i, b, any, err);
+    }
+    return rc;
+}
+
+/* level i's key and filter, without its link to the level before */
+static int level_own(const PathPlan *pp, size_t i, GsqlBuf *b, int *any, GsqlError *err) {
     const PathLevel *lv = &pp->lv[i];
     if (lv->key) {
         GsBytes items[PATH_MAX_KEY];
@@ -583,15 +596,68 @@ static int level_cond(const PathPlan *pp, size_t i, GsqlBuf *b, int *any, GsqlEr
             return rc;
         }
     }
-    if (i > 0) {
-        return level_link(pp, i, b, any, err);
+    return GSQL_OK;
+}
+
+/* ---- braces (docs/gsql_paths_design.md §3.5) ----------------------------- */
+
+/* the select list of the braced levels from `from` on, each column named as
+   the catalog names it; two levels giving one name are refused */
+static int select_list(const PathPlan *pp, size_t from, GsqlBuf *b, GsqlError *err) {
+    const char *given[PATH_MAX_SET];
+    const char *owner[PATH_MAX_SET];
+    size_t ngiven = 0;
+    for (size_t i = from; i < pp->n; i++) {
+        const PathLevel *lv = &pp->lv[i];
+        if (!lv->cols) {
+            continue;
+        }
+        GsBytes items[PATH_MAX_SET];
+        long m = v3_array_items(lv->cols->v, lv->cols->vlen, items, PATH_MAX_SET);
+        for (long j = 0; j < m; j++) {
+            char *name = v3_read_text(items[j].p, items[j].n);
+            const char *real = name ? column_named(lv->tb, name, err) : NULL;
+            free(name);
+            if (!real) {
+                return err->code ? err->code : GSQL_PROTOCOL;
+            }
+            for (size_t k = 0; k < ngiven; k++) {
+                if (strcmp(given[k], real) == 0) {
+                    if (strcmp(owner[k], gsql_table_name(lv->tb)) == 0) {
+                        return pfail(err, GSQL_SYNTAX, "`%s` is named twice", real);
+                    }
+                    return pfail(err, GSQL_SYNTAX, "`%s` and `%s` both give `%s` -- leave one out", owner[k],
+                                 gsql_table_name(lv->tb), real);
+                }
+            }
+            if (ngiven < PATH_MAX_SET) {
+                given[ngiven] = real;
+                owner[ngiven++] = gsql_table_name(lv->tb);
+            }
+            put(b, ngiven > 1 ? ", " : "");
+            put_col(b, alias_of(pp, i), real);
+            put(b, " AS ");
+            put_name(b, real);
+        }
     }
     return GSQL_OK;
 }
 
+/* the ON of a join from level i-1 to level i: its key's columns, equal */
+static void join_on(const PathPlan *pp, size_t i, GsqlBuf *b) {
+    const PathLevel *cur = &pp->lv[i], *prev = &pp->lv[i - 1];
+    const PathFk *k = &pp->fks.k[cur->fk];
+    const GsqlTable *parent = cur->up ? cur->tb : prev->tb;
+    for (size_t j = 0; j < k->ncols; j++) {
+        put(b, j ? " AND " : "");
+        put_col(b, alias_of(pp, i), cur->up ? parent_col(k, parent, j) : k->cols[j]);
+        put(b, " = ");
+        put_col(b, alias_of(pp, i - 1), cur->up ? k->cols[j] : parent_col(k, parent, j));
+    }
+}
+
 /* ---- writing ------------------------------------------------------- */
 
-#define PATH_MAX_SET 256
 
 typedef struct {
     const char *col;   /* the catalog's name */
@@ -938,6 +1004,7 @@ int gsql_path_compile(const GsEngine *e, GsTxn *t, const unsigned char *p, size_
         }
         lv->key = v3_field_named(lfields[i], m, "key");
         lv->filter = v3_field_named(lfields[i], m, "filter");
+        lv->cols = v3_field_named(lfields[i], m, "cols");
         if (i > 0) {
             lv->fk = fk_between(&pp->fks, gsql_table_name(pp->lv[i - 1].tb), gsql_table_name(lv->tb), &lv->up, err);
             if (lv->fk < 0) {
@@ -947,15 +1014,33 @@ int gsql_path_compile(const GsEngine *e, GsTxn *t, const unsigned char *p, size_
         }
         lv->one = lv->key != NULL || (i > 0 && lv->up && pp->lv[i - 1].one);
     }
+    /* braces before the last table join from the first of them: one row only
+       when every table from there to the last is one (§3.5) */
+    long first_braced = -1;
+    int path_one = pp->lv[nl - 1].one;
+    for (long i = 0; i < nl; i++) {
+        if (pp->lv[i].cols && first_braced < 0) {
+            first_braced = i;
+        }
+    }
+    if (first_braced >= 0 && first_braced < nl - 1) {
+        for (long i = first_braced; i < nl; i++) {
+            path_one = path_one && pp->lv[i].one;
+        }
+    }
     char *expect = field_text(f, nf, "expect");
     int said_one = expect && strcmp(expect, "one") == 0;
     free(expect);
-    if (said_one && !pp->lv[nl - 1].one) {
+    if (said_one && !path_one) {
         rc = pfail(err, GSQL_STALE, "the path was read as one row, from foreign keys this client held, and the "
                    "database's own make it many");
         goto out;
     }
-    const PathLevel *last = &pp->lv[nl - 1];
+    if ((update || upsert || insert || del) && first_braced >= 0) {
+        rc = pfail(err, GSQL_SYNTAX, "a path with braces chooses columns to read; write through the path without "
+                   "them");
+        goto out;
+    }
     if (update || upsert || insert || del) {
         rc = path_write_sql(pp, f, nf, update ? 'u' : upsert ? 'p' : insert ? 'i' : 'd', &b, err);
         if (rc != GSQL_OK) {
@@ -963,15 +1048,41 @@ int gsql_path_compile(const GsEngine *e, GsTxn *t, const unsigned char *p, size_
         }
         goto done;
     }
-    put(&b, count ? "SELECT count(*) AS \"count\" FROM " : "SELECT * FROM ");
-    put_name(&b, gsql_table_name(last->tb));
+    int join = first_braced >= 0 && first_braced < nl - 1;
+    size_t from = join ? (size_t)first_braced : (size_t)nl - 1;
+    if (count) {
+        put(&b, "SELECT count(*) AS \"count\" FROM ");
+    } else if (first_braced >= 0) {
+        put(&b, "SELECT ");
+        rc = select_list(pp, from, &b, err);
+        if (rc != GSQL_OK) {
+            goto out;
+        }
+        put(&b, " FROM ");
+    } else {
+        put(&b, "SELECT * FROM ");
+    }
+    put_name(&b, gsql_table_name(pp->lv[from].tb));
     if (pp->aliased) {
         put(&b, " AS ");
-        put_name(&b, last->alias);
+        put_name(&b, pp->lv[from].alias);
+    }
+    for (size_t i = from + 1; i < (size_t)nl; i++) {
+        put(&b, " JOIN ");
+        put_name(&b, gsql_table_name(pp->lv[i].tb));
+        put(&b, " AS ");
+        put_name(&b, pp->lv[i].alias);
+        put(&b, " ON ");
+        join_on(pp, i, &b);
     }
     GsqlBuf w = {0};
     int any = 0;
-    rc = level_cond(pp, (size_t)nl - 1, &w, &any, err);
+    /* the first table read takes its link to the levels before it; each
+       joined one after only its own key and filter */
+    rc = level_cond(pp, from, &w, &any, err);
+    for (size_t i = from + 1; rc == GSQL_OK && i < (size_t)nl; i++) {
+        rc = level_own(pp, i, &w, &any, err);
+    }
     if (rc != GSQL_OK) {
         gsql_buf_free(&w);
         goto out;
@@ -982,12 +1093,18 @@ int gsql_path_compile(const GsEngine *e, GsTxn *t, const unsigned char *p, size_
     }
     gsql_buf_free(&w);
     if (!count) {
-        /* primary key order, always (docs/gsql_paths_design.md §3.3) */
-        size_t nkey = gsql_table_nkey(last->tb);
-        const unsigned *cols = gsql_table_key_cols(last->tb);
-        for (size_t i = 0; i < nkey; i++) {
-            put(&b, i ? ", " : " ORDER BY ");
-            put_col(&b, alias_of(pp, (size_t)nl - 1), gsql_table_col(last->tb, cols[i])->name);
+        /* primary key order, always (docs/gsql_paths_design.md §3.3): the
+           last table's, then back through the tables joined */
+        int first = 1;
+        for (size_t lvl = (size_t)nl; lvl-- > from;) {
+            const GsqlTable *tb = pp->lv[lvl].tb;
+            size_t nkey = gsql_table_nkey(tb);
+            const unsigned *cols = gsql_table_key_cols(tb);
+            for (size_t i = 0; i < nkey; i++) {
+                put(&b, first ? " ORDER BY " : ", ");
+                first = 0;
+                put_col(&b, alias_of(pp, lvl), gsql_table_col(tb, cols[i])->name);
+            }
         }
     }
     if (text) {

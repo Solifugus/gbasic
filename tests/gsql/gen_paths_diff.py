@@ -81,7 +81,7 @@ class Case:
         return "$%d" % len(self.params)
 
 
-def comparison(rng, t, case):
+def comparison(rng, t, case, q=""):
     c, kind = rng.choice(t.all_cols())
     ops = ["=", "!="] if kind == "boolean" else ["=", "!=", "<", ">", "<=", ">="]
     op = rng.choice(ops)
@@ -89,29 +89,30 @@ def comparison(rng, t, case):
     shape = rng.random()
     same = [n for n, k in t.all_cols() if k == kind and n != c]
     if shape < 0.15:
-        return "is_unknown(.%s)" % c, "%s is null" % c
+        return "is_unknown(.%s)" % c, "%s%s is null" % (q, c)
     if shape < 0.3 and same:
         d = rng.choice(same)
-        return ".%s %s .%s" % (c, op, d), "%s %s %s" % (c, sql_op, d)
+        return ".%s %s .%s" % (c, op, d), "%s%s %s %s%s" % (q, c, sql_op, q, d)
     if shape < 0.45 and kind == "integer":
         n = rng.randint(-3, 3)
         v = value(rng, kind)
-        return "(.%s + %s) %s %s" % (c, glit(n), op, glit(v)), "(%s + %s) %s %s" % (c, case.p(n), sql_op, case.p(v))
+        return "(.%s + %s) %s %s" % (c, glit(n), op, glit(v)), "(%s%s + %s) %s %s" % (q, c, case.p(n), sql_op,
+                                                                                         case.p(v))
     v = None if rng.random() < 0.08 else value(rng, kind)
-    return ".%s %s %s" % (c, op, glit(v)), "%s %s %s" % (c, sql_op, case.p(v))
+    return ".%s %s %s" % (c, op, glit(v)), "%s%s %s %s" % (q, c, sql_op, case.p(v))
 
 
-def condition(rng, t, case, depth=0):
+def condition(rng, t, case, depth=0, q=""):
     r = rng.random()
     if depth < 2 and r < 0.2:
-        a, sa = condition(rng, t, case, depth + 1)
-        b, sb = condition(rng, t, case, depth + 1)
+        a, sa = condition(rng, t, case, depth + 1, q)
+        b, sb = condition(rng, t, case, depth + 1, q)
         word = rng.choice(["and", "or"])
         return "(%s %s %s)" % (a, word, b), "(%s %s %s)" % (sa, word, sb)
     if depth < 2 and r < 0.3:
-        a, sa = condition(rng, t, case, depth + 1)
+        a, sa = condition(rng, t, case, depth + 1, q)
         return "not (%s)" % a, "not (%s)" % sa
-    return comparison(rng, t, case)
+    return comparison(rng, t, case, q)
 
 
 def steps_main(seed, db):
@@ -182,11 +183,14 @@ def steps_main(seed, db):
         case = Case()
         path = "db"
         one = False
-        conds = []
+        braces = rng.random() < 0.4
+        used = set()
+        first_braced = None
+        braced_one = True
         for li, lv in enumerate(levels):
             t = lv["t"]
-            path += ("." if True else "") + t.name
-            lv_conds = []
+            lv["alias"] = "a%d" % li
+            path += "." + t.name
             keyed = False
             r = rng.random()
             if r < 0.25:
@@ -196,6 +200,7 @@ def steps_main(seed, db):
                 keyed = True
             elif r < 0.55:
                 a, sa = condition(rng, t, case)
+                qcase_len = len(case.params)
                 path += "[%s]" % a
                 lv["filter"] = sa
             if li == 0:
@@ -203,6 +208,21 @@ def steps_main(seed, db):
             else:
                 up = lv["i"] < levels[li - 1]["i"]
                 one = keyed or (up and one)
+            # braces: columns no braced table before has given, so no name is
+            # given twice (a refusal of its own, tested by hand)
+            if braces and rng.random() < 0.6:
+                free = [c for c, _ in t.all_cols() + ([("r", "integer")] if lv["i"] > 0 else []) if c not in used]
+                if free:
+                    cols = rng.sample(free, rng.randint(1, min(2, len(free))))
+                    used.update(cols)
+                    lv["cols"] = cols
+                    path += "{ %s }" % ", ".join(cols)
+                    if first_braced is None:
+                        first_braced = li
+            if first_braced is not None:
+                braced_one = braced_one and one
+        if first_braced is not None and first_braced < len(levels) - 1:
+            one = braced_one
         # the expected SQL, inside out, with its own parameter numbering
         sqlcase = Case()
 
@@ -228,7 +248,52 @@ def steps_main(seed, db):
                 else:
                     where.append("r in (%s)" % sub(li - 1, "k1"))      # down: children of them
             return "select %s from %s%s" % (col, t.name, " where " + " and ".join(where) if where else "")
-        sql = sub(len(levels) - 1, "*") + " order by k1"
+        nlv = len(levels)
+        if first_braced is None:
+            sql = sub(nlv - 1, "*") + " order by k1"
+        elif first_braced == nlv - 1:
+            sql = sub(nlv - 1, ", ".join(levels[-1]["cols"])) + " order by k1"
+        else:
+            # a comma join from the first braced table, each column qualified,
+            # the tables before it an IN on the first
+            f = first_braced
+            sel = []
+            for lv in levels[f:]:
+                for c in lv.get("cols", []):
+                    sel.append("%s.%s as %s" % (lv["alias"], c, c))
+            frm = ", ".join("%s %s" % (lv["t"].name, lv["alias"]) for lv in levels[f:])
+            where = []
+            for li in range(f, nlv):
+                lv = levels[li]
+                a = lv["alias"]
+                if "key" in lv:
+                    where.append("%s.k1 = %s" % (a, sqlcase.p(lv["key"])))
+                if "filter" in lv:
+                    fl = lv["filter"]
+                    for idx in range(len(case.params), 0, -1):
+                        fl = fl.replace("$%d" % idx, "\0%d\0" % idx)
+                    fl = qualify(fl, lv["t"], a)
+                    for idx in range(1, len(case.params) + 1):
+                        if "\0%d\0" % idx in fl:
+                            fl = fl.replace("\0%d\0" % idx, sqlcase.p(case.params[idx - 1]))
+                    where.append("(%s)" % fl)
+                if li > f:
+                    prev = levels[li - 1]
+                    if lv["i"] < prev["i"]:
+                        where.append("%s.k1 = %s.r" % (a, prev["alias"]))
+                    else:
+                        where.append("%s.r = %s.k1" % (a, prev["alias"]))
+            if f > 0:
+                prev = levels[f - 1]
+                a = levels[f]["alias"]
+                if levels[f]["i"] < prev["i"]:
+                    where.append("%s.k1 in (select r from %s%s)" % (a, prev["t"].name,
+                                                                   wsql(where_of(levels, case, sqlcase, f - 1))))
+                else:
+                    where.append("%s.r in (select k1 from %s%s)" % (a, prev["t"].name,
+                                                                   wsql(where_of(levels, case, sqlcase, f - 1))))
+            order = ", ".join("%s.k1" % lv["alias"] for lv in reversed(levels[f:]))
+            sql = "select %s from %s%s order by %s" % (", ".join(sel), frm, wsql(where), order)
         params = "[" + ", ".join(glit(v) for v in sqlcase.params) + "]"
         label = glit("case %d %s" % (n, path))
         if one:
@@ -241,6 +306,34 @@ def steps_main(seed, db):
     w('print "answered " + string(checks.rows) + " of " + string(checks.n) + " with rows"')
     w('print "ok " + string(checks.n) + " checks, " + string(checks.bad) + " mismatches"')
     print("\n".join(out))
+
+
+def qualify(sql, t, alias):
+    """a filter's unqualified columns, each given the table's alias: only
+    whole words that are this table's column names, outside strings"""
+    import re
+    names = set(c for c, _ in t.all_cols()) | {"r"}
+    out, i = [], 0
+    while i < len(sql):
+        if sql[i] == "'":
+            j = i + 1
+            while j < len(sql):
+                if sql[j] == "'" and (j + 1 >= len(sql) or sql[j + 1] != "'"):
+                    break
+                j += 2 if sql[j] == "'" else 1
+            out.append(sql[i:j + 1])
+            i = j + 1
+            continue
+        m = re.match(r"[A-Za-z_][A-Za-z0-9_]*", sql[i:])
+        if m:
+            w = m.group(0)
+            prev = sql[i - 1] if i else ""
+            out.append(alias + "." + w if w in names and prev != "." else w)
+            i += len(w)
+            continue
+        out.append(sql[i])
+        i += 1
+    return "".join(out)
 
 
 def chain(rng):

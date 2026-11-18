@@ -709,6 +709,7 @@ typedef struct {
 %token IF CONSIDER_IF THEN ELSE CONSIDER_ELSE END END_CONSIDER PRINT TRUE FALSE NOTHING UNKNOWN_VALUE AND OR NOT TRY WITH NEW SPAWN FOR TO STEP DO UNTIL IN EACH WHILE CONSIDER BREAK CONTINUE FUNCTION RETURN GOTO GOSUB WATCH UNWATCH WAIT WITHOUT WATCHERS ON NEXT STOP ERROR_VALUE MODIFIER PROGRAM LIBRARY LOAD USE EXPORT
 %token OP_EQ OP_NE OP_GT OP_LT OP_GE OP_LE OP_NGT OP_NLT OP_NGE OP_NLE
 %token PLUS MINUS STAR SLASH LPAREN RPAREN LBRACKET RBRACKET LBRACE RBRACE COMMA COLON NEWLINE
+%token PATH_LBRACE
 %precedence IF_WITHOUT_ELSE
 %precedence ELSE
 %precedence NO_DOT
@@ -844,6 +845,7 @@ static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue record_literal set_expression
 %type <expr_list> argument_list argument_list_opt array_argument_list
 %type <text> field_name dot_field_name
+%type <name_list> projection_names
 %type <record_field_list> record_field_list
 %type <field_policy> field_policy
 %type <consider_branch_list> consider_branch_list
@@ -1921,6 +1923,13 @@ postfix_expression
         $$ = expr_at(ast_index_list($1, items), @2.first_line, @2.first_column);
       }
     | postfix_expression DOT dot_field_name { $$ = expr_at(ast_field($1, $3), @2.first_line, @2.first_column); }
+    /* `shop.customer[3]{ name, email }`: a G-SQL path's columns
+     * (docs/gsql_paths_design.md §3.5). The lexer gives PATH_LBRACE only
+     * after a name or `]` with no `=` or comparison after the group, so no
+     * modifier, lens or record literal reaches this rule. */
+    | postfix_expression PATH_LBRACE projection_names RBRACE {
+        $$ = expr_at(ast_project($1, $3), @2.first_line, @2.first_column);
+      }
     | postfix_expression DOT IDENT LPAREN argument_list_opt RPAREN {
         /* Method call on an expression receiver where the method name is a bare
          * IDENT (the receiver ends in ) or ], e.g. make().show(), a[0].show()). */
@@ -2196,6 +2205,11 @@ field_name
  * but a name can appear -- so admitting a keyword here costs no ambiguity and
  * keeps the KEYWORD namespace out of the DATA namespace. Before this was wired
  * into dot access, `{ end: 1 }` built a field that `r.end` could never read. */
+projection_names
+    : dot_field_name { $$ = ast_name_list_append(ast_name_list_empty(), $1); }
+    | projection_names COMMA dot_field_name { $$ = ast_name_list_append($1, $3); }
+    ;
+
 dot_field_name
     : IDENT { $$ = $1; }
     | AS             { $$ = kw_name("as"); }
@@ -2852,6 +2866,7 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
         lvalp->text = copy_text(token.start, token.length);
         return SQL_TEXT;
     case TOKEN_LBRACE: return LBRACE;
+    case TOKEN_PATH_LBRACE: return PATH_LBRACE;
     case TOKEN_RBRACE: return RBRACE;
     case TOKEN_DOT: return DOT;
     case TOKEN_COLON: return COLON;

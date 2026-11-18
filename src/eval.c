@@ -3923,6 +3923,7 @@ static Value gsql_path_bracket(Value base, AstExpr *expr, int keep);
 static Value gsql_path_step(Value base, const AstExpr *expr, int keep);
 static int gsql_is_path(const Value *v);
 static int gsql_path_assign_stmt(AstStmt *stmt);
+static Value gsql_path_project(Value base, AstExpr *expr, int keep);
 #endif
 
 /* --- PLAT-HTTP: handle registry and release ------------------------------
@@ -31979,12 +31980,13 @@ static Value handle_method_call(AstExpr *expr, const char *module, Value *receiv
  * asking costs nothing and runs nothing. A path is a value, not a place, so
  * it is evaluated rather than resolved as an lvalue. */
 static int receiver_is_path(const AstExpr *recv) {
-    if (recv->kind != AST_EXPR_FIELD && recv->kind != AST_EXPR_INDEX) {
+    if (recv->kind != AST_EXPR_FIELD && recv->kind != AST_EXPR_INDEX && recv->kind != AST_EXPR_PROJECT) {
         return 0;
     }
     const AstExpr *e = recv;
-    while (e->kind == AST_EXPR_FIELD || e->kind == AST_EXPR_INDEX) {
-        e = e->kind == AST_EXPR_FIELD ? e->as.field.object : e->as.index.array;
+    while (e->kind == AST_EXPR_FIELD || e->kind == AST_EXPR_INDEX || e->kind == AST_EXPR_PROJECT) {
+        e = e->kind == AST_EXPR_FIELD ? e->as.field.object
+          : e->kind == AST_EXPR_INDEX ? e->as.index.array : e->as.project.object;
     }
     if (e->kind != AST_EXPR_IDENT) {
         return 0;
@@ -43113,6 +43115,24 @@ static Value eval_expr(AstExpr *expr) {
         return eval_binary(expr);
     case AST_EXPR_HELD:
         return value_copy(*(Value *)expr->as.held.value);
+    case AST_EXPR_PROJECT: {
+        g_path_keep = 1;
+        Value object = eval_expr(expr->as.project.object);
+        g_path_keep = 0;
+        if (error_action_pending()) {
+            value_free(object);
+            return value_null();
+        }
+#if GBASIC_GSQL
+        if (gsql_is_path(&object)) {
+            return gsql_path_project(object, expr, path_keep && !expr->parenthesized);
+        }
+#endif
+        value_free(object);
+        runtime_error_raise_at("braces after a value choose a G-SQL path's columns (`shop.customer[3]{ name }`); a "
+                               "record's field is read with a dot", 1003, "path", expr->line, expr->column);
+        return value_null();
+    }
     case AST_EXPR_COLUMN: {
         char message[300];
         snprintf(message, sizeof message, "`.%s` names a column, and is read only inside a G-SQL path's brackets "
