@@ -1733,7 +1733,7 @@ static Value xml_eval_canonicalize(AstExpr *expr) {
     if (ok && id) {
         XmlIdFind f = { id_attr ? id_attr : "ID", id, NULL, 0 };
         xml_find_id(xmlDocGetRootElement(doc), &f);
-        char m[400];
+        char m[512];
         if (f.count == 0) {
             snprintf(m, sizeof m, "xml.canonicalize: no element has %.60s=\"%.200s\"", f.attr, id);
             runtime_error_raise(m, XML_ERROR_CODE, "xml");

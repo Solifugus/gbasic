@@ -1,5 +1,13 @@
 CC := cc
-CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Iinclude -g
+# OPTIMISED BY DEFAULT, since 0.12.0. Until then nothing set a level, so the tree
+# and every release tarball were built -O0. Measured 2026-11-17, -O2 against
+# -O0 on six workloads, output identical: G-SQL insert and query 2.18x, a
+# recursive function 1.93x, an arithmetic loop 1.50x, records 1.45x, JSON 1.39x,
+# strings 1.32x. `make OPT=-O0` for a debugger that follows every line; -g is
+# kept either way. OPT is in .buildswitch-stamp's signature, so changing it
+# rebuilds every object.
+OPT ?= -O2
+CFLAGS := -std=c11 -Wall -Wextra -Wpedantic -Iinclude -g $(OPT)
 
 # Install layout. Override PREFIX to install elsewhere, e.g. `make install PREFIX=$HOME/.local`.
 PREFIX ?= /usr/local
@@ -122,7 +130,7 @@ endif
 QT_CFLAGS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --cflags Qt6Widgets 2>/dev/null)
 QT_LIBS := $(shell command -v pkg-config >/dev/null 2>&1 && pkg-config --libs Qt6Widgets 2>/dev/null)
 CXX ?= c++
-QT_CXXFLAGS := -std=c++17 -fPIC -Wall -Wextra -Iinclude -Isrc/modules -g
+QT_CXXFLAGS := -std=c++17 -fPIC -Wall -Wextra -Iinclude -Isrc/modules -g $(OPT)
 
 
 # WINDOWS: NO OPTIONAL MODULE IS AUTO-DETECTED. An MSYS2 install carries
@@ -538,7 +546,7 @@ FORCE:
 # `^[A-Z0-9_]+_AVAILABLE` from COLUMN ONE, and a name used only inside this
 # variable never appears there -- so tests/run_library_tiers.sh asserts the
 # names in this line are all assigned, which catches the NEXT one.
-BUILD_SWITCH_SIG := $(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE)|$(LIBPQ_AVAILABLE)|$(LIBSSL_AVAILABLE)|$(LIBXCRYPT_AVAILABLE)|$(LIBXML2_AVAILABLE)|$(ODBC_AVAILABLE)|$(QT_AVAILABLE)|$(KSYNTAX_AVAILABLE)|$(QT_SVG_AVAILABLE)|$(SQLITE3_AVAILABLE)|$(ZLIB_AVAILABLE)|$(YESCRYPT_VENDORED)
+BUILD_SWITCH_SIG := $(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE)|$(LIBPQ_AVAILABLE)|$(LIBSSL_AVAILABLE)|$(LIBXCRYPT_AVAILABLE)|$(LIBXML2_AVAILABLE)|$(ODBC_AVAILABLE)|$(QT_AVAILABLE)|$(KSYNTAX_AVAILABLE)|$(QT_SVG_AVAILABLE)|$(SQLITE3_AVAILABLE)|$(ZLIB_AVAILABLE)|$(YESCRYPT_VENDORED)|$(OPT)
 .buildswitch-stamp: FORCE
 	@printf '%s' '$(BUILD_SWITCH_SIG)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(BUILD_SWITCH_SIG)' > $@
 

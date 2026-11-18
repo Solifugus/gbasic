@@ -52,6 +52,14 @@ reader sees.
 
 ### What was added
 
+- **gBASIC is built optimised.** Nothing set an optimisation level, so the
+  tree and every release were compiled `-O0`; the default is now `-O2`
+  (`make OPT=-O0` for debugging). Measured on six workloads with identical
+  output: G-SQL 2.2x faster, recursion 1.9x, an arithmetic loop 1.5x,
+  records 1.45x, JSON 1.4x, strings 1.3x. The four warnings `-O2` raised
+  (three possible truncations, one false uninitialised) are fixed at their
+  cause, checked on GCC 11, 13 and 15, full and lean.
+
 - **Recursion goes about eight times deeper.** A gBASIC call took about 17 KB
   of C stack and now takes about 2 KB, so the recursion guard refuses near
   3 900 calls at the default 8 MB stack (it was 483) and 870 at 2 MB (it was

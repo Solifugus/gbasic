@@ -2783,11 +2783,11 @@ static int zone_check(const char *zone, char *message, size_t size) {
     if (known < 0) {
         snprintf(message, size,
                  "named time zones need the zone database Windows ships from "
-                 "Windows 10 version 1903 (icu.dll), which this system lacks: '%s'",
+                 "Windows 10 version 1903 (icu.dll), which this system lacks: '%.100s'",
                  zone);
     } else {
         snprintf(message, size,
-                 "unknown timezone '%s' (expected an IANA name like America/New_York, or UTC)",
+                 "unknown timezone '%.100s' (expected an IANA name like America/New_York, or UTC)",
                  zone);
     }
     return 0;
@@ -47584,30 +47584,15 @@ case_done:
     return eval_no_result();
 }
 
-static EvalResult eval_stmt(AstStmt *stmt) {
+/* eval_stmt is a DISPATCHER and nothing else (work order item 5): every C
+ * frame between a gBASIC call and the statement it sits in is on the stack for
+ * the length of that call, so a statement kind's locals live in its own
+ * GB_NOINLINE helper, and the kinds that are a line or two each live in
+ * eval_stmt_rest -- where whatever the optimiser inlines into them at -O2 (it
+ * inlined 1.3 KB of them into eval_stmt when they were here) stays. */
+static GB_NOINLINE EvalResult eval_stmt_rest(AstStmt *stmt, int previous_line, int previous_column) {
     EvalResult no_result = eval_no_result();
-    int previous_line = current_line;
-    int previous_column = current_column;
-    current_line = stmt->line;
-    current_column = stmt->column;
-
     switch (stmt->kind) {
-    case AST_STMT_ASSIGN:
-        return eval_stmt_case_assign(stmt, previous_line, previous_column);
-    case AST_STMT_PRINT:
-        return eval_stmt_case_print(stmt, previous_line, previous_column);
-    case AST_STMT_EXPR:
-        return eval_stmt_case_expr(stmt, previous_line, previous_column);
-    case AST_STMT_WITH_PRINCIPAL:
-        return eval_stmt_case_with_principal(stmt, previous_line, previous_column);
-    case AST_STMT_WITH_LOCK:
-        return eval_stmt_case_with_lock(stmt, previous_line, previous_column);
-    case AST_STMT_DO_LOOP:
-        return eval_stmt_case_do_loop(stmt, previous_line, previous_column);
-    case AST_STMT_FOR_RANGE:
-        return eval_stmt_case_for_range(stmt, previous_line, previous_column);
-    case AST_STMT_FOR_EACH:
-        return eval_stmt_case_for_each(stmt, previous_line, previous_column);
     case AST_STMT_FUNCTION:
         if (stmt->as.function.object) {
             /* Dotted def: an executable attach statement, not a hoisted decl. */
@@ -47699,10 +47684,6 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             return eval_error_result();
         }
         break;
-    case AST_STMT_UNWATCH:
-        return eval_stmt_case_unwatch(stmt, previous_line, previous_column);
-    case AST_STMT_WITHOUT_WATCHERS:
-        return eval_stmt_case_without_watchers(stmt, previous_line, previous_column);
     /* PLAT-ERR: these arm THIS FRAME and nothing else. A callee starts in the
      * default state whatever its caller set, and the arming dies with the
      * frame -- which is what makes absorption safe and is the whole difference
@@ -47725,18 +47706,8 @@ static EvalResult eval_stmt(AstStmt *stmt) {
     case AST_STMT_ON_WARNING:
         current_error_frame->warn_mode = stmt->as.warn_mode;
         break;
-    case AST_STMT_WARNING:
-        return eval_stmt_case_warning(stmt, previous_line, previous_column);
-    case AST_STMT_ERROR:
-        return eval_stmt_case_error(stmt, previous_line, previous_column);
-    case AST_STMT_RETURN:
-        return eval_stmt_case_return(stmt, previous_line, previous_column);
     case AST_STMT_LABEL:
         break;
-    case AST_STMT_GOTO:
-        return eval_stmt_case_goto(stmt, previous_line, previous_column);
-    case AST_STMT_GOSUB:
-        return eval_stmt_case_gosub(stmt, previous_line, previous_column);
     case AST_STMT_BREAK:
         if (loop_depth == 0 && consider_depth == 0) {
             runtime_error_raise("break outside loop or consider block", 1003, "invalid control flow");
@@ -47757,6 +47728,52 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         current_line = previous_line;
         current_column = previous_column;
         return eval_continue(stmt->as.loop_target, stmt->line, stmt->column);
+    default:
+        break;   /* the kinds eval_stmt dispatches to their own helpers never reach here */
+    }
+
+    current_line = previous_line;
+    current_column = previous_column;
+    return no_result;
+}
+
+static EvalResult eval_stmt(AstStmt *stmt) {
+    int previous_line = current_line;
+    int previous_column = current_column;
+    current_line = stmt->line;
+    current_column = stmt->column;
+
+    switch (stmt->kind) {
+    case AST_STMT_ASSIGN:
+        return eval_stmt_case_assign(stmt, previous_line, previous_column);
+    case AST_STMT_PRINT:
+        return eval_stmt_case_print(stmt, previous_line, previous_column);
+    case AST_STMT_EXPR:
+        return eval_stmt_case_expr(stmt, previous_line, previous_column);
+    case AST_STMT_WITH_PRINCIPAL:
+        return eval_stmt_case_with_principal(stmt, previous_line, previous_column);
+    case AST_STMT_WITH_LOCK:
+        return eval_stmt_case_with_lock(stmt, previous_line, previous_column);
+    case AST_STMT_DO_LOOP:
+        return eval_stmt_case_do_loop(stmt, previous_line, previous_column);
+    case AST_STMT_FOR_RANGE:
+        return eval_stmt_case_for_range(stmt, previous_line, previous_column);
+    case AST_STMT_FOR_EACH:
+        return eval_stmt_case_for_each(stmt, previous_line, previous_column);
+    case AST_STMT_UNWATCH:
+        return eval_stmt_case_unwatch(stmt, previous_line, previous_column);
+    case AST_STMT_WITHOUT_WATCHERS:
+        return eval_stmt_case_without_watchers(stmt, previous_line, previous_column);
+    case AST_STMT_WARNING:
+        return eval_stmt_case_warning(stmt, previous_line, previous_column);
+    case AST_STMT_ERROR:
+        return eval_stmt_case_error(stmt, previous_line, previous_column);
+    case AST_STMT_RETURN:
+        return eval_stmt_case_return(stmt, previous_line, previous_column);
+    case AST_STMT_GOTO:
+        return eval_stmt_case_goto(stmt, previous_line, previous_column);
+    case AST_STMT_GOSUB:
+        return eval_stmt_case_gosub(stmt, previous_line, previous_column);
     case AST_STMT_IF:
         return eval_stmt_case_if(stmt, previous_line, previous_column);
     case AST_STMT_WAIT:
@@ -47765,11 +47782,9 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         return eval_stmt_case_while(stmt, previous_line, previous_column);
     case AST_STMT_CONSIDER:
         return eval_stmt_case_consider(stmt, previous_line, previous_column);
+    default:
+        return eval_stmt_rest(stmt, previous_line, previous_column);
     }
-
-    current_line = previous_line;
-    current_column = previous_column;
-    return no_result;
 }
 
 static EvalResult eval_stmt_list(AstStmtList statements) {

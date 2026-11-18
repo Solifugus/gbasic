@@ -1054,8 +1054,10 @@ static GsqlHv *eval(X *x, SqlExpr *e) {
         return x->h->copy(x->h->ctx, e->hv);
     case SX_PARAM:
         if (!e->hv) {
-            const unsigned char *v;
-            size_t n;
+            /* set, though param_bytes sets both whenever it answers OK: GCC 11
+               and 13 at -O2 cannot see that xfail never answers OK */
+            const unsigned char *v = NULL;
+            size_t n = 0;
             if (param_bytes(x, e, &v, &n) != GSQL_OK) {
                 return NULL;
             }
@@ -6172,7 +6174,7 @@ static int reads_column(const SqlExpr *e, unsigned col) {
 /* A serial's scope planned against `table`: GSQL_OK, or a refusal at `pos`. */
 static int scope_plan(X *x, const char *table, const GsqlColumn *col, long self, CkPlan *cp, uint32_t pos) {
     char *list = scope_list(col);
-    char why[400];
+    char why[512];   /* the size of the GsqlError message it may copy */
     int planned = row_plan(x, "a scope", table, list, col->nscope, cp, why, sizeof why);
     free(list);
     if (!planned) {
@@ -7798,7 +7800,7 @@ static int ck_create(X *x, const char *table, const SqlCheck *d) {
     }
     CkRec rec = { dup_cstr(gen), dup_cstr(table), dup_cstr(d->text), 1 };
     CkPlan cp;
-    char why[400];
+    char why[512];   /* the size of the GsqlError message it may copy */
     int rc = GSQL_OK;
     if (!ck_plan(x, table, d->text, &cp, why, sizeof why)) {
         rc = xfail(x->err, GSQL_SCHEMA, d->pos, "check `%s` cannot be applied to `%s`: %s", gen, table, why);

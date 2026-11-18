@@ -15,6 +15,7 @@ design/reference documents.
 ```sh
 make                       # build ./gbasic (runs bison, then cc)
 make clean && make         # full rebuild
+make OPT=-O0               # unoptimised, for a debugger that follows every line (the default is -O2 since 0.12.0)
 ./gbasic program.bas       # run a program
 ./gbasic --tokens program.bas   # dump lexer tokens
 ./gbasic --ast program.bas      # dump parsed AST
