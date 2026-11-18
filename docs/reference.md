@@ -3128,7 +3128,8 @@ a key or filters, and `.name` inside a bracket is a column
 (`docs/gsql_paths_design.md`). A path is one SQL statement, which the owner
 writes from the catalog and runs as it would any other, so every G-SQL rule
 applies to it. A dot after a path steps to another table across the foreign
-key joining them. Writes and columns in braces come in later increments.
+key joining them. A path is written by assigning it a record, and has
+`insert` and `delete`. Columns in braces come in a later increment.
 
 ```basic
 load gsql
@@ -3158,6 +3159,9 @@ print (shop.invoice[11].customer).name       ' a child's parent: one row
 | `path.count()` | how many rows, counted by the owner |
 | `path.sql()` | the statement and its parameters as text; nothing is run |
 | `for each r in path` | the rows, a batch at a time |
+| `path = { col: v, ... }` | writes those columns of every row the path names. A key of one table that names no row inserts it by `INSERT`'s rules; a path of one reached by a step whose row is not there is refused `NOT_FOUND`; a path of many writes the rows it has, none included. A key column may not be named |
+| `path.insert(rec)`, `path.insert([recs])` | new rows, all or none, answered as stored (a record for a record, an array for an array); through a step from one row, `shop.customer[3].invoice.insert(...)`, the foreign key comes from the path |
+| `path.delete()` | removes the rows the path names, cascading as their keys say, and answers how many |
 | `path.table` | a **step** to `table` across the one foreign key joining it to the path's last table: from a parent to its children is many, from a child to its parent is one when the path was one |
 
 - **A result runs when it is used, each time**, against the data as it is

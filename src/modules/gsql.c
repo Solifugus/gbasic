@@ -3848,9 +3848,12 @@ static int gsql_path_assign(Value target, Value rec) {
     char who[300];
     gsql_who(st, who, sizeof who);
     if (rec.kind != VALUE_RECORD) {
-        char msg[300];
-        snprintf(msg, sizeof msg, "a path is written with a record of its columns, `= { email: v }`, not %s",
-                 value_kind_name(rec.kind));
+        char msg[500];
+        ArrayStorage *lv = st->path_levels.as.array.store;
+        int bare = lv->count == 1 && lv->items[0].as.record.count == 1;   /* `db.name`, nothing after */
+        snprintf(msg, sizeof msg, "a path is written with a record of its columns, `= { email: v }`, not %s%s%s%s",
+                 value_kind_name(rec.kind), bare ? "; if `" : "", bare ? st->path_table : "",
+                 bare ? "` was meant as the connection's attribute, its one attribute is max_recursion" : "");
         value_free(target);
         value_free(rec);
         gsql_module_raise(who, "TYPE", msg, 0, NULL);

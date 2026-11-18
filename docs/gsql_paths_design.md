@@ -1,6 +1,6 @@
 # Paths over G-SQL: reading and writing tables by path
 
-**Status:** design note, 2026-11-16, revised the same day with Matthew's rulings on its first draft (§10). **Increments 1 and 2 are built** (one table read by path; steps between tables across foreign keys; §8.1 and §8.2 record where the build departed from this text). Increments 3 to 5 are not.
+**Status:** design note, 2026-11-16, revised the same day with Matthew's rulings on its first draft (§10). **Increments 1 to 3 are built** (one table read by path; steps between tables across foreign keys; writing by path; §8.1 to §8.3 record where the build departed from this text). Increments 4 and 5 are not.
 
 ## 1. What it is, and what it is not
 
@@ -296,6 +296,27 @@ Each change below is held to **zero new conflicts** and to every existing test o
 - **What a step compiles to.** Each level is a table aliased `t0`, `t1`, ...; the last is the one read. A step from one row across a one-column key is a scalar subquery the step's table is sought by, `"t1"."id" = (SELECT "t0"."customer" FROM "invoice" AS "t0" WHERE "t0"."id" = $1)`, so the primary key or an index on the column is used. Anything else, a step from many or across a key of several columns, is a correlated `EXISTS`. Each parent is then given once, and the path is still one statement over one snapshot. A path of one table is written as before, with no aliases, so its `.sql()` text did not change.
 - **The refusals** are the owner's, code `NOT_FOUND`: *`shipment` and `customer` are joined by 2 foreign keys, shipment_bill_to_fkey, shipment_ship_to_fkey, so a step cannot tell which is meant -- filter by the key's column instead*; *`employee` references itself by employee_boss_fkey, so a step cannot tell a parent from a child -- filter by its column: `.boss = ...`*; *not joined by a foreign key*; an unbound key; and *has no table `invoce` -- did you mean `invoice`?*.
 - **Tests:** `tests/gsql/paths_steps_test.bas` (38 checks by hand: down and up, keys and filters on a step, a two-column key both ways, the refusals beside the filter each points to, and the stale case driven from a second connection that turns a key around), and `stepdiff`, random chains of two to four tables walked up and down, against SQL the generator nests as `IN` subqueries, a different form from the compiler's (five seeds of 100 paths, 21 to 68 answering rows). Six perturbations, each red: the owner's check off, a step's direction reversed, one carried down a step, an `EXISTS` join comparing a column to itself, the client's one carried down, and the stale retry dropped.
+
+### 8.3 As built: increment 3, writes (2026-11-17)
+
+- **What each write compiles to,** one statement each:
+
+  | write | SQL |
+  |---|---|
+  | `shop.customer[3] = rec` (a key of one table) | `INSERT INTO customer (id, ...) VALUES ($k, ...) ON CONFLICT (id) DO UPDATE SET c = excluded.c, ...` |
+  | any other path `= rec` | `UPDATE t [AS tN] SET c = $n, ... WHERE <the path's conditions>` |
+  | `path.insert(rec or [recs])` | `INSERT INTO t (cols) VALUES (...), (...) RETURNING *`, a column a row leaves out as `DEFAULT` |
+  | `parent[k].child.insert(...)` | `INSERT INTO child (cols, fk) SELECT $n, ..., t0.id FROM parent AS t0 WHERE ... [UNION ALL ...] RETURNING *` |
+  | `path.delete()` | `DELETE FROM t [AS tN] WHERE <the path's conditions>` |
+
+- **A missing row.** A key of one table is inserted by `INSERT`'s rules (§10 A2): defaults, `NOT NULL`, `CHECK`, foreign keys, a `SERIAL` key supplied moving its counter up. Any other path of one row, which is to say one reached by a step, is refused **`NOT_FOUND`** when its row is not there, since what would be inserted is not said: `shop.customer[2].invoice[1] = ...` when invoice 1 is another customer's. The client counts the rows the `UPDATE` changed, since `UPDATE ... RETURNING` is not in this release. A path of many writes the rows it has, none included.
+- **Departures from §4:**
+  - a record naming a key column is refused even when the value is the key's own, which is simpler to say than "may not change it";
+  - `delete()` works on every path, a step from many included (`shop.customer[.city = "Rome"].invoice.delete()`), since what it removes is as well defined as what that path reads;
+  - rows inserted through a step all name the same columns, since the form is `INSERT ... SELECT` and a `SELECT` has no `DEFAULT`; through a table alone they need not;
+  - an insert through a step from a row that is not there inserts nothing and is refused **`NOT_FOUND`**, not `FOREIGN_KEY`: the `SELECT` finds no parent, so no row reaches the key's check.
+- **Assignment.** `x = ...` whose target is a path (a dot or bracket after a connection, by the variable it starts from) is a write, not a variable's; `shop.max_recursion = n` is still the attribute. A compound assignment or a modifier clause on a path is refused. Grammar: a list in an assignment's brackets, `shop.line[17, 2] = ...`, at zero new conflicts.
+- **Tests:** `tests/gsql/paths_writes_test.bas` (59 checks by hand, every write read back by SQL, never by a path, so the two cannot share a mistake), and `writediff`: two databases made alike, 60 random writes (delete, update, upsert, insert, insert through a step) by path to one and by the generator's own SQL to the other, every table compared row for row after each, and the same refusal on both sides (five seeds, 20 to 30 writes each changing data). Five perturbations, each red: `ON CONFLICT DO NOTHING`, an `UPDATE` losing its `WHERE`, a step's insert writing `NULL` for the key, the client's `NOT_FOUND` dropped, a key column allowed in a record.
 
 ## 9. Not in this note
 

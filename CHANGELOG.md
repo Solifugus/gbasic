@@ -66,6 +66,11 @@ reader sees.
   One or many is decided from the foreign keys the connection holds and
   checked by the owner on every request, so keys that have gone stale cost a
   round trip (the new code `STALE`, handled for you), never a wrong answer.
+- **G-SQL paths, increment 3: writing by path.** `shop.customer[3] = { email: v }`
+  writes the columns named, and inserts the row by `INSERT`'s rules when a
+  key of one table names none; `path.insert(rec)` answers the row as stored
+  (through `shop.customer[3].invoice` the foreign key comes from the path);
+  `path.delete()` answers how many. Each is one statement.
 
 - New words where a program needed one: `secret` (a password field),
   `default` (the button Enter presses), `clear`, `select_all`, `fit_columns`,
