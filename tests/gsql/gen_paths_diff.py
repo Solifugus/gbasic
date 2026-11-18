@@ -344,12 +344,15 @@ def chain(rng):
         t = Table.__new__(Table)
         t.name = "t%d" % i
         t.key = ["k1"]
-        t.cols = [("c%d" % j, rng.choice(["integer", "text", "boolean"])) for j in range(rng.randint(1, 3))]
+        # nn is NOT NULL with no default: a key path's write to a row that is
+        # there must not be checked as a new row (found by the cookbook)
+        t.cols = [("c%d" % j, rng.choice(["integer", "text", "boolean"])) for j in range(rng.randint(1, 3))] + \
+                 [("nn", "integer")]
         t.rows = []
         for k in rng.sample(range(0, 12), rng.randint(2, 8)):
             row = {"k1": k}
             for c, kind in t.cols:
-                row[c] = None if rng.random() < 0.2 else value(rng, kind)
+                row[c] = value(rng, kind) if c == "nn" or rng.random() >= 0.2 else None
             if i > 0:
                 parents = [r["k1"] for r in tables[i - 1].rows]
                 row["r"] = rng.choice(parents) if rng.random() < 0.85 else None
@@ -415,6 +418,19 @@ def wsql(where):
     return " where " + " and ".join(where) if where else ""
 
 
+def keywrite(table, k, vals):
+    """the SQL a key's write means, as two statements: update by the key, and
+    insert the key with the columns when no row was there"""
+    u = Case()
+    sets = ", ".join("%s = %s" % (c, u.p(v)) for c, v in vals)
+    usql = "update %s set %s where k1 = %s" % (table, sets, u.p(k))
+    i = Case()
+    names = ["k1"] + [c for c, _ in vals]
+    isql = "insert into %s (%s) values (%s)" % (table, ", ".join(names), ", ".join([i.p(k)] + [i.p(v) for _, v in vals]))
+    lit = lambda case: "[" + ", ".join(glit(v) for v in case.params) + "]"
+    return ((usql, lit(u)), (isql, lit(i)))
+
+
 def writes_main(seed, db):
     """Two databases made alike; random writes, by path to one and by the SQL
     this generator writes for them to the other; after each, every table of
@@ -461,7 +477,8 @@ def writes_main(seed, db):
     w('b = gsql.connect(%s, { create: true, linger: 0, wait: 600 })' % glit(db + "b"))
     for d in ("a", "b"):
         for i, t in enumerate(tables):
-            cols = ["k1 integer primary key"] + ["%s %s" % c for c in t.cols]
+            cols = ["k1 integer primary key"] + ["%s %s%s" % (c[0], c[1], " not null" if c[0] == "nn" else "")
+                                                 for c in t.cols]
             if i > 0:
                 cols.append("r integer references t%d" % (i - 1))
             w('%s.exec("create table %s (%s)")' % (d, t.name, ", ".join(cols)))
@@ -489,12 +506,7 @@ def writes_main(seed, db):
                 rec = "{ " + ", ".join("%s: %s" % (c, glit(v)) for c, v in vals) + " }"
                 write_a = "%s = %s" % (path, rec)
                 if op == "upsert-by-walk":
-                    k = levels[0]["key"]
-                    names = ["k1"] + [c for c, _ in vals]
-                    ph = [sqlcase.p(k)] + [sqlcase.p(v) for _, v in vals]
-                    sql = "insert into %s (%s) values (%s) on conflict (k1) do update set %s" % (
-                        last.name, ", ".join(names), ", ".join(ph),
-                        ", ".join("%s = excluded.%s" % (c, c) for c, _ in vals))
+                    sql = keywrite(last.name, levels[0]["key"], vals)
                 else:
                     sets = ", ".join("%s = %s" % (c, sqlcase.p(v)) for c, v in vals)
                     where = wsql(where_of(levels, case, sqlcase, len(levels) - 1))
@@ -506,10 +518,7 @@ def writes_main(seed, db):
             vals = [(c, value(rng, kind)) for c, kind in cols]
             path = "db.%s[%s]" % (t.name, glit(k))
             write_a = "%s = { %s }" % (path, ", ".join("%s: %s" % (c, glit(v)) for c, v in vals))
-            names = ["k1"] + [c for c, _ in vals]
-            ph = [sqlcase.p(k)] + [sqlcase.p(v) for _, v in vals]
-            sql = "insert into %s (%s) values (%s) on conflict (k1) do update set %s" % (
-                t.name, ", ".join(names), ", ".join(ph), ", ".join("%s = excluded.%s" % (c, c) for c, _ in vals))
+            sql = keywrite(t.name, k, vals)
         elif op == "insert":
             t = rng.choice(tables)
             k = rng.randint(0, 14)
@@ -541,9 +550,29 @@ def writes_main(seed, db):
         w("    return code_of(error)")
         w("end function")
         w("function op%d_b(db)" % n)
-        w("    on error goto next")
-        w("    x = db.exec(%s, %s)" % (glit(sql), params))
-        w("    return code_of(error)")
+        if isinstance(sql, tuple):
+            # a key's write: the UPDATE, and the INSERT when it found no row,
+            # in one transaction
+            (usql, uparams), (isql, iparams) = sql
+            w("    db.begin()")
+            w("    on error goto next")
+            w("    x = db.exec(%s, %s)" % (glit(usql), uparams))
+            w("    if not error then")
+            w("        if x.rows_affected = 0 then")
+            w("            x = db.exec(%s, %s)" % (glit(isql), iparams))
+            w("        end if")
+            w("    end if")
+            w("    e = error")
+            w("    if e then")
+            w("        db.rollback()")
+            w("        return code_of(e)")
+            w("    end if")
+            w("    db.commit()")
+            w("    return \"ok\"")
+        else:
+            w("    on error goto next")
+            w("    x = db.exec(%s, %s)" % (glit(sql), params))
+            w("    return code_of(error)")
         w("end function")
         w("same(%s, op%d_a(a), op%d_b(b), a, b)" % (glit("op %d %s: %s" % (n, op, write_a)), n, n))
     w("a.close()")

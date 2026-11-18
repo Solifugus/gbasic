@@ -3934,8 +3934,50 @@ static int gsql_path_assign(Value target, Value rec) {
     Value set = path_columns(&rec, &w->path_params);
     value_free(rec);
     int one = w->path_one;
-    long n = gsql_path_change(w, upsert ? "upsert" : "update", "set", set);
+    int own = 0;
+    GsqlConnectionValue *c = NULL;
+    if (upsert) {
+        /* the UPDATE and, if it found no row, the INSERT, in one write
+           transaction -- the program's if one is open -- so no other writer
+           comes between them */
+        c = gsql_connection_of(value_copy(w->bound), who);
+        if (!c) {
+            value_free(set);
+            value_free(value_gsql_statement(w));
+            return 0;
+        }
+        Value begin = value_record(NULL, 0);
+        record_set(&begin, "mode", value_string("write"));
+        unsigned type;
+        char code[64];
+        if (!gsql_raw(c, GSQL_M_BEGIN, begin, who, &type, code, sizeof code)) {
+            value_free(set);
+            value_free(value_gsql_statement(w));
+            return 0;
+        }
+        own = type != GSQL_M_ERROR;
+    }
+    long n = gsql_path_change(w, "update", "set", value_copy(set));
+    if (upsert && n == 0) {
+        n = gsql_path_change(w, "keyinsert", "set", value_copy(set));
+    }
+    value_free(set);
     int ok = n >= 0;
+    if (own) {
+        unsigned type;
+        char code[64];
+        if (ok) {
+            ok = gsql_raw(c, GSQL_M_COMMIT, value_record(NULL, 0), who, &type, code, sizeof code) &&
+                 type != GSQL_M_ERROR;
+            if (!ok && !error_action_pending()) {
+                char msg[200];
+                snprintf(msg, sizeof msg, "the write's transaction could not commit (%s)", code);
+                gsql_module_raise(who, code, msg, 0, NULL);
+            }
+        } else {
+            gsql_raw(c, GSQL_M_ROLLBACK, value_record(NULL, 0), who, &type, code, sizeof code);
+        }
+    }
     if (ok && !upsert && one && w->path_one && n == 0) {
         gsql_module_raise(who, "NOT_FOUND", "the row this path names is not there, so nothing was written (a key "
                           "of one table is inserted when it is missing; a row reached by a step is not)", 0, NULL);

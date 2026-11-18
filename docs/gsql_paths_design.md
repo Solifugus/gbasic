@@ -303,12 +303,13 @@ Each change below is held to **zero new conflicts** and to every existing test o
 
   | write | SQL |
   |---|---|
-  | `shop.customer[3] = rec` (a key of one table) | `INSERT INTO customer (id, ...) VALUES ($k, ...) ON CONFLICT (id) DO UPDATE SET c = excluded.c, ...` |
+  | `shop.customer[3] = rec` (a key of one table) | `UPDATE customer SET c = $n, ... WHERE id = $k` and, when it changed no row, `INSERT INTO customer (id, ...) VALUES ($k, ...)`, both in one write transaction (the program's, if one is open) |
   | any other path `= rec` | `UPDATE t [AS tN] SET c = $n, ... WHERE <the path's conditions>` |
   | `path.insert(rec or [recs])` | `INSERT INTO t (cols) VALUES (...), (...) RETURNING *`, a column a row leaves out as `DEFAULT` |
   | `parent[k].child.insert(...)` | `INSERT INTO child (cols, fk) SELECT $n, ..., t0.id FROM parent AS t0 WHERE ... [UNION ALL ...] RETURNING *` |
   | `path.delete()` | `DELETE FROM t [AS tN] WHERE <the path's conditions>` |
 
+- **Corrected 2026-11-17, by the cookbook's recipe:** the key's write was first one `INSERT ... ON CONFLICT DO UPDATE`. That checks the row it proposes, `NOT NULL` among the rest, *before* it finds the conflict (PostgreSQL's order too), so `shop.customer[1] = { city: "Paris" }` on a row that is there was refused because the record left out `name`, a column the write never meant to touch. The writes fixture's `name` had a default and the differential's tables had no `NOT NULL` column, so neither could see it. It is now an `UPDATE`, then the `INSERT` only when no row was found, in one write transaction so no other writer comes between them. The fixture gained a `NOT NULL` column with no default, and the differential's tables one each, with its own SQL written as the same two statements; run against the old build they fail (16, 1 and 40 mismatches over three seeds; the fixture stops at the new check).
 - **A missing row.** A key of one table is inserted by `INSERT`'s rules (§10 A2): defaults, `NOT NULL`, `CHECK`, foreign keys, a `SERIAL` key supplied moving its counter up. Any other path of one row, which is to say one reached by a step, is refused **`NOT_FOUND`** when its row is not there, since what would be inserted is not said: `shop.customer[2].invoice[1] = ...` when invoice 1 is another customer's. The client counts the rows the `UPDATE` changed, since `UPDATE ... RETURNING` is not in this release. A path of many writes the rows it has, none included.
 - **Departures from §4:**
   - a record naming a key column is refused even when the value is the key's own, which is simpler to say than "may not change it";

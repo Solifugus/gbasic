@@ -11,9 +11,9 @@
  *
  * The path record:
  *   { levels: [{ table, key: [n, ...], filter: tree, cols: [name, ...] }, ...],
- *     mode: "rows" | "count" | "sql" | "fkeys" | "update" | "upsert" |
+ *     mode: "rows" | "count" | "sql" | "fkeys" | "update" | "keyinsert" |
  *           "insert" | "delete", expect: "one" | "many",
- *     set: [{ col, param }, ...],            -- update and upsert
+ *     set: [{ col, param }, ...],            -- update and keyinsert
  *     rows: [[{ col, param }, ...], ...] }   -- insert
  * A level is a table; each after the first is a STEP to it across the one
  * foreign key joining it to the level before. `key` holds the parameter
@@ -754,10 +754,13 @@ static int path_write_sql(const PathPlan *pp, const V3Field *f, long nf, char mo
         goto out;
     }
     if (mode == 'p') {
-        /* a key path of one table: the row is there, its fields change;
-           not there, it is inserted by INSERT's rules (§10 A2) */
+        /* a key path of one table whose row the UPDATE before this did not
+           find: inserted with that key, by INSERT's rules (§10 A2). Not
+           ON CONFLICT DO UPDATE, which checks the row it proposes -- NOT NULL
+           among the rest -- before it finds the conflict, so an update of a
+           row that is there would be refused for columns it never named. */
         if (n != 1 || !last->key) {
-            rc = pfail(err, GSQL_PROTOCOL, "only a key path of one table is written as an upsert");
+            rc = pfail(err, GSQL_PROTOCOL, "only a key path of one table is inserted with its key");
             goto out;
         }
         GsBytes items[PATH_MAX_KEY];
@@ -793,18 +796,7 @@ static int path_write_sql(const PathPlan *pp, const V3Field *f, long nf, char mo
             put(b, ", ");
             put_param(b, set[i].param);
         }
-        put(b, ") ON CONFLICT (");
-        for (size_t k = 0; k < want; k++) {
-            put(b, k ? ", " : "");
-            put_name(b, gsql_table_col(last->tb, cols[k])->name);
-        }
-        put(b, ") DO UPDATE SET ");
-        for (long i = 0; i < nset; i++) {
-            put(b, i ? ", " : "");
-            put_name(b, set[i].col);
-            put(b, " = excluded.");
-            put_name(b, set[i].col);
-        }
+        put(b, ")");
         goto out;
     }
     /* insert */
@@ -958,11 +950,12 @@ int gsql_path_compile(const GsEngine *e, GsTxn *t, const unsigned char *p, size_
     }
     int rows = strcmp(mode, "rows") == 0, count = strcmp(mode, "count") == 0, text = strcmp(mode, "sql") == 0,
         fkeys = strcmp(mode, "fkeys") == 0, update = strcmp(mode, "update") == 0,
-        upsert = strcmp(mode, "upsert") == 0, insert = strcmp(mode, "insert") == 0,
+        upsert = strcmp(mode, "keyinsert") == 0, insert = strcmp(mode, "insert") == 0,
         del = strcmp(mode, "delete") == 0;
     free(mode);
     if (!rows && !count && !text && !fkeys && !update && !upsert && !insert && !del) {
-        return pfail(err, GSQL_PROTOCOL, "a path's mode is rows, count, sql, fkeys, update, upsert, insert or delete");
+        return pfail(err, GSQL_PROTOCOL, "a path's mode is rows, count, sql, fkeys, update, keyinsert, insert or "
+                     "delete");
     }
     PathPlan *pp = calloc(1, sizeof *pp);
     if (!pp) {

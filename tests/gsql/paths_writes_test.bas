@@ -136,6 +136,25 @@ function compound()
 end function
 check("a compound assignment", message_has(refusal(compound), "not a compound assignment"), true)
 
+' a NOT NULL column with no default: a row that is there is updated by the
+' columns given, never checked as a row to insert (found by the cookbook: an
+' INSERT ... ON CONFLICT DO UPDATE checks the row it proposes first)
+shop.exec("create table member (id integer primary key, name text not null, city text)")
+shop.exec("insert into member values (1, 'A', 'X')")
+shop.member[1] = { city: "Y" }
+check("a row there is updated without the columns it already has", (rows_of("select city from member where id = 1")[0]).city, "Y")
+function member_missing()
+    shop.member[2] = { city: "Z" }
+    return nothing
+end function
+check("a row not there is refused as its INSERT is", refusal(member_missing).code, "NOT_NULL")
+check("...writing nothing", len(rows_of("select id from member")), 1)
+shop.begin()
+r = refusal(member_missing)
+shop.member[1] = { city: "W" }
+shop.commit()
+check("in the program's transaction, the refused insert leaves it usable", (rows_of("select city from member where id = 1")[0]).city, "W")
+
 ' --- a record assigned to many ----------------------------------------------
 shop.customer[.city = "Rome"] = { credit: 5 }
 check("a filter writes every row it names", rows_of("select id from customer where credit = 5 order by id").id, [])
