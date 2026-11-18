@@ -63,6 +63,8 @@ interpreter **built optimised**, 1.3 to 2.2 times faster.
   `styleSheet` is gone: a part stands out with `emphasis: "outline"` or
   `"strong"`, a heading takes `bold: true` and `font_size`. `ui.theme(text)`
   still takes a Qt stylesheet, as Qt's own, and a part is `#name` in it.
+  `ui.theme("")` clears either kind of theme, and it works on every backend,
+  including one without stylesheets.
 
 ### What was added
 

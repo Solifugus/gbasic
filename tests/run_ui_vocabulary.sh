@@ -235,6 +235,16 @@ else
     group_case "ui.theme(text) needs stylesheet" stylesheet "$ok_parts" '' \
         '    ui.theme("#a { color: red; }")' \
         "ui.theme with a stylesheet (a theme record is every backend's)"
+    # ...but THE EMPTY TEXT IS A CLEAR, and every backend's: Studio clears a
+    # record with ui.theme("") and died at launch with `stylesheet` withheld
+    # (2026-11-18). The record must read back, then nothing after the clear.
+    printf 'program main()\n    ui.theme({ bg: "#000000", base: "#111111", ctl: "#222222", hi: "#333333", fg: "#ffffff", faint: "#888888", line: "#444444", sel: "#555555", on_sel: "#ffffff" })\n    print type(ui.theme())\n    ui.theme("")\n    print "[" + string(ui.theme()) + "]"\n    print "RAN"\nend program\n' > "$work/clear.bas"
+    held=$(GBASIC_UI_WITHHOLD=stylesheet ./gbasic "$work/clear.bas" 2>&1 | tr '\n' '|')
+    if [ "$held" = "record|[]|RAN|" ]; then
+        pass "ui.theme(\"\") clears a record with stylesheet withheld"
+    else
+        fail "ui.theme(\"\") with stylesheet withheld: $held"
+    fi
     group_case "ui.capture needs figures" figures "$ok_parts" '' \
         '    ui.open(w)
     ui.capture(w, "'"$work"'/w.png")' 'ui.capture'

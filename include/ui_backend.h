@@ -136,6 +136,8 @@ typedef struct GbUiBackend {
     int (*can_display)(void);
     void (*set_callbacks)(GbUiInvokeFn invoke, GbUiTickFn tick,
                           GbUiClosedFn closed, GbUiCellFn cell);
+    /* "" CLEARS the theme -- a record or a stylesheet -- and every backend
+     * owes that, `stylesheet` group or not; other text is a stylesheet. */
     int (*theme_set)(const char *css, char *err, size_t err_size);
     int (*theme_record)(const char *const *names, const char *const *values,
                         size_t n, char *err, size_t err_size);

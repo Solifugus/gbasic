@@ -5691,7 +5691,11 @@ static Value qt_eval_call(AstExpr *expr) {
             value_free(v);
             return value_null();
         }
-        if (!ui_has("stylesheet")) {
+        /* THE EMPTY TEXT IS A CLEAR, and every backend's: it is how a program
+         * says "no theme of mine" after a record, so it cannot need the group
+         * a stylesheet does (Studio died at launch with `stylesheet` withheld,
+         * 2026-11-18). */
+        if (string_length(v.as.string) > 0 && !ui_has("stylesheet")) {
             value_free(v);
             ui_group_refusal(message, sizeof(message),
                              "ui.theme with a stylesheet (a theme record is "

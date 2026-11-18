@@ -5319,7 +5319,7 @@ has all eight.
 |---|---|
 | `highlighting` | `ui.highlighting`; a `source`'s `language:` and `theme:` |
 | `docking` | `ui.dock`, `ui.layout`, `ui.restore_layout`; `docks` and `dock` |
-| `stylesheet` | `ui.theme(text)`; a theme record is every backend's |
+| `stylesheet` | `ui.theme(text)`; a theme record is every backend's, and so is `ui.theme("")`, which clears |
 | `figures` | `ui.capture`, `ui.render_svg` |
 | `file_dialogs` | `ui.choose_file`, `ui.choose_save`, `ui.choose_folder`, `ui.dialog` |
 | `notebook` | `ui.blocks`, `ui.fold`, `ui.block_press`, `ui.block_event`, `ui.link_press`, `ui.link`; the `markdown` part; the `block` and `link` events |
@@ -5441,7 +5441,7 @@ end program
 | `win.choose_save([opts])` (`ui.choose_save`) | *what shall I call it?* — a name to write to, which need not exist yet |
 | `win.choose_folder([opts])` (`ui.choose_folder`) | *which folder?* |
 | `ui.dialog()` | the innermost open dialog as a record — `kind` (`"message"` or `"chooser"`), `title`, and `text` or `folder`/`filter` — or **`unknown`** when none is open, which is a different claim from a dialog carrying no fields |
-| `ui.theme(record)` / `ui.theme()` | set or read the **theme** for the whole application: a record of plain colours `{ bg, base, ctl, hi, fg, faint, line, sel, on_sel }`, optionally `accent` and the icon files `arrow`, `tick`, `dock_close`, `dock_float`. Every backend draws it its own way. Needs no display, and is remembered until the first window opens, so a program themes first and opens second. `ui.theme(text)` takes a **Qt stylesheet** instead, Qt's alone (a part is `#name` in it) |
+| `ui.theme(record)` / `ui.theme()` | set or read the **theme** for the whole application: a record of plain colours `{ bg, base, ctl, hi, fg, faint, line, sel, on_sel }`, optionally `accent` and the icon files `arrow`, `tick`, `dock_close`, `dock_float`. Every backend draws it its own way. Needs no display, and is remembered until the first window opens, so a program themes first and opens second. `ui.theme(text)` takes a **Qt stylesheet** instead, Qt's alone (a part is `#name` in it). `ui.theme("")` clears either kind, on every backend |
 | `win.subject(name)` (`ui.subject`) | the record a form is working on. For `form to edit` the widgets are read **at the moment you ask** and folded into the record the form captured when the window opened; for `form to show` the captured record comes back untouched |
 | `win.invoke(name, method)` (`ui.invoke`) | do one **method word** to a part — `press`, `clear`, `focus`, `select_all`, or `close` on the **window itself** |
 | `ui.run()` | hand the thread to Qt's event loop. gBASIC's own sources (a webserver, transfers, timers, the actor inbox) keep being serviced |
