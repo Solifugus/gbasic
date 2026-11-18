@@ -137,18 +137,24 @@ vg_riscv|valgrind does not exist for riscv64|a fact about another architecture, 
 probe_deep_value_teardown() {
     # THE DEPTH IS A PROPERTY OF THE STACK, NOT OF THE LANGUAGE, so this probe is
     # a PAIR and neither half means anything alone. At a PINNED 8 MB stack a
-    # 60,000-deep value must die releasing itself (the limitation still holds);
+    # 140,000-deep value must die releasing itself (the limitation still holds);
     # at 64 MB the SAME program must exit 0 (which is what makes the claim "your
     # stack decides" rather than "gBASIC cannot do this"). Pinning is the lesson
     # this bullet was re-measured for: the ledger's old figures were taken on an
     # unpinned stack and the array one was out by more than 2x.
+    #
+    # 140,000, NOT THE 60,000 IT WAS: the build is -O2 from 2026-11-17, and its
+    # smaller frames release 80,000 at 8 MB (120,000 still crashes; 64 MB
+    # releases 180,000). The recursion is the same one -- the gate read the
+    # 60,000 passing as the limitation gone, and it is not. 140,000 crashes at
+    # 8 MB under -O2 and -O0 alike and releases at 64 MB.
     #
     # THE CONTROL ALSO STOPS THE PROBE PASSING FOR THE WRONG REASON. "exit 139 at
     # 8 MB" is equally satisfied by a fixture that cannot run at all -- a typo in
     # the path, a stdlib that will not load -- and a crash is exactly the shape
     # that hides such a thing. The 64 MB run has to SUCCEED, and it prints, so
     # the program is known to work.
-    printf 'program main(args)\n  v = 1\n  i = 0\n  while i < 60000\n    v = { inner: v }\n    i = i + 1\n  end while\n  print "built"\n  v = 0\n  print "released"\nend program\n' \
+    printf 'program main(args)\n  v = 1\n  i = 0\n  while i < 140000\n    v = { inner: v }\n    i = i + 1\n  end while\n  print "built"\n  v = 0\n  print "released"\nend program\n' \
         > "$WORK/deep.bas"
     if ! ( ulimit -s 65536 ) 2>/dev/null; then
         skipped "deep value teardown (this shell cannot raise ulimit -s to 64 MB, so the"
@@ -179,9 +185,9 @@ probe_deep_value_teardown() {
         return
     fi
     if [ "$small" -eq 139 ]; then
-        ok "60,000 deep still dies releasing itself at 8 MB, and still survives at 64 MB"
+        ok "140,000 deep still dies releasing itself at 8 MB, and still survives at 64 MB"
     else
-        fixed "a 60,000-deep value now releases cleanly at an 8 MB stack (exit $small)"
+        fixed "a 140,000-deep value now releases cleanly at an 8 MB stack (exit $small)"
     fi
 }
 

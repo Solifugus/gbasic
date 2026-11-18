@@ -1018,7 +1018,11 @@ what proves the live probes are running anything at all.
   60,000-deep value releases cleanly. That pinning is the whole point of
   re-measuring: the ledger previously carried "~50,000 for a record, ~100,000 for
   an array", and the array figure was out by more than 2x because the stack had
-  not been held still.
+  not been held still. **The build moves it too (2026-11-17):** from 0.12.0
+  gBASIC is built `-O2`, whose frames are smaller, and 80,000 releases cleanly
+  at 8 MB while 120,000 still crashes (64 MB releases 180,000) -- the
+  recursion is unchanged, only its cost per level. The probe now uses 140,000,
+  which crashes under either build.
 
   **WHY IT IS ACCEPTED RATHER THAN FIXED.** Nothing a program *reads* can reach
   it: `decode`/`try_decode` are bounded by the stack itself since 0.8.1
