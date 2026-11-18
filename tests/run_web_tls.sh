@@ -187,29 +187,56 @@ case "$resumed" in
 esac
 printf 'PASS mtls_resume (a client-verified session resumes)\n'
 
-# over the websocket the webserver hands to net: c.tls is the same session
-if python3 -c 'import websockets.sync.client' 2>/dev/null; then
-    ws_who() { # cert key -> what "who" answers, or REFUSED
+# over the websocket the webserver hands to net: c.tls is the same session.
+# THE CLIENT IS ONE THREAD, written here, and not websockets.sync: that client
+# reads in a thread it starts BEFORE it writes the upgrade request, so under
+# TLS 1.3 its reader takes the server's session tickets in SSL_read while its
+# own GET is in SSL_write on the same SSL object -- which OpenSSL does not
+# allow -- and about one GET in ten never left it (2026-11-18: 15 of 200 with
+# tickets, 0 of 200 with the server sending none, 0 of 300 from this client;
+# the server's poll was asking for the GET the whole time). It had been read
+# as gate load since 2026-11-08 and it failed alone too.
+if python3 -c 'import ssl' 2>/dev/null; then
+    ws_who() { # [cert key] -> what "who" answers, or REFUSED
         python3 -I - "$mport" "$@" <<'PY' 2>>"$scratch/wss.err" || { printf 'REFUSED'; echo "  the server was $(( $(date +%s) - mt0 )) s old, alive: $(kill -0 "$msrv" 2>/dev/null && echo yes || echo no)" >> "$scratch/wss.err"; }
-import ssl, sys
-from websockets.sync.client import connect
+import base64, os, socket, ssl, sys
 ctx = ssl.create_default_context()
 ctx.check_hostname = False
 ctx.verify_mode = ssl.CERT_NONE
 if len(sys.argv) > 3:
     ctx.load_cert_chain(sys.argv[2], sys.argv[3])
-# 20 s, not 5: the gate runs suites in parallel, and twice on 2026-11-08 a
-# client WITH the right certificate read REFUSED, passing alone both times.
-# A refusal is the handshake failing, which is fast, so it costs no time.
-with connect("wss://127.0.0.1:%s/ws" % sys.argv[1], ssl=ctx, open_timeout=20) as ws:
-    ws.send("who")
-    sys.stdout.write(ws.recv(timeout=20))
+def take(t, n):
+    d = b""
+    while len(d) < n:
+        c = t.recv(n - len(d))
+        if not c:
+            raise EOFError("the server closed")
+        d += c
+    return d
+# 20 s: a refusal is the handshake failing, which is fast, so it costs no time
+t = ctx.wrap_socket(socket.create_connection(("127.0.0.1", int(sys.argv[1])), timeout=20))
+key = base64.b64encode(os.urandom(16)).decode()
+t.sendall(("GET /ws HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n"
+           "Sec-WebSocket-Key: %s\r\nSec-WebSocket-Version: 13\r\n\r\n" % key).encode())
+head = b""
+while b"\r\n\r\n" not in head:
+    c = t.recv(4096)
+    if not c:
+        raise EOFError("the server closed before the 101")
+    head += c
+if not head.startswith(b"HTTP/1.1 101 "):
+    raise RuntimeError("not upgraded: %r" % head[:60])
+mask = os.urandom(4)
+t.sendall(bytes([0x81, 0x80 | 3]) + mask + bytes(b ^ mask[i % 4] for i, b in enumerate(b"who")))
+hd = take(t, 2)                       # an unmasked text frame from the server
+if hd[0] != 0x81 or hd[1] & 0x80 or (hd[1] & 0x7f) > 125:
+    raise RuntimeError("not one short text frame: %r" % hd)
+sys.stdout.write(take(t, hd[1] & 0x7f).decode())
 PY
     }
     got="$(ws_who "$scratch/client.crt" "$scratch/client.key")"
-    # it has failed three times in the parallel gate and never alone, even at
-    # every core busy, so a failure says why: the client's exception, the
-    # server's age and liveness, and what the server wrote
+    # a failure says why: the client's exception, the server's age and
+    # liveness, and what the server wrote
     if [ "$got" != "CN=client-one" ]; then
         tail -8 "$scratch/wss.err"; tail -5 "$scratch/mtls-require.err"
         fail "mtls_wss (c.tls after the upgrade: got '$got')"
@@ -219,7 +246,7 @@ PY
     [ "$got" = "REFUSED" ] || fail "mtls_wss (A WSS CLIENT WITH NO CERTIFICATE WAS UPGRADED: '$got')"
     printf 'PASS mtls_wss (the upgraded connection'"'"'s c.tls names the client; none is refused before the 101)\n'
 else
-    printf 'SKIP mtls_wss (python3 websockets not installed): the upgraded connection'"'"'s c.tls was NOT checked\n'
+    printf 'SKIP mtls_wss (python3 has no ssl module): the upgraded connection'"'"'s c.tls was NOT checked\n'
 fi
 kill "$msrv" 2>/dev/null || true
 wait "$msrv" 2>/dev/null || true
