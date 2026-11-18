@@ -877,6 +877,15 @@ typedef struct {
     Value value;
 } EvalResult;
 
+/* Kept out of line, so a helper's locals are on the C stack only while it
+ * runs, not in the frame of every caller it might have been inlined into
+ * (work order item 5: the stack a gBASIC call costs). */
+#if defined(__GNUC__)
+#define GB_NOINLINE __attribute__((noinline))
+#else
+#define GB_NOINLINE
+#endif
+
 typedef struct Env {
     Symbol *items;
     size_t count;
@@ -3881,6 +3890,20 @@ static void loop_flow_message(EvalResult result, char *out, size_t size) {
     }
 }
 
+static void runtime_error_raise(const char *message, int code, const char *kind);
+
+/* A `break` or `continue` that reached no loop, raised at its own line; out
+ * of line so the message is not in the frame of every caller. */
+static GB_NOINLINE void raise_loop_flow(EvalResult result) {
+    char flow_message[128];
+    loop_flow_message(result, flow_message, sizeof(flow_message));
+    if (result.flow_line > 0) {
+        current_line = result.flow_line;
+        current_column = result.flow_column;
+    }
+    runtime_error_raise(flow_message, 1003, "invalid control flow");
+}
+
 static int loop_claims_flow(EvalResult result, const char *loop_variable) {
     if (!result.did_break && !result.did_continue) {
         return 0;
@@ -4575,7 +4598,24 @@ static void note_fmt_at(int code, const char *source, int line, int column,
 
 /* printf-style front end, so the pre-existing diagnostics can move onto the
  * channel without reshaping their call sites. */
-static void warn_fmt(int code, const char *source, const char *fmt, ...) {
+/* OUT OF LINE ON PURPOSE (work order item 5): a message buffer declared in a
+ * function every gBASIC call passes through -- eval_stmt, eval_expr -- is in
+ * that frame on every call, at every depth of recursion, though it is filled
+ * only on the way to a refusal. Formatted here, the buffer is on the stack
+ * only while it is in use. GB_NOINLINE is defined at the top of this file. */
+
+static void runtime_error_raise(const char *message, int code, const char *kind);
+
+static GB_NOINLINE void raise_fmt(int code, const char *kind, const char *fmt, ...) {
+    char buffer[512];
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(buffer, sizeof(buffer), fmt, args);
+    va_end(args);
+    runtime_error_raise(buffer, code, kind);
+}
+
+static GB_NOINLINE void warn_fmt(int code, const char *source, const char *fmt, ...) {
     char buffer[512];
     va_list args;
     va_start(args, fmt);
@@ -13926,14 +13966,12 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
         for (size_t i = 0; i < argc; i++) {
             value_free(args[i]);
         }
-        char message[320];
-        snprintf(message, sizeof message,
-                 "recursion too deep: calling `%s` would exhaust the stack "
-                 "(%ld KB, `ulimit -s`), so it is refused here rather than "
-                 "crashing -- raise the limit, or recurse less deeply",
-                 stmt->as.function.name ? stmt->as.function.name : "a function",
-                 gb_stack_limit_kb());
-        runtime_error_raise(message, 1005, "recursion");
+        raise_fmt(1005, "recursion",
+                  "recursion too deep: calling `%s` would exhaust the stack "
+                  "(%ld KB, `ulimit -s`), so it is refused here rather than "
+                  "crashing -- raise the limit, or recurse less deeply",
+                  stmt->as.function.name ? stmt->as.function.name : "a function",
+                  gb_stack_limit_kb());
         return value_null();
     }
     Env local_env = {0};
@@ -14116,12 +14154,9 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
                     /* A raise, not a printed line: this ABANDONS THE REST OF
                      * THE FUNCTION, so a typo'd label used to truncate it
                      * silently and still exit 0. */
-                    char message[320];
-                    snprintf(message, sizeof(message),
-                             "unknown label in function %s: %s",
-                             stmt->as.function.name, jump);
+                    raise_fmt(1003, "invalid control flow", "unknown label in function %s: %s",
+                              stmt->as.function.name, jump);
                     free(jump);
-                    runtime_error_raise(message, 1003, "invalid control flow");
                     result = eval_error_result();
                 }
             }
@@ -14139,12 +14174,9 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
             size_t target = 0;
             if (!find_function_label(stmt->as.function.body, result.goto_label, &target)) {
                 {
-                    char message[320];
-                    snprintf(message, sizeof(message),
-                             "unknown label in function %s: %s",
-                             stmt->as.function.name, result.goto_label);
+                    raise_fmt(1003, "invalid control flow", "unknown label in function %s: %s",
+                              stmt->as.function.name, result.goto_label);
                     free(result.goto_label);
-                    runtime_error_raise(message, 1003, "invalid control flow");
                     result = eval_error_result();
                 }
                 break;
@@ -14158,12 +14190,9 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
             size_t target = 0;
             if (!find_function_label(stmt->as.function.body, result.gosub_label, &target)) {
                 {
-                    char message[320];
-                    snprintf(message, sizeof(message),
-                             "unknown label in function %s: %s",
-                             stmt->as.function.name, result.gosub_label);
+                    raise_fmt(1003, "invalid control flow", "unknown label in function %s: %s",
+                              stmt->as.function.name, result.gosub_label);
                     free(result.gosub_label);
-                    runtime_error_raise(message, 1003, "invalid control flow");
                     result = eval_error_result();
                 }
                 break;
@@ -14217,15 +14246,7 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
         return result.value;
     }
     if (result.did_break || result.did_continue) {
-        char flow_message[128];
-        loop_flow_message(result, flow_message, sizeof(flow_message));
-        if (result.flow_line > 0) {
-            current_line = result.flow_line;
-            current_column = result.flow_column;
-        }
-        runtime_error_raise(flow_message,
-                            1003,
-                            "invalid control flow");
+        raise_loop_flow(result);
         value_free(result.value);
     }
     return value_null();
@@ -33980,7 +34001,44 @@ static Value builtin_transcode(AstExpr *expr) {
     return r;
 }
 
+/* THE STACK A gBASIC CALL COSTS (work order item 5, 2026-11-17). Every call
+ * of a user function passes through eval_call, and eval_call is also every
+ * builtin: one function of 6 600 lines whose frame held the locals of all of
+ * them, 10 336 bytes unoptimised, 60% of the 17 KB one level of gBASIC
+ * recursion cost -- 483 calls deep at the default 8 MB. So a call to a user
+ * function is resolved HERE, in a small frame, and the builtins are
+ * eval_call_rest's, a frame that is on the stack only while one of them
+ * runs. The order is the old one's: a method call, a qualified call, `warning`
+ * and `error.clear` go to the rest first, then the calling library's own
+ * function, then a function of the program. */
+static Value eval_call_rest(AstExpr *expr);
+
 static Value eval_call(AstExpr *expr) {
+    if (!expr->as.call.receiver && !expr->as.call.library &&
+        strcmp(expr->as.call.name, "warning") != 0 && strcmp(expr->as.call.name, "error.clear") != 0) {
+        FunctionDef *function = function_in_current_library(expr->as.call.name);
+        if (!function) {
+            function = function_find_local(expr->as.call.name);
+        }
+        if (function) {
+            /* the warning eval_call_rest gives a function value shadowed by a
+               builtin's name, given here too since this call never reaches it */
+            Symbol *shadowed = env_find(expr->as.call.name);
+            if (shadowed && shadowed->value.kind == VALUE_FUNCTION &&
+                gbasic_has_builtin(expr->as.call.name) &&
+                warn_site_first_time(expr->line, expr->column)) {
+                warn_fmt(2102, "override",
+                         "'%s' holds a function value, but the call reaches the BUILT-IN of that name; "
+                         "rename the variable to call the function value",
+                         expr->as.call.name);
+            }
+            return eval_user_function(expr, function);
+        }
+    }
+    return eval_call_rest(expr);
+}
+
+static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     if (expr->as.call.receiver) {
         return eval_method_call(expr);
     }
@@ -41031,15 +41089,7 @@ static Value eval_assign_modifier(AstModifierUse use, Value value) {
         return result.value;
     }
     if (result.did_break || result.did_continue) {
-        char flow_message[128];
-        loop_flow_message(result, flow_message, sizeof(flow_message));
-        if (result.flow_line > 0) {
-            current_line = result.flow_line;
-            current_column = result.flow_column;
-        }
-        runtime_error_raise(flow_message,
-                            1003,
-                            "invalid control flow");
+        raise_loop_flow(result);
         value_free(result.value);
     }
     return value_null();
@@ -41083,15 +41133,7 @@ static Value eval_compare_modifier(AstModifierUse use, const char *op, Value lef
         return result.value;
     }
     if (result.did_break || result.did_continue) {
-        char flow_message[128];
-        loop_flow_message(result, flow_message, sizeof(flow_message));
-        if (result.flow_line > 0) {
-            current_line = result.flow_line;
-            current_column = result.flow_column;
-        }
-        runtime_error_raise(flow_message,
-                            1003,
-                            "invalid control flow");
+        raise_loop_flow(result);
         value_free(result.value);
     }
     return value_null();
@@ -41805,42 +41847,11 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     return value_bool(result);
 }
 
-static Value eval_binary(AstExpr *expr) {
-    const char *op = expr->as.binary.op;
-    int previous_line = current_line;
-    int previous_column = current_column;
-    if (expr->line > 0) {
-        current_line = expr->line;
-        current_column = expr->column > 0 ? expr->column : previous_column;
-    }
-
-    /* --- `a excluding b` / `a intersecting b` -------------------------------
-     *
-     * SET DIFFERENCE AND INTERSECTION, as infix word operators. MEASURED before
-     * choosing the spelling, because this project rejected `IDENT expression` as
-     * a statement form over FOUR conflicts and the design offered a function form
-     * as the fallback: the operator costs **ZERO** shift/reduce conflicts, at its
-     * own precedence level between comparison and additive. So `a excluding b`
-     * reads as English and the function form was not needed.
-     *
-     * The cost is two RESERVED WORDS, measured too: no identifier in this tree is
-     * named `excluding` or `intersecting` (three matches, all in prose comments),
-     * and the keyword-field rules already let `r.excluding` and
-     * `{ excluding: 1 }` keep working, so what is actually claimed is the name of
-     * a variable, parameter or function -- which nothing has.
-     *
-     * MEMBERSHIP IS `array_find_index`, THE SAME AUTHORITY `contains`, `find` and
-     * `remove_value` USE. PLAT-EQ's sweep established that six routes ask "is this
-     * value present" and must agree; these are the seventh and eighth, and they
-     * agree BY CONSTRUCTION rather than by a test, which is the only way that
-     * property survives an edit. So records compare by VALUE, as PLAT-EQ made
-     * them.
-     *
-     * THE LEFT SIDE'S ORDER AND DUPLICATES ARE PRESERVED. These are filters over
-     * `a`, not set-theoretic sets: `unique` exists separately and composes, so
-     * folding it in here would take away the choice. */
-    int is_excluding = strcmp(op, "excluding") == 0;
-    if (is_excluding || strcmp(op, "intersecting") == 0) {
+/* `a excluding b` / `a intersecting b`, out of eval_binary's frame (see
+ * binary_apply). */
+static GB_NOINLINE Value binary_setop(AstExpr *expr, const char *op, int is_excluding, int previous_line,
+                                      int previous_column) {
+    (void)expr;
         Value left = eval_expr(expr->as.binary.left);
         if (error_action_pending()) {
             value_free(left);
@@ -41902,70 +41913,15 @@ static Value eval_binary(AstExpr *expr) {
         return value_array(items, kept);
     }
 
-    /* `and` / `or`: KLEENE'S THREE-VALUED LOGIC (docs/unknown_nan_design.md
-     * increment B), the tables SQL uses for NULL. Commutative, so `unknown and
-     * false` is false exactly as `false and unknown` is; the right operand is
-     * skipped only when the LEFT DETERMINES the answer (false for `and`, true for
-     * `or`) -- an unknown left does not, so the right is evaluated. Any operand
-     * other than `unknown` keeps its ordinary truthiness. */
-    int is_and = strcmp(op, "and") == 0;
-    if (is_and || strcmp(op, "or") == 0) {
-        int refused = 0;
-        Value left = eval_expr(expr->as.binary.left);
-        int left_unknown = left.kind == VALUE_UNKNOWN;
-        int left_truth = 0;
-        if (!left_unknown && !error_action_pending()) {
-            left_truth = value_truthy(left, &refused);
-        }
-        value_free(left);
-        if (refused || error_action_pending()) {
-            current_line = previous_line;
-            current_column = previous_column;
-            return value_null();
-        }
-        if (!left_unknown && left_truth != is_and) {
-            /* false and _  /  true or _ */
-            current_line = previous_line;
-            current_column = previous_column;
-            return value_bool(!is_and);
-        }
-        Value right = eval_expr(expr->as.binary.right);
-        int right_unknown = right.kind == VALUE_UNKNOWN;
-        int right_truth = 0;
-        if (!right_unknown && !error_action_pending()) {
-            right_truth = value_truthy(right, &refused);
-        }
-        value_free(right);
-        current_line = previous_line;
-        current_column = previous_column;
-        if (refused || error_action_pending()) {
-            return value_null();
-        }
-        if (!right_unknown && right_truth != is_and) {
-            /* _ and false  /  _ or true: decided by the right alone */
-            return value_bool(!is_and);
-        }
-        if (left_unknown || right_unknown) {
-            return value_unknown();
-        }
-        return value_bool(is_and);
-    }
-
-    Value left = eval_expr(expr->as.binary.left);
-    if (error_action_pending()) {
-        value_free(left);
-        current_line = previous_line;
-        current_column = previous_column;
-        return value_null();
-    }
-    Value right = eval_expr(expr->as.binary.right);
-    if (error_action_pending()) {
-        value_free(left);
-        value_free(right);
-        current_line = previous_line;
-        current_column = previous_column;
-        return value_null();
-    }
+/* WHAT A BINARY OPERATOR DOES WITH ITS TWO VALUES, out of eval_binary's frame
+ * (work order item 5, 2026-11-17). eval_binary is on the C stack for as long as
+ * its operands take to evaluate -- the whole of a recursive call in
+ * `down(n - 1) + 1` -- and its frame held the locals of every operator's
+ * arithmetic, money, dates and refusals. Evaluated there, applied here, so
+ * this frame exists only once both values are in hand. */
+static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, int previous_line,
+                                      int previous_column) {
+    const char *op = expr->as.binary.op;
 
     if (strcmp(op, "=") == 0 ||
         strcmp(op, "!=") == 0 ||
@@ -42450,6 +42406,112 @@ static Value eval_binary(AstExpr *expr) {
     return value_null();
 }
 
+static Value eval_binary(AstExpr *expr) {
+    const char *op = expr->as.binary.op;
+    int previous_line = current_line;
+    int previous_column = current_column;
+    if (expr->line > 0) {
+        current_line = expr->line;
+        current_column = expr->column > 0 ? expr->column : previous_column;
+    }
+
+    /* --- `a excluding b` / `a intersecting b` -------------------------------
+     *
+     * SET DIFFERENCE AND INTERSECTION, as infix word operators. MEASURED before
+     * choosing the spelling, because this project rejected `IDENT expression` as
+     * a statement form over FOUR conflicts and the design offered a function form
+     * as the fallback: the operator costs **ZERO** shift/reduce conflicts, at its
+     * own precedence level between comparison and additive. So `a excluding b`
+     * reads as English and the function form was not needed.
+     *
+     * The cost is two RESERVED WORDS, measured too: no identifier in this tree is
+     * named `excluding` or `intersecting` (three matches, all in prose comments),
+     * and the keyword-field rules already let `r.excluding` and
+     * `{ excluding: 1 }` keep working, so what is actually claimed is the name of
+     * a variable, parameter or function -- which nothing has.
+     *
+     * MEMBERSHIP IS `array_find_index`, THE SAME AUTHORITY `contains`, `find` and
+     * `remove_value` USE. PLAT-EQ's sweep established that six routes ask "is this
+     * value present" and must agree; these are the seventh and eighth, and they
+     * agree BY CONSTRUCTION rather than by a test, which is the only way that
+     * property survives an edit. So records compare by VALUE, as PLAT-EQ made
+     * them.
+     *
+     * THE LEFT SIDE'S ORDER AND DUPLICATES ARE PRESERVED. These are filters over
+     * `a`, not set-theoretic sets: `unique` exists separately and composes, so
+     * folding it in here would take away the choice. */
+    int is_excluding = strcmp(op, "excluding") == 0;
+    if (is_excluding || strcmp(op, "intersecting") == 0) {
+        return binary_setop(expr, op, is_excluding, previous_line, previous_column);
+    }
+
+    /* `and` / `or`: KLEENE'S THREE-VALUED LOGIC (docs/unknown_nan_design.md
+     * increment B), the tables SQL uses for NULL. Commutative, so `unknown and
+     * false` is false exactly as `false and unknown` is; the right operand is
+     * skipped only when the LEFT DETERMINES the answer (false for `and`, true for
+     * `or`) -- an unknown left does not, so the right is evaluated. Any operand
+     * other than `unknown` keeps its ordinary truthiness. */
+    int is_and = strcmp(op, "and") == 0;
+    if (is_and || strcmp(op, "or") == 0) {
+        int refused = 0;
+        Value left = eval_expr(expr->as.binary.left);
+        int left_unknown = left.kind == VALUE_UNKNOWN;
+        int left_truth = 0;
+        if (!left_unknown && !error_action_pending()) {
+            left_truth = value_truthy(left, &refused);
+        }
+        value_free(left);
+        if (refused || error_action_pending()) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_null();
+        }
+        if (!left_unknown && left_truth != is_and) {
+            /* false and _  /  true or _ */
+            current_line = previous_line;
+            current_column = previous_column;
+            return value_bool(!is_and);
+        }
+        Value right = eval_expr(expr->as.binary.right);
+        int right_unknown = right.kind == VALUE_UNKNOWN;
+        int right_truth = 0;
+        if (!right_unknown && !error_action_pending()) {
+            right_truth = value_truthy(right, &refused);
+        }
+        value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
+        if (refused || error_action_pending()) {
+            return value_null();
+        }
+        if (!right_unknown && right_truth != is_and) {
+            /* _ and false  /  _ or true: decided by the right alone */
+            return value_bool(!is_and);
+        }
+        if (left_unknown || right_unknown) {
+            return value_unknown();
+        }
+        return value_bool(is_and);
+    }
+
+    Value left = eval_expr(expr->as.binary.left);
+    if (error_action_pending()) {
+        value_free(left);
+        current_line = previous_line;
+        current_column = previous_column;
+        return value_null();
+    }
+    Value right = eval_expr(expr->as.binary.right);
+    if (error_action_pending()) {
+        value_free(left);
+        value_free(right);
+        current_line = previous_line;
+        current_column = previous_column;
+        return value_null();
+    }
+    return binary_apply(expr, left, right, previous_line, previous_column);
+}
+
 static int values_equal_for_consider(Value subject, Value candidate) {
     /* `consider` is a route: a branch written `unknown` matches an unknown
      * subject, as it always has. */
@@ -42591,34 +42653,19 @@ static Value derive_record(Value proto) {
 static Value apply_assignment_modifier(AstModifierUse modifier, Value value);
 
 
-static Value eval_expr(AstExpr *expr) {
-    int path_keep = g_path_keep;
-    g_path_keep = 0;
-    (void)path_keep;
-    switch (expr->kind) {
-    case AST_EXPR_NUMBER:
-        /* The literal carries the exactness the lexer determined from its digits.
-         * NOTE there are TWO `AST_EXPR_NUMBER` cases in this file and only this
-         * one is `eval_expr`; the other belongs to `server_literal_value`. The
-         * first version of this change edited that one by mistake, and NOTHING
-         * FAILED -- every exactness check simply stayed false, so the feature was
-         * inert and the fixture read as a design error rather than a wrong edit.
-         * Found by probing the flag at `value_is_exact`, not by reading. */
-        return expr->as.num.is_exact ? value_number_exact(expr->as.num.exact)
-             : expr->as.num.scale > 0
-                 ? value_number_decimal(expr->as.num.exact, expr->as.num.scale)
-                 : value_number(expr->as.num.value);
-    case AST_EXPR_STRING:
-        return value_string(expr->as.string);
-    case AST_EXPR_IDENT:
-        return env_get(expr->as.ident);
-    case AST_EXPR_BOOL:
-        return value_bool(expr->as.boolean);
-    case AST_EXPR_NULL:
-        return value_null();
-    case AST_EXPR_UNKNOWN:
-        return value_unknown();
-    case AST_EXPR_DURATION: {
+static Value eval_expr_case_duration(AstExpr *expr, int path_keep);
+static Value eval_expr_case_array(AstExpr *expr, int path_keep);
+static Value eval_expr_case_record(AstExpr *expr, int path_keep);
+static Value eval_expr_case_new(AstExpr *expr, int path_keep);
+static Value eval_expr_case_index(AstExpr *expr, int path_keep);
+static Value eval_expr_case_field(AstExpr *expr, int path_keep);
+static Value eval_expr_case_project(AstExpr *expr, int path_keep);
+static Value eval_expr_case_column(AstExpr *expr, int path_keep);
+static Value eval_expr_case_apply(AstExpr *expr, int path_keep);
+static Value eval_expr_case_unary(AstExpr *expr, int path_keep);
+
+static GB_NOINLINE Value eval_expr_case_duration(AstExpr *expr, int path_keep) {
+
         Duration duration = {
             expr->as.duration.years,
             expr->as.duration.months,
@@ -42629,8 +42676,12 @@ static Value eval_expr(AstExpr *expr) {
             expr->as.duration.seconds
         };
         return value_duration(duration);
-    }
-    case AST_EXPR_ARRAY: {
+    (void)path_keep;
+    return value_null();
+}
+
+static GB_NOINLINE Value eval_expr_case_array(AstExpr *expr, int path_keep) {
+
         Value *items = NULL;
         if (expr->as.array.count > 0) {
             items = malloc(sizeof(Value) * expr->as.array.count);
@@ -42642,8 +42693,12 @@ static Value eval_expr(AstExpr *expr) {
             items[i] = eval_expr(expr->as.array.items[i]);
         }
         return value_array(items, expr->as.array.count);
-    }
-    case AST_EXPR_RECORD: {
+    (void)path_keep;
+    return value_null();
+}
+
+static GB_NOINLINE Value eval_expr_case_record(AstExpr *expr, int path_keep) {
+
         RecordField *fields = NULL;
         if (expr->as.record.count > 0) {
             fields = calloc(expr->as.record.count, sizeof(RecordField));
@@ -42665,8 +42720,12 @@ static Value eval_expr(AstExpr *expr) {
             fields[i].reset_expr = expr->as.record.items[i].reset_expr;
         }
         return value_record(fields, expr->as.record.count);
-    }
-    case AST_EXPR_NEW: {
+    (void)path_keep;
+    return value_null();
+}
+
+static GB_NOINLINE Value eval_expr_case_new(AstExpr *expr, int path_keep) {
+
         Value proto = eval_expr(expr->as.derive.proto);
         if (error_action_pending()) {
             value_free(proto);
@@ -42721,8 +42780,12 @@ static Value eval_expr(AstExpr *expr) {
             return value_null();
         }
         return instance;
-    }
-    case AST_EXPR_INDEX: {
+    (void)path_keep;
+    return value_null();
+}
+
+static GB_NOINLINE Value eval_expr_case_index(AstExpr *expr, int path_keep) {
+
         g_path_keep = 1;
         Value array = eval_expr(expr->as.index.array);
         g_path_keep = 0;
@@ -42841,8 +42904,12 @@ static Value eval_expr(AstExpr *expr) {
         value_free(index);
         runtime_error_raise_at(message, 1003, "indexing", expr->line, expr->column);
         return value_null();
-    }
-    case AST_EXPR_FIELD: {
+    (void)path_keep;
+    return value_null();
+}
+
+static GB_NOINLINE Value eval_expr_case_field(AstExpr *expr, int path_keep) {
+
         /* PLAT-WARN: `warning.field` reads the stored warning without claiming
          * it, so a check block can describe what it caught after the condition
          * consumed the flag. Guarded on the name NOT resolving as a variable,
@@ -43101,21 +43168,12 @@ static Value eval_expr(AstExpr *expr) {
         Value result = value_copy(*field->value);
         value_free(object);
         return result;
-    }
-    case AST_EXPR_CALL:
-        return eval_call(expr);
-    case AST_EXPR_SPAWN:
-        /* A spawned actor is a process that outlives the line that started
-         * it, which is as plain an act as this language has. */
-        if (repl_effect_watch) {
-            repl_note_effect();
-        }
-        return eval_spawn(expr);
-    case AST_EXPR_BINARY:
-        return eval_binary(expr);
-    case AST_EXPR_HELD:
-        return value_copy(*(Value *)expr->as.held.value);
-    case AST_EXPR_PROJECT: {
+    (void)path_keep;
+    return value_null();
+}
+
+static GB_NOINLINE Value eval_expr_case_project(AstExpr *expr, int path_keep) {
+
         g_path_keep = 1;
         Value object = eval_expr(expr->as.project.object);
         g_path_keep = 0;
@@ -43132,15 +43190,23 @@ static Value eval_expr(AstExpr *expr) {
         runtime_error_raise_at("braces after a value choose a G-SQL path's columns (`shop.customer[3]{ name }`); a "
                                "record's field is read with a dot", 1003, "path", expr->line, expr->column);
         return value_null();
-    }
-    case AST_EXPR_COLUMN: {
+    (void)path_keep;
+    return value_null();
+}
+
+static GB_NOINLINE Value eval_expr_case_column(AstExpr *expr, int path_keep) {
+
         char message[300];
         snprintf(message, sizeof message, "`.%s` names a column, and is read only inside a G-SQL path's brackets "
                  "(`shop.customer[.%s = ...]`)", expr->as.ident, expr->as.ident);
         runtime_error_raise_at(message, 1003, "path", expr->line, expr->column);
         return value_null();
-    }
-    case AST_EXPR_MODIFIER_APPLY: {
+    (void)path_keep;
+    return value_null();
+}
+
+static GB_NOINLINE Value eval_expr_case_apply(AstExpr *expr, int path_keep) {
+
         /* The inline form of the assignment clause, and DELIBERATELY the same
          * function: `{USD}x` and `x {USD}= ...` must not be able to disagree
          * about what {USD} means, so there is one implementation and this is
@@ -43163,8 +43229,12 @@ static Value eval_expr(AstExpr *expr) {
         current_line = previous_line;
         current_column = previous_column;
         return value;
-    }
-    case AST_EXPR_UNARY: {
+    (void)path_keep;
+    return value_null();
+}
+
+static GB_NOINLINE Value eval_expr_case_unary(AstExpr *expr, int path_keep) {
+
         if (strcmp(expr->as.unary.op, "try") == 0) {
             return eval_try(expr->as.unary.expr);
         }
@@ -43255,7 +43325,70 @@ static Value eval_expr(AstExpr *expr) {
         }
         value_free(value);
         return value_null();
-    }
+    (void)path_keep;
+    return value_null();
+}
+
+static Value eval_expr(AstExpr *expr) {
+    int path_keep = g_path_keep;
+    g_path_keep = 0;
+    (void)path_keep;
+    switch (expr->kind) {
+    case AST_EXPR_NUMBER:
+        /* The literal carries the exactness the lexer determined from its digits.
+         * NOTE there are TWO `AST_EXPR_NUMBER` cases in this file and only this
+         * one is `eval_expr`; the other belongs to `server_literal_value`. The
+         * first version of this change edited that one by mistake, and NOTHING
+         * FAILED -- every exactness check simply stayed false, so the feature was
+         * inert and the fixture read as a design error rather than a wrong edit.
+         * Found by probing the flag at `value_is_exact`, not by reading. */
+        return expr->as.num.is_exact ? value_number_exact(expr->as.num.exact)
+             : expr->as.num.scale > 0
+                 ? value_number_decimal(expr->as.num.exact, expr->as.num.scale)
+                 : value_number(expr->as.num.value);
+    case AST_EXPR_STRING:
+        return value_string(expr->as.string);
+    case AST_EXPR_IDENT:
+        return env_get(expr->as.ident);
+    case AST_EXPR_BOOL:
+        return value_bool(expr->as.boolean);
+    case AST_EXPR_NULL:
+        return value_null();
+    case AST_EXPR_UNKNOWN:
+        return value_unknown();
+    case AST_EXPR_DURATION:
+        return eval_expr_case_duration(expr, path_keep);
+    case AST_EXPR_ARRAY:
+        return eval_expr_case_array(expr, path_keep);
+    case AST_EXPR_RECORD:
+        return eval_expr_case_record(expr, path_keep);
+    case AST_EXPR_NEW:
+        return eval_expr_case_new(expr, path_keep);
+    case AST_EXPR_INDEX:
+        return eval_expr_case_index(expr, path_keep);
+    case AST_EXPR_FIELD:
+        return eval_expr_case_field(expr, path_keep);
+    case AST_EXPR_CALL:
+        return eval_call(expr);
+    case AST_EXPR_SPAWN:
+        /* A spawned actor is a process that outlives the line that started
+         * it, which is as plain an act as this language has. */
+        if (repl_effect_watch) {
+            repl_note_effect();
+        }
+        return eval_spawn(expr);
+    case AST_EXPR_BINARY:
+        return eval_binary(expr);
+    case AST_EXPR_HELD:
+        return value_copy(*(Value *)expr->as.held.value);
+    case AST_EXPR_PROJECT:
+        return eval_expr_case_project(expr, path_keep);
+    case AST_EXPR_COLUMN:
+        return eval_expr_case_column(expr, path_keep);
+    case AST_EXPR_MODIFIER_APPLY:
+        return eval_expr_case_apply(expr, path_keep);
+    case AST_EXPR_UNARY:
+        return eval_expr_case_unary(expr, path_keep);
     }
 
     return value_null();
@@ -45972,15 +46105,68 @@ static void for_each_check_dead_write(AstStmt *stmt) {
     }
 }
 
-static EvalResult eval_stmt(AstStmt *stmt) {
-    EvalResult no_result = eval_no_result();
-    int previous_line = current_line;
-    int previous_column = current_column;
-    current_line = stmt->line;
-    current_column = stmt->column;
 
-    switch (stmt->kind) {
-    case AST_STMT_ASSIGN: {
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+static EvalResult eval_stmt_case_assign(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_print(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_expr(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_with_principal(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_with_lock(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_do_loop(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_for_range(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_for_each(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_unwatch(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_without_watchers(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_warning(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_error(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_return(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_goto(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_gosub(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_if(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_wait(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_while(AstStmt *stmt, int previous_line, int previous_column);
+static EvalResult eval_stmt_case_consider(AstStmt *stmt, int previous_line, int previous_column);
+
+static GB_NOINLINE EvalResult eval_stmt_case_assign(AstStmt *stmt, int previous_line, int previous_column) {
+
 #if GBASIC_GSQL
         /* `shop.customer[3] = { email: v }`: a write to the database by path
            (docs/gsql_paths_design.md §4), not to a variable */
@@ -45990,7 +46176,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
                 current_column = previous_column;
                 return eval_error_result();
             }
-            break;
+            goto case_done;
         }
 #endif
         int before_error = error_generation;
@@ -46114,7 +46300,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             }
         }
         if (assign_result == LVALUE_ASSIGN_UNCHANGED) {
-            break;
+            goto case_done;
         }
         char *watch_path = lvalue_watch_path(stmt->as.assign.target);
         if (watch_path) {
@@ -46135,9 +46321,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
                 }
             }
         }
-        break;
-    }
-    case AST_STMT_PRINT: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_print(AstStmt *stmt, int previous_line, int previous_column) {
+
         int before_error = error_generation;
         Value value = eval_expr(stmt->as.print.expr);
         if (error_generation != before_error) {
@@ -46151,9 +46344,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
          * it unbuffered, so the line is already gone by the time this returns. */
         value_print_to(stmt->as.print.to_stderr ? stderr : stdout, value);
         value_free(value);
-        break;
-    }
-    case AST_STMT_EXPR: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_expr(AstStmt *stmt, int previous_line, int previous_column) {
+
         int before_error = error_generation;
         Value value = eval_expr(stmt->as.expr_stmt);
         if (error_generation != before_error) {
@@ -46179,13 +46379,11 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             stmt->as.expr_stmt->kind == AST_EXPR_CALL &&
             function_resolve(library_identity_of(stmt->as.expr_stmt->as.call.library),
                              stmt->as.expr_stmt->as.call.name)) {
-            char message[320];
-            snprintf(message, sizeof(message),
+            warn_fmt(2101, "unused-result",
                      "the result of '%s' is discarded; a gBASIC function cannot "
                      "change its caller, so an update returns the new value and "
                      "dropping it does nothing (assign it, or return nothing)",
                      stmt->as.expr_stmt->as.call.name);
-            runtime_warn(message, 2101, "unused-result", value_null());
             if (error_action_pending()) {
                 value_free(value);
                 current_line = previous_line;
@@ -46194,9 +46392,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             }
         }
         value_free(value);
-        break;
-    }
-    case AST_STMT_WITH_PRINCIPAL: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_with_principal(AstStmt *stmt, int previous_line, int previous_column) {
+
         int before_error = error_generation;
         Value who = eval_expr(stmt->as.with_principal.value);
         if (error_generation != before_error) {
@@ -46212,12 +46417,10 @@ static EvalResult eval_stmt(AstStmt *stmt) {
          * `with principal("alice")` looks like it works and gives every reader
          * downstream something they cannot ask a question of. */
         if (who.kind != VALUE_RECORD) {
-            char message[160];
-            snprintf(message, sizeof(message),
-                     "with principal expects a record describing who is acting, "
-                     "not a %s", value_kind_name(who.kind));
+            const char *kind_name = value_kind_name(who.kind);
             value_free(who);
-            runtime_error_raise(message, 1003, "principal");
+            raise_fmt(1003, "principal", "with principal expects a record describing who is acting, not a %s",
+                      kind_name);
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();
@@ -46238,9 +46441,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_column = previous_column;
             return presult;
         }
-        break;
-    }
-    case AST_STMT_WITH_LOCK: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_with_lock(AstStmt *stmt, int previous_line, int previous_column) {
+
         int before_error = error_generation;
         Value file_value = eval_expr(stmt->as.with_lock.file);
         if (error_generation != before_error) {
@@ -46274,9 +46484,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             }
         }
         free(path);
-        break;
-    }
-    case AST_STMT_DO_LOOP: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_do_loop(AstStmt *stmt, int previous_line, int previous_column) {
+
         /* POST-test: the body runs, THEN the condition decides. `until` stops
          * when the condition becomes true. `while ... end while` already covers
          * the pre-test case, so this exists only for the "do it at least once"
@@ -46333,9 +46550,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             }
         }
         loop_depth--;
-        break;
-    }
-    case AST_STMT_FOR_RANGE: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_for_range(AstStmt *stmt, int previous_line, int previous_column) {
+
         if (loop_lock_refused(stmt->as.for_range.name, 1)) {
             current_line = previous_line;
             current_column = previous_column;
@@ -46462,9 +46686,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             }
         }
         loop_depth--;
-        break;
-    }
-    case AST_STMT_FOR_EACH: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_for_each(AstStmt *stmt, int previous_line, int previous_column) {
+
         if (loop_lock_refused(stmt->as.for_each.name, 0) ||
             loop_lock_refused(stmt->as.for_each.index_name, 1)) {
             current_line = previous_line;
@@ -46509,11 +46740,8 @@ static EvalResult eval_stmt(AstStmt *stmt) {
              * credibility. */
             GbLineReader reader;
             if (!gb_line_reader_open(&reader, iterable.as.file_path)) {
-                char message[512];
-                snprintf(message, sizeof message,
-                         "could not read file: %s (%s)",
-                         iterable.as.file_path, strerror(errno));
-                runtime_error_raise(message, 1004, "file operation");
+                raise_fmt(1004, "file operation", "could not read file: %s (%s)", iterable.as.file_path,
+                          strerror(errno));
                 value_free(iterable);
                 current_line = previous_line;
                 current_column = previous_column;
@@ -46559,11 +46787,8 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             gb_line_reader_close(&reader);
             loop_depth--;
             if (read_failed && !returning) {
-                char message[512];
-                snprintf(message, sizeof message,
-                         "could not read file: %s (%s)",
-                         iterable.as.file_path, strerror(errno));
-                runtime_error_raise(message, 1004, "file operation");
+                raise_fmt(1004, "file operation", "could not read file: %s (%s)", iterable.as.file_path,
+                          strerror(errno));
                 value_free(iterable);
                 current_line = previous_line;
                 current_column = previous_column;
@@ -46575,7 +46800,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             if (returning) {
                 return out;
             }
-            break;
+            goto case_done;
         }
         if (iterable.kind == VALUE_CSV_SOURCE) {
             /* --- A DELIMITED FILE, RECORD BY RECORD (docs/csv_design.md §2) --
@@ -46645,7 +46870,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             if (failed) {
                 return eval_error_result();
             }
-            break;
+            goto case_done;
         }
         if (iterable.kind == VALUE_GSQL_STATEMENT) {
             /* --- AN `sql` BLOCK, ROW BY ROW (docs/gsql_module_design.md §7) --
@@ -46709,7 +46934,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             if (error_action_pending()) {
                 return eval_error_result();
             }
-            break;
+            goto case_done;
 #else
             runtime_error_raise("G-SQL is not yet available on this platform", GSQL_ERROR_CODE, "gsql");
             value_free(iterable);
@@ -46782,100 +47007,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         }
         loop_depth--;
         value_free(iterable);
-        break;
-    }
-    case AST_STMT_FUNCTION:
-        if (stmt->as.function.object) {
-            /* Dotted def: an executable attach statement, not a hoisted decl. */
-            if (!eval_method_attach(stmt)) {
-                current_line = previous_line;
-                current_column = previous_column;
-                return eval_error_result();
-            }
-        } else {
-            function_register(stmt);
-            /* Registration can now REFUSE -- a parameter list with a default
-             * before a required parameter. Propagate it the way the attach
-             * branch above does, or the declaration is reported and the
-             * program carries on running underneath the diagnostic. */
-            if (raise_in_flight) {
-                current_line = previous_line;
-                current_column = previous_column;
-                return eval_error_result();
-            }
-        }
-        break;
-    case AST_STMT_MODIFIER:
-        modifier_register(stmt);
-        if (raise_in_flight) {
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        break;
-    case AST_STMT_PROGRAM:
-    case AST_STMT_LIBRARY:
-        break;
-    case AST_STMT_USE:
-        library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path, stmt->as.use_stmt.alias);
-        if (error_action_pending()) {
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        break;
-    /* A `window` DECLARATION BINDS AN INTROSPECTABLE RECORD AND REGISTERS ITS
-     * HANDLERS, and that is all it does -- opening a window is `ui.open`,
-     * which is a separate act for the same reason `web.serve` is. The two
-     * earlier states of this comment are worth keeping in mind by anyone
-     * editing it: it first said the block was not executable and REFUSED, then
-     * said it bound a record and nothing could render it. Both were true when
-     * written, and both stopped being true. */
-    case AST_STMT_WINDOW:
-        /* REGISTERED BY THE HOIST ALREADY, so reaching the statement binds it
-         * again and nothing more -- the same shape a server block has. It no
-         * longer REFUSES: the declaration now does something observable (it
-         * binds an introspectable record), so there is nothing silent left to
-         * guard against. What still does not exist is anything that RENDERS
-         * it, and that is a missing backend rather than a missing declaration. */
-        window_register(stmt);
-        if (error_action_pending()) {
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        break;
-    case AST_STMT_SERVER:
-        server_register(stmt);
-        if (error_action_pending()) {
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        break;
-    case AST_STMT_DATABASE:
-    case AST_STMT_SQL:
-        /* hoisted when written at the top level; one written directly in
-           `program` binds here, as a server block does */
-        if (!gsql_decl_require_loaded(stmt)) {
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        if (stmt->kind == AST_STMT_DATABASE) {
-            database_register(stmt);
-        } else {
-            sql_register(stmt);
-        }
-        break;
-    case AST_STMT_WATCH:
-        if (!watcher_register(stmt)) {
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        break;
-    case AST_STMT_UNWATCH: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_unwatch(AstStmt *stmt, int previous_line, int previous_column) {
+
         int before_error = error_generation;
         Value value = eval_expr(stmt->as.unwatch_expr);
         if (error_generation != before_error) {
@@ -46885,12 +47026,9 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             return eval_error_result();
         }
         if (value.kind != VALUE_WATCHER) {
-            char message[128];
-            snprintf(message, sizeof(message),
-                     "unwatch expects a watcher value but got %s",
-                     value_kind_name(value.kind));
+            const char *kind_name = value_kind_name(value.kind);
             value_free(value);
-            runtime_error_raise(message, 1003, "watcher");
+            raise_fmt(1003, "watcher", "unwatch expects a watcher value but got %s", kind_name);
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();
@@ -46904,9 +47042,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             watchers[at].active = 0;
         }
         value_free(value);
-        break;
-    }
-    case AST_STMT_WITHOUT_WATCHERS: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_without_watchers(AstStmt *stmt, int previous_line, int previous_column) {
+
         watcher_suppressed++;
         EvalResult result = eval_stmt_list(stmt->as.without_watchers);
         watcher_suppressed--;
@@ -46915,37 +47060,30 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_column = previous_column;
             return result;
         }
-        break;
-    }
-    /* PLAT-ERR: these arm THIS FRAME and nothing else. A callee starts in the
-     * default state whatever its caller set, and the arming dies with the
-     * frame -- which is what makes absorption safe and is the whole difference
-     * from the process-global model. */
-    case AST_STMT_ON_ERROR_GOTO:
-        free(current_error_frame->label);
-        current_error_frame->label = copy_string(stmt->as.on_error_label);
-        current_error_frame->mode = EFRAME_GOTO_LABEL;
-        break;
-    case AST_STMT_ON_ERROR_GOTO_NEXT:
-        free(current_error_frame->label);
-        current_error_frame->label = NULL;
-        current_error_frame->mode = EFRAME_GOTO_NEXT;
-        break;
-    case AST_STMT_ON_ERROR_STOP:
-        free(current_error_frame->label);
-        current_error_frame->label = NULL;
-        current_error_frame->mode = EFRAME_DEFAULT;
-        break;
-    case AST_STMT_ON_WARNING:
-        current_error_frame->warn_mode = stmt->as.warn_mode;
-        break;
-    case AST_STMT_WARNING: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_warning(AstStmt *stmt, int previous_line, int previous_column) {
+    (void)stmt;
+
         /* Unreachable via the grammar (the raise is the `warning(...)` builtin
          * -- `IDENT expression` as a statement costs 4 shift/reduce conflicts),
          * kept so the node has a home if a spelling is ever added. */
-        break;
-    }
-    case AST_STMT_ERROR: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_error(AstStmt *stmt, int previous_line, int previous_column) {
+
         int before_error = error_generation;
         Value value = eval_expr(stmt->as.error_message);
         if (error_generation != before_error) {
@@ -47046,9 +47184,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_column = previous_column;
             return eval_error_result();
         }
-        break;
-    }
-    case AST_STMT_RETURN: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_return(AstStmt *stmt, int previous_line, int previous_column) {
+
         int before_error = error_generation;
         Value value = stmt->as.return_expr ? eval_expr(stmt->as.return_expr) : value_null();
         if (error_generation != before_error) {
@@ -47081,10 +47226,15 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         current_line = previous_line;
         current_column = previous_column;
         return eval_return(value, stmt->as.return_expr != NULL);
-    }
-    case AST_STMT_LABEL:
-        break;
-    case AST_STMT_GOTO: {
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_goto(AstStmt *stmt, int previous_line, int previous_column) {
+
         if (function_depth == 0) {
             runtime_error_raise("goto is not supported at top level; supported inside functions",
                                 1003, "invalid control flow");
@@ -47093,8 +47243,15 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             return eval_error_result();
         }
         return eval_goto(stmt->as.goto_label);
-    }
-    case AST_STMT_GOSUB: {
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_gosub(AstStmt *stmt, int previous_line, int previous_column) {
+
         if (function_depth == 0) {
             runtime_error_raise("gosub is not supported at top level; supported inside functions",
                                 1003, "invalid control flow");
@@ -47103,28 +47260,15 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             return eval_error_result();
         }
         return eval_gosub(stmt->as.gosub_label);
-    }
-    case AST_STMT_BREAK:
-        if (loop_depth == 0 && consider_depth == 0) {
-            runtime_error_raise("break outside loop or consider block", 1003, "invalid control flow");
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        current_line = previous_line;
-        current_column = previous_column;
-        return eval_break(stmt->as.loop_target, stmt->line, stmt->column);
-    case AST_STMT_CONTINUE:
-        if (loop_depth == 0) {
-            runtime_error_raise("continue outside loop", 1003, "invalid control flow");
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        current_line = previous_line;
-        current_column = previous_column;
-        return eval_continue(stmt->as.loop_target, stmt->line, stmt->column);
-    case AST_STMT_IF: {
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_if(AstStmt *stmt, int previous_line, int previous_column) {
+
         int before_error = error_generation;
         Value condition = eval_expr(stmt->as.if_stmt.condition);
         if (error_generation != before_error) {
@@ -47159,9 +47303,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
                 return result;
             }
         }
-        break;
-    }
-    case AST_STMT_WAIT: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_wait(AstStmt *stmt, int previous_line, int previous_column) {
+
         /* wait until <condition> [for <limit>] (docs/watch_scope_design.md §4,
          * Matthew's rulings 2026-11-07): the event loop runs from HERE, in this
          * frame, delivering to the watches of every live frame, until the
@@ -47170,10 +47321,8 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             /* RAISED, NOT SKIPPED: a Qt handler past its cap is not called and
              * the program goes on (2117), but the code after a wait relies on
              * its condition being true, so a skipped wait would be a lie */
-            char message[200];
-            snprintf(message, sizeof message, "wait until: nested %d deep, inside watches whose bodies wait; "
-                     "a wait in a watch body that calls a waiting function is usually a cycle", WAIT_MAX_DEPTH);
-            runtime_error_raise(message, 1003, "wait");
+            raise_fmt(1003, "wait", "wait until: nested %d deep, inside watches whose bodies wait; "
+                      "a wait in a watch body that calls a waiting function is usually a cycle", WAIT_MAX_DEPTH);
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();
@@ -47255,10 +47404,8 @@ static EvalResult eval_stmt(AstStmt *stmt) {
                 break;
             }
             if (deadline >= 0.0 && webserver_now() >= deadline) {
-                char message[200];
-                snprintf(message, sizeof message, "wait until: the limit of %g seconds passed and the condition "
-                         "is still false", limit_s);
-                runtime_error_raise(message, 1003, "wait");
+                raise_fmt(1003, "wait", "wait until: the limit of %g seconds passed and the condition is still false",
+                          limit_s);
                 failed = 1;
                 break;
             }
@@ -47308,9 +47455,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             current_column = previous_column;
             return eval_error_result();
         }
-        break;
-    }
-    case AST_STMT_WHILE: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_while(AstStmt *stmt, int previous_line, int previous_column) {
+
         loop_depth++;
         for (;;) {
             int before_error = error_generation;
@@ -47359,9 +47513,16 @@ static EvalResult eval_stmt(AstStmt *stmt) {
             }
         }
         loop_depth--;
-        break;
-    }
-    case AST_STMT_CONSIDER: {
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_consider(AstStmt *stmt, int previous_line, int previous_column) {
+
         int before_error = error_generation;
         Value subject = eval_expr(stmt->as.consider.subject);
         if (error_generation != before_error) {
@@ -47408,15 +47569,202 @@ static EvalResult eval_stmt(AstStmt *stmt) {
         value_free(subject);
         if (result.did_break) {
             value_free(result.value);
-            break;
+            goto case_done;
         }
         if (eval_result_exits_block(result)) {
             current_line = previous_line;
             current_column = previous_column;
             return result;
         }
+        goto case_done;
+    goto case_done;
+case_done:
+    current_line = previous_line;
+    current_column = previous_column;
+    return eval_no_result();
+}
+
+static EvalResult eval_stmt(AstStmt *stmt) {
+    EvalResult no_result = eval_no_result();
+    int previous_line = current_line;
+    int previous_column = current_column;
+    current_line = stmt->line;
+    current_column = stmt->column;
+
+    switch (stmt->kind) {
+    case AST_STMT_ASSIGN:
+        return eval_stmt_case_assign(stmt, previous_line, previous_column);
+    case AST_STMT_PRINT:
+        return eval_stmt_case_print(stmt, previous_line, previous_column);
+    case AST_STMT_EXPR:
+        return eval_stmt_case_expr(stmt, previous_line, previous_column);
+    case AST_STMT_WITH_PRINCIPAL:
+        return eval_stmt_case_with_principal(stmt, previous_line, previous_column);
+    case AST_STMT_WITH_LOCK:
+        return eval_stmt_case_with_lock(stmt, previous_line, previous_column);
+    case AST_STMT_DO_LOOP:
+        return eval_stmt_case_do_loop(stmt, previous_line, previous_column);
+    case AST_STMT_FOR_RANGE:
+        return eval_stmt_case_for_range(stmt, previous_line, previous_column);
+    case AST_STMT_FOR_EACH:
+        return eval_stmt_case_for_each(stmt, previous_line, previous_column);
+    case AST_STMT_FUNCTION:
+        if (stmt->as.function.object) {
+            /* Dotted def: an executable attach statement, not a hoisted decl. */
+            if (!eval_method_attach(stmt)) {
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+        } else {
+            function_register(stmt);
+            /* Registration can now REFUSE -- a parameter list with a default
+             * before a required parameter. Propagate it the way the attach
+             * branch above does, or the declaration is reported and the
+             * program carries on running underneath the diagnostic. */
+            if (raise_in_flight) {
+                current_line = previous_line;
+                current_column = previous_column;
+                return eval_error_result();
+            }
+        }
         break;
-    }
+    case AST_STMT_MODIFIER:
+        modifier_register(stmt);
+        if (raise_in_flight) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        break;
+    case AST_STMT_PROGRAM:
+    case AST_STMT_LIBRARY:
+        break;
+    case AST_STMT_USE:
+        library_import(stmt->as.use_stmt.name, stmt->as.use_stmt.path, stmt->as.use_stmt.alias);
+        if (error_action_pending()) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        break;
+    /* A `window` DECLARATION BINDS AN INTROSPECTABLE RECORD AND REGISTERS ITS
+     * HANDLERS, and that is all it does -- opening a window is `ui.open`,
+     * which is a separate act for the same reason `web.serve` is. The two
+     * earlier states of this comment are worth keeping in mind by anyone
+     * editing it: it first said the block was not executable and REFUSED, then
+     * said it bound a record and nothing could render it. Both were true when
+     * written, and both stopped being true. */
+    case AST_STMT_WINDOW:
+        /* REGISTERED BY THE HOIST ALREADY, so reaching the statement binds it
+         * again and nothing more -- the same shape a server block has. It no
+         * longer REFUSES: the declaration now does something observable (it
+         * binds an introspectable record), so there is nothing silent left to
+         * guard against. What still does not exist is anything that RENDERS
+         * it, and that is a missing backend rather than a missing declaration. */
+        window_register(stmt);
+        if (error_action_pending()) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        break;
+    case AST_STMT_SERVER:
+        server_register(stmt);
+        if (error_action_pending()) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        break;
+    case AST_STMT_DATABASE:
+    case AST_STMT_SQL:
+        /* hoisted when written at the top level; one written directly in
+           `program` binds here, as a server block does */
+        if (!gsql_decl_require_loaded(stmt)) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        if (stmt->kind == AST_STMT_DATABASE) {
+            database_register(stmt);
+        } else {
+            sql_register(stmt);
+        }
+        break;
+    case AST_STMT_WATCH:
+        if (!watcher_register(stmt)) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        break;
+    case AST_STMT_UNWATCH:
+        return eval_stmt_case_unwatch(stmt, previous_line, previous_column);
+    case AST_STMT_WITHOUT_WATCHERS:
+        return eval_stmt_case_without_watchers(stmt, previous_line, previous_column);
+    /* PLAT-ERR: these arm THIS FRAME and nothing else. A callee starts in the
+     * default state whatever its caller set, and the arming dies with the
+     * frame -- which is what makes absorption safe and is the whole difference
+     * from the process-global model. */
+    case AST_STMT_ON_ERROR_GOTO:
+        free(current_error_frame->label);
+        current_error_frame->label = copy_string(stmt->as.on_error_label);
+        current_error_frame->mode = EFRAME_GOTO_LABEL;
+        break;
+    case AST_STMT_ON_ERROR_GOTO_NEXT:
+        free(current_error_frame->label);
+        current_error_frame->label = NULL;
+        current_error_frame->mode = EFRAME_GOTO_NEXT;
+        break;
+    case AST_STMT_ON_ERROR_STOP:
+        free(current_error_frame->label);
+        current_error_frame->label = NULL;
+        current_error_frame->mode = EFRAME_DEFAULT;
+        break;
+    case AST_STMT_ON_WARNING:
+        current_error_frame->warn_mode = stmt->as.warn_mode;
+        break;
+    case AST_STMT_WARNING:
+        return eval_stmt_case_warning(stmt, previous_line, previous_column);
+    case AST_STMT_ERROR:
+        return eval_stmt_case_error(stmt, previous_line, previous_column);
+    case AST_STMT_RETURN:
+        return eval_stmt_case_return(stmt, previous_line, previous_column);
+    case AST_STMT_LABEL:
+        break;
+    case AST_STMT_GOTO:
+        return eval_stmt_case_goto(stmt, previous_line, previous_column);
+    case AST_STMT_GOSUB:
+        return eval_stmt_case_gosub(stmt, previous_line, previous_column);
+    case AST_STMT_BREAK:
+        if (loop_depth == 0 && consider_depth == 0) {
+            runtime_error_raise("break outside loop or consider block", 1003, "invalid control flow");
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        current_line = previous_line;
+        current_column = previous_column;
+        return eval_break(stmt->as.loop_target, stmt->line, stmt->column);
+    case AST_STMT_CONTINUE:
+        if (loop_depth == 0) {
+            runtime_error_raise("continue outside loop", 1003, "invalid control flow");
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        current_line = previous_line;
+        current_column = previous_column;
+        return eval_continue(stmt->as.loop_target, stmt->line, stmt->column);
+    case AST_STMT_IF:
+        return eval_stmt_case_if(stmt, previous_line, previous_column);
+    case AST_STMT_WAIT:
+        return eval_stmt_case_wait(stmt, previous_line, previous_column);
+    case AST_STMT_WHILE:
+        return eval_stmt_case_while(stmt, previous_line, previous_column);
+    case AST_STMT_CONSIDER:
+        return eval_stmt_case_consider(stmt, previous_line, previous_column);
     }
 
     current_line = previous_line;
@@ -47743,13 +48091,7 @@ int eval_program(AstStmtList program) {
      * them all, so it is raised here, ABOVE the report below, and comes out as
      * an ordinary located runtime error naming the loop that does not exist. */
     if (result.did_break || result.did_continue) {
-        char flow_message[128];
-        loop_flow_message(result, flow_message, sizeof(flow_message));
-        if (result.flow_line > 0) {
-            current_line = result.flow_line;
-            current_column = result.flow_column;
-        }
-        runtime_error_raise(flow_message, 1003, "invalid control flow");
+        raise_loop_flow(result);
     }
     if (result.did_raise || raise_in_flight) {
         raise_report_fatal();
@@ -47971,13 +48313,7 @@ int gb_session_run(AstStmtList chunk) {
     }
 
     if (result.did_break || result.did_continue) {
-        char flow_message[128];
-        loop_flow_message(result, flow_message, sizeof(flow_message));
-        if (result.flow_line > 0) {
-            current_line = result.flow_line;
-            current_column = result.flow_column;
-        }
-        runtime_error_raise(flow_message, 1003, "invalid control flow");
+        raise_loop_flow(result);
     }
     int failed = 0;
     if (result.did_raise || raise_in_flight || base_error_frame.pending) {
