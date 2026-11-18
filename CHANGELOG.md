@@ -16,6 +16,20 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+Nothing yet.
+
+## 0.12.0 — 2026-11-18
+
+**Read this first.** Two things change what an existing program sees. **The GUI
+module is `ui`, not `qt`**, and a window speaks gBASIC's own words rather than
+Qt's, so every GUI program needs `qt.` renamed and its Qt property names
+replaced; each old name is refused with the new one to write. And **a name
+after a G-SQL connection is a table** (`db.customer`), the start of a path.
+Everything else is added: G-SQL **paths**, reading and writing tables as
+`shop.customer[3].invoice` beside SQL; a GUI **backend table** that a second
+toolkit can fill, with `ui.can`; recursion **about eight times deeper**; and an
+interpreter **built optimised**, 1.3 to 2.2 times faster.
+
 ### What a program written for 0.11.0 sees differently
 
 - **A name after a G-SQL connection is a table.** `db.timeout` used to be

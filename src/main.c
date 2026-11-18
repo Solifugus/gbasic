@@ -1023,7 +1023,7 @@ int main(int argc, char **argv) {
     char stack_mark = 0;
     gb_stack_base_note(&stack_mark, argv, environ);
     /* the same two pieces `--version` prints, below; a runner checks the two agree */
-    gb_runtime_identity_set("0.11.0", GBASIC_REVISION);
+    gb_runtime_identity_set("0.12.0", GBASIC_REVISION);
     int ast_only = 0;
     int tokens_only = 0;
     int json_diagnostics = 0;
@@ -1088,7 +1088,7 @@ int main(int argc, char **argv) {
     } else if (argc == 2 && strcmp(argv[1], "--version") == 0) {
         /* GBASIC_REVISION is "" for a release tag, else "+<rev>" (the
          * Makefile says how) */
-        printf("gBASIC 0.11.0%s\n", GBASIC_REVISION);
+        printf("gBASIC 0.12.0%s\n", GBASIC_REVISION);
         return 0;
     } else if (argc == 2 && strcmp(argv[1], "--capabilities") == 0) {
         /* WHAT THIS INTERPRETER CAN TOUCH: one name per line, tab, its labels,
