@@ -13960,3 +13960,20 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Workaround:** `on error goto next`, then `e = error` on the next line, the
   shape tests/gsql/insert_test.bas uses; one refusal per function. Documented
   behaviour, so no ledger row.
+
+## 2026-11-18 — CC — while: running the 0.12.0 tarballs on a G-SQL program
+- **Type:** bug
+- **Severity:** medium
+- **What:** a database directory can't be removed right after its last
+  connection closes. A connection opened with `linger: 0` is closed, then
+  `remove_tree` runs on its directory:
+  `db = gsql.connect(dir + "/d", { create: true, linger: 0 })`, `db.close()`,
+  `remove_tree(dir)`. That fails 19 times in 20 with "Directory not empty". The
+  same happens on 0.11.0, so it isn't new. The reference says linger 0 "stops
+  it at the last close". But the owner stops a moment after `close()` returns,
+  and in that moment it is still flushing and rotating its files (`db.1.sst`,
+  `db.log.2` and `db.log.3` were found in the directory). A program has no
+  way to wait for that.
+- **Workaround:** none taken. The check for the release only needed the paths'
+  output. A fix to consider: with linger 0, `close()` of the last connection
+  returns only after the owner has stopped. Or a verb that waits for it.
