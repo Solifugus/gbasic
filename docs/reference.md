@@ -2643,10 +2643,11 @@ trace.
 after its block.
 
 **Recursion is bounded by the stack, and going past it is an error, not a
-crash** *(after 0.10.0)*. Each gBASIC function call uses C stack (about 13 KB
-on x86, more on s390x), so the depth a program can recurse depends on
-`ulimit -s`: measured on x86, about 480 calls at the default 8 MB and about
-100 at 2 MB. A
+crash** *(after 0.10.0)*. Each gBASIC function call uses C stack (about 2 KB
+on x86 since 0.12.0, more on s390x; it was about 17 KB), so the depth a
+program can recurse depends on `ulimit -s`: measured on x86, about 3 900 calls
+at the default 8 MB and about 870 at 2 MB. Each statement or expression a call
+sits inside adds a little. A
 call that would leave less than 256 KB of stack is refused, and the call
 raises:
 

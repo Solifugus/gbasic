@@ -259,9 +259,10 @@ printf '%s' "$idem_out" | grep -qx 'mismatches: 0'
 check "{file}/{dir} idempotent, and still refuse a wrong type" $?
 
 # --- recursion too deep for the stack raises, never crashes -----------------
-# A gBASIC call takes about 13 KB of C stack on x86, and nothing guarded it:
+# A gBASIC call took about 13 KB of C stack on x86, and nothing guarded it:
 # ordinary recursion about 600 calls deep SEGFAULTED at the default 8 MB, 150
-# at 2 MB (2026-11-14) -- no message, nothing `on error` could catch. Calls now
+# at 2 MB (2026-11-14) -- no message, nothing `on error` could catch. (About
+# 2 KB since 2026-11-17, so the guard now refuses near 3 900.) Calls now
 # measure the stack in use and refuse within a reserve of its limit. A golden
 # cannot say "did not crash"; the exit status and the caught error can.
 #   - 100 000 deep is caught as 1005 / "recursion" and the program goes on,

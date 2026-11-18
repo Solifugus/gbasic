@@ -222,11 +222,18 @@ fi
 # crash point (~4 044), and a 4 100-deep document segfaulted (2026-11-14). The
 # fix measures the stack IN USE (decode_stack_exhausted, src/eval.c). On x86
 # the tier above cannot see that fix, because there the cap stops in time.
-# This can: the same document decoded 100 gBASIC calls deep, under the cap,
+# This can: the same document decoded 750 gBASIC calls deep, under the cap,
 # crashed the old build at 2 MB and is refused by this one, since the stack the
 # recursion holds counts against the same limit.
 #
-# ITS PREMISE IS ITS OWN, and checked: 100 calls must survive 2 MB with a
+# 750, NOT THE 100 IT WAS: a gBASIC call took about 17 KB of C stack when this
+# tier was written, so 100 calls held 1.7 MB, and from 2026-11-17 it takes
+# about 2 KB (work order item 5), so 100 held 200 KB and the document fitted --
+# the tier answered ok=true, with the decoder's check still in force. Measured
+# then at 2 MB: 600 calls let the 3500-deep document through, 700 have it
+# refused, and 874 is where the recursion guard itself refuses; 750 is between.
+#
+# ITS PREMISE IS ITS OWN, and checked: 750 calls must survive 2 MB with a
 # trivial document, or the crash would be the recursion's, not the decoder's.
 # Where it does not (s390x's larger frames), the tier SKIPS, saying why.
 cat >"$work/held.bas" <<'GB'
@@ -238,7 +245,7 @@ function down(n, doc)
     return down(n - 1, doc)
 end function
 d = number(env("DOC_DEPTH"))
-print down(100, repeat("[", d) + "1" + repeat("]", d))
+print down(750, repeat("[", d) + "1" + repeat("]", d))
 GB
 if ! ( ulimit -s 2048 ) 2>/dev/null; then
     printf 'SKIP decode_held_stack (this shell cannot set ulimit -s)\n'
@@ -251,14 +258,14 @@ else
     }
     premise="$(held_at 1)"
     if [ "$premise" != "ok=true" ]; then
-        printf 'SKIP decode_held_stack (100 gBASIC calls alone do not survive a 2 MB stack here:\n'
+        printf 'SKIP decode_held_stack (750 gBASIC calls alone do not survive a 2 MB stack here:\n'
         printf '     %s -- the recursion, not the decoder; NOTHING was checked)\n' "$premise"
     else
         held="$(held_at 3500)"
         if [ "$held" = "ok=false" ]; then
-            printf 'PASS decode_held_stack (3500 deep under 100 calls at 2 MB is refused, not a crash)\n'
+            printf 'PASS decode_held_stack (3500 deep under 750 calls at 2 MB is refused, not a crash)\n'
         else
-            printf 'FAIL decode_held_stack (3500 deep under 100 calls at 2 MB: <%s>, want ok=false)\n' "$held"
+            printf 'FAIL decode_held_stack (3500 deep under 750 calls at 2 MB: <%s>, want ok=false)\n' "$held"
             status=1
         fi
     fi

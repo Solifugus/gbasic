@@ -52,6 +52,12 @@ reader sees.
 
 ### What was added
 
+- **Recursion goes about eight times deeper.** A gBASIC call took about 17 KB
+  of C stack and now takes about 2 KB, so the recursion guard refuses near
+  3 900 calls at the default 8 MB stack (it was 483) and 870 at 2 MB (it was
+  108). The interpreter's busiest functions keep the locals of their rarer
+  branches out of the frames every call passes through.
+
 - **G-SQL paths, increment 1: a table read by path** (docs/gsql_paths_design.md).
   `shop.customer[3]` is the row's record or `unknown`; `shop.line[17, 2]` a
   key of two columns; `shop.customer[.city = "Rome", .active]` a result like an
