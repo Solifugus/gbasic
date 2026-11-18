@@ -77,6 +77,8 @@ reader sees.
   carrying its customer's columns. A `{` right after a name or `]` with no
   `=`, compound assignment or comparison after its group is a path's; every
   other `{` means what it did.
+- **The G-SQL cookbook has a Part 4, paths**: recipe 19 reads by path, each
+  path printed beside the `sql` block it equals; recipe 20 writes by path.
 
 - New words where a program needed one: `secret` (a password field),
   `default` (the button Enter presses), `clear`, `select_all`, `fit_columns`,

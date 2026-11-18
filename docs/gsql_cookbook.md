@@ -10,7 +10,7 @@ Run any recipe yourself:
 GBASIC_PATH=stdlib ./gbasic examples/gsql_cookbook/01_first_database.bas
 ```
 
-**SQL is written in blocks**, G-SQL's normal form: a `database` block names the file and an `sql` block holds one statement, checked when the program loads, with values reaching it only as `:name` parameters, so nothing a user types can become part of the SQL. A string appears only where a recipe needs SQL that is not fixed text: recipe 10 sends broken SQL on purpose, and recipe 15 edits a dump. Part 3 is SQL for reports: window functions, recursive queries and subtotals. Each recipe's database is a file in the current directory, removed before and after, so it runs the same way every time.
+**SQL is written in blocks**, G-SQL's normal form: a `database` block names the file and an `sql` block holds one statement, checked when the program loads, with values reaching it only as `:name` parameters, so nothing a user types can become part of the SQL. A string appears only where a recipe needs SQL that is not fixed text: recipe 10 sends broken SQL on purpose, and recipe 15 edits a dump. Part 3 is SQL for reports: window functions, recursive queries and subtotals. Part 4 reads and writes the same tables by **path**, `shop.customer[3].invoice`, which an application often finds shorter than SQL; each path is one SQL statement, and the recipes print it. Each recipe's database is a file in the current directory, removed before and after, so it runs the same way every time.
 
 Where to read more:
 
@@ -1604,5 +1604,151 @@ remove_tree({dir}"cookbook_rollup.gsql")
   west  motor  975.50
   west subtotal        1425.50
 Grand total            3875.50  (6 sales)
+```
+
+---
+
+# Part 4: paths
+
+## 19. Reading by path
+
+**A path names rows the way a program thinks of them**: `shop.customer[3]` is a customer, `shop.customer[3].invoice` that customer's invoices, `shop.invoice[10].customer` an invoice's customer. Dots name tables, a bracket holds a key or filters whose columns are dotted, and braces choose columns, joining when they come before a step. A path is one SQL statement, run by the same rules as a block's; `.sql()` shows it, nothing run.
+
+<!--CODE:19_paths_reading-->
+
+```basic
+' Recipe 19: read tables by path. Dots name tables, a bracket is a key or a
+' filter whose columns are dotted, braces choose columns, and a dot after a
+' path steps across the foreign key joining two tables. Each path is one SQL
+' statement; .sql() shows it, and here each one is printed beside the sql
+' block it equals.
+load gsql
+
+if exists({dir}"cookbook_paths.gsql") then
+    remove_tree({dir}"cookbook_paths.gsql")
+end if
+
+database shop( file: "cookbook_paths.gsql", create: true )
+
+sql make on shop
+    create table customer (id integer primary key, name text, city text);
+    create table invoice (id integer primary key, customer integer references customer, total money(USD), paid boolean);
+    insert into customer values (1, 'Ana', 'Rome'), (2, 'Bo', 'Oslo'), (3, 'Cy', 'Rome');
+    insert into invoice values (10, 1, 120.00, true), (11, 3, 40.50, false), (12, 3, 75.00, true)
+end sql
+
+sql unpaid_in on shop
+    select i.* from invoice i join customer c on i.customer = c.id
+    where c.city = :town and i.paid = false order by i.id
+end sql
+
+make.exec()
+
+' a key: the row, read where the path ends
+c = shop.customer[3]
+print c.name + " lives in " + c.city
+
+' a filter: a result, read when it is used
+for each r in shop.customer[.city = "Rome"]
+    print "in Rome: " + r.name
+next
+
+' a step from a parent to its children, and from a child to its parent
+for each inv in shop.customer[3].invoice
+    print "Cy's invoice " + string(inv.id) + ": " + string(inv.total)
+next
+print "invoice 10 is " + (shop.invoice[10].customer).name + "'s"
+
+' a step from many, filtered at both ends, against the sql block it equals
+town = "Rome"
+by_path = shop.customer[.city = town].invoice[.paid = false].query()
+print "unpaid in Rome: " + string(len(by_path)) + ", the same as the sql block: " + string(string(by_path) = string(unpaid_in.query()))
+
+' braces: the columns, and a join when they come before a step
+for each r in shop.customer[.city = "Rome"]{ name }.invoice{ id, total }
+    print r.name + "  #" + string(r.id) + "  " + string(r.total)
+next
+
+' what a path is
+print shop.customer[3].invoice.sql()
+
+shop.close()
+remove_tree({dir}"cookbook_paths.gsql")
+```
+
+<!--OUT:19_paths_reading-->
+
+```
+Cy lives in Rome
+in Rome: Ana
+in Rome: Cy
+Cy's invoice 11: 40.50
+Cy's invoice 12: 75.00
+invoice 10 is Ana's
+unpaid in Rome: 1, the same as the sql block: true
+Ana  #10  120.00
+Cy  #11  40.50
+Cy  #12  75.00
+SELECT * FROM "invoice" AS "t1" WHERE "t1"."customer" = (SELECT "t0"."id" FROM "customer" AS "t0" WHERE "t0"."id" = $1) ORDER BY "t1"."id"
+$1 = 3
+```
+
+## 20. Writing by path
+
+**Assigning a record writes the columns it names**, every row the path names. A key of one table that names no row inserts it, by `INSERT`'s rules. `insert` answers the rows as stored, and through a step the foreign key is filled in from the path; `delete` answers how many it removed, and cascades as the keys say.
+
+<!--CODE:20_paths_writing-->
+
+```basic
+' Recipe 20: write by path. Assigning a record writes the columns it names;
+' a key of one table that names no row inserts it, by INSERT's rules. insert
+' answers the rows as stored, and through a step the foreign key comes from
+' the path. delete answers how many it removed, cascading as the keys say.
+load gsql
+
+if exists({dir}"cookbook_paths_write.gsql") then
+    remove_tree({dir}"cookbook_paths_write.gsql")
+end if
+
+database shop( file: "cookbook_paths_write.gsql", create: true )
+
+sql make on shop
+    create table customer (id integer serial primary key, name text not null, city text);
+    create table invoice (id integer serial primary key, customer integer references customer on delete cascade, total money(USD), paid boolean default false)
+end sql
+
+make.exec()
+
+ana = shop.customer.insert({ name: "Ana", city: "Rome" })
+print "inserted customer " + string(ana.id)
+
+shop.customer[ana.id] = { city: "Paris" }               ' the row is there: an UPDATE
+shop.customer[7] = { name: "Gus" }                      ' it is not: an INSERT
+print (shop.customer[1]).city + ", and customer 7 is " + (shop.customer[7]).name
+
+' through a step from one customer, the invoice's customer is filled in
+shop.customer[1].invoice.insert([{ total: "20.00" }, { total: "35.50" }])
+first = shop.customer[7].invoice.insert({ total: "9.99" })
+print "Gus's invoice " + string(first.id) + " belongs to customer " + string(first.customer)
+
+shop.customer[1].invoice[.total < 30] = { paid: true }  ' every row the path names
+print "paid: " + string(shop.invoice[.paid = true].count())
+
+print "deleted " + string(shop.customer[7].delete()) + " customer, and its invoices with it"
+print "invoices left: " + string(shop.invoice.count())
+
+shop.close()
+remove_tree({dir}"cookbook_paths_write.gsql")
+```
+
+<!--OUT:20_paths_writing-->
+
+```
+inserted customer 1
+Paris, and customer 7 is Gus
+Gus's invoice 3 belongs to customer 7
+paid: 1
+deleted 1 customer, and its invoices with it
+invoices left: 2
 ```
 

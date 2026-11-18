@@ -1,0 +1,12 @@
+Cy lives in Rome
+in Rome: Ana
+in Rome: Cy
+Cy's invoice 11: 40.50
+Cy's invoice 12: 75.00
+invoice 10 is Ana's
+unpaid in Rome: 1, the same as the sql block: true
+Ana  #10  120.00
+Cy  #11  40.50
+Cy  #12  75.00
+SELECT * FROM "invoice" AS "t1" WHERE "t1"."customer" = (SELECT "t0"."id" FROM "customer" AS "t0" WHERE "t0"."id" = $1) ORDER BY "t1"."id"
+$1 = 3

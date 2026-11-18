@@ -1,6 +1,6 @@
 # Paths over G-SQL: reading and writing tables by path
 
-**Status:** design note, 2026-11-16, revised the same day with Matthew's rulings on its first draft (§10). **Increments 1 to 4 are built** (one table read by path; steps between tables across foreign keys; writing by path; columns in braces; §8.1 to §8.4 record where the build departed from this text). Increment 5, the cookbook chapter, is not.
+**Status:** design note, 2026-11-16, revised the same day with Matthew's rulings on its first draft (§10). **Built, increments 1 to 5** (one table read by path; steps between tables across foreign keys; writing by path; columns in braces; the cookbook's Part 4, recipes 19 and 20; §8.1 to §8.4 record where the build departed from this text).
 
 ## 1. What it is, and what it is not
 
