@@ -71,6 +71,12 @@ reader sees.
   key of one table names none; `path.insert(rec)` answers the row as stored
   (through `shop.customer[3].invoice` the foreign key comes from the path);
   `path.delete()` answers how many. Each is one statement.
+- **G-SQL paths, increment 4: columns in braces.** `shop.customer[3]{ name, phone }`
+  reads those columns; braces before a step join:
+  `shop.customer[3]{ id, name }.purchases{ item, price }` is a row per purchase
+  carrying its customer's columns. A `{` right after a name or `]` with no
+  `=`, compound assignment or comparison after its group is a path's; every
+  other `{` means what it did.
 
 - New words where a program needed one: `secret` (a password field),
   `default` (the button Enter presses), `clear`, `select_all`, `fit_columns`,

@@ -3128,8 +3128,9 @@ a key or filters, and `.name` inside a bracket is a column
 (`docs/gsql_paths_design.md`). A path is one SQL statement, which the owner
 writes from the catalog and runs as it would any other, so every G-SQL rule
 applies to it. A dot after a path steps to another table across the foreign
-key joining them. A path is written by assigning it a record, and has
-`insert` and `delete`. Columns in braces come in a later increment.
+key joining them. Braces choose the columns read, and braces before a step
+join. A path is written by assigning it a record, and has `insert` and
+`delete`.
 
 ```basic
 load gsql
@@ -3159,6 +3160,7 @@ print (shop.invoice[11].customer).name       ' a child's parent: one row
 | `path.count()` | how many rows, counted by the owner |
 | `path.sql()` | the statement and its parameters as text; nothing is run |
 | `for each r in path` | the rows, a batch at a time |
+| `path{ a, b }` | only those columns of the table before the braces. Braces before a step **join**: `shop.customer[3]{ id, name }.purchases{ item, price }` is a row per purchase carrying its customer's columns, inner (a customer with no purchases gives no rows), in the last table's key order then back. A table passed through gives no columns; two tables giving one name are refused. One row only when every table from the first braces on is one |
 | `path = { col: v, ... }` | writes those columns of every row the path names. A key of one table that names no row inserts it by `INSERT`'s rules; a path of one reached by a step whose row is not there is refused `NOT_FOUND`; a path of many writes the rows it has, none included. A key column may not be named |
 | `path.insert(rec)`, `path.insert([recs])` | new rows, all or none, answered as stored (a record for a record, an array for an array); through a step from one row, `shop.customer[3].invoice.insert(...)`, the foreign key comes from the path |
 | `path.delete()` | removes the rows the path names, cascading as their keys say, and answers how many |
@@ -3174,6 +3176,10 @@ print (shop.invoice[11].customer).name       ' a child's parent: one row
   unknown` matches no row, as SQL's `= NULL` does.
 - **A dot after a path is a step to another table**, so a row's field is read
   from the record: `(shop.customer[3]).name`, or `c = shop.customer[3]`.
+- **Braces belong to a path when they follow a name or `]` directly and no
+  `=`, compound assignment or comparison follows them**; otherwise `{...}` is
+  the modifier it always was, so `x{date} = s` is a clause. A path with braces
+  is read only: it cannot be written, inserted into or deleted through.
 - **A step crosses one foreign key.** Two tables joined by two keys, or a
   table joined to itself, cannot be stepped between: filter by the key's
   column instead, `shop.invoice[.bill_to = 3]`, `shop.employee[.boss = 7]`.
