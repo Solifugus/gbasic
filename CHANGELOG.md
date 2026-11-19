@@ -16,7 +16,22 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
-Nothing yet.
+- **`load` of a module that needs none says so.** `load xlsx` (or `money`,
+  `ui`, `csv`, `zip`, ...) used to say "library not found: xlsx", which read as
+  "this build has no xlsx". It now says "xlsx needs no `load`: it is part of
+  gbasic, not a library file. Remove this line". It is still a refusal, and a
+  name that is neither a module nor a library file still says "library not
+  found" (DOGFOOD #10, struck).
+- **`read_at` and `overwrite` at a position of exactly 2^63** are refused as
+  too large, like every larger position. The bound let that one value through
+  to the OS, which answered "Invalid argument" (found by clang 20).
+- **`linger: 0` points at `close({ wait })`.** The owner stops a moment after
+  the last `close` returns, so a program that will delete the database's
+  directory closes with `{ wait }`, which answers once the owner has stopped.
+  The reference now says so; the behaviour is unchanged.
+- **The build prints no warnings on clang 20** (four before: two were the
+  2^63 bound, one an unused counter in G-SQL's LSM, one Bison's unread
+  `yynerrs`).
 
 ## 0.12.0 — 2026-11-18
 

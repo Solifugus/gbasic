@@ -260,11 +260,10 @@ program main(args)
     ' A DIRECTORY, which the whole-file readers learned to refuse the day
     ' before this shipped -- and a third reader must not reintroduce the crash.
     r = read_at({file}root, 0, 4)
-    refused("a directory is refused", error)
-    if error then
-        m = error.message
-        error.clear()
-        check("and it says so by name", contains(m, "Is a directory"), true)
+    e = error
+    refused("a directory is refused", e)
+    if e then
+        check("and it says so by name", contains(e.message, "Is a directory"), true)
     end if
 
     ' AND THE CASE THAT MAKES THE GUARD LOAD-BEARING RATHER THAN BELT AND
@@ -290,6 +289,31 @@ program main(args)
     refused("a directory with a generous count is refused, not a core dump", error)
     if error then
         error.clear()
+    end if
+
+    ' A POSITION OF EXACTLY 2^63: the bound was `> LONG_MAX`, and LONG_MAX as a
+    ' double rounds UP to 2^63, so this one value passed the check to a cast
+    ' that cannot hold it and was refused by the OS instead ("Invalid
+    ' argument"; found by clang 20's -Wimplicit-const-int-float-conversion,
+    ' 2026-11-18). Refused either way, so the check is the MESSAGE.
+    '
+    ' THE MESSAGE IS READ FROM A SNAPSHOT, `e = error`: a bare `error` is
+    ' acknowledged by the read, so after `refused(label, error)` an
+    ' `if error then` is false and its check never runs. The directory check
+    ' above had never run for that reason (found here, 2026-11-18); the
+    ' `if error then error.clear()` blocks elsewhere in this list are dead
+    ' code of the same kind, and harmless.
+    r = read_at(f, pow(2, 63), 1)
+    e = error
+    refused("a position of 2^63 is refused", e)
+    if e then
+        check("as too large, before the OS sees it", e.message, "read_at position is too large")
+    end if
+    overwrite(f, "z", pow(2, 63))
+    e = error
+    refused("an overwrite at 2^63 is refused", e)
+    if e then
+        check("as beyond the end, before the OS sees it", e.message, "overwrite position is beyond end of file")
     end if
 
     ' THE CONTROL for the whole block: without it every refusal above is

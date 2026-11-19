@@ -718,6 +718,10 @@ typedef struct {
 %define api.pure full
 %param {gb_parse_ctx *ctx}
 %locations
+/* A pure parser keeps its error count in a local, `yynerrs`, which Bison
+ * counts and this grammar never reads (errors go to ctx's sink); clang 20 says
+ * "set but not used" of the generated parser. Read here, once, at the start. */
+%initial-action { (void)yynerrs; }
 
 /* Emitted after YYSTYPE/YYLTYPE are defined (so the pure-parser signatures are
  * legal here) and before yyparse — where the grammar actions that call

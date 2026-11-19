@@ -10486,7 +10486,16 @@ static void library_import(const char *name, const char *path, const char *alias
 
     if (match_count == 0) {
         char message[256];
-        snprintf(message, sizeof(message), "library not found: %s", name);
+        /* `load xlsx` read as "this build has no xlsx" (DOGFOOD #10): a
+         * native module that answers without a load is part of gbasic, not a
+         * file to find, and the line asking for one is the whole mistake. */
+        if (library_is_native_qualifier(name) && !eval_module_needs_load(name)) {
+            snprintf(message, sizeof(message),
+                     "%s needs no `load`: it is part of gbasic, not a library file. Remove this line",
+                     name);
+        } else {
+            snprintf(message, sizeof(message), "library not found: %s", name);
+        }
         runtime_error_raise(message, 1003, "use");
         library_matches_clear(matches, match_count);
         return;
@@ -13022,7 +13031,7 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(position_value);
             return value_null();
         }
-        if (position_value.as.num.value > GB_OFF_MAX) {
+        if (position_value.as.num.value >= GB_OFF_LIMIT) {
             runtime_error_raise("overwrite position is beyond end of file", 1004, "file operation");
             value_free(file_value);
             value_free(text_value);
@@ -13169,7 +13178,7 @@ static Value eval_file_call(AstExpr *expr) {
                 value_free(count_value);
                 return value_null();
             }
-            if (numbers[i].as.num.value > GB_OFF_MAX) {
+            if (numbers[i].as.num.value >= GB_OFF_LIMIT) {
                 char message[128];
                 snprintf(message, sizeof(message), "read_at %s is too large", which[i]);
                 runtime_error_raise(message, 1004, "file operation");

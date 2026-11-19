@@ -713,6 +713,13 @@ typedef long long gb_off_t;
 #else
 #define GB_OFF_MAX LONG_MAX
 #endif
+/* The first double PAST the largest offset, for checking a gBASIC number
+ * against it: GB_OFF_MAX itself is no bound for a double, since 2^63 - 1
+ * rounds UP to 2^63 and `x > GB_OFF_MAX` then let exactly 2^63 through, to a
+ * cast that cannot hold it (clang's -Wimplicit-const-int-float-conversion,
+ * 2026-11-18; `read_at(f, 2^63, 1)` said "Invalid argument"). Refuse
+ * `x >= GB_OFF_LIMIT`. */
+#define GB_OFF_LIMIT ((double)GB_OFF_MAX + 1.0)
 int gb_fseek(FILE *file, gb_off_t offset, int whence);
 gb_off_t gb_ftell(FILE *file);
 
