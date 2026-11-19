@@ -29,6 +29,13 @@ reader sees.
   the last `close` returns, so a program that will delete the database's
   directory closes with `{ wait }`, which answers once the owner has stopped.
   The reference now says so; the behaviour is unchanged.
+- **`pg.insert` and `odbc.insert`**: many rows in one call, the bulk load
+  enterprise data work most needs. `pg.insert` goes through Postgres's `COPY`
+  (14-22x a loop of `exec` here); `odbc.insert` uses parameter arrays (2x
+  with SQLite3, 8x with PostgreSQL's driver). Both follow `gsql.insert`'s
+  contract: an array of records, all or nothing, the refused row named by
+  `error.details.index`. Every row names the same columns
+  (`docs/bulk_insert_design.md`).
 - **`gbasic --modules`** lists each part a build can leave out (`odbc`,
   `ui`, `tls`, ...), whether this build has it, and what it needs.
   `install.sh` now reports from it. It used to read `--capabilities`, which

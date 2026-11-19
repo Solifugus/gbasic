@@ -178,6 +178,17 @@ do
     fi
 done
 
+printf 'TIER insert: many rows through parameter arrays\n'
+# odbc.insert (docs/bulk_insert_design.md §4): parameter arrays, all or
+# nothing, the refused row named exactly even past a batch of 1000. Its speed
+# against a loop of exec is PRINTED, not asserted: it is the driver's to
+# give (2x with SQLite3, which is in-process; 8x with psqlODBC on a socket,
+# measured 2026-11-18), and the claim the reference makes is only that.
+run_fixture tests/odbc_insert_test.bas 36 'odbc_insert_test'
+speed="$(sed -n 's/^speed: insert \([0-9.e-]*\) s, exec loop \([0-9.e-]*\) s$/\1 \2/p' "$work/out")"
+[ -n "$speed" ] && printf '  (insert against a loop of exec on this driver: %s)\n' \
+    "$(printf '%s\n' "$speed" | awk '{ if ($1 > 0) printf "%.1fx", $2 / $1 }')"
+
 printf 'TIER bytes and fractions (book gaps G49, G47)\n'
 # A binary column comes back as its BYTES, where the whole query was refused
 # (a rowversion made `select *` fail); and a timestamp's fraction, cut to the
@@ -419,7 +430,7 @@ fi
 
 printf 'TIER valgrind\n'
 if vg_available; then
-    for fixture in tests/odbc_test.bas tests/odbc_refusal_test.bas; do
+    for fixture in tests/odbc_test.bas tests/odbc_refusal_test.bas tests/odbc_insert_test.bas; do
         # The driver manager and the driver itself leak by design (dlopen'd
         # libraries, one-time catalogs), so this tier asserts NO INVALID
         # ACCESS rather than no leak: every real defect in this module so far
@@ -431,7 +442,7 @@ if vg_available; then
         # "anything inside a driver", because a blanket rule would also hide
         # uninitialised data WE passed in -- the very thing this tier is for.
         if VG_EXTRA=--suppressions=tests/odbc.supp \
-                vg_run_access_only ./gbasic "$fixture" >/dev/null 2>"$work/vg"; then
+                GB_INSERT_QUICK=1 vg_run_access_only ./gbasic "$fixture" >/dev/null 2>"$work/vg"; then
             pass "valgrind clean: $fixture"
         else
             fail "valgrind clean: $fixture"

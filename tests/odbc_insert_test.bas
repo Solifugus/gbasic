@@ -121,24 +121,27 @@ check("a call inside a committed transaction is kept", ids(db), [1, 2, 3, 200, 2
 check("an empty array sends nothing", db.insert("gb_oi", []), { command: "INSERT", rows_affected: 0 })
 
 ' --- the speed, as a ratio (run_odbc.sh prints it) ---------------------------
-x = db.exec("delete from gb_oi")
-rows = []
-for i = 1 to 20000
-    rows = append(rows, { id: i, amt: i * 1.25, note: "row " + string(i) })
-end for
-t0 = monotonic()
-r = db.insert("gb_oi", rows)
-t1 = monotonic()
-check("20000 rows", r.rows_affected, 20000)
-x = db.exec("delete from gb_oi")
-t2 = monotonic()
-x = db.begin()
-for each row in rows
-    x = db.exec("insert into gb_oi (id, amt, note) values (?, ?, ?)", [row.id, row.amt, row.note])
-end for
-x = db.commit()
-t3 = monotonic()
-print "speed: insert " + string(t1 - t0) + " s, exec loop " + string(t3 - t2) + " s"
+' (skipped under valgrind, GB_INSERT_QUICK=1: the tier there is about memory)
+if is_unknown(env("GB_INSERT_QUICK")) then
+    x = db.exec("delete from gb_oi")
+    rows = []
+    for i = 1 to 20000
+        rows = append(rows, { id: i, amt: i * 1.25, note: "row " + string(i) })
+    end for
+    t0 = monotonic()
+    r = db.insert("gb_oi", rows)
+    t1 = monotonic()
+    check("20000 rows", r.rows_affected, 20000)
+    x = db.exec("delete from gb_oi")
+    t2 = monotonic()
+    x = db.begin()
+    for each row in rows
+        x = db.exec("insert into gb_oi (id, amt, note) values (?, ?, ?)", [row.id, row.amt, row.note])
+    end for
+    x = db.commit()
+    t3 = monotonic()
+    print "speed: insert " + string(t1 - t0) + " s, exec loop " + string(t3 - t2) + " s"
+end if
 x = db.exec("drop table gb_oi")
 
 print "checks: " + string(tally.checks)

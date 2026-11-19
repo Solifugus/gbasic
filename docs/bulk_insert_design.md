@@ -1,6 +1,6 @@
 # Bulk insert into PostgreSQL and ODBC databases
 
-**Status:** Proposal, 2026-11-18, being built for 0.13.0. It is G2 of
+**Status:** Shipped 2026-11-18 on master, for 0.13.0 (§6 says what building it found). It is G2 of
 `docs/enterprise_data_review.md`, ruled for 0.13.0 the same day.
 
 ## 1. The gap
@@ -120,3 +120,30 @@ the caller's row, `pg.insert: rows[1234]: ...`, with `error.details.index`
   - `pg`: the opt-in `run_postgres.sh` (`GBASIC_POSTGRES_TEST=1`), which the
     gate skips. That is a stated limit: `pg.insert` is proven by a run here
     before each push that touches it.
+
+## 6. What building it found
+
+- **No driver could name the failed row, two ways.** SQLite3's ODBC driver
+  leaves `SQL_ATTR_PARAM_STATUS_PTR` untouched and counts as processed only
+  the rows before the failure, where the specification counts the failed
+  one. psqlODBC marks every row of a failed batch as an error. So a failed
+  batch in a transaction of the call's own is rolled back and run again a
+  row at a time; the failure then names its row exactly. Inside the
+  caller's transaction, a row is named only when the status array marks
+  exactly one. Held by `odbc_insert_test`'s third-batch row (2100), which a
+  perturbation removing the rerun turned red.
+- **Money and numbers share a column.** The first rule refused a money
+  value beside an exact decimal in one column. Both travel as decimal text,
+  so a column holding either is declared DECIMAL with its largest scale.
+- **`exec` refuses `unknown` as a parameter** in `pg` and `odbc`, though
+  G-SQL and these verbs take it as NULL. That predates this work; it is
+  recorded in DOGFOOD (2026-11-18) for the sweep.
+- **Measured, 20 000 rows against a loop of `exec` in one transaction:**
+  - `pg.insert` over `COPY`: 14x to 22x (`run_postgres.sh` asserts at least
+    3x);
+  - `odbc.insert`: 2.1x on SQLite3 (in-process, so there is no round trip to
+    save) and 8x on psqlODBC over the local socket.
+
+  MariaDB and FreeTDS were not run: no credentials here. Valgrind finds no
+  invalid access in either fixture.
+

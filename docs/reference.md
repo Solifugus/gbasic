@@ -3347,6 +3347,25 @@ The module provides:
   (measured on the SQLite3 ODBC driver: 158 MB capped against 678 for a
   million rows, the rest being the driver's).
 - `connection.exec(sql[, params])` (`odbc.exec`) → `{command, rows_affected}`
+- `connection.insert(table, rows)` (`odbc.insert`) *(after 0.12.0)* — many
+  rows in one call, through ODBC parameter arrays: one prepared `INSERT`,
+  bound a column at a time in batches of 1 000. The gain is the driver's:
+  2x a loop of `exec` with the SQLite3 driver (in-process), 8x with
+  PostgreSQL's on a socket (measured 2026-11-18; `run_odbc.sh` prints the
+  ratio for its driver and does not assert it). The contract is
+  `pg.insert`'s: every row names the same columns, the answer is
+  `{ command: "INSERT", rows_affected }`, a NULL is `unknown` or `nothing`,
+  and one refused row undoes the whole call and is named,
+  `odbc.insert: rows[1234]: ...` with `error.details.index`. The row is
+  exact even where the driver cannot say which row failed: the call is
+  rolled back and run again a row at a time to find it. **A column is bound
+  as one kind**: numbers and money share one (declared DECIMAL with the
+  largest scale any row needs, when any row is money or an exact decimal);
+  a column whose rows mix text and numbers is refused before anything is
+  sent. **Inside the caller's transaction** there is no portable savepoint,
+  so a refused call says to roll the transaction back. A driver without
+  parameter arrays gets the same statement once per row, in one transaction
+  (`docs/bulk_insert_design.md`).
 - `connection.begin()` (`odbc.begin`)
 - `connection.commit()` (`odbc.commit`)
 - `connection.rollback()` (`odbc.rollback`)
