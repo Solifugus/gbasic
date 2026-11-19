@@ -1,8 +1,9 @@
 # Closures: a review, and a recommendation
 
-**Status:** Review, 2026-11-18, for Matthew to decide (§5). Matthew,
-2026-11-18: "I am not sure we need or want it. We should do a review and
-decide."
+**Status:** Ruled 2026-11-18: **closures are declined** (Matthew: "let's
+decline them then"). §5's other half, letting a handler run in the frame
+that declares it, goes to the "less work for the developer" sweep as a
+design note. The review stands as the reason.
 
 ## 1. Where things stand
 

@@ -1,7 +1,11 @@
 # The EDGAR suite: where it stands
 
-**Status:** Review, 2026-11-18, for Matthew (§4). Matthew, 2026-11-18: "We
-should also take a review of EDGAR when we get a chance."
+**Status:** Ruled 2026-11-18. Matthew: "one of the books planned will
+actually make heavy use of EDGAR when we get to it. It will be proven then
+for sure." So the live check (§4 item 1) and the verification of the 33
+claims wait for that book, and run against the live SEC then. Until then,
+the plan stays as it is. Matthew, 2026-11-18: "We should also take a review
+of EDGAR when we get a chance."
 
 ## 1. What was planned, and what was claimed
 

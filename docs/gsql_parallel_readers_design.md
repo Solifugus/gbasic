@@ -1,8 +1,12 @@
 # G-SQL: parallel readers
 
-**Status:** Proposal, 2026-11-18. Nothing here is built. §7 holds the questions
-for Matthew. Matthew, 2026-11-18: parallel readers are "important". He said
-the same of read concurrency on 2026-11-01 (`gsql_slicing_design.md`).
+**Status:** Ruled 2026-11-18. Matthew accepted §7 as proposed ("yeah..
+great"): option B, a reader forked per long read (Q1); the reads it takes
+(Q2); the core count minus two, at least one, set per database (Q3); reads
+inside a write transaction kept sliced for now (Q4); and the replica (D) as
+its own item after B (Q5). Increment 1 is done (§5); the build is for
+0.13.0. Matthew, 2026-11-18: parallel readers are "important". He said the
+same of read concurrency on 2026-11-01 (`gsql_slicing_design.md`).
 
 ## 1. What slicing did, and what it did not
 

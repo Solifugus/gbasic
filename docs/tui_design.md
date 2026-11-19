@@ -1,7 +1,9 @@
 # A TUI: a terminal layer, then a third `ui` backend
 
 **Status:** Proposal, 2026-11-18. Nothing here is built. §8 holds the
-questions for Matthew. Matthew, 2026-11-18:
+questions for Matthew. **Q1 ruled the same day: our own terminal layer, not
+ncurses** (Matthew: "our own terminal layer sounds fine ... time to leave
+that to the history books"). Q2 to Q6 are open. Matthew, 2026-11-18:
 
 > On the TUI. It is important to have one. We should design one. My first
 > thought is to build a basic TUI system that can work across Linux, Mac, and
