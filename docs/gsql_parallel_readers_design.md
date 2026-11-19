@@ -149,13 +149,44 @@ amount of memory touched forks a child, best of 7:
   buffers and its cache misses. N readers can use up to N times a read's
   budget. This is the cap's real reason.
 
-These figures are from a synthetic process, not the owner. Increment 1
-measures the owner itself.
+Those figures are from a synthetic process. **Through the real engine
+(2026-11-18)**, `research/gsql/fork_readers.c` opens a store in process, loads
+the rows, and runs `SELECT b, count(*), sum(c), min(d) FROM t GROUP BY b`.
+That read touches every row, and the SQL layer folds them with gBASIC
+evaluating each operator. It runs N times, one after another (one owner
+thread), against N children forked at once, each running it on the state it
+inherited:
+
+| rows | resident | one read | N = 2 | N = 4 | N = 8 | fork |
+|---|---|---|---|---|---|---|
+| 10⁵ | 44 MB | 0.053 s | 1.74x | 3.20x | 5.34x | 0.8 to 1.1 ms |
+| 10⁶ | 104 MB | 0.59 s | 1.73x | 2.31x | 3.38x | 3.6 to 4.0 ms |
+
+(The N columns are throughput against serial: serial time over forked time.)
+
+- **Every child answered exactly the parent's pre-fork result**, while the
+  parent inserted 1 000 rows during each round. So the fork is a snapshot,
+  as §3 claims: 0 wrong answers in 15 forked reads at each size.
+- **The fork cost what §5's table predicted** for the resident size: about
+  4 ms at 104 MB.
+- **N = 1 is slightly slower forked** (0.93x): the fork and the pipe, paid
+  only by a read that has already run longer than a slice.
+- **The speedup flattens on this machine for a reason of its own.** It is an
+  Intel Core Ultra 7 155H: 6 performance cores (12 threads, cpus 0-11) and
+  10 efficiency cores (cpus 12-21), in a laptop whose clock drops as more
+  cores are busy. Past 6 readers, the extra ones run on the slow cores. The
+  machine was otherwise idle (load 1.7). A server with uniform cores should
+  scale further; that is not measured here.
+
+Not yet measured: the real owner, with batches relayed through it and point
+reads beside the forked readers. That is increment 2's tier.
 
 ## 6. Increments
 
-1. **A probe through the real owner**, extending `research/gsql/stall.c`. Fork
-   the owner mid-statement and measure:
+1. **A probe through the real engine.** *Done 2026-11-18, §5: forked readers
+   pay for themselves (3.4x at 8 readers at 10⁶ rows on this laptop).* The
+   owner-level measurement, extending `research/gsql/stall.c`, folds into
+   increment 2. Fork the owner mid-statement and measure:
    - the fork at the owner's real resident size;
    - N concurrent `GROUP BY`s over 10⁶ rows, wall time against the same N
      sliced, for N = 1, 2, 4, 8;
