@@ -133,3 +133,27 @@ if [ -n "$capped" ] && [ -n "$whole" ] && [ $((capped * 5)) -lt "$whole" ]; then
 else
     printf '%s\n' "$mm"; printf 'FAIL max_rows memory (the rows past the cap were held)\n'; exit 1
 fi
+
+# pg.insert (docs/bulk_insert_design.md): COPY, all or nothing, the refused
+# row named; read back by Postgres. THE SPEED IS A RATIO, the same 20,000
+# rows through insert and through a loop of exec in one transaction (the
+# loop's best case), so a slow machine scales both sides. Measured 14-20x
+# here on a local socket (2026-11-18); a network widens it.
+if ./gbasic tests/postgres_insert.bas >"$stdout_file" 2>"$stderr_file"; then
+    speed="$(sed -n 's/^speed: insert \([0-9.e-]*\) s, exec loop \([0-9.e-]*\) s$/\1 \2/p' "$stdout_file")"
+    ratio="$(printf '%s\n' "$speed" | awk '{ if ($1 > 0) printf "%.1f", $2 / $1 }')"
+    if grep -q '^mismatches: 0$' "$stdout_file" \
+       && [ "$(sed -n 's/^checks: //p' "$stdout_file")" -ge 35 ] \
+       && awk -v r="${ratio:-0}" 'BEGIN { exit !(r >= 3) }'; then
+        printf 'PASS tests/postgres_insert.bas (%s checks; COPY %sx a loop of exec)\n' \
+            "$(sed -n 's/^checks: //p' "$stdout_file")" "$ratio"
+    else
+        printf 'FAIL tests/postgres_insert.bas (ratio %s, wanted at least 3)\n' "${ratio:-none}"
+        grep -E '^MISMATCH|^checks|^mismatches|^speed' "$stdout_file"
+        exit 1
+    fi
+else
+    status=$?
+    cat "$stderr_file"
+    exit "$status"
+fi

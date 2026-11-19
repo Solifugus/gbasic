@@ -3233,6 +3233,21 @@ The module provides:
   one took 655. In a transaction the cancel aborts it, as any error does in
   PostgreSQL. Pass `[]` for no parameters.
 - `connection.exec(sql[, params])` (`pg.exec`)
+- `connection.insert(table, rows)` (`pg.insert`) *(after 0.12.0)* — many rows
+  in one call, through Postgres's `COPY`. It is about 20 times a loop of
+  `exec` in one transaction, measured on a local socket (`run_postgres.sh`
+  holds it to at least 3 times); over a network the gap widens. `rows` is an array of records keyed by column name, and **every
+  row names the same columns**: a column every row leaves out takes its
+  default, and a NULL is written `unknown`. Each value is sent as `exec` sends
+  a parameter, so it means the same thing either way. The answer is
+  `{ command: "INSERT", rows_affected }`. **All or nothing:** one refused row
+  undoes the whole call, and the error names the caller's row,
+  `pg.insert: rows[1234]: ...`, with `error.details.index` 1234. Inside a
+  transaction the call is a savepoint, so only the call is undone. A row that
+  is not a record, or names other columns than `rows[0]`, is refused before
+  anything is sent. `table` may be `schema.table`; each part is quoted, so it
+  is the table's own name, with its case and spaces
+  (`docs/bulk_insert_design.md`).
 - `connection.begin()` (`pg.begin`)
 - `connection.commit()` (`pg.commit`)
 - `connection.rollback()` (`pg.rollback`)
