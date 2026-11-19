@@ -48,7 +48,9 @@ Rejected alternatives:
   Crosses the "earn a C module" bar for no benefit the site doesn't already get
   from SVG.
 - **ASCII/Unicode terminal charts** — a real want, but that is the *TUI*
-  rendering concern and belongs with the planned unified-UI work, not here.
+  rendering concern, not a chart's. (The unified GUI/TUI/MCP track this once
+  pointed to was dropped on 2026-11-18; whisker is the basis for any such UI
+  now.)
   Sparklines (§14 Phase 4) are the one text-mode primitive worth folding in
   because dossiers want them inline in tables.
 
@@ -389,8 +391,7 @@ Off by default, so every existing golden is byte-identical.
   (§10a delivers the opt-in this line anticipated; the core stays static and
   JS-free);
 - raster/PNG export (would require a C imaging module — deliberately declined);
-- terminal/ASCII rendering (belongs to the unified-UI/TUI track, except inline
-  sparklines);
+- terminal/ASCII rendering (not a chart's concern, except inline sparklines);
 - 3D and geographic projections;
 - statistical computation — the library *plots* a fit line but does not compute
   it; the caller passes fitted values (keeps `chart` and `stats` decoupled).
@@ -430,8 +431,9 @@ string into its HTML body; no file, no asset pipeline.
    HTML document as a thin convenience.
 3. **Number formatting** — one sane fixed default now (fixed decimal rules,
    thousands separators on axis labels); per-axis format options later.
-4. **Dark mode / theming** — deferred; light-only v1, until the unified-UI
-   theming story exists.
+4. **Dark mode / theming** — deferred; light-only v1. (It waited on a
+   unified-UI theming story; that track was dropped on 2026-11-18, so a dark
+   mode would be a chart option of its own.)
 5. **Scope of v1** — the roadmap's own phasing: Phase 1 is line + scatter only
    (which alone unblocks the EDGAR trend and stats fit-plot cases); bar +
    histogram are Phase 2.

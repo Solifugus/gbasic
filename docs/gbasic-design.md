@@ -14,7 +14,8 @@ Scope and companion documents:
 - `tutorial.md` — a guided introduction.
 - Library/module designs, each kept separate: `sqlite_design.md`,
   `postgres_design.md`, `webclient_design.md`, `webserver_design.md`,
-  `gui_design.md`.
+  `ui_design.md` (the GUI; `gui_design.md`, the GTK design, was removed with
+  GTK).
 - `historical_development_archive.md` — completed-phase history.
 - `gbasic_dogfood_notes.md` — running list of language/library friction found
   while building real programs.
