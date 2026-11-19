@@ -329,6 +329,31 @@ else
     fi
 fi
 
+# --modules: what THIS build has (install.sh reports from it). The built rows
+# are measured here; run_packaging.sh's lean build measures the left-out ones.
+if mc=$(bash tests/modules_check.sh "$PWD/gbasic" 2>&1); then
+    ok "--modules agrees with what this binary does: $(printf '%s' "$mc" | tail -1)"
+else
+    bad "--modules disagrees with this binary" "$(printf '%s' "$mc" | head -5)"
+fi
+# CONTROL: a binary whose --modules lies (every answer flipped) must disagree
+liar="$(mktemp -d)/gbasic"
+cat > "$liar" <<LIAR
+#!/usr/bin/env bash
+if [ "\$1" = --modules ]; then
+    "$PWD/gbasic" --modules | sed -e 's/\tbuilt\t/\tWAS\t/' -e 's/\tleft out\t/\tbuilt\t/' -e 's/\tWAS\t/\tleft out\t/'
+else
+    exec "$PWD/gbasic" "\$@"
+fi
+LIAR
+chmod +x "$liar"
+if mc=$(bash tests/modules_check.sh "$liar" 2>&1); then
+    bad "CONTROL: a --modules with every answer flipped passed the check" "$(printf '%s' "$mc" | tail -1)"
+else
+    ok "CONTROL: a --modules with every answer flipped is caught: $(printf '%s' "$mc" | tail -1)"
+fi
+rm -rf "$(dirname "$liar")"
+
 printf '\nchecks: %d\n' "$checks"
 if [ "$status" = 0 ]; then printf 'mismatches: 0\n'; else printf 'FAILED\n'; fi
 exit "$status"

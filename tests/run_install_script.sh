@@ -5,7 +5,7 @@
 # Tiers:
 #   1. LIST -- every row of tools/deps.list well formed, and its pkg-config
 #      probes the Makefile's exactly (check-deps.sh's self-check, both ways).
-#   2. DISTRO -- os-release files of eleven distributions read as the family
+#   2. DISTRO -- os-release files of twelve distributions read as the family
 #      whose package names apply, or as unknown.
 #   3. COMMANDS -- with every library hidden from pkg-config, a dry run's
 #      install command for each family, and what --minimal, --qt, --no-qt and
@@ -40,6 +40,7 @@ osr ubuntu ubuntu debian;   osr debian debian "";        osr pop pop "ubuntu deb
 osr mint linuxmint "ubuntu debian"; osr fedora fedora ""; osr rocky rocky "rhel centos fedora"
 osr alma almalinux "rhel centos fedora"; osr arch arch ""; osr manjaro manjaro arch
 osr endeavour endeavouros arch; osr suse opensuse-tumbleweed "opensuse suse"
+osr rhel rhel "fedora"; printf 'VERSION_ID="10.3"\n' >> "$work/rhel.os"
 
 printf 'TIER list: tools/deps.list is well formed and is the Makefile'"'"'s\n'
 bad=$(grep -v '^[[:space:]]*#' tools/deps.list | grep -v '^[[:space:]]*$' | awk -F'|' '
@@ -69,15 +70,28 @@ has "DRIFT: the Makefile probes zlib" "$out" && pass "CONTROL: with zlib's row r
     fail "CONTROL: the self-check did not see zlib's row removed"
 
 printf 'TIER distro: os-release read as the family whose names apply\n'
-want="ubuntu:debian debian:debian pop:debian mint:debian fedora:fedora rocky:fedora alma:fedora arch:arch manjaro:arch endeavour:arch suse:unknown"
+want="ubuntu:debian debian:debian pop:debian mint:debian fedora:fedora rocky:fedora alma:fedora arch:arch manjaro:arch endeavour:arch rhel:fedora suse:unknown"
 wrong=""
 for pair in $want; do
     got=$(GB_OS_RELEASE="$work/${pair%%:*}.os" bash -c '. tools/deps.sh; deps_distro')
     [ "$got" = "${pair#*:}" ] || wrong="$wrong ${pair%%:*}=$got"
 done
-[ -z "$wrong" ] && pass "11 distributions, each its family (openSUSE unknown)" || fail "read wrongly:$wrong"
+[ -z "$wrong" ] && pass "12 distributions, each its family (openSUSE unknown)" || fail "read wrongly:$wrong"
 [ "$(GB_OS_RELEASE="$work/none.os" bash -c '. tools/deps.sh; deps_distro')" = unknown ] &&
     pass "and no os-release at all is unknown" || fail "a missing os-release was not unknown"
+# RHEL and its rebuilds keep some -devel packages in a repository shipped
+# disabled (unixODBC-devel on RHEL 10.3, gbasic books 2026-11-18); install.sh
+# names the command that enables it, and nothing on other families
+hint() { GB_OS_RELEASE="$work/$1.os" bash -c '. tools/deps.sh; deps_extra_repo_hint'; }
+[ "$(hint rhel)" = "sudo subscription-manager repos --enable codeready-builder-for-rhel-10-$(uname -m)-rpms" ] &&
+[ "$(hint rocky)" = "sudo dnf config-manager --set-enabled crb" ] &&
+[ "$(hint alma)" = "sudo dnf config-manager --set-enabled crb" ] &&
+    pass "RHEL is told CodeReady Builder's command (its major version, this arch), Rocky and Alma crb" ||
+    fail "repository hint: rhel [$(hint rhel)] rocky [$(hint rocky)] alma [$(hint alma)]"
+quiet=""
+for d in fedora ubuntu debian arch suse; do hint "$d" >/dev/null && quiet="$quiet $d"; done
+[ -z "$quiet" ] && pass "and no other family is told of a repository (Fedora's packages need none)" ||
+    fail "a repository hint on:$quiet"
 
 printf 'TIER commands: what a dry run would install, every library hidden\n'
 # pkg-config finds nothing, so every library row is missing; the tools are here
@@ -133,10 +147,24 @@ mkdir -p "$work/elsewhere"
 printf 'load notation\nprint notation.from_text(notation.to_text({ v: 41 + 1 })).v\n' > "$work/elsewhere/t.bas"
 got=$(cd "$work/elsewhere" && env -u GBASIC_PATH "$work/p/q/bin/gbasic" t.bas 2>&1)
 [ "$got" = 42 ] && pass "  checked from here: the installed binary finds its stdlib" || fail "the installed binary said: $got"
+# THE REPORT IS THE INSTALLED BINARY'S --modules, which tests/modules_check.sh
+# holds to what the binary does. This check compared it with --capabilities
+# until 2026-11-18, and so held the report to the very list that lists every
+# module whatever the build has: it passed while install.sh told a RHEL
+# machine with no unixODBC that ODBC was built (gbasic books).
 mods=$(printf '%s\n' "$o" | sed -n 's/^Optional modules built: //p')
-wantm=$(./gbasic --capabilities | cut -f1 | grep -xE 'sqlite|pg|odbc|ldap|webclient|http|smtp|xml|xlsx|zip|qt' | tr '\n' ' ')
-[ "$(printf '%s\n' $mods | sort | tr '\n' ' ')" = "$(printf '%s\n' $wantm | sort | tr '\n' ' ')" ] && pass "  the modules it names are the ones --capabilities reports ($(echo $mods | wc -w))" ||
-    fail "modules named [$mods], --capabilities [$wantm]"
+wantm=$("$work/p/q/bin/gbasic" --modules | awk -F'\t' '$2 == "built" { print $1 }' | tr '\n' ' ')
+[ "$(printf '%s\n' $mods | sort | tr '\n' ' ')" = "$(printf '%s\n' $wantm | sort | tr '\n' ' ')" ] && pass "  the modules it names built are the installed binary's --modules ($(echo $mods | wc -w))" ||
+    fail "modules named [$mods], --modules [$wantm]"
+# and what it lists left out is exactly the rest, each with what it needs
+# (none, on a machine with every library: then there is no such line at all)
+gotl=$(printf '%s\n' "$o" | sed -n 's/^    \([a-z_]*\) (needs .*)$/\1/p' | sort | tr '\n' ' ')
+wantl=$("$work/p/q/bin/gbasic" --modules | awk -F'\t' '$2 == "left out" { print $1 }' | sort | tr '\n' ' ')
+if [ "$gotl" = "$wantl" ] && { [ -n "$wantl" ] || ! has "Left out" "$o"; }; then
+    pass "  and the ones it lists left out are --modules' left-out rows [${wantl:-none}]"
+else
+    fail "left out listed [$gotl], --modules [$wantl]"
+fi
 o=$(./install.sh --no-install --prefix "$work/never" < /dev/null 2>&1); rc=$?
 [ "$rc" = 0 ] && [ ! -e "$work/never" ] && has "Not installed (--no-install)" "$o" &&
     pass "--no-install builds and installs nothing" || fail "--no-install rc $rc: $(printf '%s' "$o" | tail -3)"
@@ -177,7 +205,7 @@ else
             rc=$?
             caps=$(sed -n 's/^CAPS //p' "$log")
             built=$(sed -n 's/^Optional modules built: //p' "$log")
-            left=$(sed -n 's/^Left out (their libraries are not installed)://p' "$log")
+            left=$(sed -n 's/^    \([a-z_]*\) (needs .*/\1/p' "$log" | tr '\n' ' ')
             unpk=$(sed -n 's/^Not packaged on this release, so left out://p' "$log" | grep -oE '[a-z0-9.+-]+ \(' | tr -d ' (' | sort | tr '\n' ' ')
             if [ "$rc" = 0 ] && [ -n "$caps" ]; then
                 pass "$img: installed; built:$built${left:+; left out:$left}"

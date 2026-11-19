@@ -27,6 +27,21 @@ deps_distro() {
     echo unknown
 }
 
+# The command that enables the repository RHEL and its rebuilds keep some
+# -devel packages in (CodeReady Builder; "crb" on Alma, Rocky and CentOS
+# Stream), or nothing and status 1 elsewhere. Fedora itself needs none.
+deps_extra_repo_hint() {
+    local f="${GB_OS_RELEASE:-/etc/os-release}" id="" ver=""
+    [ -r "$f" ] || return 1
+    id=$(. "$f" 2>/dev/null; printf '%s' "${ID:-}")
+    ver=$(. "$f" 2>/dev/null; printf '%s' "${VERSION_ID:-}")
+    case "$id" in
+        rhel) echo "sudo subscription-manager repos --enable codeready-builder-for-rhel-${ver%%.*}-$(uname -m)-rpms" ;;
+        almalinux|rocky|centos) echo "sudo dnf config-manager --set-enabled crb" ;;
+        *) return 1 ;;
+    esac
+}
+
 deps_present() {
     case "$1" in
         tool) command -v "$2" >/dev/null 2>&1 ;;

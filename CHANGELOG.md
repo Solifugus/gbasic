@@ -29,6 +29,18 @@ reader sees.
   the last `close` returns, so a program that will delete the database's
   directory closes with `{ wait }`, which answers once the owner has stopped.
   The reference now says so; the behaviour is unchanged.
+- **`gbasic --modules`** lists each part a build can leave out (`odbc`,
+  `ui`, `tls`, ...), whether this build has it, and what it needs.
+  `install.sh` now reports from it. It used to read `--capabilities`, which
+  lists every module whatever the build has, so on a machine with no unixODBC
+  it reported ODBC as built, and the first `load odbc` was refused (found on
+  RHEL 10.3 by the gBASIC books). Since 0.12.0 renamed `qt` to `ui`, it would
+  also have reported Qt as left out on every machine. Each row is held to what
+  the binary does, in a full build and a lean one.
+- **`install.sh` on RHEL, Alma and Rocky** names the command that enables
+  CodeReady Builder (`crb`) when a package is left out, since unixODBC-devel
+  is there and those repositories ship disabled. It names the command and
+  does not run it.
 - **The build prints no warnings on clang 20** (four before: two were the
   2^63 bound, one an unused counter in G-SQL's LSM, one Bison's unread
   `yynerrs`).

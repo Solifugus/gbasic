@@ -9881,6 +9881,37 @@ void gb_print_capabilities(FILE *out) {
     }
 }
 
+/* Emitted by `gbasic --modules`: each part of gBASIC that a build can leave
+ * out, whether THIS build has it, and what it needs. --capabilities cannot
+ * answer that (it lists every module whatever the build has, by design), and
+ * install.sh reported "built" from it for modules the build lacked: on RHEL
+ * with no unixODBC, ODBC was reported built and `load odbc` refused (gbasic
+ * books, 2026-11-18). Each row's switch is the one guarding that module's
+ * "not available in this build" refusal, so the two cannot disagree;
+ * tests/run_capabilities.sh and run_packaging.sh hold them to each other. */
+void gb_print_modules(FILE *out) {
+    static const struct { const char *name; int built; const char *needs; } rows[] = {
+        { "gsql",          GBASIC_GSQL,                 "a POSIX system" },
+        { "sqlite",        HAVE_SQLITE3,                "SQLite 3" },
+        { "pg",            HAVE_LIBPQ,                  "libpq" },
+        { "odbc",          HAVE_ODBC,                   "unixODBC" },
+        { "ldap",          HAVE_LDAP,                   "OpenLDAP" },
+        { "webclient",     HAVE_LIBCURL,                "libcurl" },
+        { "http",          HAVE_LIBCURL,                "libcurl" },
+        { "smtp",          HAVE_LIBCURL,                "libcurl" },
+        { "xml",           HAVE_LIBXML2,                "libxml2" },
+        { "xlsx",          HAVE_ZLIB && HAVE_LIBXML2,   "zlib and libxml2" },
+        { "zip",           HAVE_ZLIB,                   "zlib" },
+        { "ui",            HAVE_QT,                     "Qt 6" },
+        { "tls",           HAVE_LIBSSL,                 "OpenSSL's libssl" },
+        { "crypto",        HAVE_LIBCRYPTO,              "OpenSSL's libcrypto" },
+        { "password_hash", GB_PASSWORD_HASH,            "libxcrypt (or a libc with yescrypt)" },
+    };
+    for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
+        fprintf(out, "%s\t%s\t%s\n", rows[i].name, rows[i].built ? "built" : "left out", rows[i].needs);
+    }
+}
+
 /* For the tripwire: walk the table from outside this file. */
 const char *gb_capability_at(size_t index, const char **caps) {
     size_t n = sizeof(gb_capability_table) / sizeof(gb_capability_table[0]);

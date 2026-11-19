@@ -41,6 +41,7 @@ int eval_is_native_module(const char *name);
  * `--capabilities` so a scanner elsewhere DERIVES the list rather than
  * hardcoding it. gb_capability_at walks it for tests/run_capabilities.sh. */
 void gb_print_capabilities(FILE *out);
+void gb_print_modules(FILE *out);
 const char *gb_capability_at(size_t index, const char **caps);
 
 /* Run this process as a spawned actor: register the program's top-level

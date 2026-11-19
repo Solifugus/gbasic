@@ -146,6 +146,15 @@ if [ -n "${absent# }" ]; then
         missing="$(printf '%s\n' $missing | sort -u | tr '\n' ' ')"
         missing="${missing% }"
         [ -n "$unpackaged" ] && say "Not packaged on this release, so left out:$unpackaged"
+        # RHEL AND ITS REBUILDS SHIP SOME -devel PACKAGES in a repository they
+        # leave disabled (unixODBC-devel, gbasic books on RHEL 10.3,
+        # 2026-11-18). It is named rather than enabled: a repository is the
+        # machine owner's decision.
+        if [ -n "$unpackaged" ] && crb=$(deps_extra_repo_hint); then
+            say "On this distribution some of those are in a repository that ships disabled. To add it:"
+            say "    $crb"
+            say "then run ./install.sh again."
+        fi
         if [ -n "$missing" ]; then
             # shellcheck disable=SC2086
             run $sudo $(deps_install_cmd "$distro") $missing ||
@@ -206,14 +215,15 @@ if [ "$out" != "from gBASIC" ]; then
     say "    $out"
     exit 1
 fi
-# the modules whose presence depends on a library (the rest are always built)
-caps=$("$bin" --capabilities | cut -f1)
-built="" left=""
-for m in sqlite pg odbc ldap webclient http smtp xml xlsx zip qt; do
-    if printf '%s\n' "$caps" | grep -qx "$m"; then built="$built $m"; else left="$left $m"; fi
-done
+# WHAT THIS BUILD HAS, from the binary itself. --capabilities lists every
+# module whatever the build has, and reading it reported ODBC built on a RHEL
+# machine with no unixODBC (gbasic books, 2026-11-18); --modules answers from
+# the build's own switches, and tests/modules_check.sh holds it to the binary.
+mods=$("$bin" --modules)
+built=$(printf '%s\n' "$mods" | awk -F'\t' '$2 == "built" { printf " %s", $1 }')
 say "Optional modules built:${built:- none}"
-[ -n "$left" ] && say "Left out (their libraries are not installed):$left"
+left=$(printf '%s\n' "$mods" | awk -F'\t' '$2 == "left out" { printf "\n    %s (needs %s)", $1, $3 }')
+[ -n "$left" ] && say "Left out, their libraries not installed:$left"
 case ":$PATH:" in
     *":$prefix/bin:"*) say "Run it as: gbasic program.bas" ;;
     *) say ""

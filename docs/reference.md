@@ -12572,6 +12572,20 @@ Show version:
 gbasic --version
 ```
 
+Show which optional parts this build has:
+
+```sh
+gbasic --modules
+```
+
+One line per part a build can leave out: its name, `built` or `left out`, and
+what it needs, separated by tabs (`odbc	left out	unixODBC`). The parts are
+`gsql`, `sqlite`, `pg`, `odbc`, `ldap`, `webclient`, `http`, `smtp`, `xml`,
+`xlsx`, `zip`, `ui`, `tls`, `crypto` and `password_hash`. A part left out is
+refused with "... is not available in this build" when it is used. `install.sh`
+reports from this. `--capabilities` answers a different question: what any
+gBASIC can touch, for capability scanners, whatever this build has.
+
 Print lexer tokens:
 
 ```sh

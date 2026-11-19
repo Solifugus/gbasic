@@ -163,9 +163,21 @@ else
     fail "the application source is at the expected path ($appsrc)"
 fi
 
-printf 'TIER run\n'
+printf 'TIER modules: the lean binary says which modules it left out, truthfully\n'
 mkdir -p "$RT" "$work/state"
 cp -r "$work/x$RT/." "$RT/" 2>/dev/null
+# THE LEFT-OUT DIRECTION, which only a lean build can show: --modules is what
+# install.sh reports, and every row must be what a probe finds the binary
+# doing (tests/modules_check.sh). run_capabilities.sh holds the built rows.
+left=$("$RT/gbasic" --modules 2>/dev/null | awk -F'\t' '$2 == "left out"' | wc -l)
+if mc=$(bash tests/modules_check.sh "$RT/gbasic" 2>&1) && [ "$left" -ge 8 ]; then
+    pass "--modules agrees with the lean binary, $left rows left out: $(printf '%s' "$mc" | tail -1)"
+else
+    printf '%s\n' "$mc" | sed 's/^/     /'
+    fail "--modules and the lean binary disagree ($left rows left out, wanted at least 8)"
+fi
+
+printf 'TIER run\n'
 
 # PORT 0: the kernel assigns. A fixed port made this suite unrepeatable and,
 # worse, made it talk to a STRANGER -- a previous run's process still holding

@@ -39,6 +39,7 @@ static void print_help(const char *argv0) {
     printf("  --ast FILE      parse and print AST\n");
     printf("  --add-loads FILE analyze unresolved calls/modifiers and print source with load statements\n");
     printf("  --capabilities   list what this interpreter can touch (name, labels), for capability scanners\n");
+    printf("  --modules        list the parts a build can leave out, and whether this one has each\n");
     printf("  --add-uses FILE  compatibility alias; emits use statements\n");
     printf("  --json-diagnostics FILE [args...]  run FILE, emitting diagnostics as JSON\n");
     printf("                   lines to stderr. Runs the program, so it takes program\n");
@@ -1097,6 +1098,12 @@ int main(int argc, char **argv) {
          * module a hardcoded scanner does not know, every scan after it is
          * silently incomplete. docs/library_trust_design.md §1.3. */
         gb_print_capabilities(stdout);
+        return 0;
+    } else if (argc == 2 && strcmp(argv[1], "--modules") == 0) {
+        /* WHAT THIS BUILD HAS: each part a build can leave out, tab, "built"
+         * or "left out", tab, what it needs. --capabilities lists every
+         * module whatever the build has, so it cannot answer this. */
+        gb_print_modules(stdout);
         return 0;
     } else if (argc == 3 && strcmp(argv[1], "--ast") == 0) {
         ast_only = 1;
