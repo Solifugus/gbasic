@@ -42,6 +42,7 @@ struct GsLease {
     Rec mine;
     uint64_t confirmed;           /* when our record was last read back as ours */
     int fenced;
+    int reader;                   /* a forked reader's copy: every write refused */
     char holder[HOST_N + 48];
     uint64_t renewals, renew_us_max;
     FencedIo *fio;
@@ -323,6 +324,7 @@ int gs_lease_keep(GsLease *l, int force, uint64_t *due_ms) {
 
 /* §5's fence: renew first when the last confirmation is too old to trust */
 static int fence_check(GsLease *l) {
+    if (l->reader) return GSQL_IO_READER;
     if (l->fenced) return GSQL_IO_FENCED;
     if (now(l) - l->confirmed < l->trust_ms) return 0;
     int rc = renew(l);
@@ -331,6 +333,7 @@ static int fence_check(GsLease *l) {
 }
 
 int gs_lease_fenced(const GsLease *l) { return l->fenced; }
+void gs_lease_reader(GsLease *l) { l->reader = 1; }
 const char *gs_lease_holder(const GsLease *l) { return l->holder; }
 
 void gs_lease_stats(const GsLease *l, uint64_t *renewals, uint64_t *renew_us_max) {
@@ -375,7 +378,7 @@ static int f_write_at(GsqlFile *f, uint64_t o, const void *b, size_t n) {
     int rc = fence_check(FL(f));
     return rc ? rc : gsql_io_write_at(FIN(f), o, b, n);
 }
-static int f_sync(GsqlFile *f) { return gsql_io_sync(FIN(f)); }
+static int f_sync(GsqlFile *f) { return FL(f)->reader ? GSQL_IO_READER : gsql_io_sync(FIN(f)); }
 static int f_size(GsqlFile *f, uint64_t *o) { return gsql_io_size(FIN(f), o); }
 static int f_truncate(GsqlFile *f, uint64_t n) {
     int rc = fence_check(FL(f));
@@ -394,8 +397,8 @@ static int f_remove(GsqlIo *io, const char *p) {
     int rc = fence_check(IOL(io));
     return rc ? rc : gsql_io_remove(IOIN(io), p);
 }
-static int f_sync_dir(GsqlIo *io, const char *d) { return gsql_io_sync_dir(IOIN(io), d); }
-static int f_lock(GsqlFile *f, int nb) { return gsql_io_lock(FIN(f), nb); }
+static int f_sync_dir(GsqlIo *io, const char *d) { return IOL(io)->reader ? GSQL_IO_READER : gsql_io_sync_dir(IOIN(io), d); }
+static int f_lock(GsqlFile *f, int nb) { return FL(f)->reader ? GSQL_IO_READER : gsql_io_lock(FIN(f), nb); }
 static void f_free(GsqlIo *io) { (void)io; /* gs_lease_close owns it */ }
 static void f_random(GsqlIo *io, void *o, size_t n) { gsql_io_random(IOIN(io), o, n); }
 static int f_mkdir(GsqlIo *io, const char *p) {

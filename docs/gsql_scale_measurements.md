@@ -103,7 +103,7 @@ Measured by reading the executor, not by running it. Six operations hold their w
 
 **At a billion rows each is a process killed partway** (the program sees `LOST`, and nothing committed is lost), unless spill-to-disk bounds it.
 
-**The owner is single-threaded** (`gsql_owner_design.md` §6.1). Since 2026-11-01 a sort, a `GROUP BY` and the aggregates run in slices, so a point read waits at most a few milliseconds beside them (`gsql_slicing_design.md` §5). Building a hash join's inner side, a derived table, a `WITH` query and a set operation's sides still run as one piece, during which **every other client of that database waits**.
+**The owner is single-threaded** (`gsql_owner_design.md` §6.1). *(2026-11-18: a read still working after its first slice now runs in a forked reader, on a core of its own; `gsql_parallel_readers_design.md`. What follows is the slicing that remains, for reads inside a transaction and past the readers' cap.)* Since 2026-11-01 a sort, a `GROUP BY` and the aggregates run in slices, so a point read waits at most a few milliseconds beside them (`gsql_slicing_design.md` §5). Building a hash join's inner side, a derived table, a `WITH` query and a set operation's sides still run as one piece, during which **every other client of that database waits**.
 
 ## 4. What follows from it
 

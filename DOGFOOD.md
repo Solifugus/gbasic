@@ -14020,3 +14020,17 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   value, cannot be passed to `exec` as it is.
 - **Workaround:** pass `nothing` for a NULL parameter. For the sweep: bind
   `unknown` as NULL in every driver, as G-SQL and `insert` do.
+
+## 2026-11-18 — CC — while: writing the G-SQL readers suite's fixtures
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** two classic BASIC spellings fail to parse with a message that
+  does not name the fix, where `elseif` already gets one ("`elseif` is not
+  gBASIC; write `else if`..."):
+  - `exit for` says "syntax error, unexpected FOR". gBASIC's spelling is
+    `break` (UNLEARN.md says so, but the message does not);
+  - `sleep 0.1` says "syntax error, unexpected NUMBER". `sleep` is a
+    function: `sleep(0.1)`.
+- **Workaround:** `break`, and `sleep(...)`. For the ergonomics sweep: give
+  both the `elseif` treatment, naming the gBASIC spelling at the token.
+

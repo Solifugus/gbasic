@@ -268,6 +268,7 @@ int gs_io_status(int rc) {
     if (rc == ENOSPC) return GS_FULL;
     if (rc == EWOULDBLOCK) return GS_BUSY;
     if (rc == GSQL_IO_FENCED) return GS_FENCED;
+    if (rc == GSQL_IO_READER) return GS_READ_ONLY;
     return GS_IO;
 }
 

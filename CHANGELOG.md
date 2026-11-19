@@ -29,6 +29,16 @@ reader sees.
   the last `close` returns, so a program that will delete the database's
   directory closes with `{ wait }`, which answers once the owner has stopped.
   The reference now says so; the behaviour is unchanged.
+- **G-SQL reads on more than one core.** A read still working after its
+  first slice (a `GROUP BY`, a sort no index gives, an aggregate) is finished
+  by a reader the owner forks, whose snapshot is the fork, while the owner
+  serves everyone else. Four programs running a `GROUP BY` at once finished
+  2.4x to 3.3x faster than sliced, and point reads beside them stopped
+  waiting for slices. Answers are unchanged: 14 statements gave byte-identical
+  rows forked and sliced. `GBASIC_GSQL_READERS` sets how many at once (the
+  core count less two by default; 0 for none). Reads inside a transaction
+  are still sliced. One read alone is about 15% slower forked
+  (`docs/gsql_parallel_readers_design.md`, `tests/run_gsql_readers.sh`).
 - **`pg.insert` and `odbc.insert`**: many rows in one call, the bulk load
   enterprise data work most needs. `pg.insert` goes through Postgres's `COPY`
   (14-22x a loop of `exec` here); `odbc.insert` uses parameter arrays (2x

@@ -5,12 +5,14 @@
  *   3. the writer slot and its FIFO
  *   4. cursors
  *   5. answering one request
+ *   5b. forked readers: a long read on a core of its own
  *   6. the loop: poll, read, pump, write, timeouts
  *   7. starting and stopping */
 
 #define _POSIX_C_SOURCE 200809L
 #include "gsql_owner.h"
 #include "lease.h"
+#include "platform.h"
 #include "serialize_tags.h"
 #include "v3.h"
 #include "xsort.h"
@@ -26,6 +28,7 @@
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/un.h>
+#include <sys/wait.h>
 #include <time.h>
 #include <unistd.h>
 
@@ -275,6 +278,7 @@ typedef struct Cursor {
     void *svc;
     GsTxn *own;         /* an autocommit read's snapshot; NULL inside a transaction */
     uint64_t last_ms;
+    struct Reader *reader;   /* a forked reader holds it, and FETCHes go there (§5b) */
 } Cursor;
 
 enum { TX_NONE, TX_READ, TX_WRITE, TX_FAILED, TX_TIMED_OUT };
@@ -307,6 +311,9 @@ typedef struct {
        (docs/gsql_group_commit_design.md) */
     int awaiting;
     uint64_t last_commit_ms;   /* when it last committed: it may again (§2) */
+    /* the head request is a forked reader's to answer (§5b): its first rows,
+       or a FETCH forwarded to it; nothing more is answered here until then */
+    struct Reader *wait;
 } Conn;
 
 typedef struct {
@@ -343,6 +350,9 @@ typedef struct {
     uint64_t group_start_us;   /* when the group's first commit was made */
     uint64_t sync_us[16];      /* the last syncs, timed: the storage, measured */
     unsigned nsync, sync_at;
+    struct Reader *readers;    /* forked, and not yet freed (§5b) */
+    unsigned nreaders;         /* running: forked and not yet reaped */
+    unsigned max_readers;      /* 0: none, every long read sliced here */
 } Owner;
 
 static void out_frame(Conn *c, unsigned type, uint32_t id, const GsqlBuf *body) {
@@ -474,7 +484,12 @@ static int writer_take(Owner *o, Conn *c) {
 
 /* ==== 4. cursors ========================================================= */
 
+static void reader_let_go(struct Reader *rd);
+
 static void cursor_free(Owner *o, Cursor *k) {
+    if (k->reader) {
+        reader_let_go(k->reader);
+    }
     if (o->svc && o->svc->close && k->svc) {
         o->svc->close(o->svc->ctx, k->svc);
     }
@@ -499,7 +514,8 @@ static void cursor_drop(Owner *o, Conn *c, Cursor *k) {
 static void cursors_of_txn(Owner *o, Conn *c) {
     Cursor **p = &c->cursors;
     while (*p) {
-        if (!(*p)->own) {
+        /* a reader's cursor is an autocommit read's: its snapshot is the fork */
+        if (!(*p)->own && !(*p)->reader) {
             Cursor *k = *p;
             *p = k->next;
             cursor_free(o, k);
@@ -553,6 +569,10 @@ static void conn_cleanup(Owner *o, Conn *c) {
         }
     }
     work_end(o, c);   /* before the transaction it may be reading */
+    if (c->wait) {
+        reader_let_go(c->wait);
+        c->wait = NULL;
+    }
     txn_end(o, c);
     while (c->cursors) {
         cursor_drop(o, c, c->cursors);
@@ -685,6 +705,7 @@ static void storage_failed(Owner *o, Conn *c, const char *what) {
 }
 
 static int run_query(Owner *o, Conn *c, Req *r, GsqlStatement *sp);
+static int reader_start(Owner *o, Conn *c, uint32_t id, void *work, GsTxn *txn);
 
 /* A path's SQL (docs/gsql_paths_design.md §2), its names resolved in the
  * connection's transaction, or in a snapshot of its own taken and dropped at
@@ -864,6 +885,13 @@ static int run_query(Owner *o, Conn *c, Req *r, GsqlStatement *sp) {
         return DONE_REQ;
     }
     if (res.working) {
+        /* still working after its first slice: an autocommit read goes on in
+           a reader of its own, whose snapshot is the fork (§5b); one inside a
+           transaction, or past the readers' cap, is sliced here */
+        if (c->tx == TX_NONE && reader_start(o, c, r->id, res.cursor, t)) {
+            result_free(&res);
+            return WORKING;
+        }
         c->work = res.cursor;
         c->work_txn = c->tx == TX_NONE ? t : NULL;
         c->work_id = r->id;
@@ -926,6 +954,8 @@ static int cursor_missing(Conn *c, uint32_t req, uint64_t id) {
     return DONE_REQ;
 }
 
+static int reader_fetch(Owner *o, Conn *c, Req *r, Cursor *k);
+
 static int do_fetch(Owner *o, Conn *c, Req *r) {
     uint64_t id, count;
     if (!cursor_id(c, r, &id, &count)) {
@@ -934,6 +964,9 @@ static int do_fetch(Owner *o, Conn *c, Req *r) {
     Cursor *k = cursor_find(c, id);
     if (!k) {
         return cursor_missing(c, r->id, id);
+    }
+    if (k->reader) {
+        return reader_fetch(o, c, r, k);
     }
     GsqlResult res;
     memset(&res, 0, sizeof res);
@@ -1381,7 +1414,7 @@ static int handle(Owner *o, Conn *c, Req *r) {
  * any was answered. */
 static int process(Owner *o, Conn *c) {
     int progress = 0;
-    while (c->head && !c->closing && !c->dead && !c->work && !c->awaiting) {
+    while (c->head && !c->closing && !c->dead && !c->work && !c->wait && !c->awaiting) {
         Req *r = c->head;
         if (handle(o, c, r) != DONE_REQ) {
             break;   /* parked, or working: its turn comes again */
@@ -1434,6 +1467,409 @@ static int work_step(Owner *o, Conn *c) {
     return 1;
 }
 
+/* ==== 5b. forked readers (docs/gsql_parallel_readers_design.md §4) ======
+ *
+ * The owner is one thread, and gBASIC evaluates SQL's operators, so a long
+ * read cannot run beside the owner in a thread. It runs in a PROCESS: a read
+ * still working after its first slice is forked, and the child, a copy of the
+ * owner at that instant, holds the read's snapshot with no snapshot machinery
+ * at all. It finishes the read on a core of its own and answers through the
+ * owner, which relays each answer on the client's connection as if it had
+ * computed it; the client cannot tell. A cursor the read leaves stays in the
+ * child, and the owner forwards its FETCHes there.
+ *
+ * What keeps it safe:
+ *   - the child's storage refuses every write (the engine's `reader`), so a
+ *     write there is a refusal, not a damaged database;
+ *   - the owner holds its own paused copy of the read and its snapshot until
+ *     the child is reaped, so no file the child may read is deleted;
+ *   - the child dies with the owner (gb_arm_parent_death), and a child that
+ *     dies is a LOST read for its one client, never the owner's problem. */
+
+static int g_signal_pipe[2];
+static int nonblock(int fd);
+
+typedef struct Reader {
+    struct Reader *next;
+    pid_t pid;
+    int fd;             /* the owner's end of the pair; -1 once reaped */
+    GsqlReader in;      /* its answers, as frames */
+    GsqlBuf out;        /* FETCHes forwarded to it, not yet written */
+    size_t out_pos;
+    Conn *c;            /* whose read it answers; NULL once nobody waits on it */
+    uint64_t cursor;    /* the cursor id it answers for, reserved at the fork */
+    void *work;         /* the owner's copy of the read, paused at the fork, */
+    GsTxn *txn;         /* and its snapshot: held until the reader is reaped */
+} Reader;
+
+static void reader_note(Owner *o, const char *fmt, ...) {
+    if (!o->opt.reader_log) {
+        return;
+    }
+    FILE *f = fopen(o->opt.reader_log, "a");
+    if (!f) {
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(f, fmt, ap);
+    va_end(ap);
+    fputc('\n', f);
+    fclose(f);
+}
+
+/* Nobody waits on it any more: a reader still answering is killed. Reaped
+ * when its end of the pair closes. */
+static void reader_let_go(Reader *rd) {
+    if (rd->c && rd->fd >= 0) {
+        kill(rd->pid, SIGKILL);
+    }
+    rd->c = NULL;
+}
+
+static Cursor *reader_cursor(Conn *c, const Reader *rd) {
+    for (Cursor *k = c->cursors; k; k = k->next) {
+        if (k->reader == rd) {
+            return k;
+        }
+    }
+    return NULL;
+}
+
+/* The head request is answered: the next may go. */
+static void head_done(Conn *c) {
+    Req *r = c->head;
+    if (r) {
+        c->head = r->next;
+        if (!c->head) {
+            c->tail = NULL;
+        }
+        free(r);
+    }
+}
+
+/* Writes what the pair takes now; the rest waits for POLLOUT. */
+static void reader_flush(Reader *rd) {
+    while (rd->fd >= 0 && rd->out_pos < rd->out.length) {
+        ssize_t w = write(rd->fd, rd->out.bytes + rd->out_pos, rd->out.length - rd->out_pos);
+        if (w < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            return;   /* full, or gone: its end closing says which */
+        }
+        rd->out_pos += (size_t)w;
+    }
+    if (rd->out_pos == rd->out.length) {
+        rd->out.length = rd->out_pos = 0;
+    }
+}
+
+/* The child: it never returns. Everything it answers goes to `fd`, as the
+ * frames the owner would have sent, and it exits once its cursor ends or the
+ * owner closes the pair. Nothing is freed: the process ends with _exit, and
+ * freeing a snapshot could try to delete files it no longer needs, which is
+ * a write. */
+static void reader_main(Owner *o, int fd, pid_t parent, uint32_t id, uint64_t cid, void *work) {
+    gb_arm_parent_death();
+    signal(SIGTERM, SIG_DFL);
+    alarm(0);
+    if (getppid() != parent) {
+        _exit(1);   /* the owner died before the arming landed */
+    }
+    /* none of these are the reader's to serve or to hold open */
+    if (o->ls >= 0) {
+        close(o->ls);
+    }
+    close(g_signal_pipe[0]);
+    close(g_signal_pipe[1]);
+    for (size_t i = 0; i < o->nconns; i++) {
+        if (o->conns[i]->fd >= 0) {
+            close(o->conns[i]->fd);
+        }
+    }
+    for (Reader *rd = o->readers; rd; rd = rd->next) {
+        if (rd->fd >= 0) {
+            close(rd->fd);
+        }
+    }
+    Conn pc;
+    memset(&pc, 0, sizeof pc);
+    pc.fd = fd;
+    pc.hello = 1;
+    int rc = o->e->reader(o->db);
+    if (rc) {
+        send_errorf(&pc, id, GSQL_STORAGE, "a reader could not make its storage read-only: the engine answered %s",
+                    gs_status_name(rc));
+        flush_out(&pc);
+        _exit(0);
+    }
+    if (o->opt.reader_test_write) {
+        /* the tripwire, exercised: a write from here must be refused */
+        GsTxn *w = NULL;
+        rc = o->e->begin_write(o->db, &w);
+        if (!rc) {
+            const char *name = "planted";
+            GsBytes tree = { (const unsigned char *)name, strlen(name) };
+            rc = o->e->tree_create(w, tree);
+            uint64_t ignored = 0;
+            if (!rc) {
+                rc = o->e->commit(w, 1, &ignored);
+            }
+        }
+        send_errorf(&pc, id, GSQL_STORAGE, "a reader's planted write was answered %s", gs_status_name(rc));
+        flush_out(&pc);
+        _exit(0);
+    }
+    GsqlResult res;
+    GsqlError err = { GSQL_OK, "", 0, 0, "", "", "", 0 };
+    for (;;) {
+        /* nobody shares this process's turn: the rest of the read at once */
+        memset(&res, 0, sizeof res);
+        rc = o->svc->resume(o->svc->ctx, work, UINT64_MAX, &res, &err);
+        if (rc != GSQL_OK || !res.working) {
+            break;
+        }
+        work = res.cursor;
+        result_free(&res);
+    }
+    if (rc != GSQL_OK) {
+        send_error_about(&pc, id, rc, err.message, err.position, &err);
+        flush_out(&pc);
+        _exit(0);
+    }
+    o->next_cursor = cid - 1;   /* so the cursor is the one the owner reserved */
+    if (res.has_rows) {
+        send_rows(o, &pc, id, &res, NULL);
+    } else {
+        send_done(&pc, id, &res, 0, 0);   /* as run_query answers a read with no rows */
+    }
+    flush_out(&pc);
+    GsqlReader in;
+    memset(&in, 0, sizeof in);
+    unsigned char buf[65536];
+    while (pc.cursors && !pc.dead) {
+        ssize_t n = read(fd, buf, sizeof buf);
+        if (n < 0 && errno == EINTR) {
+            continue;
+        }
+        if (n <= 0) {
+            _exit(0);   /* the owner let it go */
+        }
+        gsql_reader_feed(&in, buf, (size_t)n);
+        GsqlFrame f;
+        while (gsql_reader_next(&in, &f) == GSQL_READ_FRAME) {
+            if (f.type != GSQL_M_FETCH) {
+                _exit(1);   /* the owner forwards nothing else */
+            }
+            Req *r = malloc(sizeof *r + f.length);
+            if (!r) {
+                abort();
+            }
+            memset(r, 0, sizeof *r);
+            r->type = f.type;
+            r->id = f.id;
+            r->length = f.length;
+            if (f.length) {
+                memcpy(r->body, f.body, f.length);
+            }
+            do_fetch(o, &pc, r);
+            free(r);
+            flush_out(&pc);
+        }
+    }
+    _exit(0);
+}
+
+/* Forks a reader for a read still working after its first slice; answers 1
+ * when it did, and the read's state and snapshot are then held for it.
+ * Answers 0 past the cap, or when the fork fails: the read is sliced here,
+ * so the cap degrades service rather than refusing it. */
+static int reader_start(Owner *o, Conn *c, uint32_t id, void *work, GsTxn *txn) {
+    if (!o->max_readers || o->nreaders >= o->max_readers || !o->e->reader) {
+        return 0;
+    }
+    int sv[2];
+    if (socketpair(AF_UNIX, SOCK_STREAM, 0, sv) != 0) {
+        return 0;
+    }
+    uint64_t cid = ++o->next_cursor;
+    pid_t parent = getpid();
+    fflush(NULL);
+    uint64_t t0 = mono_us();
+    pid_t pid = fork();
+    if (pid < 0) {
+        close(sv[0]);
+        close(sv[1]);
+        return 0;
+    }
+    if (pid == 0) {
+        close(sv[0]);
+        reader_main(o, sv[1], parent, id, cid, work);
+    }
+    close(sv[1]);
+    nonblock(sv[0]);
+    fcntl(sv[0], F_SETFD, FD_CLOEXEC);
+    Reader *rd = calloc(1, sizeof *rd);
+    if (!rd) {
+        abort();
+    }
+    rd->pid = pid;
+    rd->fd = sv[0];
+    rd->c = c;
+    rd->cursor = cid;
+    rd->work = work;
+    rd->txn = txn;
+    rd->next = o->readers;
+    o->readers = rd;
+    o->nreaders++;
+    c->wait = rd;
+    reader_note(o, "start %ld fork %llu us", (long)pid, (unsigned long long)(mono_us() - t0));
+    return 1;
+}
+
+/* A FETCH on a reader's cursor goes to the reader. */
+static int reader_fetch(Owner *o, Conn *c, Req *r, Cursor *k) {
+    Reader *rd = k->reader;
+    if (rd->fd < 0) {
+        uint64_t id = k->id;
+        cursor_drop(o, c, k);
+        send_errorf(c, r->id, GSQL_LOST, "cursor %llu was read by a reader that ended before the read was finished "
+                    "(it was killed, or crashed); the database and every other connection go on",
+                    (unsigned long long)id);
+        return DONE_REQ;
+    }
+    gsql_frame_put(&rd->out, GSQL_M_FETCH, r->id, r->body, r->length);
+    reader_flush(rd);
+    k->last_ms = now_ms();
+    c->wait = rd;
+    return WORKING;
+}
+
+/* One answer from a reader: relayed to its client as it came. */
+static void reader_answer(Owner *o, Reader *rd, const GsqlFrame *f) {
+    Conn *c = rd->c;
+    if (!c || c->wait != rd || !c->head || c->head->id != f->id) {
+        return;   /* nobody waits for it any more */
+    }
+    gsql_frame_put(&c->out, f->type, f->id, f->body, f->length);
+    int more = 0;
+    if (f->type == GSQL_M_ROWS) {
+        V3Field fl[MAX_FIELDS];
+        long nf = body_fields(f->body, f->length, fl);
+        const V3Field *m = nf >= 0 ? v3_field_named(fl, nf, "more") : NULL;
+        if (!m || !v3_read_bool(m->v, m->vlen, &more)) {
+            more = 0;
+        }
+    }
+    Cursor *k = reader_cursor(c, rd);
+    if (more && !k) {
+        k = calloc(1, sizeof *k);
+        if (!k) {
+            abort();
+        }
+        k->id = rd->cursor;
+        k->reader = rd;
+        k->next = c->cursors;
+        c->cursors = k;
+    }
+    if (k && !more) {
+        k->reader = NULL;   /* it ended its cursor itself */
+        cursor_drop(o, c, k);
+    }
+    if (k && more) {
+        k->last_ms = now_ms();
+    }
+    c->wait = NULL;
+    head_done(c);
+    if (!more) {
+        rd->c = NULL;   /* answered for good: it exits by itself */
+    }
+}
+
+/* Its end closed: it exited, crashed or was killed. The snapshot it was
+ * reading is released here, and not before. */
+static void reader_reap(Owner *o, Reader *rd) {
+    close(rd->fd);
+    rd->fd = -1;
+    int st = 0;
+    while (waitpid(rd->pid, &st, 0) < 0 && errno == EINTR) {
+    }
+    reader_note(o, "reaped %ld %s %d", (long)rd->pid, WIFSIGNALED(st) ? "signal" : "exit",
+                WIFSIGNALED(st) ? WTERMSIG(st) : WEXITSTATUS(st));
+    if (rd->work && o->svc->close) {
+        o->svc->close(o->svc->ctx, rd->work);
+    }
+    if (rd->txn) {
+        o->e->abort(rd->txn);
+    }
+    rd->work = NULL;
+    rd->txn = NULL;
+    o->nreaders--;
+    gsql_reader_free(&rd->in);
+    gsql_buf_free(&rd->out);
+    rd->out_pos = 0;
+    Conn *c = rd->c;
+    if (c && c->wait == rd) {
+        c->wait = NULL;
+        send_error(c, c->head->id, GSQL_LOST, "the reader answering this read ended before it answered (it was "
+                   "killed, or crashed); the database and every other connection go on");
+        head_done(c);
+    }
+    /* a cursor it held stays, so its next FETCH can say what happened */
+    if (c && !reader_cursor(c, rd)) {
+        rd->c = NULL;
+    }
+}
+
+static void reader_read(Owner *o, Reader *rd) {
+    unsigned char buf[65536];
+    int ended = 0;
+    for (;;) {
+        ssize_t n = read(rd->fd, buf, sizeof buf);
+        if (n < 0) {
+            if (errno == EINTR) {
+                continue;
+            }
+            ended = errno != EAGAIN && errno != EWOULDBLOCK;
+            break;
+        }
+        if (n == 0) {
+            ended = 1;
+            break;
+        }
+        gsql_reader_feed(&rd->in, buf, (size_t)n);
+        if ((size_t)n < sizeof buf) {
+            break;
+        }
+    }
+    GsqlFrame f;
+    int st;
+    while ((st = gsql_reader_next(&rd->in, &f)) == GSQL_READ_FRAME) {
+        reader_answer(o, rd, &f);
+    }
+    if (st != GSQL_READ_MORE && !ended) {
+        kill(rd->pid, SIGKILL);   /* a reader that sends garbage is a defect */
+    }
+    if (ended) {
+        reader_reap(o, rd);
+    }
+}
+
+/* Frees the readers reaped and no longer named by any cursor. */
+static void readers_sweep(Owner *o) {
+    Reader **p = &o->readers;
+    while (*p) {
+        Reader *rd = *p;
+        if (rd->fd < 0 && !rd->c) {
+            *p = rd->next;
+            free(rd);
+        } else {
+            p = &rd->next;
+        }
+    }
+}
+
 /* ==== 6. the loop ======================================================== */
 
 static int g_signal_pipe[2] = { -1, -1 };
@@ -1471,7 +1907,22 @@ static void enqueue(Owner *o, Conn *c, const GsqlFrame *f) {
         long nf = body_fields(f->body, f->length, fl);
         uint64_t target;
         int hit = 0;
-        if (nf >= 0 && field_u64(fl, nf, "request", &target) && c->head && c->work && c->head->id == target) {
+        if (nf >= 0 && field_u64(fl, nf, "request", &target) && c->head && c->wait && c->head->id == target) {
+            /* a reader's read, or a FETCH forwarded to one: the reader is
+               killed, and with it the cursor it held (§5b) */
+            Req *t = c->head;
+            Reader *rd = c->wait;
+            c->wait = NULL;
+            Cursor *k = reader_cursor(c, rd);
+            if (k) {
+                cursor_drop(o, c, k);
+            } else {
+                reader_let_go(rd);
+            }
+            send_error(c, t->id, GSQL_CANCELLED, "cancelled while it was still reading");
+            head_done(c);
+            hit = 1;
+        } else if (nf >= 0 && field_u64(fl, nf, "request", &target) && c->head && c->work && c->head->id == target) {
             /* a read still working: its cursor closed, its snapshot ended */
             Req *t = c->head;
             work_end(o, c);
@@ -1783,8 +2234,13 @@ static void serve(Owner *o) {
         } else {
             o->alone_since = 0;
         }
-        if (o->nconns + 2 > fcap) {
-            fcap = o->nconns + 16;
+        readers_sweep(o);
+        size_t nrd = 0;
+        for (Reader *rd = o->readers; rd; rd = rd->next) {
+            nrd += rd->fd >= 0;
+        }
+        if (o->nconns + nrd + 2 > fcap) {
+            fcap = o->nconns + nrd + 16;
             struct pollfd *g = realloc(fds, fcap * sizeof *g);
             if (!g) {
                 abort();
@@ -1808,6 +2264,15 @@ static void serve(Owner *o) {
             }
             fds[i + 2].revents = 0;
         }
+        size_t at = o->nconns + 2;
+        for (Reader *rd = o->readers; rd; rd = rd->next) {
+            if (rd->fd >= 0) {
+                fds[at].fd = rd->fd;
+                fds[at].events = (short)(POLLIN | (rd->out_pos < rd->out.length ? POLLOUT : 0));
+                fds[at].revents = 0;
+                at++;
+            }
+        }
         /* the lease: renewed once a second here, and if another machine has
            taken the database, nothing more is written -- not even the
            planned handoff's flush (gsql_lease_design.md §5) */
@@ -1821,7 +2286,7 @@ static void serve(Owner *o) {
                 wait = (int)due;
             }
         }
-        int n = poll(fds, (nfds_t)(o->nconns + 2), wait);
+        int n = poll(fds, (nfds_t)at, wait);
         if (n < 0) {
             if (errno == EINTR) {
                 continue;
@@ -1840,6 +2305,19 @@ static void serve(Owner *o) {
             }
             if ((ev & POLLOUT) && !c->dead) {
                 flush_out(c);
+            }
+        }
+        at = before + 2;
+        for (Reader *rd = o->readers; rd && at < before + 2 + nrd; rd = rd->next) {
+            if (rd->fd < 0) {
+                continue;
+            }
+            short ev = fds[at++].revents;
+            if (ev & POLLOUT) {
+                reader_flush(rd);
+            }
+            if (ev & (POLLIN | POLLHUP | POLLERR)) {
+                reader_read(o, rd);
             }
         }
         if (fds[1].revents & POLLIN) {
@@ -1958,6 +2436,15 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
     sigaction(SIGTERM, &sa, NULL);
     signal(SIGALRM, SIG_DFL);   /* the stop's deadline must be able to end us */
     g_stop_grace_s = o.opt.stop_grace_s ? o.opt.stop_grace_s : 10;
+    if (o.opt.readers == GSQL_READERS_NONE) {
+        o.max_readers = 0;
+    } else if (o.opt.readers) {
+        o.max_readers = o.opt.readers;
+    } else {
+        /* the owner and the programs need cores too (§7 Q3) */
+        long cores = sysconf(_SC_NPROCESSORS_ONLN);
+        o.max_readers = cores > 3 ? (unsigned)(cores - 2) : 1;
+    }
     /* what a crashed owner or program left of its sorts and spools */
     gs_xsort_sweep(NULL);
 
@@ -2083,6 +2570,15 @@ int gsql_owner_run(const char *db, const GsqlService *service, const GsqlOwnerOp
         free(o.conns[i]);
     }
     o.nconns = 0;
+    /* every reader ended and reaped before the store is flushed and closed:
+       each holds a copy of the lock's descriptor until it exits (§5b) */
+    for (Reader *rd = o.readers; rd; rd = rd->next) {
+        if (rd->fd >= 0) {
+            kill(rd->pid, SIGKILL);
+            reader_reap(&o, rd);
+        }
+    }
+    readers_sweep(&o);
     /* the socket goes first, before the lock goes with the store: an owner
        started meanwhile finds no socket and waits for the lock (§3) */
     if (o.ls >= 0) {

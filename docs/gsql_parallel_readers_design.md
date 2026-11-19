@@ -1,11 +1,13 @@
 # G-SQL: parallel readers
 
-**Status:** Ruled 2026-11-18. Matthew accepted §7 as proposed ("yeah..
-great"): option B, a reader forked per long read (Q1); the reads it takes
-(Q2); the core count minus two, at least one, set per database (Q3); reads
-inside a write transaction kept sliced for now (Q4); and the replica (D) as
-its own item after B (Q5). Increment 1 is done (§5); the build is for
-0.13.0. Matthew, 2026-11-18: parallel readers are "important". He said the
+**Status:** Partial. Increment 2 shipped 2026-11-18 on master, for 0.13.0:
+a read still working after its first slice is finished by a forked reader
+(§8 says what building it found). Increments 3 to 5 are not built (§6).
+Ruled 2026-11-18: Matthew accepted §7 as proposed ("yeah.. great"): option
+B, a reader forked per long read (Q1); the reads it takes (Q2); the core
+count minus two, at least one, set per database (Q3); reads inside a write
+transaction kept sliced for now (Q4); and the replica (D) as its own item
+after B (Q5). Matthew, 2026-11-18: parallel readers are "important". He said the
 same of read concurrency on 2026-11-01 (`gsql_slicing_design.md`).
 
 ## 1. What slicing did, and what it did not
@@ -182,8 +184,32 @@ inherited:
   machine was otherwise idle (load 1.7). A server with uniform cores should
   scale further; that is not measured here.
 
-Not yet measured: the real owner, with batches relayed through it and point
-reads beside the forked readers. That is increment 2's tier.
+**Through the real owner (2026-11-18, increment 2).** N programs each run
+`SELECT b, count(*), sum(c), min(d) FROM t GROUP BY b ORDER BY b` over
+10⁵ rows ten times, at once, against an owner with readers and one with
+`GBASIC_GSQL_READERS=0`. A third program does point reads beside them
+throughout. Wall time from outside, one representative run:
+
+| N | forked | sliced | speedup | point-read p99, forked / sliced |
+|---|---|---|---|---|
+| 1 | 0.93 s | 0.75 s | 0.81x | 0.1 / 1.4 ms |
+| 2 | 1.00 s | 1.53 s | 1.53x | 0.0 / 3.1 ms |
+| 4 | 1.17 s | 3.02 s | 2.59x | 0.1 / 6.2 ms |
+| 8 | 1.46 s | 5.54 s | 3.79x | 0.2 / 11.3 ms |
+
+- **A fork costs under 1 ms** at the owner's 42 MB resident (the reader log
+  records each one).
+- **One read alone is about 15% slower forked** (0.81x to 0.88x over
+  several runs). The fork is not the cost; the rest is the child's
+  copy-on-write faults and its exit. The design expected this (§5's 0.93x),
+  and it is paid only by a read already longer than a slice.
+- **The point reads gain most.** Beside sliced reads a point read waits for
+  a slice; beside forked ones it waits for nothing, and the point reader got
+  about three times as many reads through in the same time.
+
+`run_gsql_readers.sh` asserts at least 1.5x at N = 4 and a forked p99 under
+half the sliced one, from the serial lane so no other suite shares the
+cores.
 
 ## 6. Increments
 
@@ -197,9 +223,10 @@ reads beside the forked readers. That is increment 2's tier.
    - the point-read tail beside them.
 
    This settles whether B pays for itself before any of it ships.
-2. **Hand a working read to a reader.** After its first slice, with batches
-   relayed through the owner, the version held until `SIGCHLD`, a read-only
-   I/O layer, and cancel and death as §4 says.
+2. **Hand a working read to a reader.** *Done 2026-11-18 (§5, §8).* After
+   its first slice, with batches relayed through the owner, the version held
+   until the reader is reaped, a read-only I/O layer, and cancel and death as
+   §4 says.
 
    Tests:
    - differential: the same statements forked and sliced answer the same
@@ -237,3 +264,70 @@ reads beside the forked readers. That is increment 2's tier.
 
 - Writes stay in the owner, one at a time, with group commit.
 - Windows has no G-SQL today, so nothing changes there.
+
+## 8. What building increment 2 found
+
+**How it is built** (`src/gsql/owner.c` §5b):
+
+- **The fork point** is `run_query`, where a read first answers `working`.
+  An autocommit read forks there if the cap allows. A read inside a
+  transaction, or past the cap, is sliced as before.
+- **The child** finishes the read in one resume (no one shares its turn),
+  then sends the frames the owner would have sent, ROWS or ERROR, over a
+  socket pair. A cursor the read leaves stays in the child, under the id the
+  owner reserved before the fork. The owner forwards that cursor's FETCHes to
+  the child and relays the answers unread. The child exits when its cursor
+  ends or the owner closes the pair.
+- **The owner holds** its own paused copy of the read and its snapshot until
+  the child is reaped, which is what keeps the files the child reads.
+  CANCEL, CLOSE of the cursor, the cursor's idle timeout and a dropped
+  connection each kill the child. A child that dies is `LOST` for its one
+  read, or for its cursor's next FETCH.
+- **The child's storage** is switched to the engine's new `reader` mode.
+  The lease's fenced layer then refuses every write, creation, rename,
+  removal, sync and lock with `GS_READ_ONLY`, the lease is never renewed,
+  and the child's copy of the lock's descriptor is closed (an `flock`
+  belongs to the descriptor the owner still holds).
+- **The child dies with the owner** (`gb_arm_parent_death`, plus a
+  `getppid` check for the race). An owner stopping kills and reaps its
+  readers before it flushes and closes the store.
+- **Settings:**
+  - `GBASIC_GSQL_READERS`, read by the owner when it starts: how many at
+    once, and 0 for none. It is interim until increment 4's per-database
+    setting.
+  - `GBASIC_GSQL_READER_LOG`, `GBASIC_GSQL_TEST_READER_WRITE` and
+    `GBASIC_GSQL_TEST_TUNE` exist for tests.
+
+**Findings:**
+
+- **A refused write in a reader first surfaced as `IO`.** The commit
+  answered `GS_IO` for every log write failure except FULL and FENCED, so
+  the tripwire looked like a failing disk. The commit now passes
+  `READ_ONLY` through, and the planted-write tier requires that word. With
+  `reader` mode switched off, the same tier shows the write going through
+  (`OK`).
+- **The file hold is what keeps a reader correct, and the snapshot tier
+  shows it.** It runs with a 64 KB memtable and two open handles, so files
+  are reopened by name. Releasing the owner's copy after the reader's first
+  answer turned "every file the reader's snapshot names is still there"
+  red.
+- **Parent death matters.** Without `gb_arm_parent_death` in the child, a
+  killed owner left its reader running, and `run_gsql_owner.sh`'s readers
+  tier went red.
+- **Ten of the differential's 14 statements were forked.** The other four
+  finish in their first slice (an indexed range, a `LIMIT ... OFFSET` in key
+  order, and two small results), so they never pay for a fork.
+- **The Makefile's G-SQL pattern rule lacked `include/platform.h`**, which
+  `client.c` and `sql_exec.c` already included, and `owner.c` now does.
+  `run_make_deps.sh` checks only explicit rules, so a change to that header
+  would have left those objects stale. It is added.
+
+**Not done here:**
+
+- reads inside a transaction (Q4);
+- forking the unsliced steps up front (increment 3);
+- the per-database cap and a status answer (increment 4);
+- the replica (increment 5).
+
+`gsql.connect` has no way to send CANCEL, so cancel is held by the owner
+suite's test service, not from a program.

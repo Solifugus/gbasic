@@ -4133,10 +4133,11 @@ static int lsm_commit(struct GsTxn *t, int sync, uint64_t *commit_id) {
     if (rc == GS_OK && sync) rc = flush_file(db, db->log);
     if (rc) {
         /* FULL: nothing landed, the next commit writes over it. IO: a flush
-         * failed (§1.3). */
+         * failed (§1.3). READ_ONLY: a forked reader tried to write, and says
+         * so rather than look like a failing disk. */
         gsbuf_free(&rec);
         lsm_abort(t);
-        return rc == GS_FULL || rc == GS_FENCED ? rc : GS_IO;
+        return rc == GS_FULL || rc == GS_FENCED || rc == GS_READ_ONLY ? rc : GS_IO;
     }
     db->log_end += rec.n;
     db->log_prev = get32(rec.p + 4);
@@ -4762,6 +4763,15 @@ static int lsm_lease_keep(GsStore *db, int force, uint64_t *due_ms, char *holder
     return rc;
 }
 
+static int lsm_reader(GsStore *db) {
+    if (!db->lease) return GS_MISUSE;
+    gs_lease_reader(db->lease);
+    if (db->lockf) {
+        gsql_io_close(db->lockf);
+        db->lockf = NULL;
+    }
+    return GS_OK;
+}
 
 /* A database is a directory (§7 question 6): resolve it, then open the files
  * inside it by their old names. */
@@ -4843,5 +4853,5 @@ const GsEngine gs_engine_lsm = {
     lsm_cursor_put, lsm_cursor_delete, lsm_cursor_close,
     lsm_backup, lsm_backup_begin, lsm_backup_step, lsm_backup_end, lsm_check, lsm_stats,
     lsm_txn_id, lsm_flush, lsm_backup_progress, lsm_lease_keep, lsm_estimate,
-    lsm_savepoint, lsm_rollback_savepoint, lsm_release_savepoint,
+    lsm_savepoint, lsm_rollback_savepoint, lsm_release_savepoint, lsm_reader,
 };

@@ -19,8 +19,11 @@
  *                                 local to each machine (gsql_lease_design.md)
  *   owner_test cost DIR ITERS     the round trip against in process
  *
+ *   owner_test readers DIR        forked readers (gsql_parallel_readers_design.md)
+ *
  * THE TEST SERVICE IS NOT SQL. A statement is a word -- put, dup, get, scan,
- * count, whoami, fail, poison -- with text parameters, over one tree. It
+ * count, whoami, fail, poison, slow, slowscan -- with text parameters, over
+ * one tree. It
  * exists so every path the OWNER owns (transactions, the writer, cursors,
  * batches, timeouts, a dropped connection) is reached; what it computes is
  * deliberately trivial and checked by the test, not by itself.
@@ -137,7 +140,8 @@ static int svc_writes(void *ctx, const GsqlStatement *s, GsqlError *err) {
         return 1;
     }
     if (!strcmp(st.word, "get") || !strcmp(st.word, "scan") || !strcmp(st.word, "count") ||
-        !strcmp(st.word, "whoami") || !strcmp(st.word, "fail")) {
+        !strcmp(st.word, "whoami") || !strcmp(st.word, "fail") || !strcmp(st.word, "slow") ||
+        !strcmp(st.word, "slowscan")) {
         return 0;
     }
     err->code = GSQL_SCHEMA;
@@ -168,6 +172,12 @@ static void w_text_n(GsqlBuf *b, const unsigned char *p, size_t n) {
 typedef struct {
     GsCursor *cur;
     int positioned;
+    /* slow and slowscan: working for `left` more slices of `ms` each, then
+       answering; the scan's snapshot is the transaction it began in */
+    long left, ms;
+    int scan;
+    GsTxn *t;
+    uint32_t batch;
 } Scan;
 
 static int scan_rows(Scan *sc, uint32_t count, GsqlResult *out, GsqlError *err) {
@@ -209,6 +219,8 @@ static void columns(GsqlResult *out) {
     v3_w_text(&out->columns, "key");
     v3_w_text(&out->columns, "value");
 }
+
+static int svc_resume(void *ctx, void *cursor, uint64_t budget, GsqlResult *out, GsqlError *err);
 
 static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *s, GsqlResult *out, GsqlError *err) {
     (void)ctx;
@@ -276,6 +288,33 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
         for (;;) {
             n++;
         }
+    }
+    if (!strcmp(st.word, "slow") || !strcmp(st.word, "slowscan")) {
+        /* a read that answers `working` for a number of slices, each `ms`
+         * long: what the owner forks a reader for. slow answers the pid of
+         * the process that finished it; slowscan, the tree as `scan` does */
+        char *a = st.n >= 2 ? v3_read_text(st.p[0].p, st.p[0].n) : NULL;
+        char *b = st.n >= 2 ? v3_read_text(st.p[1].p, st.p[1].n) : NULL;
+        Scan *sc = calloc(1, sizeof *sc);
+        sc->ms = a ? atol(a) : 0;
+        sc->left = b ? atol(b) : 0;
+        free(a);
+        free(b);
+        sc->scan = !strcmp(st.word, "slowscan");
+        sc->t = t;
+        sc->batch = s->batch;
+        if (s->sliced) {
+            sleep_ms(sc->ms);
+            sc->left--;
+            out->working = 1;
+            out->cursor = sc;
+            return GSQL_OK;
+        }
+        while (sc->left-- > 0) {
+            sleep_ms(sc->ms);
+        }
+        sc->left = 0;
+        return svc_resume(ctx, sc, 0, out, err);
     }
     if (!strcmp(st.word, "poison")) {
         snprintf(err->message, sizeof err->message, "a failure the test service made on purpose");
@@ -378,11 +417,63 @@ static int svc_fetch(void *ctx, void *cursor, uint32_t count, GsqlResult *out, G
 static void svc_close(void *ctx, void *cursor) {
     (void)ctx;
     Scan *sc = cursor;
-    E->cursor_close(sc->cur);
+    if (sc->cur) {
+        E->cursor_close(sc->cur);
+    }
     free(sc);
 }
 
-static const GsqlService SERVICE = { NULL, svc_writes, svc_run, svc_fetch, svc_close, NULL, NULL, NULL };
+/* slow and slowscan, a slice further */
+static int svc_resume(void *ctx, void *cursor, uint64_t budget, GsqlResult *out, GsqlError *err) {
+    (void)ctx;
+    (void)budget;
+    Scan *sc = cursor;
+    if (sc->left > 0) {
+        sleep_ms(sc->ms);
+        sc->left--;
+        out->working = 1;
+        out->cursor = sc;
+        return GSQL_OK;
+    }
+    out->has_rows = 1;
+    if (!sc->scan) {
+        out->columns.length = 0;
+        v3_w_array(&out->columns, 1);
+        v3_w_text(&out->columns, "pid");
+        v3_w_array(&out->rows, 1);
+        v3_w_array(&out->rows, 1);
+        v3_w_int(&out->rows, (uint64_t)getpid());
+        free(sc);
+        out->cursor = NULL;
+        return GSQL_OK;
+    }
+    columns(out);
+    int rc = E->cursor_open(sc->t, tree(), &sc->cur);
+    if (rc == GS_NOT_FOUND) {
+        v3_w_array(&out->rows, 0);
+        free(sc);
+        out->cursor = NULL;
+        return GSQL_OK;
+    }
+    if (rc) {
+        free(sc);
+        out->cursor = NULL;
+        snprintf(err->message, sizeof err->message, "cursor_open: %s", gs_status_name(rc));
+        return err->code = GSQL_STORAGE;
+    }
+    E->first(sc->cur, &sc->positioned);
+    rc = scan_rows(sc, sc->batch, out, err);
+    if (rc || !sc->positioned) {
+        E->cursor_close(sc->cur);
+        free(sc);
+        out->cursor = NULL;
+        return rc;
+    }
+    out->cursor = sc;
+    return GSQL_OK;
+}
+
+static const GsqlService SERVICE = { NULL, svc_writes, svc_run, svc_fetch, svc_close, NULL, svc_resume, NULL };
 
 static uint32_t env_ms(const char *name) {
     const char *v = getenv(name);
@@ -455,6 +546,13 @@ static int owner_main(const char *db, const char *fd, const char *mode) {
         }
         so.io = io;
     }
+    /* forked readers: GSQL_TEST_READERS 0 for none, and a log of them */
+    const char *rv = getenv("GSQL_TEST_READERS");
+    if (rv && *rv) {
+        o.readers = atol(rv) <= 0 ? GSQL_READERS_NONE : (uint32_t)atol(rv);
+    }
+    const char *rl = getenv("GSQL_TEST_READER_LOG");
+    o.reader_log = rl && *rl ? rl : NULL;
     const char *ns = getenv("GSQL_TEST_NO_SERVICE");
     return gsql_owner_run(db, ns && *ns == '1' ? NULL : &SERVICE, &o);
 }
@@ -3179,6 +3277,290 @@ static int cost_main(const char *dir, long iters) {
     return finish();
 }
 
+/* ==== forked readers (docs/gsql_parallel_readers_design.md §6, 2) ======== */
+
+/* The pid of the reader log's last `start` line after `after` of them, or 0
+ * once `wait_ms` has passed without one. */
+static long reader_started(const char *log, int after, long wait_ms) {
+    for (long waited = 0; waited <= wait_ms; waited += 10) {
+        FILE *f = fopen(log, "r");
+        int n = 0;
+        long pid = 0;
+        char line[200];
+        while (f && fgets(line, sizeof line, f)) {
+            long p;
+            if (sscanf(line, "start %ld", &p) == 1 && ++n > after) {
+                pid = p;
+                break;
+            }
+        }
+        if (f) {
+            fclose(f);
+        }
+        if (pid) {
+            return pid;
+        }
+        sleep_ms(10);
+    }
+    return 0;
+}
+
+/* Whether the log says `pid` was reaped, and how: "signal 9", "exit 0". */
+static int reader_reaped(const char *log, long pid, const char *how, long wait_ms) {
+    char want[120];
+    snprintf(want, sizeof want, "reaped %ld %s", pid, how);
+    for (long waited = 0; waited <= wait_ms; waited += 10) {
+        FILE *f = fopen(log, "r");
+        char line[200];
+        int hit = 0;
+        while (f && fgets(line, sizeof line, f)) {
+            line[strcspn(line, "\n")] = 0;
+            hit |= !strcmp(line, want);
+        }
+        if (f) {
+            fclose(f);
+        }
+        if (hit) {
+            return 1;
+        }
+        sleep_ms(10);
+    }
+    return 0;
+}
+
+static long count_starts(const char *log) {
+    FILE *f = fopen(log, "r");
+    long n = 0;
+    char line[200];
+    while (f && fgets(line, sizeof line, f)) {
+        n += !strncmp(line, "start ", 6);
+    }
+    if (f) {
+        fclose(f);
+    }
+    return n;
+}
+
+/* A `slow` reply's pid, or -1. */
+static long slow_pid(const GsqlFrame *f) {
+    GsBytes r[1], cells[1];
+    uint64_t pid;
+    if (f->type != GSQL_M_ROWS || rows_of(f, r, 1) != 1 || v3_array_items(r[0].p, r[0].n, cells, 1) != 1 ||
+        !v3_read_u64(cells[0].p, cells[0].n, &pid)) {
+        return -1;
+    }
+    return (long)pid;
+}
+
+static uint32_t send_q(GsqlClient *c, const char *word, int n, const char *const *params, uint32_t batch) {
+    GsqlBuf b = {0};
+    b_query(&b, word, n, params, batch);
+    uint32_t id = 0;
+    GsqlError err;
+    gsql_client_send(c, GSQL_M_QUERY, &b, &id, &err);
+    gsql_buf_free(&b);
+    return id;
+}
+
+static int readers_main(const char *dir) {
+    char db[600], log[700];
+    snprintf(db, sizeof db, "%s/readers", dir);
+    snprintf(log, sizeof log, "%s/readers.log", dir);
+    setenv("GSQL_TEST_READER_LOG", log, 1);
+    GsqlClient *a = open_db(db, 1);
+    GsqlClient *b = open_db(db, 0);
+    if (!a || !b) {
+        return finish();
+    }
+    long owner = (long)gsql_client_owner_pid(a);
+    GsqlError err;
+    for (int i = 1; i <= 5; i++) {
+        char k[16];
+        snprintf(k, sizeof k, "k%d", i);
+        put(a, k, "v");
+    }
+
+    /* a read still working after its first slice is answered by a reader,
+       and the client cannot tell: the reply is the reply */
+    const char *quick[] = { "20", "5" };
+    EXPECT(!strcmp(q(a, "slow", 2, quick), "ROWS"), "slow answered %s: %s", last_word, last_message);
+    long pid = slow_pid(&last);
+    EXPECT(pid > 0 && pid != owner, "the slow read was finished by pid %ld, the owner being %ld", pid, owner);
+    EXPECT(reader_started(log, 0, 0) == pid, "the reader log's first start is %ld, the read's pid %ld",
+           reader_started(log, 0, 0), pid);
+    EXPECT(reader_reaped(log, pid, "exit 0", 2000), "the reader %ld was not reaped after a clean exit", pid);
+    /* a read that is done in one slice is never forked */
+    EXPECT(!strcmp(q(a, "count", 0, NULL), "ROWS") && count_starts(log) == 1,
+           "a one-slice read started a reader (%ld starts)", count_starts(log));
+
+    /* the owner stays free while a reader works, and CANCEL kills it */
+    const char *longer[] = { "50", "60" };
+    long rpid = count_starts(log);
+    uint32_t qid = send_q(a, "slow", 2, longer, 0);
+    rpid = reader_started(log, (int)rpid, 2000);
+    EXPECT(rpid > 0, "the long read started no reader");
+    double t0 = now_us();
+    EXPECT(!strcmp(call(b, GSQL_M_PING, NULL), "PONG") && count_rows(b) == 5,
+           "another connection was not served while a reader worked");
+    EXPECT(now_us() - t0 < 500000, "another connection waited %.0f ms beside a reader", (now_us() - t0) / 1000);
+    GsqlBuf cb = {0};
+    b_one(&cb, "request", qid);
+    uint32_t cid;
+    gsql_client_send(a, GSQL_M_CANCEL, &cb, &cid, &err);
+    gsql_client_recv(a, &last, &err);
+    EXPECT(last.id == qid && !strcmp(word_of(&last, last_word, sizeof last_word), "ERROR:CANCELLED"),
+           "the cancelled read was answered %s", last_word);
+    gsql_client_recv(a, &last, &err);
+    int hit = 0;
+    EXPECT(last.id == cid && last.type == GSQL_M_DONE && field_bool(&last, "cancelled", &hit) && hit,
+           "the CANCEL was answered %s, cancelled %d", gsql_msg_name((int)last.type), hit);
+    EXPECT(now_us() - t0 < 1500000, "the cancel took %.0f ms; the read had 3 s left", (now_us() - t0) / 1000);
+    EXPECT(reader_reaped(log, rpid, "signal 9", 2000), "the cancelled reader %ld was not killed and reaped", rpid);
+    EXPECT(!strcmp(call(a, GSQL_M_PING, NULL), "PONG"), "after a cancelled read the connection was not usable");
+
+    /* a reader killed from outside: LOST for its one read, nothing else */
+    rpid = count_starts(log);
+    qid = send_q(a, "slow", 2, longer, 0);
+    rpid = reader_started(log, (int)rpid, 2000);
+    EXPECT(rpid > 0, "the long read started no reader");
+    if (rpid > 0) {
+        kill((pid_t)rpid, SIGKILL);
+    }
+    gsql_client_recv(a, &last, &err);
+    remember_message(&last);
+    EXPECT(last.id == qid && !strcmp(word_of(&last, last_word, sizeof last_word), "ERROR:LOST"),
+           "a read whose reader was killed was answered %s: %s", last_word, last_message);
+    EXPECT(!strcmp(call(a, GSQL_M_PING, NULL), "PONG") && count_rows(a) == 5 && count_rows(b) == 5,
+           "after a killed reader the connections were not served");
+    EXPECT(reader_reaped(log, rpid, "signal 9", 2000), "the killed reader %ld was not reaped", rpid);
+
+    /* the snapshot is the fork: a commit made while the reader works is not
+       in its rows, which come in batches through a cursor it holds */
+    const char *scan5[] = { "30", "6" };
+    rpid = count_starts(log);
+    qid = send_q(a, "slowscan", 2, scan5, 2);
+    rpid = reader_started(log, (int)rpid, 2000);
+    EXPECT(rpid > 0, "the slow scan started no reader");
+    EXPECT(!strcmp(put(b, "k6", "late"), "DONE"), "a put beside the reader answered %s", last_word);
+    gsql_client_recv(a, &last, &err);
+    long seen = 0;
+    uint64_t cur = 0;
+    int more = 0;
+    GsBytes rr[8];
+    for (int guard = 0; guard < 10; guard++) {
+        if (last.type != GSQL_M_ROWS) {
+            remember_message(&last);
+            mismatch("the slow scan was answered %s: %s", word_of(&last, last_word, sizeof last_word), last_message);
+            break;
+        }
+        long got = rows_of(&last, rr, 8);
+        seen += got > 0 ? got : 0;
+        more = 0;
+        field_bool(&last, "more", &more);
+        if (!more) {
+            break;
+        }
+        EXPECT(field_u64(&last, "cursor", &cur), "a batch with more had no cursor");
+        GsqlBuf fb = {0};
+        b_fetch(&fb, cur, 2);
+        call(a, GSQL_M_FETCH, &fb);
+        gsql_buf_free(&fb);
+    }
+    EXPECT(seen == 5, "the reader's cursor gave %ld rows; there were 5 when it began", seen);
+    EXPECT(count_rows(a) == 6, "the later put is not there for a new read");
+    EXPECT(reader_reaped(log, rpid, "exit 0", 2000), "the scan's reader %ld did not exit when its cursor ended", rpid);
+
+    /* a reader's cursor closed early: the reader is killed and reaped */
+    rpid = count_starts(log);
+    qid = send_q(a, "slowscan", 2, scan5, 1);
+    rpid = reader_started(log, (int)rpid, 2000);
+    gsql_client_recv(a, &last, &err);
+    cur = 0;
+    EXPECT(last.type == GSQL_M_ROWS && field_u64(&last, "cursor", &cur), "the slow scan had no cursor");
+    GsqlBuf ob = {0};
+    b_one(&ob, "cursor", cur);
+    EXPECT(!strcmp(call(a, GSQL_M_CLOSE, &ob), "DONE"), "CLOSE of a reader's cursor answered %s", last_word);
+    gsql_buf_free(&ob);
+    EXPECT(reader_reaped(log, rpid, "signal 9", 2000), "the reader %ld of a closed cursor was not ended", rpid);
+
+    /* inside a transaction a read is sliced in the owner, as before (§4) */
+    EXPECT(!strcmp(begin(a, "read"), "DONE"), "BEGIN READ answered %s", last_word);
+    EXPECT(!strcmp(q(a, "slow", 2, quick), "ROWS") && slow_pid(&last) == owner,
+           "a read inside a transaction was finished by pid %ld, not the owner %ld", slow_pid(&last), owner);
+    EXPECT(!strcmp(call(a, GSQL_M_ROLLBACK, NULL), "DONE"), "ROLLBACK answered %s", last_word);
+
+    /* the owner stopped with a reader working: the reader goes with it */
+    rpid = count_starts(log);
+    qid = send_q(a, "slow", 2, longer, 0);
+    rpid = reader_started(log, (int)rpid, 2000);
+    EXPECT(rpid > 0, "the long read started no reader");
+    kill((pid_t)owner, SIGTERM);
+    gsql_client_recv(a, &last, &err);
+    for (int w = 0; w < 200 && rpid > 0 && kill((pid_t)rpid, 0) == 0; w++) {
+        sleep_ms(10);
+    }
+    EXPECT(rpid > 0 && kill((pid_t)rpid, 0) != 0, "the reader %ld outlived its stopped owner", rpid);
+    gsql_client_close(a);
+    gsql_client_close(b);
+    for (int w = 0; w < 300 && kill((pid_t)owner, 0) == 0; w++) {
+        sleep_ms(10);
+    }
+
+    /* the owner killed outright: the reader dies with it */
+    a = open_db(db, 0);
+    owner = a ? (long)gsql_client_owner_pid(a) : 0;
+    if (a) {
+        long before = count_starts(log);
+        send_q(a, "slow", 2, longer, 0);
+        rpid = reader_started(log, (int)before, 2000);
+        EXPECT(rpid > 0, "the long read started no reader");
+        kill((pid_t)owner, SIGKILL);
+        for (int w = 0; w < 200 && rpid > 0 && kill((pid_t)rpid, 0) == 0; w++) {
+            sleep_ms(10);
+        }
+        EXPECT(rpid > 0 && kill((pid_t)rpid, 0) != 0, "the reader %ld outlived its killed owner", rpid);
+        gsql_client_close(a);
+    }
+
+    /* the cap: one reader at most, so a second long read beside it is sliced
+       in the owner; and none at all */
+    char db2[600];
+    snprintf(db2, sizeof db2, "%s/capped", dir);
+    setenv("GSQL_TEST_READERS", "1", 1);
+    a = open_db(db2, 1);
+    b = open_db(db2, 0);
+    unsetenv("GSQL_TEST_READERS");
+    if (a && b) {
+        owner = (long)gsql_client_owner_pid(a);
+        const char *mid[] = { "20", "15" };
+        uint32_t ia = send_q(a, "slow", 2, mid, 0);
+        sleep_ms(40);
+        uint32_t ib = send_q(b, "slow", 2, mid, 0);
+        gsql_client_recv(a, &last, &err);
+        long pa = last.id == ia ? slow_pid(&last) : -1;
+        gsql_client_recv(b, &last, &err);
+        long pb = last.id == ib ? slow_pid(&last) : -1;
+        EXPECT(pa > 0 && pa != owner && pb == owner,
+               "with a cap of 1 the reads were finished by %ld and %ld (owner %ld): want a reader, then the owner",
+               pa, pb, owner);
+        gsql_client_close(a);
+        gsql_client_close(b);
+    }
+    char db3[600];
+    snprintf(db3, sizeof db3, "%s/none", dir);
+    setenv("GSQL_TEST_READERS", "0", 1);
+    a = open_db(db3, 1);
+    unsetenv("GSQL_TEST_READERS");
+    if (a) {
+        EXPECT(!strcmp(q(a, "slow", 2, quick), "ROWS") && slow_pid(&last) == (long)gsql_client_owner_pid(a),
+               "with readers off a long read was finished by pid %ld, not the owner", slow_pid(&last));
+        gsql_client_close(a);
+    }
+    gsql_buf_free(&cb);
+    unsetenv("GSQL_TEST_READER_LOG");
+    return finish();
+}
+
 int main(int argc, char **argv) {
     signal(SIGPIPE, SIG_IGN);
     if (argc >= 5 && !strcmp(argv[1], "owner")) {
@@ -3229,10 +3611,13 @@ int main(int argc, char **argv) {
     if (argc >= 5 && !strcmp(argv[1], "churn")) {
         return churn_main(argv[2], atoi(argv[3]), atoi(argv[4]));
     }
+    if (argc >= 3 && !strcmp(argv[1], "readers")) {
+        return readers_main(argv[2]);
+    }
     if (argc >= 4 && !strcmp(argv[1], "cost")) {
         return cost_main(argv[2], atol(argv[3]));
     }
     fprintf(stderr, "usage: owner_test owner DB FD MODE | wire | protocol DIR | noservice DIR | timeouts DIR | stall DIR "
-                    "| race DIR N [ROUNDS] | paths DIR | handoff DIR | lifetime DIR | busygone DIR | churn DIR N ROUNDS | cost DIR ITERS\n");
+                    "| race DIR N [ROUNDS] | paths DIR | handoff DIR | lifetime DIR | busygone DIR | churn DIR N ROUNDS | readers DIR | cost DIR ITERS\n");
     return 2;
 }

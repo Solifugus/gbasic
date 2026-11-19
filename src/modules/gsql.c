@@ -4254,6 +4254,34 @@ int gb_gsql_owner_main(int argc, char **argv) {
     }
     opt.ready_fd = atoi(argv[1]);
     opt.create = strcmp(argv[2], "create") == 0;
+    /* forked readers (docs/gsql_parallel_readers_design.md): how many at
+       once, from the environment the starting program gave the owner, until
+       a database's own setting exists (§6 increment 4); 0 turns them off.
+       The other two are for tests */
+    const char *readers = getenv("GBASIC_GSQL_READERS");
+    if (readers && *readers) {
+        long n = atol(readers);
+        opt.readers = n <= 0 ? GSQL_READERS_NONE : (uint32_t)n;
+    }
+    const char *log = getenv("GBASIC_GSQL_READER_LOG");
+    opt.reader_log = log && *log ? log : NULL;
+    opt.reader_test_write = getenv("GBASIC_GSQL_TEST_READER_WRITE") != NULL;
+    /* tests: the engine's tuning (GsOptions tune_a..tune_d: memtable bytes,
+       level-0 files before compaction, the blob threshold, read handles kept
+       open), so a test reaches flushes and compactions with a few writes */
+    GsOptions store;
+    memset(&store, 0, sizeof store);
+    const char *tune = getenv("GBASIC_GSQL_TEST_TUNE");
+    if (tune && *tune) {
+        unsigned long long t[4] = { 0, 0, 0, 0 };
+        if (sscanf(tune, "%llu,%llu,%llu,%llu", &t[0], &t[1], &t[2], &t[3]) >= 1) {
+            store.tune_a = t[0];
+            store.tune_b = t[1];
+            store.tune_c = t[2];
+            store.tune_d = t[3];
+            opt.store = &store;
+        }
+    }
     GsqlSql *q = gsql_sql_new(&gsql_interpreter_host);
     GsqlService svc = gsql_sql_service(q);
     int rc = gsql_owner_run(argv[0], &svc, &opt);

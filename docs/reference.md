@@ -3021,6 +3021,19 @@ starts a new owner. An owner whose database another machine has taken writes
 nothing more and exits, so its clients see `LOST`, and their next call is
 refused with `ELSEWHERE`.
 
+**A long read runs on a core of its own** *(after 0.12.0;
+`docs/gsql_parallel_readers_design.md`)*. A read still working after its
+first slice, outside a transaction, is finished by a **reader**: a copy of
+the owner forked at that moment, which holds the read's snapshot and reads
+with every write refused. The owner relays its answers and serves everyone
+else meanwhile. A program sees no difference in what comes back. How many
+readers run at once is the core count less two, at least one; a read past
+that is sliced in the owner as before. `GBASIC_GSQL_READERS`, in the
+environment of the program that starts the owner, sets the count, and `0`
+turns readers off. A reader that dies (killed, or crashed) fails its one
+read with `LOST`; the owner and every other connection go on, and a reader
+never outlives its owner.
+
 ### The `database` and `sql` blocks
 
 A program can declare its database and its statements instead of passing

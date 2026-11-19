@@ -34,6 +34,10 @@
 /* Answered by a store's own fenced layer for a write after it lost its lease
  * (docs/gsql_lease_design.md §5): another machine owns the database now. */
 #define GSQL_IO_FENCED 100001
+/* Answered by a store's fenced layer in a forked reader
+ * (docs/gsql_parallel_readers_design.md §4) for anything that would write: a
+ * reader that writes is a defect, and this is its tripwire. */
+#define GSQL_IO_READER 100002
 
 enum {
     GSQL_IO_CREATE = 1,    /* create if absent */

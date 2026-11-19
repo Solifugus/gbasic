@@ -55,9 +55,10 @@ A program that writes to two databases makes two independent commits, and a cras
 
 ### Run long reports somewhere else
 
-**The owner is single-threaded** (`gsql_owner_design.md` §6.1), but a long read **runs in slices**: a `GROUP BY`, an aggregate or a sort no index gives yields every thousand or so rows, and every other client is served between slices. Measured at 10⁶ rows, a point read waits at most about 6 ms during such a query, where it waited the query's whole 0.6 to 2 s before (`gsql_slicing_design.md` §5).
+**The owner is single-threaded** (`gsql_owner_design.md` §6.1), but a long read **does not hold it**. A `GROUP BY`, an aggregate or a sort no index gives runs in slices, and *(after 0.12.0)* one still working after its first slice is finished by a **reader the owner forks**, on a core of its own, while the owner serves everyone else (`gsql_parallel_readers_design.md`). Four programs running such reports at once finish 2.4 to 3.3 times faster than one owner slicing them, and a point read beside them stops waiting (`tests/run_gsql_readers.sh`). A read inside a transaction is still sliced in the owner.
 
 - **Short queries** belong on the live database, and stay fast beside long ones.
+- **How many readers at once** is the machine's core count less two, at least one. `GBASIC_GSQL_READERS`, set for the program that starts the owner, changes it, and 0 turns readers off. A read past the count is sliced in the owner, not refused.
 - **A report over a large table** still runs about 10% slower there, and a hash join's inner side, a derived table, a `WITH` query and a set operation still run as one piece. Such a report belongs on a copy made by `gsql.backup` and refreshed between reports (`gsql_cookbook.md` recipe 14). Each database has its own owner, so a report there stalls nobody.
 
 ### Let indexes narrow, and read `EXPLAIN`

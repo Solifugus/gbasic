@@ -26,6 +26,10 @@ int gs_lease_take(GsqlIo *io, const char *dbpath, const GsLeaseOptions *opt, GsL
  * machine's record is found, after which it is FENCED for good. */
 int gs_lease_keep(GsLease *l, int force, uint64_t *due_ms);
 int gs_lease_fenced(const GsLease *l);
+/* A forked reader's copy of the lease (docs/gsql_parallel_readers_design.md
+ * §4): from here every write, creation, rename, removal, sync and lock through
+ * gs_lease_io answers GSQL_IO_READER, and the lease is never renewed. */
+void gs_lease_reader(GsLease *l);
 /* Who took it: "host H (pid P)". Empty until fenced. */
 const char *gs_lease_holder(const GsLease *l);
 /* The layer the store writes through: every write, truncation, rename,

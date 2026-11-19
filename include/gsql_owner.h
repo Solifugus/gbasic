@@ -106,9 +106,20 @@ typedef struct {
                                     design.md); 0: 3 000, GSQL_LINGER_NONE: at
                                     once */
     const GsOptions *store;      /* the engine's options; NULL: the defaults */
+    uint32_t readers;            /* forked readers at once (docs/gsql_parallel_
+                                    readers_design.md): a read still working
+                                    after its first slice runs in a process of
+                                    its own. 0: the core count less two, at
+                                    least 1; GSQL_READERS_NONE: none, every
+                                    long read sliced in the owner */
+    const char *reader_log;      /* tests: a line appended per reader started
+                                    and reaped; NULL: none */
+    int reader_test_write;       /* tests: each reader first tries a write,
+                                    and answers what the engine said */
 } GsqlOwnerOptions;
 
 #define GSQL_LINGER_NONE 0xffffffffu
+#define GSQL_READERS_NONE 0xffffffffu
 
 /* Serves `db` until SIGTERM, or until it has had no connection for its
  * linger. Answers the process's exit status: 0 for a clean

@@ -201,6 +201,15 @@ typedef struct GsEngine {
     int (*savepoint)(GsTxn *t);
     int (*rollback_savepoint)(GsTxn *t);
     int (*release_savepoint)(GsTxn *t);
+    /* Makes this process's copy of the store a forked reader's
+     * (docs/gsql_parallel_readers_design.md §4): every write through its I/O
+     * layer is refused with GS_READ_ONLY from here on, the lease is never
+     * renewed, and the copy of the lock's descriptor is closed (an flock
+     * belongs to the descriptor the owner still holds, so closing a copy
+     * leaves it locked). Never closed afterwards: the reader exits with
+     * _exit. NULL in an engine that cannot; GS_MISUSE where this store has
+     * no fence to refuse with. */
+    int (*reader)(GsStore *db);
 } GsEngine;
 
 extern const GsEngine gs_engine_lsm;  /* §2.C, the chosen engine */
