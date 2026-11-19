@@ -14002,3 +14002,21 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   found no other check behind this shape. A warning when bare `error` is read
   a second time in one statement list, after the read that acknowledged it,
   might catch this; not built.
+
+## 2026-11-18 — CC — while: timing odbc.insert against a loop of odbc.exec
+- **Type:** language-surprise
+- **Severity:** medium
+- **What:** `pg.exec`, `pg.query`, `odbc.exec` and `odbc.query` refuse
+  `unknown` as a parameter. `pg.query("select $1::int", [unknown])` raises
+  "unsupported PostgreSQL parameter type", and odbc says "unsupported odbc
+  parameter type". Only `nothing` binds as SQL NULL. That is inconsistent
+  three ways:
+  - G-SQL takes `unknown` as NULL (its own message: "t.amt is NOT NULL, and
+    the value is unknown");
+  - three-valued logic makes `unknown` SQL's NULL;
+  - the new `pg.insert` and `odbc.insert` take both.
+
+  A row copied from a G-SQL query, or built with `unknown` for a missing
+  value, cannot be passed to `exec` as it is.
+- **Workaround:** pass `nothing` for a NULL parameter. For the sweep: bind
+  `unknown` as NULL in every driver, as G-SQL and `insert` do.

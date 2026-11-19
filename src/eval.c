@@ -26113,6 +26113,118 @@ typedef struct {
 static void odbc_raise_message(const char *message) {
     runtime_error_raise(message, ODBC_ERROR_CODE, "odbc");
 }
+#endif
+
+#if HAVE_ODBC || HAVE_LIBPQ
+/* --- pg.insert and odbc.insert, shared (docs/bulk_insert_design.md) ------- */
+
+/* A refusal naming the caller's row, with `error.details.index` (0-based, as
+ * gsql.insert counts); `index < 0` names none. */
+static void bulk_insert_raise(const char *message, long index, int code, const char *source) {
+    if (raise_in_flight) {
+        return;
+    }
+    Value details = value_record(NULL, 0);
+    if (index >= 0) {
+        record_set(&details, "index", value_number_exact(index));
+    }
+    error_set_state_full(message, code, source, details, value_null(), 0, 0);
+    error_generation++;
+    raise_in_flight = 1;
+}
+
+/* An error already raised (by a driver, or by a value's own conversion),
+ * said as the verb's: "<verb>: rows[3].amt: <its message>", with the index
+ * in details. `row < 0` adds only the verb; `column` may be NULL. */
+static void bulk_insert_annotate(const char *verb, long row, const char *column) {
+    if (!current_error.active || !current_error.message) {
+        return;
+    }
+    size_t vl = strlen(verb);
+    const char *old = current_error.message;
+    if (strncmp(old, verb, vl) == 0 && old[vl] == ':') {
+        old += vl + 1;
+        while (*old == ' ') old++;
+    }
+    char *said = malloc(strlen(old) + vl + 300);
+    if (!said) abort();
+    if (row >= 0 && column) {
+        sprintf(said, "%s: rows[%ld].%.200s: %s", verb, row, column, old);
+    } else if (row >= 0) {
+        sprintf(said, "%s: rows[%ld]: %s", verb, row, old);
+    } else {
+        sprintf(said, "%s: %s", verb, old);
+    }
+    free(current_error.message);
+    current_error.message = said;
+    if (row >= 0) {
+        value_free(current_error.details);
+        current_error.details = value_record(NULL, 0);
+        record_set(&current_error.details, "index", value_number_exact(row));
+    }
+}
+
+/* The rows' shape, refused before anything is sent: an array of records,
+ * every one naming rows[0]'s columns. Answers 1 when the rows may be sent. */
+static int bulk_insert_rows_ok(const char *verb, Value *rows, int code, const char *source) {
+    char message[1000];
+    if (rows->kind != VALUE_ARRAY) {
+        snprintf(message, sizeof message, "%s: the rows are an array of records, one per row", verb);
+        bulk_insert_raise(message, -1, code, source);
+        return 0;
+    }
+    size_t nrows = rows->as.array.store->count;
+    Value *first = nrows ? &rows->as.array.store->items[0] : NULL;
+    for (size_t r = 0; r < nrows; r++) {
+        Value *row = &rows->as.array.store->items[r];
+        if (row->kind != VALUE_RECORD) {
+            snprintf(message, sizeof message, "%s: rows[%zu] is %s, not a record of column values",
+                     verb, r, value_kind_name(row->kind));
+            bulk_insert_raise(message, (long)r, code, source);
+            return 0;
+        }
+        if (row->as.record.count == 0) {
+            snprintf(message, sizeof message, "%s: rows[%zu] is an empty record, so it names no column", verb, r);
+            bulk_insert_raise(message, (long)r, code, source);
+            return 0;
+        }
+        int same = row->as.record.count == first->as.record.count;
+        for (size_t c = 0; same && c < first->as.record.count; c++) {
+            same = record_find(row, first->as.record.fields[c].name) != NULL;
+        }
+        if (!same) {
+            StringBuilder a, b;
+            sb_init(&a);
+            sb_init(&b);
+            for (size_t c = 0; c < first->as.record.count; c++) {
+                if (c) sb_append_text(&a, ", ");
+                sb_append_text(&a, first->as.record.fields[c].name);
+            }
+            for (size_t c = 0; c < row->as.record.count; c++) {
+                if (c) sb_append_text(&b, ", ");
+                sb_append_text(&b, row->as.record.fields[c].name);
+            }
+            snprintf(message, sizeof message,
+                     "%s: rows[%zu] names %.300s where rows[0] names %.300s; every row names the same "
+                     "columns (unknown for a NULL)", verb, r, b.items, a.items);
+            free(a.items);
+            free(b.items);
+            bulk_insert_raise(message, (long)r, code, source);
+            return 0;
+        }
+    }
+    return 1;
+}
+
+static Value bulk_insert_answer(long affected) {
+    Value result = value_record(NULL, 0);
+    record_set(&result, "command", value_string("INSERT"));
+    record_set(&result, "rows_affected", value_number_exact(affected));
+    return result;
+}
+#endif
+
+#if HAVE_ODBC
 
 /* Build "prefix: [STATE] message" from the driver's own diagnostic record.
  * Walking every record rather than only the first matters: drivers routinely
@@ -27695,7 +27807,434 @@ static Value odbc_eval_info(AstExpr *expr) {
     return value_record(fields, n);
 }
 
+/* --- odbc.insert: many rows through parameter arrays ----------------------
+ * (docs/bulk_insert_design.md §4). One prepared INSERT, its parameters bound
+ * column-wise in batches of up to ODBC_INSERT_BATCH rows. A driver refusing
+ * arrays gets the same statement once per row. All or nothing: with
+ * autocommit on, the call is its own transaction. */
+#define ODBC_INSERT_BATCH 1000
+
+enum { OIK_NONE, OIK_BOOL, OIK_NUMBER, OIK_MONEY, OIK_TEXT, OIK_DATETIME };
+
+static int odbc_insert_kind(const Value *v) {
+    switch (v->kind) {
+    case VALUE_BOOL: return OIK_BOOL;
+    case VALUE_NUMBER: return OIK_NUMBER;
+    case VALUE_MONEY: return OIK_MONEY;
+    case VALUE_STRING: return OIK_TEXT;
+    case VALUE_DATETIME: return OIK_DATETIME;
+    default: return -1;
+    }
+}
+
+static const char *odbc_insert_kind_name(int kind) {
+    static const char *names[] = { "unknown", "boolean", "number", "money", "text", "date or time" };
+    return kind >= 0 && kind <= OIK_DATETIME ? names[kind] : "a kind odbc cannot send";
+}
+
+/* One value's text as odbc_bind_value would send it, or NULL with a raise. */
+static char *odbc_insert_text(const Value *v, size_t *length) {
+    char buf[64];
+    char *text = NULL;
+    switch (v->kind) {
+    case VALUE_NUMBER:
+        if (!isfinite(v->as.num.value)) {
+            odbc_raise_message("odbc number parameters must be finite");
+            return NULL;
+        }
+        format_number_value(buf, sizeof buf, *v);
+        text = copy_string(buf);
+        break;
+    case VALUE_MONEY:
+        money_render(v->as.money, (int)v->as.money.exponent, buf, sizeof buf);
+        text = copy_string(buf);
+        break;
+    case VALUE_DATETIME:
+        text = odbc_datetime_text(v->as.datetime);
+        break;
+    case VALUE_STRING: {
+        size_t n = string_length(v->as.string);
+        text = malloc(n + 1);
+        if (!text) abort();
+        memcpy(text, v->as.string, n);
+        text[n] = '\0';
+        *length = n;
+        return text;
+    }
+    default:
+        odbc_raise_message("unsupported odbc parameter type");
+        return NULL;
+    }
+    if (text) {
+        *length = strlen(text);
+    }
+    return text;
+}
+
+/* `schema.table`, each part quoted with the driver's identifier quote. */
+static void odbc_insert_append_name(StringBuilder *sql, const char *name, const char *quote) {
+    if (!quote[0] || quote[0] == ' ') {
+        sb_append_text(sql, name);
+        return;
+    }
+    char close = quote[0] == '[' ? ']' : quote[0];
+    sb_append_char(sql, quote[0]);
+    for (const char *p = name; *p; p++) {
+        if (*p == close) sb_append_char(sql, close);
+        sb_append_char(sql, *p);
+    }
+    sb_append_char(sql, close);
+}
+
+static Value odbc_eval_insert(AstExpr *expr) {
+    if (expr->as.call.args.count != 3) {
+        odbc_raise_message("odbc.insert expects a connection, a table's name and the rows, an array of records");
+        return value_null();
+    }
+    Value conn_value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(conn_value);
+        return value_null();
+    }
+    Value table = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(conn_value);
+        value_free(table);
+        return value_null();
+    }
+    Value rows = eval_expr(expr->as.call.args.items[2]);
+    if (error_action_pending()) {
+        value_free(conn_value);
+        value_free(table);
+        value_free(rows);
+        return value_null();
+    }
+    Value result = value_null();
+    StringBuilder sql;
+    sb_init(&sql);
+    SQLHSTMT stmt = SQL_NULL_HSTMT;
+    int *kinds = NULL, *scales = NULL, *decimal = NULL;
+    int own_transaction = 0;
+    char message[1000];
+    OdbcConnectionValue *connection = odbc_connection_from_value(conn_value);
+    if (!connection) {
+        goto done;
+    }
+    if (table.kind != VALUE_STRING || string_length(table.as.string) == 0 ||
+        string_length(table.as.string) != strlen(table.as.string)) {
+        bulk_insert_raise("odbc.insert: the table's name is a text, such as \"invoice\" or \"sales.invoice\"",
+                          -1, ODBC_ERROR_CODE, "odbc");
+        goto done;
+    }
+    if (!bulk_insert_rows_ok("odbc.insert", &rows, ODBC_ERROR_CODE, "odbc")) {
+        goto done;
+    }
+    size_t nrows = rows.as.array.store->count;
+    if (nrows == 0) {
+        result = bulk_insert_answer(0);
+        goto done;
+    }
+    Value *first = &rows.as.array.store->items[0];
+    size_t ncols = first->as.record.count;
+
+    /* each column's kind, from its first value that is not unknown; a later
+       value of another kind is refused before anything is sent */
+    kinds = calloc(ncols, sizeof *kinds);
+    scales = calloc(ncols, sizeof *scales);
+    decimal = calloc(ncols, sizeof *decimal);
+    if (!kinds || !scales || !decimal) abort();
+    for (size_t r = 0; r < nrows; r++) {
+        Value *row = &rows.as.array.store->items[r];
+        for (size_t c = 0; c < ncols; c++) {
+            Value *v = record_find(row, first->as.record.fields[c].name)->value;
+            if (v->kind == VALUE_NULL || v->kind == VALUE_UNKNOWN) {
+                continue;
+            }
+            int k = odbc_insert_kind(v);
+            if (k < 0) {
+                snprintf(message, sizeof message, "odbc.insert: rows[%zu].%.200s is %s, which odbc cannot send",
+                         r, first->as.record.fields[c].name, value_kind_name(v->kind));
+                bulk_insert_raise(message, (long)r, ODBC_ERROR_CODE, "odbc");
+                goto done;
+            }
+            /* money and numbers share a column: both travel as decimal text */
+            if (k == OIK_MONEY) {
+                k = OIK_NUMBER;
+                decimal[c] = 1;
+            } else if (k == OIK_NUMBER && value_is_decimal(*v)) {
+                decimal[c] = 1;
+            }
+            if (kinds[c] == OIK_NONE) {
+                kinds[c] = k;
+            } else if (kinds[c] != k) {
+                snprintf(message, sizeof message,
+                         "odbc.insert: rows[%zu].%.200s is %s where the column's earlier rows are %s; one column "
+                         "is bound as one kind", r, first->as.record.fields[c].name, odbc_insert_kind_name(k),
+                         odbc_insert_kind_name(kinds[c]));
+                bulk_insert_raise(message, (long)r, ODBC_ERROR_CODE, "odbc");
+                goto done;
+            }
+            /* the scale a DECIMAL is declared with: the largest any row needs */
+            int sc = v->kind == VALUE_MONEY ? (int)v->as.money.exponent :
+                     value_is_decimal(*v) ? (int)v->as.num.scale : 0;
+            if (sc > scales[c]) scales[c] = sc;
+        }
+    }
+
+    /* INSERT INTO <table> (<cols>) VALUES (?, ...), names quoted */
+    SQLHDBC dbc = connection->dbc;
+    char quote[8] = {0};
+    SQLSMALLINT ql = 0;
+    if (!SQL_SUCCEEDED(SQLGetInfo(dbc, SQL_IDENTIFIER_QUOTE_CHAR, quote, sizeof quote, &ql))) {
+        strcpy(quote, "\"");
+    }
+    sb_append_text(&sql, "INSERT INTO ");
+    {
+        const char *part = table.as.string;
+        for (;;) {
+            const char *dot = strchr(part, '.');
+            size_t n = dot ? (size_t)(dot - part) : strlen(part);
+            char *piece = malloc(n + 1);
+            if (!piece) abort();
+            memcpy(piece, part, n);
+            piece[n] = '\0';
+            odbc_insert_append_name(&sql, piece, quote);
+            free(piece);
+            if (!dot) break;
+            sb_append_char(&sql, '.');
+            part = dot + 1;
+        }
+    }
+    sb_append_text(&sql, " (");
+    for (size_t c = 0; c < ncols; c++) {
+        if (c) sb_append_text(&sql, ", ");
+        odbc_insert_append_name(&sql, first->as.record.fields[c].name, quote);
+    }
+    sb_append_text(&sql, ") VALUES (");
+    for (size_t c = 0; c < ncols; c++) {
+        sb_append_text(&sql, c ? ", ?" : "?");
+    }
+    sb_append_char(&sql, ')');
+
+    /* all or nothing: with autocommit on, this call is its own transaction */
+    SQLULEN autocommit = SQL_AUTOCOMMIT_ON;
+    SQLGetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT, &autocommit, 0, NULL);
+    if (autocommit == SQL_AUTOCOMMIT_ON) {
+        if (!SQL_SUCCEEDED(SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)SQL_AUTOCOMMIT_OFF, 0))) {
+            odbc_raise_diag(SQL_HANDLE_DBC, dbc, "odbc.insert: could not begin a transaction");
+            goto done;
+        }
+        own_transaction = 1;
+    }
+    if (!SQL_SUCCEEDED(SQLAllocHandle(SQL_HANDLE_STMT, dbc, &stmt))) {
+        odbc_raise_diag(SQL_HANDLE_DBC, dbc, "odbc.insert: could not allocate a statement");
+        stmt = SQL_NULL_HSTMT;
+        goto fail;
+    }
+    if (!SQL_SUCCEEDED(SQLPrepare(stmt, (SQLCHAR *)sql.items, SQL_NTS))) {
+        odbc_raise_diag_sql(SQL_HANDLE_STMT, stmt, "odbc.insert", sql.items);
+        bulk_insert_annotate("odbc.insert", -1, NULL);
+        goto fail;
+    }
+    /* parameter arrays, or one row at a time where the driver has none */
+    size_t cap = ODBC_INSERT_BATCH;
+    SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_BIND_TYPE, (SQLPOINTER)SQL_PARAM_BIND_BY_COLUMN, 0);
+    if (!SQL_SUCCEEDED(SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)(SQLULEN)cap, 0))) {
+        cap = 1;
+    }
+    SQLUSMALLINT *status = calloc(ODBC_INSERT_BATCH, sizeof *status);
+    char **bufs = calloc(ncols, sizeof *bufs);
+    SQLLEN **inds = calloc(ncols, sizeof *inds);
+    if (!status || !bufs || !inds) abort();
+    int ok = 1, retried = 0;
+    for (size_t at = 0; ok && at < nrows;) {
+        size_t n = nrows - at < cap ? nrows - at : cap;
+        /* each column's values for these rows, as text (a boolean as a bit) */
+        for (size_t c = 0; ok && c < ncols; c++) {
+            const char *col = first->as.record.fields[c].name;
+            char **texts = calloc(n, sizeof *texts);
+            size_t *lens = calloc(n, sizeof *lens);
+            if (!texts || !lens) abort();
+            size_t width = 1;
+            for (size_t i = 0; i < n; i++) {
+                Value *v = record_find(&rows.as.array.store->items[at + i], col)->value;
+                if (v->kind == VALUE_NULL || v->kind == VALUE_UNKNOWN || kinds[c] == OIK_BOOL) {
+                    continue;
+                }
+                texts[i] = odbc_insert_text(v, &lens[i]);
+                if (!texts[i]) {
+                    bulk_insert_annotate("odbc.insert", (long)(at + i), col);
+                    ok = 0;
+                    break;
+                }
+                if (lens[i] + 1 > width) width = lens[i] + 1;
+            }
+            free(bufs[c]);
+            free(inds[c]);
+            bufs[c] = calloc(n, kinds[c] == OIK_BOOL ? 1 : width);
+            inds[c] = calloc(n, sizeof(SQLLEN));
+            if (!bufs[c] || !inds[c]) abort();
+            for (size_t i = 0; i < n; i++) {
+                Value *v = record_find(&rows.as.array.store->items[at + i], col)->value;
+                if (v->kind == VALUE_NULL || v->kind == VALUE_UNKNOWN) {
+                    inds[c][i] = SQL_NULL_DATA;
+                } else if (kinds[c] == OIK_BOOL) {
+                    bufs[c][i] = v->as.boolean ? 1 : 0;
+                    inds[c][i] = 1;
+                } else if (texts[i]) {
+                    memcpy(bufs[c] + i * width, texts[i], lens[i]);
+                    inds[c][i] = (SQLLEN)lens[i];
+                }
+                free(texts[i]);
+            }
+            free(texts);
+            free(lens);
+            if (!ok) {
+                break;
+            }
+            SQLSMALLINT ctype = kinds[c] == OIK_BOOL ? SQL_C_BIT : SQL_C_CHAR;
+            SQLSMALLINT stype = SQL_VARCHAR;
+            SQLULEN size = width > 1 ? width - 1 : 1;
+            SQLSMALLINT digits = 0;
+            SQLLEN buflen = (SQLLEN)width;
+            switch (kinds[c]) {
+            case OIK_BOOL: stype = SQL_BIT; size = 1; buflen = 1; break;
+            /* DECIMAL with its scale when any row is money or an exact
+               decimal, so no driver takes the digits through a double
+               (odbc_bind_value says why); DOUBLE otherwise, as exec sends */
+            case OIK_NUMBER: stype = decimal[c] ? SQL_DECIMAL : SQL_DOUBLE; digits = (SQLSMALLINT)scales[c]; break;
+            /* WVARCHAR so Unicode survives FreeTDS; nvarchar(max) past 4000
+               (odbc_bind_value says why) */
+            case OIK_TEXT: stype = size > 4000 ? SQL_WLONGVARCHAR : SQL_WVARCHAR; break;
+            default: break;
+            }
+            if (!SQL_SUCCEEDED(SQLBindParameter(stmt, (SQLUSMALLINT)(c + 1), SQL_PARAM_INPUT, ctype, stype,
+                                                size, digits, bufs[c], buflen, inds[c]))) {
+                odbc_raise_diag(SQL_HANDLE_STMT, stmt, "odbc.insert: could not bind a column");
+                ok = 0;
+            }
+        }
+        if (!ok) {
+            break;
+        }
+        SQLULEN processed = 0;
+        for (size_t i = 0; i < n; i++) status[i] = SQL_PARAM_UNUSED;
+        if (cap > 1) {
+            SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)(SQLULEN)n, 0);
+            SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, status, 0);
+            SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, &processed, 0);
+        }
+        SQLRETURN rc = SQLExecute(stmt);
+        /* a row the status array marks alone; psqlODBC marks every row of a
+           failed batch (measured 2026-11-18), so more than one names none */
+        long bad = -1;
+        int marked = 0;
+        for (size_t i = 0; cap > 1 && i < n; i++) {
+            if (status[i] == SQL_PARAM_ERROR) {
+                marked++;
+                bad = (long)(at + i);
+            }
+        }
+        if (marked != 1) {
+            bad = -1;
+        }
+        int failed = !SQL_SUCCEEDED(rc) || marked > 0;
+        if (failed) {
+            /* WHICH ROW. Drivers disagree: SQLite3's leaves the status array
+               alone and counts as processed only the rows before the failure,
+               where the ODBC specification counts the failed one too, and
+               psqlODBC marks every row of the batch (measured 2026-11-18).
+               So in a transaction of our own, roll back and run the call
+               again a row at a time: the failure then names its row exactly,
+               at a cost only a failing call pays. */
+            if (cap > 1 && own_transaction && !retried) {
+                SQLFreeStmt(stmt, SQL_CLOSE);
+                SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK);
+                SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)(SQLULEN)1, 0);
+                SQLSetStmtAttr(stmt, SQL_ATTR_PARAM_STATUS_PTR, NULL, 0);
+                SQLSetStmtAttr(stmt, SQL_ATTR_PARAMS_PROCESSED_PTR, NULL, 0);
+                cap = 1;
+                at = 0;
+                retried = 1;
+                continue;
+            }
+            if (bad < 0 && cap == 1) bad = (long)at;
+            odbc_raise_diag_sql(SQL_HANDLE_STMT, stmt, "odbc.insert", NULL);
+            bulk_insert_annotate("odbc.insert", bad, NULL);
+            if (bad < 0 && current_error.active && current_error.message) {
+                char *said = malloc(strlen(current_error.message) + 64);
+                if (!said) abort();
+                sprintf(said, "%s (the driver did not say which row)", current_error.message);
+                free(current_error.message);
+                current_error.message = said;
+            }
+            ok = 0;
+            break;
+        }
+        /* a driver that took the array attribute and ran fewer rows than it
+           was given: the rest go one at a time */
+        if (cap > 1 && processed > 0 && processed < n) {
+            SQLFreeStmt(stmt, SQL_CLOSE);
+            at += processed;
+            cap = 1;
+            SQLSetStmtAttr(stmt, SQL_ATTR_PARAMSET_SIZE, (SQLPOINTER)(SQLULEN)1, 0);
+            continue;
+        }
+        SQLFreeStmt(stmt, SQL_CLOSE);
+        at += n;
+    }
+    for (size_t c = 0; c < ncols; c++) {
+        free(bufs[c]);
+        free(inds[c]);
+    }
+    free(bufs);
+    free(inds);
+    free(status);
+    if (!ok) {
+        goto fail;
+    }
+    if (own_transaction) {
+        if (!SQL_SUCCEEDED(SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_COMMIT))) {
+            odbc_raise_diag(SQL_HANDLE_DBC, dbc, "odbc.insert: the commit failed, so nothing was kept");
+            goto fail;
+        }
+        SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)SQL_AUTOCOMMIT_ON, 0);
+        own_transaction = 0;
+    }
+    result = bulk_insert_answer((long)nrows);
+    goto done;
+
+fail:
+    if (own_transaction) {
+        SQLEndTran(SQL_HANDLE_DBC, dbc, SQL_ROLLBACK);
+        SQLSetConnectAttr(dbc, SQL_ATTR_AUTOCOMMIT, (SQLPOINTER)SQL_AUTOCOMMIT_ON, 0);
+    } else if (current_error.active && current_error.message) {
+        /* the caller's transaction: no portable savepoint, so it is theirs */
+        char *said = malloc(strlen(current_error.message) + 120);
+        if (!said) abort();
+        sprintf(said, "%s (inside your transaction: roll it back, since rows before this one may be in it)",
+                current_error.message);
+        free(current_error.message);
+        current_error.message = said;
+    }
+done:
+    if (stmt != SQL_NULL_HSTMT) {
+        SQLFreeHandle(SQL_HANDLE_STMT, stmt);
+    }
+    free(kinds);
+    free(scales);
+    free(decimal);
+    free(sql.items);
+    value_free(conn_value);
+    value_free(table);
+    value_free(rows);
+    return result;
+}
+
 static Value odbc_eval_call(AstExpr *expr) {
+    if (strcmp(expr->as.call.name, "insert") == 0) {
+        return odbc_eval_insert(expr);
+    }
     const char *name = expr->as.call.name;
     if (strcmp(name, "connect") == 0) {
         return odbc_eval_connect(expr);
@@ -29068,21 +29607,6 @@ static Value pg_eval_transaction(AstExpr *expr, const char *sql, const char *nam
  * or nothing, a refused row named by its index in the caller's array. Every
  * row names the same columns, since COPY takes one column list. */
 
-/* A refusal naming the caller's row, with `error.details.index` (0-based, as
- * gsql.insert counts); `index < 0` names none. */
-static void pg_insert_raise(const char *message, long index) {
-    if (raise_in_flight) {
-        return;
-    }
-    Value details = value_record(NULL, 0);
-    if (index >= 0) {
-        record_set(&details, "index", value_number_exact(index));
-    }
-    error_set_state_full(message, PG_ERROR_CODE, "postgres", details, value_null(), 0, 0);
-    error_generation++;
-    raise_in_flight = 1;
-}
-
 /* `schema.table` or `table`, each part quoted by libpq, appended. */
 static int pg_insert_append_table(PGconn *conn, StringBuilder *sql, const char *table) {
     const char *part = table;
@@ -29090,7 +29614,7 @@ static int pg_insert_append_table(PGconn *conn, StringBuilder *sql, const char *
         const char *dot = strchr(part, '.');
         size_t n = dot ? (size_t)(dot - part) : strlen(part);
         if (n == 0) {
-            pg_insert_raise("pg.insert: the table's name has an empty part", -1);
+            bulk_insert_raise("pg.insert: the table's name has an empty part", -1, PG_ERROR_CODE, "postgres");
             return 0;
         }
         char *quoted = PQescapeIdentifier(conn, part, n);
@@ -29135,17 +29659,6 @@ static long pg_copy_error_row(PGresult *result) {
     return line >= 1 ? line - 1 : -1;
 }
 
-/* An error libpq raised during pg.insert, said as pg.insert's. */
-static void pg_insert_prefix_error(void) {
-    if (current_error.active && current_error.message && strncmp(current_error.message, "pg.insert", 9) != 0) {
-        char *said = malloc(strlen(current_error.message) + 16);
-        if (!said) abort();
-        sprintf(said, "pg.insert: %s", current_error.message);
-        free(current_error.message);
-        current_error.message = said;
-    }
-}
-
 static Value pg_eval_insert(AstExpr *expr) {
     if (expr->as.call.args.count != 3) {
         pg_raise_message("pg.insert expects a connection, a table's name and the rows, an array of records");
@@ -29183,62 +29696,18 @@ static Value pg_eval_insert(AstExpr *expr) {
     PGconn *conn = connection->connection;
     if (table.kind != VALUE_STRING || string_length(table.as.string) == 0 ||
         string_length(table.as.string) != strlen(table.as.string)) {
-        pg_insert_raise("pg.insert: the table's name is a text, such as \"invoice\" or \"sales.invoice\"", -1);
+        bulk_insert_raise("pg.insert: the table's name is a text, such as \"invoice\" or \"sales.invoice\"", -1, PG_ERROR_CODE, "postgres");
         goto done;
     }
-    if (rows.kind != VALUE_ARRAY) {
-        pg_insert_raise("pg.insert: the rows are an array of records, one per row", -1);
+    if (!bulk_insert_rows_ok("pg.insert", &rows, PG_ERROR_CODE, "postgres")) {
         goto done;
     }
     size_t nrows = rows.as.array.store->count;
     if (nrows == 0) {
-        result = value_record(NULL, 0);
-        record_set(&result, "command", value_string("INSERT"));
-        record_set(&result, "rows_affected", value_number_exact(0));
+        result = bulk_insert_answer(0);
         goto done;
     }
-    /* every row a record naming the first row's columns, refused before
-       anything is sent */
     Value *first = &rows.as.array.store->items[0];
-    for (size_t r = 0; r < nrows; r++) {
-        Value *row = &rows.as.array.store->items[r];
-        if (row->kind != VALUE_RECORD) {
-            snprintf(message, sizeof message, "pg.insert: rows[%zu] is %s, not a record of column values",
-                     r, value_kind_name(row->kind));
-            pg_insert_raise(message, (long)r);
-            goto done;
-        }
-        if (row->as.record.count == 0) {
-            snprintf(message, sizeof message, "pg.insert: rows[%zu] is an empty record, so it names no column", r);
-            pg_insert_raise(message, (long)r);
-            goto done;
-        }
-        int same = row->as.record.count == first->as.record.count;
-        for (size_t c = 0; same && c < first->as.record.count; c++) {
-            same = record_find(row, first->as.record.fields[c].name) != NULL;
-        }
-        if (!same) {
-            StringBuilder a, b;
-            sb_init(&a);
-            sb_init(&b);
-            for (size_t c = 0; c < first->as.record.count; c++) {
-                if (c) sb_append_text(&a, ", ");
-                sb_append_text(&a, first->as.record.fields[c].name);
-            }
-            for (size_t c = 0; c < row->as.record.count; c++) {
-                if (c) sb_append_text(&b, ", ");
-                sb_append_text(&b, row->as.record.fields[c].name);
-            }
-            char *as = sb_take(&a), *bs = sb_take(&b);
-            snprintf(message, sizeof message,
-                     "pg.insert: rows[%zu] names %.300s where rows[0] names %.300s; every row names the same "
-                     "columns (unknown for a NULL)", r, bs, as);
-            free(as);
-            free(bs);
-            pg_insert_raise(message, (long)r);
-            goto done;
-        }
-    }
     size_t ncols = first->as.record.count;
     /* the table and the column list, each quoted by libpq */
     StringBuilder tsb, csb;
@@ -29276,7 +29745,7 @@ static Value pg_eval_insert(AstExpr *expr) {
     if (PQresultStatus(prep) != PGRES_COMMAND_OK) {
         pg_raise_result_error_sql(conn, prep, sql.items);
         PQclear(prep);
-        pg_insert_prefix_error();
+        bulk_insert_annotate("pg.insert", -1, NULL);
         free(table_text);
         free(cols_text);
         goto done;
@@ -29286,7 +29755,7 @@ static Value pg_eval_insert(AstExpr *expr) {
     if (PQresultStatus(desc) != PGRES_COMMAND_OK || PQnfields(desc) != (int)ncols) {
         pg_raise_result_error_sql(conn, desc, sql.items);
         PQclear(desc);
-        pg_insert_prefix_error();
+        bulk_insert_annotate("pg.insert", -1, NULL);
         free(table_text);
         free(cols_text);
         goto done;
@@ -29324,17 +29793,7 @@ static Value pg_eval_insert(AstExpr *expr) {
             if (!text) {
                 /* the value's own refusal, raised as pg.exec raises it: say
                    which of the caller's rows and which column */
-                if (current_error.active && current_error.message) {
-                    char *said = malloc(strlen(current_error.message) + 300);
-                    if (!said) abort();
-                    sprintf(said, "pg.insert: rows[%zu].%.200s: %s", r,
-                            first->as.record.fields[c].name, current_error.message);
-                    free(current_error.message);
-                    current_error.message = said;
-                    value_free(current_error.details);
-                    current_error.details = value_record(NULL, 0);
-                    record_set(&current_error.details, "index", value_number_exact((int64_t)r));
-                }
+                bulk_insert_annotate("pg.insert", (long)r, first->as.record.fields[c].name);
                 free(table_text);
                 free(cols_text);
                 goto done;
@@ -29370,7 +29829,7 @@ static Value pg_eval_insert(AstExpr *expr) {
     if (PQresultStatus(start) != PGRES_COPY_IN) {
         pg_raise_result_error_sql(conn, start, sql.items);
         PQclear(start);
-        pg_insert_prefix_error();
+        bulk_insert_annotate("pg.insert", -1, NULL);
         goto undo;
     }
     PQclear(start);
@@ -29407,7 +29866,7 @@ static Value pg_eval_insert(AstExpr *expr) {
         for (char *ch = message; *ch; ch++) {
             if (*ch == '\n' || *ch == '\r') *ch = ' ';
         }
-        pg_insert_raise(message, row);
+        bulk_insert_raise(message, row, PG_ERROR_CODE, "postgres");
     }
     PQclear(end);
     for (PGresult *more; (more = PQgetResult(conn)) != NULL;) {
@@ -29420,9 +29879,7 @@ static Value pg_eval_insert(AstExpr *expr) {
         PGresult *rel = PQexec(conn, "RELEASE SAVEPOINT gbasic_insert");
         PQclear(rel);
     }
-    result = value_record(NULL, 0);
-    record_set(&result, "command", value_string("INSERT"));
-    record_set(&result, "rows_affected", value_number_exact(affected));
+    result = bulk_insert_answer(affected);
     goto done;
 
 undo:
