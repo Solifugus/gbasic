@@ -29062,8 +29062,391 @@ static Value pg_eval_transaction(AstExpr *expr, const char *sql, const char *nam
     return value_bool(1);
 }
 
+/* --- pg.insert: many rows through COPY (docs/bulk_insert_design.md) -------
+ *
+ * gsql.insert's contract over Postgres's bulk path: an array of records, all
+ * or nothing, a refused row named by its index in the caller's array. Every
+ * row names the same columns, since COPY takes one column list. */
+
+/* A refusal naming the caller's row, with `error.details.index` (0-based, as
+ * gsql.insert counts); `index < 0` names none. */
+static void pg_insert_raise(const char *message, long index) {
+    if (raise_in_flight) {
+        return;
+    }
+    Value details = value_record(NULL, 0);
+    if (index >= 0) {
+        record_set(&details, "index", value_number_exact(index));
+    }
+    error_set_state_full(message, PG_ERROR_CODE, "postgres", details, value_null(), 0, 0);
+    error_generation++;
+    raise_in_flight = 1;
+}
+
+/* `schema.table` or `table`, each part quoted by libpq, appended. */
+static int pg_insert_append_table(PGconn *conn, StringBuilder *sql, const char *table) {
+    const char *part = table;
+    for (;;) {
+        const char *dot = strchr(part, '.');
+        size_t n = dot ? (size_t)(dot - part) : strlen(part);
+        if (n == 0) {
+            pg_insert_raise("pg.insert: the table's name has an empty part", -1);
+            return 0;
+        }
+        char *quoted = PQescapeIdentifier(conn, part, n);
+        if (!quoted) {
+            pg_raise_connection_error(conn, "pg.insert: could not quote the table's name");
+            return 0;
+        }
+        sb_append_text(sql, quoted);
+        PQfreemem(quoted);
+        if (!dot) {
+            return 1;
+        }
+        sb_append_char(sql, '.');
+        part = dot + 1;
+    }
+}
+
+/* COPY's text format: a value's text with backslash, tab, newline and
+ * carriage return escaped. NUL never reaches here (pg_parameter_text refuses
+ * it, as pg.exec does). */
+static void pg_copy_append_escaped(StringBuilder *out, const char *text) {
+    for (const char *c = text; *c; c++) {
+        switch (*c) {
+        case '\\': sb_append_text(out, "\\\\"); break;
+        case '\t': sb_append_text(out, "\\t"); break;
+        case '\n': sb_append_text(out, "\\n"); break;
+        case '\r': sb_append_text(out, "\\r"); break;
+        default: sb_append_char(out, *c); break;
+        }
+    }
+}
+
+/* The row a COPY error is about: its context reads "COPY t, line N, ...",
+ * and line N is rows[N - 1]. -1 when it does not say. */
+static long pg_copy_error_row(PGresult *result) {
+    const char *context = result ? PQresultErrorField(result, PG_DIAG_CONTEXT) : NULL;
+    const char *at = context ? strstr(context, ", line ") : NULL;
+    if (!at) {
+        return -1;
+    }
+    long line = strtol(at + 7, NULL, 10);
+    return line >= 1 ? line - 1 : -1;
+}
+
+/* An error libpq raised during pg.insert, said as pg.insert's. */
+static void pg_insert_prefix_error(void) {
+    if (current_error.active && current_error.message && strncmp(current_error.message, "pg.insert", 9) != 0) {
+        char *said = malloc(strlen(current_error.message) + 16);
+        if (!said) abort();
+        sprintf(said, "pg.insert: %s", current_error.message);
+        free(current_error.message);
+        current_error.message = said;
+    }
+}
+
+static Value pg_eval_insert(AstExpr *expr) {
+    if (expr->as.call.args.count != 3) {
+        pg_raise_message("pg.insert expects a connection, a table's name and the rows, an array of records");
+        return value_null();
+    }
+    Value conn_value = eval_expr(expr->as.call.args.items[0]);
+    if (error_action_pending()) {
+        value_free(conn_value);
+        return value_null();
+    }
+    Value table = eval_expr(expr->as.call.args.items[1]);
+    if (error_action_pending()) {
+        value_free(conn_value);
+        value_free(table);
+        return value_null();
+    }
+    Value rows = eval_expr(expr->as.call.args.items[2]);
+    if (error_action_pending()) {
+        value_free(conn_value);
+        value_free(table);
+        value_free(rows);
+        return value_null();
+    }
+    Value result = value_null();
+    StringBuilder sql;
+    StringBuilder data;
+    sb_init(&sql);
+    sb_init(&data);
+    Oid *types = NULL;
+    char message[1200];
+    PgConnectionValue *connection = pg_connection_from_value(conn_value);
+    if (!connection) {
+        goto done;
+    }
+    PGconn *conn = connection->connection;
+    if (table.kind != VALUE_STRING || string_length(table.as.string) == 0 ||
+        string_length(table.as.string) != strlen(table.as.string)) {
+        pg_insert_raise("pg.insert: the table's name is a text, such as \"invoice\" or \"sales.invoice\"", -1);
+        goto done;
+    }
+    if (rows.kind != VALUE_ARRAY) {
+        pg_insert_raise("pg.insert: the rows are an array of records, one per row", -1);
+        goto done;
+    }
+    size_t nrows = rows.as.array.store->count;
+    if (nrows == 0) {
+        result = value_record(NULL, 0);
+        record_set(&result, "command", value_string("INSERT"));
+        record_set(&result, "rows_affected", value_number_exact(0));
+        goto done;
+    }
+    /* every row a record naming the first row's columns, refused before
+       anything is sent */
+    Value *first = &rows.as.array.store->items[0];
+    for (size_t r = 0; r < nrows; r++) {
+        Value *row = &rows.as.array.store->items[r];
+        if (row->kind != VALUE_RECORD) {
+            snprintf(message, sizeof message, "pg.insert: rows[%zu] is %s, not a record of column values",
+                     r, value_kind_name(row->kind));
+            pg_insert_raise(message, (long)r);
+            goto done;
+        }
+        if (row->as.record.count == 0) {
+            snprintf(message, sizeof message, "pg.insert: rows[%zu] is an empty record, so it names no column", r);
+            pg_insert_raise(message, (long)r);
+            goto done;
+        }
+        int same = row->as.record.count == first->as.record.count;
+        for (size_t c = 0; same && c < first->as.record.count; c++) {
+            same = record_find(row, first->as.record.fields[c].name) != NULL;
+        }
+        if (!same) {
+            StringBuilder a, b;
+            sb_init(&a);
+            sb_init(&b);
+            for (size_t c = 0; c < first->as.record.count; c++) {
+                if (c) sb_append_text(&a, ", ");
+                sb_append_text(&a, first->as.record.fields[c].name);
+            }
+            for (size_t c = 0; c < row->as.record.count; c++) {
+                if (c) sb_append_text(&b, ", ");
+                sb_append_text(&b, row->as.record.fields[c].name);
+            }
+            char *as = sb_take(&a), *bs = sb_take(&b);
+            snprintf(message, sizeof message,
+                     "pg.insert: rows[%zu] names %.300s where rows[0] names %.300s; every row names the same "
+                     "columns (unknown for a NULL)", r, bs, as);
+            free(as);
+            free(bs);
+            pg_insert_raise(message, (long)r);
+            goto done;
+        }
+    }
+    size_t ncols = first->as.record.count;
+    /* the table and the column list, each quoted by libpq */
+    StringBuilder tsb, csb;
+    sb_init(&tsb);
+    sb_init(&csb);
+    if (!pg_insert_append_table(conn, &tsb, table.as.string)) {
+        free(tsb.items);
+        free(csb.items);
+        goto done;
+    }
+    for (size_t c = 0; c < ncols; c++) {
+        const char *name = first->as.record.fields[c].name;
+        char *quoted = PQescapeIdentifier(conn, name, strlen(name));
+        if (!quoted) {
+            free(tsb.items);
+            free(csb.items);
+            pg_raise_connection_error(conn, "pg.insert: could not quote a column's name");
+            goto done;
+        }
+        if (c) sb_append_text(&csb, ", ");
+        sb_append_text(&csb, quoted);
+        PQfreemem(quoted);
+    }
+    char *table_text = sb_take(&tsb);
+    char *cols_text = sb_take(&csb);
+
+    /* the columns' types, from a statement that reads no rows: also refuses
+       an unknown table or column by name before any data moves */
+    sb_append_text(&sql, "SELECT ");
+    sb_append_text(&sql, cols_text);
+    sb_append_text(&sql, " FROM ");
+    sb_append_text(&sql, table_text);
+    sb_append_text(&sql, " LIMIT 0");
+    PGresult *prep = PQprepare(conn, "", sql.items, 0, NULL);
+    if (PQresultStatus(prep) != PGRES_COMMAND_OK) {
+        pg_raise_result_error_sql(conn, prep, sql.items);
+        PQclear(prep);
+        pg_insert_prefix_error();
+        free(table_text);
+        free(cols_text);
+        goto done;
+    }
+    PQclear(prep);
+    PGresult *desc = PQdescribePrepared(conn, "");
+    if (PQresultStatus(desc) != PGRES_COMMAND_OK || PQnfields(desc) != (int)ncols) {
+        pg_raise_result_error_sql(conn, desc, sql.items);
+        PQclear(desc);
+        pg_insert_prefix_error();
+        free(table_text);
+        free(cols_text);
+        goto done;
+    }
+    types = calloc(ncols, sizeof(Oid));
+    if (!types) abort();
+    for (size_t c = 0; c < ncols; c++) {
+        types[c] = PQftype(desc, (int)c);
+    }
+    PQclear(desc);
+
+    /* every row's text, before COPY starts: a value refused here sends nothing */
+    for (size_t r = 0; r < nrows; r++) {
+        Value *row = &rows.as.array.store->items[r];
+        for (size_t c = 0; c < ncols; c++) {
+            RecordField *f = record_find(row, first->as.record.fields[c].name);
+            Value *v = f ? f->value : NULL;
+            if (c) sb_append_char(&data, '\t');
+            if (!v || v->kind == VALUE_NULL || v->kind == VALUE_UNKNOWN) {
+                sb_append_text(&data, "\\N");
+                continue;
+            }
+            char *text = NULL;
+            if (v->kind == VALUE_ARRAY && pg_oid_is_array(types[c])) {
+                StringBuilder lit;
+                sb_init(&lit);
+                if (pg_array_literal_append(&lit, *v)) {
+                    text = sb_take(&lit);
+                } else {
+                    free(lit.items);
+                }
+            } else {
+                text = pg_parameter_text(*v);
+            }
+            if (!text) {
+                /* the value's own refusal, raised as pg.exec raises it: say
+                   which of the caller's rows and which column */
+                if (current_error.active && current_error.message) {
+                    char *said = malloc(strlen(current_error.message) + 300);
+                    if (!said) abort();
+                    sprintf(said, "pg.insert: rows[%zu].%.200s: %s", r,
+                            first->as.record.fields[c].name, current_error.message);
+                    free(current_error.message);
+                    current_error.message = said;
+                    value_free(current_error.details);
+                    current_error.details = value_record(NULL, 0);
+                    record_set(&current_error.details, "index", value_number_exact((int64_t)r));
+                }
+                free(table_text);
+                free(cols_text);
+                goto done;
+            }
+            pg_copy_append_escaped(&data, text);
+            free(text);
+        }
+        sb_append_char(&data, '\n');
+    }
+
+    /* inside the caller's transaction, a savepoint: only the call is undone */
+    int nested = PQtransactionStatus(conn) == PQTRANS_INTRANS;
+    if (nested) {
+        PGresult *sp = PQexec(conn, "SAVEPOINT gbasic_insert");
+        if (PQresultStatus(sp) != PGRES_COMMAND_OK) {
+            pg_raise_result_error_sql(conn, sp, "SAVEPOINT gbasic_insert");
+            PQclear(sp);
+            free(table_text);
+            free(cols_text);
+            goto done;
+        }
+        PQclear(sp);
+    }
+    sql.length = 0;
+    sb_append_text(&sql, "COPY ");
+    sb_append_text(&sql, table_text);
+    sb_append_text(&sql, " (");
+    sb_append_text(&sql, cols_text);
+    sb_append_text(&sql, ") FROM STDIN");
+    free(table_text);
+    free(cols_text);
+    PGresult *start = PQexec(conn, sql.items);
+    if (PQresultStatus(start) != PGRES_COPY_IN) {
+        pg_raise_result_error_sql(conn, start, sql.items);
+        PQclear(start);
+        pg_insert_prefix_error();
+        goto undo;
+    }
+    PQclear(start);
+    {
+        const size_t chunk = 1u << 20;
+        int sent = 1;
+        for (size_t at = 0; sent && at < data.length; at += chunk) {
+            size_t n = data.length - at < chunk ? data.length - at : chunk;
+            sent = PQputCopyData(conn, data.items + at, (int)n) == 1;
+        }
+        if (!sent) {
+            PQputCopyEnd(conn, "gbasic: could not send the rows");
+        } else if (PQputCopyEnd(conn, NULL) != 1) {
+            pg_raise_connection_error(conn, "pg.insert: could not end COPY");
+        }
+    }
+    PGresult *end = PQgetResult(conn);
+    long affected = -1;
+    if (PQresultStatus(end) == PGRES_COMMAND_OK) {
+        affected = strtol(PQcmdTuples(end), NULL, 10);
+    } else if (!raise_in_flight) {
+        long row = pg_copy_error_row(end);
+        const char *detail = PQresultErrorMessage(end);
+        size_t dl = detail ? strlen(detail) : 0;
+        while (dl > 0 && (detail[dl - 1] == '\n' || detail[dl - 1] == '\r')) dl--;
+        const char *state = PQresultErrorField(end, PG_DIAG_SQLSTATE);
+        if (row >= 0) {
+            snprintf(message, sizeof message, "pg.insert: rows[%ld]: %.*s [SQLSTATE %s]", row, (int)dl,
+                     detail ? detail : "", state ? state : "?");
+        } else {
+            snprintf(message, sizeof message, "pg.insert: %.*s [SQLSTATE %s] (Postgres did not say which row)",
+                     (int)dl, detail ? detail : "", state ? state : "?");
+        }
+        for (char *ch = message; *ch; ch++) {
+            if (*ch == '\n' || *ch == '\r') *ch = ' ';
+        }
+        pg_insert_raise(message, row);
+    }
+    PQclear(end);
+    for (PGresult *more; (more = PQgetResult(conn)) != NULL;) {
+        PQclear(more);
+    }
+    if (affected < 0) {
+        goto undo;
+    }
+    if (nested) {
+        PGresult *rel = PQexec(conn, "RELEASE SAVEPOINT gbasic_insert");
+        PQclear(rel);
+    }
+    result = value_record(NULL, 0);
+    record_set(&result, "command", value_string("INSERT"));
+    record_set(&result, "rows_affected", value_number_exact(affected));
+    goto done;
+
+undo:
+    if (nested) {
+        PGresult *back = PQexec(conn, "ROLLBACK TO SAVEPOINT gbasic_insert");
+        PQclear(back);
+        back = PQexec(conn, "RELEASE SAVEPOINT gbasic_insert");
+        PQclear(back);
+    }
+done:
+    free(types);
+    free(sql.items);
+    free(data.items);
+    value_free(conn_value);
+    value_free(table);
+    value_free(rows);
+    return result;
+}
+
 static Value pg_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
+    if (strcmp(name, "insert") == 0) {
+        return pg_eval_insert(expr);
+    }
     if (strcmp(name, "connect") == 0) {
         return pg_eval_connect(expr);
     }
