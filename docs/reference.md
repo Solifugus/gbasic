@@ -6433,7 +6433,7 @@ GUI program can run on a headless server.
 
 ### The terminal backend
 
-*After 0.12.0* (`docs/tui_design.md`, increments 3 to 6). The same `window`
+*After 0.12.0* (`docs/tui_design.md`, increments 3 to 7). The same `window`
 declaration drawn in a terminal's cells, over the `term` layer (*Term
 Module*), not ncurses. It is chosen when there is no display and standard
 input and output are a terminal, or by `GBASIC_UI=tui` / `--ui=tui`.
@@ -6474,15 +6474,32 @@ input and output are a terminal, or by `GBASIC_UI=tui` / `--ui=tui`.
   (marked text is underlined, or drawn on the theme's `hi`), `ui.highlights`,
   `ui.mark`, `ui.marks`, `ui.gutter`, `ui.gutter_press` and
   `ui.gutter_click`. `ui.scrolled` counts lines, as Qt's does for an editor;
+- a `source` with `language:` coloured from the KDE syntax definition of
+  that name, and `theme:` (`"light"`, `"dark"` or any of KDE's themes by
+  name, as on Qt) giving it the theme's colours, with or without a language.
+  The definitions are KDE's XML files, read here by gBASIC's own reader and
+  applied by KDE's rules. They are found where KDE's library looks
+  (`~/.local/share/org.kde.syntax-highlighting/syntax`, the system's data
+  directories), then `GBASIC_SYNTAX_PATH` and the definition gBASIC
+  installs. **The difference from Qt:** KDE's library carries several
+  hundred definitions compiled into itself, which a terminal cannot reach,
+  so on the terminal a language that is not on disk is warned about
+  (`2115`) and the editor stays plain. gBASIC's own definition is always
+  there; another is installed by copying its `.xml` file into one of those
+  directories. KDE's 30 themes are carried in the binary. With no theme,
+  the editor takes the one nearest the theme record's `base`, or, with no
+  `base`, a dark theme where the terminal says its background is dark
+  (`COLORFGBG`) and a light one otherwise. `ui.highlighting`,
+  `ui.can_highlight` and `colors` answer as on Qt. This needs libxml2: a
+  build without it has no `highlighting` group on the terminal;
 - `ui.copy` and `ui.clipboard`: the clipboard is the program's own, because a
   terminal will not say what its clipboard holds. A copy is also sent to the
   terminal (OSC 52), so a person can paste it elsewhere where the terminal
   allows it.
 
 **A part in no increment is refused by name.** `markdown` needs the
-`notebook` group, and a `source` with `language:` or `theme:` needs
-`highlighting`, which is increment 7. **Of the eight groups it has `file_dialogs`**, with a
-chooser of its own. It lacks `windows`, so a second window cannot be opened
+`notebook` group. **Of the eight groups it has `file_dialogs`**, with a
+chooser of its own, **and `highlighting`** where the build has libxml2. It lacks `windows`, so a second window cannot be opened
 beside the first, but `ui.open_modal` over a window needs no group: a modal
 window is a dialog, on every backend.
 

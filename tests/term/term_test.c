@@ -230,6 +230,15 @@ static void screen(void) {
     term_screen_render(&s, &b);
     CHECK(strstr(b.p, ";34;102m") != NULL, "16 colours: navy is blue, green background is bright green: [%s]", b.p);
     term_buf_free(&b);
+    /* every attribute by its SGR number, from ECMA-48: bold 1, dim 2, italic
+     * 3, underline 4, reverse 7, strike-through 9 (increment 7's, which a
+     * KDE theme's format may ask for) */
+    TermStyle all = { TERM_DEFAULT, TERM_DEFAULT,
+                      TERM_BOLD | TERM_DIM | TERM_ITALIC | TERM_UNDERLINE | TERM_REVERSE | TERM_STRIKE };
+    term_screen_put(&s, 2, 1, "S", 1, all, &bad);
+    term_screen_render(&s, &b);
+    CHECK(strstr(b.p, "\x1b[0;1;2;3;4;7;9mS") != NULL, "each attribute written by its number: [%s]", b.p);
+    term_buf_free(&b);
     /* resize keeps what fits and redraws all */
     CHECK(term_screen_resize(&s, 3, 2) == 0 && strcmp(s.want[2].ch, "L") == 0, "resize keeps cells");
     term_screen_render(&s, &b);

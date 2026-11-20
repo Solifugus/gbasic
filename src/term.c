@@ -658,6 +658,7 @@ static void style_sgr(TermBuf *b, TermStyle st, TermDepth depth) {
     if (st.attrs & TERM_ITALIC) term_buf_add(b, ";3", 2);
     if (st.attrs & TERM_UNDERLINE) term_buf_add(b, ";4", 2);
     if (st.attrs & TERM_REVERSE) term_buf_add(b, ";7", 2);
+    if (st.attrs & TERM_STRIKE) term_buf_add(b, ";9", 2);
     if (st.fg != TERM_DEFAULT) colour(b, st.fg, 0, depth);
     if (st.bg != TERM_DEFAULT) colour(b, st.bg, 1, depth);
     term_buf_add(b, "m", 1);

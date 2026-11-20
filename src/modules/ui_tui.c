@@ -19,7 +19,8 @@
  * NO TERMINAL, NO PROBLEM, FOR A TEST. GBASIC_TUI_SCREEN=COLSxROWS draws into
  * the same buffer with no terminal at all (the `offscreen` of this backend),
  * and GBASIC_TUI_DUMP=PATH writes the screen there as text after each frame,
- * so a suite holds what was drawn without a pty. Keys then come from
+ * so a suite holds what was drawn without a pty, and GBASIC_TUI_STYLES=PATH
+ * writes each row's colours and attributes beside it. Keys then come from
  * `ui.key` and `ui.click`, which go through the same dispatch a terminal's
  * keys do. */
 
@@ -34,6 +35,8 @@ static int tui_say(char *err, size_t err_size, const char *fmt, ...) {
 #define TUI_ERR(...) tui_say(err, err_size, __VA_ARGS__)
 
 #include <fnmatch.h>
+
+#include "ksyntax.h"
 
 typedef struct TuiNode TuiNode;
 struct TuiNode {
@@ -145,6 +148,7 @@ static int tuie_set_text_prop(TuiNode *n, const char *prop, const char *value);
 static int tuie_set_bool(TuiNode *n, const char *prop, int value);
 static int tuie_set_number(TuiNode *n, const char *prop, double value);
 static int tuie_get(TuiNode *n, const char *prop, char *kind, double *num, char **text);
+static void tuie_theme_colours(const TuiNode *n, uint32_t *base, uint32_t *fg);
 
 static GbUiInvokeFn tui_g_invoke = NULL;
 static GbUiTickFn tui_g_tick = NULL;
@@ -507,10 +511,13 @@ static void tui_clamp(const TuiNode *n, int *w, int *h) {
     if (n->max_h && *h > n->max_h) *h = n->max_h;
 }
 
-/* what a form captions in its column: a field, and a memo or a source,
- * whose label is the row's caption in a form as on Qt */
+/* what a form captions in its column: a field and a choice, and a memo or a
+ * source, whose label is the row's caption in a form -- Qt's
+ * label_placed_by_parent. A choice was left out until increment 7, when
+ * run_ui_find's captions tier first ran here: a choice in a form showed no
+ * caption at all, the defect Qt once had. */
 static int tui_form_captioned(const TuiNode *k) {
-    return tui_is(k, "field") || tui_is(k, "memo") || tui_is(k, "source");
+    return tui_is(k, "field") || tui_is(k, "choice") || tui_is(k, "memo") || tui_is(k, "source");
 }
 
 static int tui_form_label_width(const TuiNode *n) {
@@ -1054,7 +1061,46 @@ static void tui_dialog_mouse(const TermEvent *ev);
 static void tui_dialogs_end_for(TuiNode *root);
 static int tui_answer_modal(void *window, int accept, char *err, size_t err_size);
 
+/* Each row's styles as runs, `count:fg:bg:attrs`, a colour as rrggbb or `-`
+ * for the terminal's own: what a suite reads to hold colours that the text
+ * dump cannot show (increment 7's highlighting). */
+static void tui_dump_styles(void) {
+    const char *path = getenv("GBASIC_TUI_STYLES");
+    if (!path || !*path) {
+        return;
+    }
+    FILE *f = fopen(path, "w");
+    if (!f) {
+        return;
+    }
+    for (int r = 0; r < tui_screen.rows; r++) {
+        TermCell *line = &tui_screen.want[(size_t)r * tui_screen.columns];
+        fprintf(f, "%d", r + 1);
+        int c = 0;
+        while (c < tui_screen.columns) {
+            TermStyle st = line[c].style;
+            int k = c + 1;
+            while (k < tui_screen.columns && line[k].style.fg == st.fg && line[k].style.bg == st.bg &&
+                   line[k].style.attrs == st.attrs) {
+                k++;
+            }
+            char fg[8] = "-", bg[8] = "-";
+            if (st.fg != TERM_DEFAULT) {
+                snprintf(fg, sizeof fg, "%06x", (unsigned)(st.fg & 0xFFFFFFu));
+            }
+            if (st.bg != TERM_DEFAULT) {
+                snprintf(bg, sizeof bg, "%06x", (unsigned)(st.bg & 0xFFFFFFu));
+            }
+            fprintf(f, " %d:%s:%s:%u", k - c, fg, bg, st.attrs);
+            c = k;
+        }
+        fputc('\n', f);
+    }
+    fclose(f);
+}
+
 static void tui_dump(void) {
+    tui_dump_styles();
     const char *path = getenv("GBASIC_TUI_DUMP");
     if (!path || !*path) {
         return;
@@ -2084,8 +2130,12 @@ static int tui_get(void *window, const char *name, const char *prop, char *kind,
      * terminal's own is not known here, so it is left out rather than
      * guessed. */
     if (strcmp(prop, "colors") == 0) {
+        /* a `source` with a theme is drawn in the theme's background and
+         * text, as Qt's palette is set from it */
+        uint32_t base = tui_base, fg = tui_fg;
+        tuie_theme_colours(n, &base, &fg);
         const struct { const char *name; uint32_t c; } cs[] = {
-            { "bg", tui_bg }, { "base", tui_base }, { "ctl", tui_ctl }, { "fg", tui_fg },
+            { "bg", tui_bg }, { "base", base }, { "ctl", tui_ctl }, { "fg", fg },
             { "faint", tui_faint }, { "line", tui_line }, { "sel", tui_sel }, { "on_sel", tui_on_sel } };
         char buf[256];
         size_t o = 0;
@@ -2366,6 +2416,21 @@ static int tui_click(void *window, const char *name, int row, char *err, size_t 
     snprintf(ev.action, sizeof ev.action, "press");
     ev.column = n->x + 1 + (tui_has_caption(n) ? tui_text_cells(n->label) + 1 : 0);
     ev.row = n->y + 1;
+    /* A PART THE SCREEN HAS NO ROOM FOR still takes its click, as Qt's
+     * widget does whether or not it is on screen: a press at its corner
+     * would land on something else, or nothing (measured: run_ui_find's
+     * button below a 40-row screen). A button or a check is pressed as the
+     * mouse would press it. */
+    TuiNode *top = tui_top();
+    TuiNode *h = top && !tui_dialog_open() ? tui_hit(top, ev.column - 1, ev.row - 1) : NULL;
+    while (h && h != n) {
+        h = h->parent;
+    }
+    if (!h && (tui_is(n, "button") || tui_is(n, "check"))) {
+        tui_press(n);
+        tui_render();
+        return 1;
+    }
     tui_mouse_event(&ev);
     tui_render();
     return 1;
@@ -2400,7 +2465,14 @@ static int tui_label(void *window, const char *name, char **text, char *err, siz
     if (!n) {
         return -1;
     }
-    if (!n->label) {
+    /* a caption, which only a part whose label its parent places has (a
+     * field or a choice anywhere, a memo or a source in a form); a check, a
+     * button or a text shows its label as its own text, and has none, as on
+     * Qt, where the caption is the label whose buddy the part is */
+    int in_form = n->parent && tui_is(n->parent, "form");
+    int placed = tui_is(n, "field") || tui_is(n, "choice") ||
+                 (in_form && (tui_is(n, "memo") || tui_is(n, "source")));
+    if (!n->label || !*n->label || !placed) {
         return 0;
     }
     *text = copy_string(n->label);
@@ -2479,20 +2551,6 @@ static int tui_theme_record(const char *const *names, const char *const *values,
 
 static char *tui_theme_get(void) {
     return copy_string("");
-}
-
-static int tui_theme_known(const char *name) {
-    (void)name;
-    return 0;
-}
-
-static char *tui_theme_names(void) {
-    return copy_string("");
-}
-
-static int tui_theme_plain(void *window, const char *name, const char *theme, char *err, size_t err_size) {
-    (void)window; (void)name; (void)theme;
-    return TUI_ERR("the tui backend has no `highlighting` group, which is where a theme's colours come from");
 }
 
 /* ---- the children of a box (ui.refresh, ui.children) ---------------------------- */
@@ -2719,20 +2777,6 @@ static int tui_block_press(void *window, const char *name, const char *id, const
     return TUI_ERR("the tui backend has no `notebook` group");
 }
 
-static int tui_has_highlighting(void) {
-    return 0;
-}
-
-static void tui_syntax_path(const char *dir) {
-    (void)dir;
-}
-
-static int tui_highlight(void *window, const char *name, const char *language, const char *theme, char *err,
-                         size_t err_size) {
-    (void)window; (void)name; (void)language; (void)theme;
-    return TUI_ERR("the tui backend has no `highlighting` group");
-}
-
 static int tui_dock_info(void *window, const char *name, char *area, size_t area_size, int *floating,
                          int *tabbed, int *visible, char *err, size_t err_size) {
     (void)window; (void)name; (void)area; (void)area_size; (void)floating; (void)tabbed; (void)visible;
@@ -2748,21 +2792,6 @@ static char *tui_layout_save(void *window, char *err, size_t err_size) {
 static int tui_layout_restore(void *window, const char *text, char *err, size_t err_size) {
     (void)window; (void)text;
     return TUI_ERR("the tui backend has no `docking` group");
-}
-
-static char *tui_highlight_language(void *window, const char *name) {
-    (void)window; (void)name;
-    return NULL;
-}
-
-static char *tui_highlight_file(void *window, const char *name) {
-    (void)window; (void)name;
-    return NULL;
-}
-
-static char *tui_highlight_theme(void *window, const char *name) {
-    (void)window; (void)name;
-    return NULL;
 }
 
 /* ---- dialogs (increment 5) --------------------------------------------------------
@@ -3979,9 +4008,14 @@ static int tui_answer_modal(void *window, int accept, char *err, size_t err_size
 
 static const GbUiBackend ui_tui_backend = {
     .name = "tui",
-    /* `file_dialogs` with its chooser (increment 5); `highlighting` comes
-     * with increment 7 (§3.2) */
+    /* `file_dialogs` with its chooser (increment 5); `highlighting` with
+     * KDE's definitions read by src/ksyntax.c, which needs libxml2
+     * (increment 7, §3.9) */
+#if HAVE_LIBXML2
+    .groups = "file_dialogs highlighting",
+#else
     .groups = "file_dialogs",
+#endif
     .can_display        = tui_can_display,
     .set_callbacks      = tui_set_callbacks,
     .theme_set          = tui_theme_set,

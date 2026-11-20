@@ -1,0 +1,31 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE language>
+<!-- SPDX-License-Identifier: Apache-2.0
+     tests/run_ui_tui.sh's `highlight` tier: a block comment that runs across
+     lines, so a line's colours depend on the lines before it, and an edit
+     above must change the colours below (docs/tui_design.md §3.9). -->
+<language name="Blocks Test" section="Other" extensions="*.blocks" version="1" kateversion="5.0">
+  <highlighting>
+    <list name="words"><item>begin</item><item>end</item></list>
+    <contexts>
+      <context name="Normal" attribute="Normal Text" lineEndContext="#stay">
+        <Detect2Chars attribute="Comment" context="Comment" char="/" char1="*"/>
+        <keyword attribute="Keyword" String="words"/>
+        <DetectChar attribute="String" context="String" char="&quot;"/>
+      </context>
+      <context name="Comment" attribute="Comment" lineEndContext="#stay">
+        <Detect2Chars attribute="Comment" context="#pop" char="*" char1="/"/>
+      </context>
+      <context name="String" attribute="String" lineEndContext="#pop">
+        <DetectChar attribute="String" context="#pop" char="&quot;"/>
+      </context>
+    </contexts>
+    <itemDatas>
+      <itemData name="Normal Text" defStyleNum="dsNormal"/>
+      <itemData name="Keyword" defStyleNum="dsKeyword"/>
+      <itemData name="Comment" defStyleNum="dsComment"/>
+      <itemData name="String" defStyleNum="dsString"/>
+    </itemDatas>
+  </highlighting>
+  <general><keywords casesensitive="1"/></general>
+</language>

@@ -443,7 +443,12 @@ TERM_OBJS := src/term.o
 CFLAGS += -DGBASIC_TERM=1
 endif
 
-LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o src/window_check.o src/csv_reader.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS) $(QT_OBJS) $(GSQL_OBJS) $(TERM_OBJS)
+# KDE's syntax definitions read in C, for the terminal's `source` editor
+# (docs/tui_design.md §3.9). Built everywhere; empty without libxml2, whose
+# absence leaves the terminal without the `highlighting` group.
+KSYNTAX_OBJS := src/ksyntax.o
+
+LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o src/window_check.o src/csv_reader.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS) $(QT_OBJS) $(GSQL_OBJS) $(TERM_OBJS) $(KSYNTAX_OBJS)
 OBJS := src/main.o src/repl.o src/lineedit.o $(LIB_OBJS)
 
 # gbasic-lsp: the Language Server, first external consumer of libgbasic. Kept out
@@ -605,7 +610,7 @@ src/ast.o: src/ast.c include/ast.h .buildswitch-stamp
 src/gsql/%.o: src/gsql/%.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gb_decimal.h include/serialize_tags.h include/platform.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/crypto_ssh.c src/vendor/bcrypt_pbkdf.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/ui.c src/modules/ui_qt.c src/modules/ui_tui.c src/modules/ui_tui_parts.c src/modules/ui_tui_editor.c src/modules/gsql.c src/modules/csv.c src/modules/net.c src/modules/zip.c src/modules/term.c include/term.h include/gb_csv.h include/gb_decimal.h include/gb_number_text.h include/gsql_sql.h $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gsql_owner.h include/gsql_table.h include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/lexer.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h include/ui_backend.h include/window_check.h src/currency_table.h third_party/yescrypt/yescrypt.h .stdlibdir-stamp .buildswitch-stamp
+src/eval.o: src/eval.c src/modules/crypto_ssh.c src/vendor/bcrypt_pbkdf.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/ui.c src/modules/ui_qt.c src/modules/ui_tui.c src/modules/ui_tui_parts.c src/modules/ui_tui_editor.c src/modules/gsql.c src/modules/csv.c src/modules/net.c src/modules/zip.c src/modules/term.c include/term.h include/ksyntax.h include/gb_csv.h include/gb_decimal.h include/gb_number_text.h include/gsql_sql.h $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gsql_owner.h include/gsql_table.h include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/lexer.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h include/ui_backend.h include/window_check.h src/currency_table.h third_party/yescrypt/yescrypt.h .stdlibdir-stamp .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # THE QT BACKEND: moc, then C++. The generated unit is `#include`d by the .cpp
@@ -646,6 +651,7 @@ src/csv_reader.o: src/csv_reader.c include/gb_csv.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/term.o: src/term.c include/term.h src/term_widths.h .buildswitch-stamp
+src/ksyntax.o: src/ksyntax.c include/ksyntax.h src/ksyntax_themes.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/frontend.o: src/frontend.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gbasic.h include/diagnostics.h include/ast.h include/window_check.h include/lexer.h .buildswitch-stamp

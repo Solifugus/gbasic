@@ -1,0 +1,54 @@
+--- the screen
+| Highlight
+|┌──────────────────────────────────────┐
+|│print "hi" ' greet                    │
+|│x = 42                                │
+|│                                      │
+|│                                      │
+|│                                      │
+|│                                      │
+|└──────────────────────────────────────┘
+|┌──────────────────────────────────────┐
+|│begin /* one                          │
+|│two */ end                            │
+|│"s" begin                             │
+|│                                      │
+|│                                      │
+|│                                      │
+|cursor 2,3
+--- its colours
+1 40:-:-:4
+2 40:-:-:1
+3 1:-:-:1 5:1f1c1b:ffffff:1 1:1f1c1b:ffffff:0 4:bf0303:ffffff:0 1:1f1c1b:ffffff:0 7:898887:ffffff:0 20:1f1c1b:ffffff:0 1:-:-:1
+4 1:-:-:1 2:1f1c1b:ffffff:0 1:ca60ca:ffffff:0 1:1f1c1b:ffffff:0 2:b08000:ffffff:0 32:1f1c1b:ffffff:0 1:-:-:1
+5 1:-:-:1 38:1f1c1b:ffffff:0 1:-:-:1
+6 1:-:-:1 38:1f1c1b:ffffff:0 1:-:-:1
+7 1:-:-:1 38:1f1c1b:ffffff:0 1:-:-:1
+8 1:-:-:1 38:1f1c1b:ffffff:0 1:-:-:1
+9 40:-:-:1
+10 40:-:-:16
+11 1:-:-:16 5:cfcfc2:232629:1 1:cfcfc2:232629:0 6:7a7c7d:232629:0 26:cfcfc2:232629:0 1:-:-:16
+12 1:-:-:16 6:7a7c7d:232629:0 1:cfcfc2:232629:0 3:cfcfc2:232629:1 28:cfcfc2:232629:0 1:-:-:16
+13 1:-:-:16 3:f44f4f:232629:0 1:cfcfc2:232629:0 5:cfcfc2:232629:1 29:cfcfc2:232629:0 1:-:-:16
+14 1:-:-:16 38:cfcfc2:232629:0 1:-:-:16
+15 1:-:-:16 38:cfcfc2:232629:0 1:-:-:16
+16 1:-:-:16 38:cfcfc2:232629:0 1:-:-:16
+--- gBASIC, Breeze Light
+keyword print: 1f1c1b:ffffff:1
+string "hi": bf0303:ffffff:0
+comment: 898887:ffffff:0
+number 42: b08000:ffffff:0
+operator =: ca60ca:ffffff:0
+plain x: 1f1c1b:ffffff:0
+highlighting: gBASIC, Breeze Light
+colors: #ffffff #1f1c1b
+--- Blocks Test, dark
+the comment runs on: two -> 7a7c7d:232629:0
+and ends: end -> cfcfc2:232629:1
+a keyword before it: begin -> cfcfc2:232629:1
+the third line plain again: begin -> cfcfc2:232629:1
+highlighting: Breeze Dark
+opener removed: two -> cfcfc2:232629:0
+and end is a keyword: cfcfc2:232629:1
+undone: two -> 7a7c7d:232629:0
+3000 lines down, still in the comment: end -> 7a7c7d:232629:0

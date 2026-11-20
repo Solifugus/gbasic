@@ -48,6 +48,12 @@ typedef struct TuiEdit {
     char *on_gutter;
     /* where the last frame put the text and the margin */
     int tx, ty, tw, th, gx, gw;
+    /* highlighting (increment 7): the definition, the theme, and each
+     * line's state after it, the first `nls` known */
+    KshDef *syn;
+    const KshTheme *theme;
+    KshState **ls;
+    int nls, capls;
 } TuiEdit;
 
 typedef struct {
@@ -96,8 +102,26 @@ static void tuie_free(TuiNode *n) {
     free(e->undo);
     free(e->redo);
     free(e->on_gutter);
+#if HAVE_LIBXML2
+    for (int i = 0; i < e->nls; i++) {
+        ksh_state_free(e->ls[i]);
+    }
+#endif
+    free(e->ls);
     free(e);
     n->ed = NULL;
+}
+
+/* An edit at line `line` (0-based) or below leaves the states before it. */
+static void tuie_forget_states(TuiEdit *e, int line) {
+#if HAVE_LIBXML2
+    while (e->nls > line && e->nls > 0) {
+        ksh_state_free(e->ls[--e->nls]);
+    }
+#else
+    (void)e;
+    (void)line;
+#endif
 }
 
 /* ---- codepoints, lines and positions ---------------------------------------------- */
@@ -348,6 +372,13 @@ static void tuie_splice(TuiNode *n, size_t from, size_t to, const char *ins, siz
     memcpy(grown, t, from);
     memcpy(grown + from, ins, len);
     memcpy(grown + from + len, t + to, old - to + 1);
+    if (e->nls) {
+        int line = 0;
+        for (size_t i = 0; i < from; i++) {
+            line += t[i] == '\n';
+        }
+        tuie_forget_states(e, line);
+    }
     free(n->text);
     n->text = grown;
     for (size_t i = 0; i < 2 * e->nhl; i++) {
@@ -403,6 +434,9 @@ static int tuie_history(TuiNode *n, int undo) {
         tuie_stack_push(&e->undo, &e->nundo, &e->capundo, n);
     }
     TuieState s = (*from)[--(*nfrom)];
+    /* a whole text back, so no line's colours can be trusted (measured: an
+     * undone block-comment opener left the line below it plain) */
+    tuie_forget_states(e, 0);
     free(n->text);
     n->text = s.text;
     n->caret = s.caret;
@@ -420,6 +454,7 @@ static int tuie_history(TuiNode *n, int undo) {
 static void tuie_set_text(TuiNode *n, const char *text) {
     TuiEdit *e = n->ed;
     tui_set(&n->text, text ? text : "");
+    tuie_forget_states(e, 0);
     n->caret = e->anchor = 0;
     e->top = e->left = 0;
     e->goal = -1;
@@ -556,6 +591,146 @@ static int tuie_gutter_width(TuiNode *n) {
     return gw ? gw + 1 : 0;
 }
 
+/* ---- highlighting (increment 7, docs/tui_design.md §3.9) --------------------------
+ *
+ * KDE'S DEFINITIONS AND KDE'S RULES, read by src/ksyntax.c, which
+ * tests/run_ui_tui.sh's `syntax` tier holds to KDE's own library line by
+ * line. Each line's state after it is kept; an edit forgets the states from
+ * its line down, and a frame works out only as far as it shows. */
+
+#if HAVE_LIBXML2
+static KshRepo *tuie_repo_ptr = NULL;
+
+static KshRepo *tuie_repo(void) {
+    if (!tuie_repo_ptr) {
+        tuie_repo_ptr = ksh_repo_new();
+    }
+    return tuie_repo_ptr;
+}
+
+/* "light" and "dark" are KDE's default themes; any other name is a theme's;
+ * none is the one nearest the editor's background, as Qt's themeForPalette
+ * chooses -- and a terminal's own background, not known here, is taken from
+ * COLORFGBG where the terminal sets it ("15;0" is light text on black), and
+ * is light otherwise, as Qt's default palette is */
+static const KshTheme *tuie_theme_named(const char *theme) {
+    KshRepo *r = tuie_repo();
+    if (theme && strcmp(theme, "dark") == 0) {
+        return ksh_theme(r, "Breeze Dark");
+    }
+    if (theme && strcmp(theme, "light") == 0) {
+        return ksh_theme(r, "Breeze Light");
+    }
+    if (theme && *theme) {
+        const KshTheme *t = ksh_theme(r, theme);
+        if (t) {
+            return t;
+        }
+    }
+    if (tui_base != TERM_DEFAULT) {
+        return ksh_theme_for_background(r, tui_base & 0xFFFFFFu);
+    }
+    const char *cfb = getenv("COLORFGBG");
+    if (cfb && *cfb) {
+        const char *semi = strrchr(cfb, ';');
+        int bg = atoi(semi ? semi + 1 : cfb);
+        if ((bg >= 0 && bg <= 6) || bg == 8) {
+            return ksh_theme(r, "Breeze Dark");
+        }
+    }
+    return ksh_theme(r, "Breeze Light");
+}
+
+/* the spans of line `line` (0-based), its first byte in `*start`; the states
+ * of the lines before it worked out first, from the last one known */
+static KshSpan *tuie_spans(TuiNode *n, int line, size_t *start, size_t *count) {
+    TuiEdit *e = n->ed;
+    const char *t = tuie_text(n);
+    long at = tuie_line_start(t, e->nls < line ? e->nls : line);
+    if (at < 0) {
+        *count = 0;
+        return NULL;
+    }
+    int i = e->nls < line ? e->nls : line;
+    for (;; i++) {
+        const char *nl = strchr(t + at, '\n');
+        size_t len = nl ? (size_t)(nl - (t + at)) : strlen(t + at);
+        KshSpan *sp = NULL;
+        size_t ns = 0;
+        KshState *st = ksh_highlight(e->syn, i ? e->ls[i - 1] : NULL, t + at, len, &sp, &ns);
+        if (i == e->nls) {
+            if (e->nls >= e->capls) {
+                e->capls = e->capls ? e->capls * 2 : 64;
+                e->ls = realloc(e->ls, (size_t)e->capls * sizeof *e->ls);
+                if (!e->ls) {
+                    abort();
+                }
+            }
+            e->ls[e->nls++] = st;
+        } else {
+            ksh_state_free(st);
+        }
+        if (i == line) {
+            *start = (size_t)at;
+            *count = ns;
+            return sp;
+        }
+        free(sp);
+        if (!nl) {
+            *count = 0;
+            return NULL;
+        }
+        at = (long)(nl + 1 - t);
+    }
+}
+
+/* a format's look under the editor's theme, in a cell's terms */
+static TermStyle tuie_span_style(TuiEdit *e, int format, TermStyle box) {
+    if (format < 0 || !e->theme) {
+        return box;
+    }
+    KshLook lk;
+    ksh_look(tuie_repo(), format, e->theme, &lk);
+    unsigned attrs = (box.attrs & TERM_DIM) | (lk.bold ? TERM_BOLD : 0) | (lk.italic ? TERM_ITALIC : 0) |
+                     (lk.underline ? TERM_UNDERLINE : 0) | (lk.strike ? TERM_STRIKE : 0);
+    return tui_style(lk.fg, lk.has_bg ? lk.bg : box.bg, attrs);
+}
+#else
+static KshSpan *tuie_spans(TuiNode *n, int line, size_t *start, size_t *count) {
+    (void)n;
+    (void)line;
+    *start = 0;
+    *count = 0;
+    return NULL;
+}
+
+static TermStyle tuie_span_style(TuiEdit *e, int format, TermStyle box) {
+    (void)e;
+    (void)format;
+    return box;
+}
+#endif
+
+/* the theme's background and normal text, for an editor that has one */
+static void tuie_theme_colours(const TuiNode *n, uint32_t *base, uint32_t *fg) {
+#if HAVE_LIBXML2
+    if (!tuie_is(n) || !n->ed->theme) {
+        return;
+    }
+    uint32_t rgb;
+    if (ksh_theme_editor(n->ed->theme, "BackgroundColor", &rgb)) {
+        *base = rgb;
+    }
+    KshLook lk;
+    ksh_look(tuie_repo(), -1, n->ed->theme, &lk);
+    *fg = lk.fg;
+#else
+    (void)n;
+    (void)base;
+    (void)fg;
+#endif
+}
+
 static void tuie_draw(TuiNode *n) {
     TuiEdit *e = n->ed;
     const char *t = tuie_text(n);
@@ -593,11 +768,15 @@ static void tuie_draw(TuiNode *n) {
     if (e->tw < 1 || e->th < 1) {
         return;
     }
-    TermStyle box = tui_style(tui_fg, tui_base, dim);
+    /* a theme gives the text its background and normal colour, as Qt's
+     * palette takes them from it */
+    uint32_t base = tui_base, fg = tui_fg;
+    tuie_theme_colours(n, &base, &fg);
+    TermStyle box = tui_style(fg, base, dim);
     TermStyle sel = tui_style(tui_on_sel, tui_sel, tui_sel == TERM_DEFAULT ? TERM_REVERSE : 0);
-    TermStyle hi = tui_hi == TERM_DEFAULT ? tui_style(tui_fg, tui_base, TERM_UNDERLINE | dim)
-                                          : tui_style(tui_fg, tui_hi, dim);
-    TermStyle faint = tui_style(tui_faint, tui_base, tui_faint == TERM_DEFAULT ? TERM_DIM : 0);
+    TermStyle hi = tui_hi == TERM_DEFAULT ? tui_style(fg, base, TERM_UNDERLINE | dim)
+                                          : tui_style(fg, tui_hi, dim);
+    TermStyle faint = tui_style(tui_faint, base, tui_faint == TERM_DEFAULT ? TERM_DIM : 0);
     TermStyle margin = tui_style(tui_faint, tui_bg, tui_faint == TERM_DEFAULT ? TERM_DIM : 0);
     tui_fill(ix, iy, iw, ih, box);
     if (gw) {
@@ -635,6 +814,10 @@ static void tuie_draw(TuiNode *n) {
     tuie_selection_bytes(n, &s0, &s1);
     int painted_lines = 0, painted_marks = 0, painted_first = 0;
     int nlines = tuie_line_count(t);
+    /* the highlighted line's spans, worked out once for all its rows */
+    int span_line = -1;
+    size_t span_start = 0, nspans = 0;
+    KshSpan *spans = NULL;
     for (int r = 0; r < e->th; r++) {
         int idx = e->top + r;
         if (idx >= nr) {
@@ -642,6 +825,12 @@ static void tuie_draw(TuiNode *n) {
         }
         const TuieRow *row = &rows[idx];
         int y = e->ty + r;
+        if (e->syn && row->line != span_line) {
+            free(spans);
+            spans = tuie_spans(n, row->line, &span_start, &nspans);
+            span_line = row->line;
+        }
+        size_t si = 0;
         int first_of_line = idx == 0 || rows[idx - 1].line != row->line;
         if (gw && first_of_line) {
             int at = ix;
@@ -673,7 +862,17 @@ static void tuie_draw(TuiNode *n) {
                 break;
             }
             if (sc >= 0 && sc + cw <= e->tw) {
-                TermStyle st = (i >= s0 && i < s1) ? sel : tuie_in_ranges(e, i) ? hi : box;
+                TermStyle code = box;
+                if (spans) {
+                    size_t off = i - span_start;
+                    while (si < nspans && spans[si].start + spans[si].len <= off) {
+                        si++;
+                    }
+                    if (si < nspans && spans[si].start <= off) {
+                        code = tuie_span_style(e, spans[si].format, box);
+                    }
+                }
+                TermStyle st = (i >= s0 && i < s1) ? sel : tuie_in_ranges(e, i) ? hi : code;
                 if (t[i] == '\t') {
                     tui_fill(e->tx + sc, y, cw, 1, st);
                     if (e->whitespace) {
@@ -707,6 +906,7 @@ static void tuie_draw(TuiNode *n) {
             }
         }
     }
+    free(spans);
     if (!*t && n->hint) {
         tui_put_clipped(e->tx, e->ty, e->tw, n->hint, faint);
     }
@@ -1412,4 +1612,125 @@ static void tui_gutter_painted(int *lines, int *marks, int *first) {
     if (lines) *lines = tuie_painted_lines;
     if (marks) *marks = tuie_painted_marks;
     if (first) *first = tuie_painted_first;
+}
+
+/* ---- highlighting's members (increment 7) ------------------------------------------
+ *
+ * Qt's sentences, word for word, since a program reads them on both. */
+
+/* a `memo` or a `source`: either can be highlighted, as on Qt */
+static TuiNode *tuie_text_named(void *window, const char *name, char *err, size_t err_size) {
+    TuiNode *n = tui_find(window, name);
+    if (!n) {
+        TUI_ERR("there is nothing called `%s` in this window", name ? name : "");
+        return NULL;
+    }
+    if (!tuie_is(n)) {
+        TUI_ERR("`%s` is not a text editor, so it cannot be highlighted", name);
+        return NULL;
+    }
+    return n;
+}
+
+static int tui_has_highlighting(void) {
+    return HAVE_LIBXML2 ? 1 : 0;
+}
+
+static void tui_syntax_path(const char *dir) {
+#if HAVE_LIBXML2
+    ksh_repo_add_path(tuie_repo(), dir);
+#else
+    (void)dir;
+#endif
+}
+
+static int tui_highlight(void *window, const char *name, const char *language, const char *theme, char *err,
+                         size_t err_size) {
+    TuiNode *n = tuie_text_named(window, name, err, err_size);
+    if (!n) {
+        return 0;
+    }
+#if HAVE_LIBXML2
+    KshDef *def = ksh_find(tuie_repo(), language ? language : "");
+    if (!def) {
+        return TUI_ERR("`source %s` asked for the `%s` syntax definition and none is installed, so it will "
+                       "work as a plain editor", name, language ? language : "");
+    }
+    n->ed->syn = def;
+    n->ed->theme = tuie_theme_named(theme);
+    tuie_forget_states(n->ed, 0);
+    tui_dirty = 1;
+    return 1;
+#else
+    (void)language;
+    (void)theme;
+    return TUI_ERR("`source %s` cannot be highlighted: this gBASIC was built without libxml2, so it will work "
+                   "as a plain editor", name);
+#endif
+}
+
+/* a `source` with a theme and no language: the theme's colours, no definition */
+static int tui_theme_plain(void *window, const char *name, const char *theme, char *err, size_t err_size) {
+    TuiNode *n = tuie_text_named(window, name, err, err_size);
+    if (!n) {
+        return 0;
+    }
+#if HAVE_LIBXML2
+    n->ed->theme = tuie_theme_named(theme);
+    tui_dirty = 1;
+    return 1;
+#else
+    (void)theme;
+    return TUI_ERR("`source %s` cannot take a theme's colours: this gBASIC was built without libxml2, which is "
+                   "where themes come from", name);
+#endif
+}
+
+/* 1 or 0; -1 when this build has no themes at all, as Qt's answers */
+static int tui_theme_known(const char *name) {
+#if HAVE_LIBXML2
+    return ksh_theme(tuie_repo(), name ? name : "") ? 1 : 0;
+#else
+    (void)name;
+    return -1;
+#endif
+}
+
+static char *tui_theme_names(void) {
+#if HAVE_LIBXML2
+    return ksh_theme_names(tuie_repo());
+#else
+    return NULL;
+#endif
+}
+
+static char *tui_highlight_language(void *window, const char *name) {
+    TuiNode *n = tuie_text_named(window, name, NULL, 0);
+#if HAVE_LIBXML2
+    return n && n->ed->syn ? copy_string(ksh_def_name(n->ed->syn)) : NULL;
+#else
+    (void)n;
+    return NULL;
+#endif
+}
+
+static char *tui_highlight_file(void *window, const char *name) {
+    TuiNode *n = tuie_text_named(window, name, NULL, 0);
+#if HAVE_LIBXML2
+    return n && n->ed->syn ? copy_string(ksh_def_file(n->ed->syn)) : NULL;
+#else
+    (void)n;
+    return NULL;
+#endif
+}
+
+/* the theme's name, for a highlighted editor only, as Qt's highlighter's */
+static char *tui_highlight_theme(void *window, const char *name) {
+    TuiNode *n = tuie_text_named(window, name, NULL, 0);
+#if HAVE_LIBXML2
+    return n && n->ed->syn && n->ed->theme ? copy_string(ksh_theme_name(n->ed->theme)) : NULL;
+#else
+    (void)n;
+    return NULL;
+#endif
 }

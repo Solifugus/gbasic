@@ -110,8 +110,12 @@ if ui_tier_needs highlighting; then   # needs highlighting
 if ! premise_highlighter_built; then
     printf '  SKIP (this build has no KSyntaxHighlighting -- the vocabulary, the oracle and binding was NOT measured)\n'
 else
+# the second definition, in the user's data directory, which both engines
+# read (tests/qt_source_other.xml says why it is not KDE's FreeBASIC)
+mkdir -p "$work/other-home/org.kde.syntax-highlighting/syntax"
+cp tests/qt_source_other.xml "$work/other-home/org.kde.syntax-highlighting/syntax/"
 set +e
-QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
+XDG_DATA_HOME="$work/other-home" QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic --line-buffered \
     tests/qt_source_test.bas > "$work/sem.out" 2> "$work/sem.err"
 sem_rc=$?
 set -e
@@ -432,7 +436,7 @@ else
     # does, or the tier below measures a different program from the one that
     # ships. Asserted as an EQUALITY of the check counts.
     set +e
-    QT_ENABLE_REGEXP_JIT=0 QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic \
+    XDG_DATA_HOME="$work/other-home" QT_ENABLE_REGEXP_JIT=0 QT_QPA_PLATFORM=offscreen timeout -k 5 120 ./gbasic \
         --line-buffered tests/qt_source_test.bas > "$work/nojit.out" 2>/dev/null
     set -e
     nojit_ok=$(grep -c '^ok' "$work/nojit.out" || true)
@@ -453,7 +457,7 @@ else
         fail "with the regex JIT off the fixture behaves differently ($nojit_ok ok/$nojit_bad bad against $jit_ok ok/$jit_bad bad) -- the tier below would measure another program"
     fi
     set +e
-    QT_ENABLE_REGEXP_JIT=0 QT_QPA_PLATFORM=offscreen vg_run_access_only ./gbasic \
+    XDG_DATA_HOME="$work/other-home" QT_ENABLE_REGEXP_JIT=0 QT_QPA_PLATFORM=offscreen vg_run_access_only ./gbasic \
         tests/qt_source_test.bas >/dev/null 2>"$work/vg.err"
     vg_rc=$?
     set -e

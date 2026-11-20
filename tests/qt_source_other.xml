@@ -1,0 +1,29 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE language>
+<!-- SPDX-License-Identifier: Apache-2.0
+     A second definition claiming `*.bas`, installed by tests/run_ui_source.sh
+     into the user's data directory for its semantics tier, where Qt's engine
+     and the terminal's both read it: asking for it by name and getting it,
+     beside asking for gBASIC and getting that, pins lookup by NAME. It was
+     KDE's FreeBASIC until increment 7 (docs/tui_design.md §3.9), which Qt's
+     engine carries compiled in and the terminal, reading only files, has not. -->
+<language name="Another BASIC" section="Sources" extensions="*.bas" version="1" kateversion="5.0" priority="5">
+  <highlighting>
+    <list name="words"><item>PRINT</item><item>GOTO</item></list>
+    <contexts>
+      <context name="Normal" attribute="Normal Text" lineEndContext="#stay">
+        <keyword attribute="Keyword" String="words"/>
+        <DetectChar attribute="String" context="String" char="&quot;"/>
+      </context>
+      <context name="String" attribute="String" lineEndContext="#pop">
+        <DetectChar attribute="String" context="#pop" char="&quot;"/>
+      </context>
+    </contexts>
+    <itemDatas>
+      <itemData name="Normal Text" defStyleNum="dsNormal"/>
+      <itemData name="Keyword" defStyleNum="dsKeyword"/>
+      <itemData name="String" defStyleNum="dsString"/>
+    </itemDatas>
+  </highlighting>
+  <general><keywords casesensitive="0"/></general>
+</language>

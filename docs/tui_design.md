@@ -8,8 +8,8 @@ increment 4, the rows, the furniture and the regions (2026-11-20, §3.6;
 `docs/reference.md`, *The terminal backend*; `tests/run_ui_tui.sh`), and
 increment 5, the dialogs, the file chooser and `open_modal` (2026-11-20,
 §3.7), and increment 6, `memo` and `source` (2026-11-20, §3.8), after which
-every GUI suite runs on this backend too. The Windows console (2) and
-increment 7 are not. §8 holds the questions for
+every GUI suite runs on this backend too, and increment 7, highlighting from
+KDE's definitions (2026-11-20, §3.9). The Windows console (2) is not. §8 holds the questions for
 Matthew. **Q1 ruled the same day: our own terminal layer, not
 ncurses** (Matthew: "our own terminal layer sounds fine ... time to leave
 that to the history books"). **Q2 ruled 2026-11-19: §4's selection rule** (Matthew: "The terminal is a
@@ -216,7 +216,7 @@ Of the eight groups in `docs/ui_design.md` §6:
 | `figures` | no | no SVG or PNG; `ui.capture` has a text answer instead (§6) |
 | `notebook` | no | blocks between lines and rendered markdown are QTextDocument's |
 | `icons` | no | an icon from a file is every backend's, and draws as nothing; see Q4 |
-| `highlighting` | **later** | the KSyntaxHighlighting definitions are XML, readable without KDE; a `source` editor can colour from them. It ships without the group, and declares it when that is built |
+| `highlighting` | **yes**, with libxml2 | the KSyntaxHighlighting definitions are XML, read here in C (§3.9); a build without libxml2 lacks the group |
 | `file_dialogs` | **yes**, our own chooser | a terminal has no native dialog to defer to |
 
 So the **common core is every verb and word no group holds**, plus
@@ -547,6 +547,130 @@ pressed one; the refusals fixture now does, and Qt refuses it in the same
 sentence), and a memo's label taken as a caption outside a form (nothing
 read it back; the refusals fixture now reads `notes`). Each is red now.
 
+### 3.9 What increment 7 built, and what it found
+
+Built 2026-11-20: `src/ksyntax.c` (`include/ksyntax.h`), KDE's syntax
+definitions read and applied in plain C, and the terminal's `source` coloured
+from it, with the `highlighting` group declared. `language:`, `theme:`,
+`ui.highlighting`, `ui.can_highlight` and `colors` answer as on Qt.
+
+**Decided in building:**
+- **Our own reader, KDE's rules.** The definitions are XML (libxml2 reads
+  them) and the regular expressions are PCRE2's, which is what
+  QRegularExpression runs. Everything between is KSyntaxHighlighting's
+  behaviour, followed rule by rule: a rule with no attribute takes the
+  attribute of the context it switches to, a keyword rule never looks behind
+  itself, a regular expression is matched once for the line and its first
+  match remembered, `#pop` cannot pop the first context, and so on. Where a
+  rule was not known, KDE's output decided (below).
+- **The oracle is KDE's own library.** `tests/ui_tui/ksh_probe.cpp` links
+  KF6's KSyntaxHighlighting, extracts the 451 definitions and 30 themes it
+  carries compiled in, and prints each character's format, colour,
+  background and flags; `tests/ui_tui/ksyntax_dump.c` prints the same from
+  our engine. Text for each definition is made from its own tokens by
+  Python's XML parser (`tests/ui_tui/ksh_corpus.py`), and real files add the
+  shapes made text lacks.
+- **Definitions are files.** KDE's library carries its definitions compiled
+  in, out of reach of anything but itself, so the terminal reads only files:
+  the user's and the system's KDE data directories, then
+  `GBASIC_SYNTAX_PATH`, the tree's and the installed one, in KDE's order (a
+  name met first stays unless a later file has a higher version). A language
+  on Qt and not on disk is warning `2115` here and a plain editor. gBASIC's
+  own definition is always found. Shipping KDE's 451 (9.8 MB) was not done.
+- **Themes are carried.** KDE's 30 themes are compiled into the binary,
+  packed (`src/ksyntax_themes.h`, 64 KB, made by
+  `tools/make_ksyntax_themes.py` from the probe's extraction; as JSON they
+  were 250 KB against 3 MB of text). A theme file in a search path's
+  `themes/` is read too. `"light"` and `"dark"` are Breeze Light and Breeze
+  Dark, as on Qt; no theme is the one nearest the theme record's `base`, as
+  Qt's themeForPalette chooses, or, with no `base`, Breeze Dark where
+  `COLORFGBG` says the terminal's background is dark and Breeze Light
+  otherwise.
+- **A theme gives the editor its background and normal text**, as Qt's
+  palette is set from it, and `colors` answers them. The margin, the
+  selection and marked ranges keep the window's colours. Strike-through is
+  a new cell attribute (SGR 9).
+- **Each line's state after it is kept**, an edit forgetting the states from
+  its line down and an undo or a whole new text forgetting all; a frame works
+  out only as far as it shows.
+- **Qt's JIT switch is read here too.** `QT_ENABLE_REGEXP_JIT=0` turns off
+  this engine's JIT with Qt's, so one variable serves a valgrind tier: the
+  JIT's code reads sixteen bytes at a time past a string's end, which
+  valgrind reports though it is not wrong (measured). Output is identical
+  either way.
+- **It needs libxml2**, so a build without it has no `highlighting` group on
+  the terminal (`src/ksyntax.c` is empty there).
+
+**KDE's rules that this engine had wrong at first, each found by the
+oracle**, in the order found, from 436 of 451 definitions identical to 451:
+- **A guard against endless steps.** A lookahead into a context that falls
+  straight back out (Elixir's `~`) never advances. KDE gives the line up
+  after 1024 steps at one offset, the rest of it in the format of the moment.
+- **A rule's own `additionalDeliminator` and `weakDeliminator`**, not only
+  the definition's (ten definitions; Klipper's `Int` among them).
+- **Colours by name**: `color="black"`, as QColor reads SVG's names
+  (eighteen in use).
+- **`context="A!B!C"` pushes three**, in the order written, the last on top
+  (Mermaid; the order was taken from KDE's output, after a first guess had
+  it reversed).
+- **An empty line takes the line end's switch** when it has no empty-line
+  switch of its own, so an empty line after a continued one ends what the
+  continuation kept open (Gnuplot).
+- **The skip cache and captures.** A dynamic regular expression meeting
+  different captures clears every remembered skip, and at a line's start the
+  captures it compares with are none (Elixir); a dynamic StringDetect or
+  DetectChar records no skip and clears nothing (MIB, Elvish: clearing for
+  those was a wrong first guess, which the oracle refused).
+- **A letter is Unicode's**, from PCRE2's tables: a rough table of blocks put
+  U+212F, a letter among the letterlike symbols, outside (Julia).
+- **QRegularExpression's JIT stack**, 32 KB growing to 512 KB: with PCRE2's
+  default a 12,000-character line's emphasis failed where KDE's matched
+  (Markdown, docs/test_suite_history.md).
+
+**Measured.**
+- **Identical to KDE's library, character for character:** all 451
+  definitions on made text under ten seeds and ten themes; gBASIC's tests
+  (32,996 lines) under all 30 themes; C, C++, Python, Bash, Makefile,
+  Markdown, XML, JSON, YAML, HTML, CSS and JavaScript files from this tree
+  (the largest Markdown, 95,063 lines).
+- **Speed:** within a factor of two of KDE's either way (the tree's C, 72,000
+  lines: 0.33 s against KDE's 0.48 s; its Markdown, 95,000 lines: 1.67 s
+  against 1.03 s).
+
+**Found in building, beyond the engine:**
+- **An undo left the colours of the lines below stale**: it restores the whole
+  text without the splice that forgets states. The highlight fixture found it
+  (an undone comment opener left line 2 plain); every whole-text change now
+  forgets them.
+- **A `choice` in a form drew no caption** on the terminal, the defect Qt
+  once had, and `ui.label` answered any part's label, where Qt's answers only
+  a caption (a check's or a button's label is its own text). run_ui_find's
+  captions tier, which needs `highlighting` and so first ran here now, found
+  both. One rule now, Qt's `label_placed_by_parent`.
+- **`ui.click` missed a button below the screen**: the press went to its
+  corner, which a 40-row screen did not have. Qt's click reaches the widget
+  wherever it is; the terminal now presses a button or check directly when
+  the point is not on it.
+- **run_ui_source asked for KDE's FreeBASIC**, which only Qt's engine
+  carries; its second language is now `tests/qt_source_other.xml`, installed
+  by the suite where both engines read it, and its fixture holds one window
+  at a time (the terminal has no `windows`). In a terminal a `memo`'s font is
+  one width, and that is held there instead (cookbook recipe 09's terminal
+  lines are in `09_code_editor.tui.out`).
+
+**Perturbed, each red:** each of the eight engine rules above undone in turn
+(the `syntax` tier: a definition, or Markdown's real files, differs from
+KDE's); an undo, and an edit, forgetting no states (`highlight`: the line
+below keeps its old colour); a theme giving no background, and a format's
+bold dropped (`highlight`, the hand-worked colours); `"dark"` meaning Breeze
+Light (`highlight`); a carried theme off by one revision (`syntax`: the
+header is not the library's); `colors` ignoring a theme (run_ui_source, on
+`tui`); a choice in a form uncaptioned (`layout`); `ui.label` answering any
+label, and a click missing a part off screen (run_ui_find, on `tui`).
+**One went GREEN first**: strike-through never written to the terminal,
+which nothing read. run_term's unit tier now holds every attribute to its
+SGR number (ECMA-48: 1, 2, 3, 4, 7, 9), and it is red now.
+
 ### 3.4 The event-loop contract
 
 The seven rules in `docs/ui_design.md` §4, for this backend:
@@ -648,7 +772,8 @@ lacks (`highlighting`, `stylesheet`, `icons`), as they should be; and the
 other five (`browser`, `clock`, `dialogs`, `menus`, `tabs`) stop at a
 `memo`, which increment 6 draws. So the target moves to increment 6.
 **Measured at increment 6 (2026-11-20): met.** Ten of the 14 run in check
-mode; the same four are refused by name for their groups (§3.8).
+mode; the same four are refused by name for their groups (§3.8). **At
+increment 7, eleven:** `editor` runs too, highlighted (§3.9).
 
 ## 8. Questions for Matthew
 

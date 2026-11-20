@@ -48,12 +48,13 @@ window ed( title: "Editor", width: 640, height: 420 )
         ' heard of. It must therefore be silent rather than warn.
         source plain( hint: "no language here" )
         ' ANOTHER LANGUAGE ENTIRELY, which is what says the name is honoured:
-        ' `*.bas` is claimed by FreeBASIC at the same priority as gBASIC, so a
-        ' backend that looked a definition up by EXTENSION would answer
-        ' FreeBASIC for our own files with no error at all. Asking for
-        ' FreeBASIC and GETTING it, beside asking for gBASIC and getting that,
-        ' is the pair that pins by-name lookup.
-        source other( language: "FreeBASIC" )
+        ' `*.bas` is claimed by "Another BASIC" too (tests/qt_source_other.xml,
+        ' which the suite installs; it was KDE's FreeBASIC, which the terminal
+        ' cannot read), so a backend that looked a definition up by EXTENSION
+        ' could answer it for our own files with no error at all. Asking for
+        ' it and GETTING it, beside asking for gBASIC and getting that, is the
+        ' pair that pins by-name lookup.
+        source other( language: "Another BASIC" )
     end column
 end window
 
@@ -103,7 +104,14 @@ program main()
     ' hardcoded family is how a port acquires a fallback nobody chose.
     check("the editor's font has one width", ui.read(ed, "code", "fixed_width"),
           true)
-    check("and the memo's does not", ui.read(ed, "log", "fixed_width"), false)
+    ' IN A TERMINAL EVERY FONT IS ONE WIDTH, the memo's too, so there the
+    ' difference is not the backend's to have and its own answer is held.
+    if ui.backend() = "tui" then
+        check("and in a terminal the memo's is one width too",
+              ui.read(ed, "log", "fixed_width"), true)
+    else
+        check("and the memo's does not", ui.read(ed, "log", "fixed_width"), false)
+    end if
     ' (4) AND THE HIGHLIGHTER, which is the one thing here the by-name
     ' property route cannot reach, being an object rather than a property.
     ok("a memo has no highlighting at all",
@@ -124,10 +132,10 @@ program main()
 
     print "-- the name is what is looked up, not the extension"
     ' WITHOUT THIS PAIR, every check above passes on a backend that resolves
-    ' `*.bas` by extension -- which answers FreeBASIC for gBASIC source, with
-    ' no error, and highlights plausibly and wrongly.
-    check("asking for FreeBASIC gives FreeBASIC",
-          ui.highlighting(ed, "other").language, "FreeBASIC")
+    ' `*.bas` by extension -- which can answer another BASIC for gBASIC
+    ' source, with no error, and highlights plausibly and wrongly.
+    check("asking for Another BASIC gives Another BASIC",
+          ui.highlighting(ed, "other").language, "Another BASIC")
     ok("so the two editors disagree about their language",
        ui.highlighting(ed, "code").language !=
        ui.highlighting(ed, "other").language)
@@ -148,7 +156,15 @@ program main()
           ui.read(ed, "code"), code)
     check("including the line count", len(split(ui.read(ed, "code"), chr(10))),
           3)
+    ' ONE WINDOW AT A TIME, which a terminal (no `windows` group) requires:
+    ' what the later sections compare with is read now, and each window is
+    ' closed before the next opens
+    dark_code = ui.read(ed, "code", "colors")
+    plain_colors = ui.read(ed, "plain", "colors")
+    memo_caret = ui.caret(ed, "log")
+    window_caret = ui.caret(ed, "ed")
     ui.stop()
+    ui.close(ed)
 
     print "-- a source binds in a form, like any other value-bearing part"
     doc = { title: "hello.bas", body: "print " + chr(34) + "x" + chr(34) }
@@ -163,6 +179,7 @@ program main()
     check("and the record follows the widget", back.body, "edited")
     check("with the other field untouched", back.title, "hello.bas")
     ui.stop()
+    ui.close(editor)
 
     print "-- `to show` makes it read-only, as it does a memo"
     ui.open(viewer)
@@ -173,6 +190,7 @@ program main()
     after = ui.subject(viewer, "doc")
     check("and its record does not follow", after.body, shown.body)
     ui.stop()
+    ui.close(viewer)
 
     print "-- the builder: a source a program generates"
     ' §4's other door. A built record gets the declaration's own load-time
@@ -190,6 +208,7 @@ program main()
     check("and does not wrap either",
           ui.read(built, "pane", "wrap"), false)
     ui.stop()
+    ui.close(built)
 
     print "-- refusals, each beside its nearest legal neighbour"
     ' THE CONTROLS ARE THE POINT: `language` and `theme` are not Qt properties,
@@ -213,6 +232,7 @@ program main()
     ui.open(legal)
     check("while a real source takes both language and theme",
           ui.highlighting(legal, "s").language, "gBASIC")
+    ui.close(legal)
 
     print "-- a theme with no language: a themed plain editor"
     ' ASKED FOR BY gBASIC STUDIO: its editor for a file with no syntax (a .txt,
@@ -235,14 +255,15 @@ program main()
           brightness(text_of(dark)) > brightness(base_of(dark)), true)
     check("a light theme alone gives a light background", brightness(base_of(light)) > 384, true)
     check("the same colours a highlighted dark source gets",
-          dark, ui.read(ed, "code", "colors"))
+          dark, dark_code)
     check("and no highlighter, since there is no language",
           is_unknown(ui.highlighting(themed, "d")), true)
     ' THE CONTROL: an editor asking for no theme keeps its own colours, or
     ' "a theme alone applies" is satisfied by colouring every source dark.
     check("while a source with no theme keeps its own background",
-          base_of(ui.read(ed, "plain", "colors")) = base_of(dark), false)
+          base_of(plain_colors) = base_of(dark), false)
     ui.close(themed)
+    ui.open(legal)
 
     ' ---- THE CARET (§0.32) ---------------------------------------------
     ' ASKED FOR BY THE CONSUMER WITH THE USE THAT JUSTIFIES IT: *"stopped at
@@ -286,7 +307,7 @@ program main()
     ' EDITOR rather than about `source` -- the same reasoning `ui.highlighting`
     ' rests on one widget along.
     ok("a memo has a caret as well",
-       not is_unknown(ui.caret(ed, "log")))
+       not is_unknown(memo_caret))
     ' AND A PART THAT IS NOT ONE ANSWERS AN ABSENCE rather than refusing:
     ' "where is the caret in this editor's language" has no answer, and
     ' `unknown` is the one that composes with `is_unknown` -- the shape
@@ -298,7 +319,7 @@ program main()
     ' The window is a part of itself (§0.17), so it is the nearest thing to
     ' hand that has no caret.
     ok("a part that is not an editor answers unknown",
-       is_unknown(ui.caret(ed, "ed")))
+       is_unknown(window_caret))
 
     on error goto next
     ' A LINE PAST THE END IS REFUSED RATHER THAN CLAMPED, because a program
@@ -350,8 +371,10 @@ function text_of(c)
     return mid(c.fg, 1, 6)
 end function
 
+' a terminal leaves out a colour it does not know (its own background), so
+' `none` stands for it
 function base_of(c)
-    return mid(c.base, 1, 6)
+    return mid(default(c.base, "#none.."), 1, 6)
 end function
 
 function brightness(hex6)

@@ -70,7 +70,7 @@ int term_decoder_pending(const TermDecoder *d);
  * terminal has (term_depth). */
 #define TERM_DEFAULT 0xFF000000u
 
-enum { TERM_BOLD = 1, TERM_UNDERLINE = 2, TERM_REVERSE = 4, TERM_ITALIC = 8, TERM_DIM = 16 };
+enum { TERM_BOLD = 1, TERM_UNDERLINE = 2, TERM_REVERSE = 4, TERM_ITALIC = 8, TERM_DIM = 16, TERM_STRIKE = 32 };
 
 typedef struct {
     uint32_t fg, bg;

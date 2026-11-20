@@ -16,6 +16,30 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **Syntax highlighting in the terminal** (`docs/tui_design.md` increment
+  7): a `source` with `language:` is coloured from KDE's syntax definition of
+  that name, read by gBASIC's own C reader (`src/ksyntax.c`) and applied by
+  KDE's rules, and `theme:` takes `"light"`, `"dark"` or any of KDE's 30
+  themes by name, as on Qt. The terminal backend now has the `highlighting`
+  group where the build has libxml2. It reads definitions from files, so a
+  language KDE's library carries compiled in but nobody has installed as a
+  file is warned about (`2115`) on the terminal and the editor stays plain;
+  gBASIC's own definition is always there.
+  - Held to KDE's own library character by character: every one of its 451
+    definitions, gBASIC's tests under each of its 30 themes, and real files
+    in six languages, each character's format and colours identical.
+  - **In the terminal, a `choice` in a form now shows its caption**, which it
+    did not, and `ui.label` answers a caption only for a part whose label is
+    one (a check's or a button's is its own text), as on Qt.
+  - **`ui.click` on a button the terminal has no room to show** presses it,
+    as Qt's click does.
+  - `GBASIC_TUI_STYLES=PATH` writes each row's colours beside the
+    `GBASIC_TUI_DUMP` text, for a suite.
+  - run_ui_source's second language is now a definition the suite installs
+    (`tests/qt_source_other.xml`) rather than KDE's FreeBASIC, which only
+    Qt's engine carries; its fixture holds one window at a time.
+  - 11 of the 14 `examples/ui` programs run on the terminal; `editor` joined
+    them.
 - **`memo` and `source` in the terminal** (`docs/tui_design.md` increment
   6): a multi-line editor in a frame. A `memo` wraps at words; a `source`
   does not, and carries line numbers and marks in its margin. Every editor

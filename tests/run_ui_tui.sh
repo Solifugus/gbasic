@@ -5,11 +5,12 @@
 # src/modules/ui_tui.c): a `window` drawn in cells over src/term.c, the
 # selection rule that chooses it, `needs:`, and sizes in characters.
 #
-# It is LEFT OUT OF EVERY OTHER GUI SUITE'S PASSES until it covers the core
-# (tests/ui_backend.sh, UI_SUITES_SKIP_BACKENDS), so this suite is where it is
-# measured. THE ORACLES ARE OUTSIDE IT: what each key must do, written by hand
-# below; a real pty driven by tests/ui_tui/terminal.py, which reads the pty's
-# settings itself and, with pyte, the screen; Qt for the sizes.
+# Every other GUI suite has a pass on this backend too (tests/ui_backend.sh);
+# this suite is where what is the terminal's alone is measured. THE ORACLES
+# ARE OUTSIDE IT: what each key must do, written by hand below; a real pty
+# driven by tests/ui_tui/terminal.py, which reads the pty's settings itself
+# and, with pyte, the screen; Qt for the sizes; KDE's own KSyntaxHighlighting
+# for the colours.
 #
 # Tiers:
 #   [N] sizes     `40 columns` and `12 rows` read as size records, and a
@@ -41,7 +42,21 @@
 #                 replace_text undone in one step, a marked range moving
 #                 with its text, read_only; held to tests/ui_tui/editor.txt.
 #                 Then the editor's refusals, Qt's sentences word for word.
-#   [T] refusals  a `source` needing `highlighting` is refused by group;
+#   [T] highlight increment 7: a `source` coloured from a KDE definition,
+#                 each cell's colours read from GBASIC_TUI_STYLES and held
+#                 to tests/ui_tui/highlight.txt and to colours worked by hand
+#                 from KDE's Breeze themes; a block comment across lines,
+#                 its opener removed (the line below turns plain) and put
+#                 back by undo, and 3000 lines below it.
+#   [T] syntax    src/ksyntax.c against KDE's own library, the oracle: every
+#                 definition the library carries (extracted by
+#                 tests/ui_tui/ksh_probe.cpp) on text made from its own
+#                 tokens, gBASIC's tests under every theme, real files in six
+#                 languages; each character's format, colour, background and
+#                 flags identical. And src/ksyntax_themes.h equal to the
+#                 library's themes. Skips without KF6's headers.
+#   [T] refusals  a `source` with a language refused for `highlighting`
+#                 when the group is withheld;
 #                 no terminal names itself and GBASIC_TUI_SCREEN; a window
 #                 needing `docking` is refused naming qt; a `needs:` that is
 #                 no group; warning 2124 for an icon with no label.
@@ -58,7 +73,7 @@
 #                 selecting, Backspace taking it, Shift+Tab leaving.
 #   [T] needs     a program whose declared windows need `docking`, run where
 #                 only the terminal could draw.
-#   [T] valgrind  the drive, parts, dialogs and editor fixtures.
+#   [T] valgrind  the drive, parts, dialogs, editor and highlight fixtures.
 . "$(dirname "$0")/portable.sh"
 set -u
 cd "$(dirname "$0")/.."
@@ -178,6 +193,27 @@ if ui_tier_tui; then
         pass "an icon-only button shows its name; the stretch pushes the others to the right edge"
     else
         fail "the button row: $(sed -n 9p "$work/layout.txt")"
+    fi
+    # A CHOICE IN A FORM IS CAPTIONED, as a field is: increment 7 found it
+    # drawn with no caption (run_ui_find's captions tier, first run here)
+    cat >"$work/formchoice.bas" <<'EOF'
+person = { who: "", licence: "MIT" }
+window w( title: "x" )
+    column
+        form to edit person
+            field who( label: "Name" )
+            choice licence( label: "Licence", options: ["Apache-2.0", "MIT"] )
+        end form
+    end column
+end window
+ui.open(w)
+x = ui.read(w, "who", "width")
+EOF
+    GBASIC_UI=tui GBASIC_TUI_SCREEN=40x6 GBASIC_TUI_DUMP="$work/fc.txt" "$GB" "$work/formchoice.bas" >/dev/null 2>&1
+    if grep -q '^Licence  *MIT' "$work/fc.txt"; then
+        pass "a choice in a form has its caption in the form's column"
+    else
+        fail "a choice in a form: $(tr '\n' '|' <"$work/fc.txt")"
     fi
     cat >"$work/width.bas" <<'EOF'
 window w( title: "x" )
@@ -333,6 +369,152 @@ EOF
     fi
 fi
 
+# ---------------------------------------------------------------- HIGHLIGHT
+printf 'TIER [T] highlight: increment 7, a source coloured from a KDE definition\n'
+if ui_tier_tui && GBASIC_UI=tui ui_tier_needs highlighting; then
+    # the repo's own definitions only: an empty user data directory, and the
+    # suite's test definition beside the tree's gBASIC
+    mkdir -p "$work/empty-home"
+    XDG_DATA_HOME="$work/empty-home" GBASIC_SYNTAX_PATH=tests/ui_tui/syntax GBASIC_UI=tui \
+        GBASIC_TUI_SCREEN=40x16 GBASIC_TUI_DUMP="$work/hl.dump" GBASIC_TUI_STYLES="$work/hl.styles" \
+        "$GB" tests/ui_tui/highlight.bas </dev/null >"$work/hl.got" 2>&1
+    if cmp -s "$work/hl.got" tests/ui_tui/highlight.txt; then
+        pass "every colour and every screen as tests/ui_tui/highlight.txt holds them"
+    else
+        fail "the highlighting differs from tests/ui_tui/highlight.txt:"
+        diff tests/ui_tui/highlight.txt "$work/hl.got" | head -14 | sed 's/^/       /'
+    fi
+    # AND WHAT A GOLDEN CANNOT ARGUE WITH, each colour read by hand from
+    # KDE's theme files (fg:bg:attrs, attrs 1 bold): Breeze Light's Keyword
+    # #1f1c1b bold, String #bf0303, Comment #898887, DecVal #b08000,
+    # Operator #ca60ca on its BackgroundColor #ffffff; Breeze Dark's Comment
+    # #7a7c7d and Normal #cfcfc2 on #232629
+    for want in "keyword print: 1f1c1b:ffffff:1" 'string "hi": bf0303:ffffff:0' \
+                "comment: 898887:ffffff:0" "number 42: b08000:ffffff:0" "operator =: ca60ca:ffffff:0" \
+                "colors: #ffffff #1f1c1b" \
+                "the comment runs on: two -> 7a7c7d:232629:0" \
+                "opener removed: two -> cfcfc2:232629:0" \
+                "undone: two -> 7a7c7d:232629:0" \
+                "3000 lines down, still in the comment: end -> 7a7c7d:232629:0"; do
+        grep -qxF "$want" "$work/hl.got" || fail "no line \`$want\`"
+    done
+fi
+
+# ------------------------------------------------------------------- SYNTAX
+# THE ORACLE IS KDE'S OWN LIBRARY. A C++ probe linked to it extracts every
+# definition and theme it carries compiled in and prints, for each line of a
+# text, each character's format, colour, background and flags; the engine's
+# dump driver prints the same from src/ksyntax.c. Text made from each
+# definition's own tokens (tests/ui_tui/ksh_corpus.py, Python's XML parser)
+# enters contexts real files rarely do; real files have the shapes text does.
+printf 'TIER [T] syntax: the engine against KDE'"'"'s KSyntaxHighlighting, character by character\n'
+if ui_tier_tui && GBASIC_UI=tui ui_tier_needs highlighting; then
+    cxx=${CXX:-c++}
+    ksh_inc=/usr/include/KF6/KSyntaxHighlighting
+    if ! command -v python3 >/dev/null 2>&1 || ! command -v "$cxx" >/dev/null 2>&1 ||
+       [ ! -d "$ksh_inc" ] || ! pkg-config --exists Qt6Gui libxml-2.0 libpcre2-8 2>/dev/null; then
+        printf '  SKIP (needs python3, a C++ compiler, KF6 SyntaxHighlighting headers and Qt6Gui -- the engine was NOT held to KDE'"'"'s)\n'
+    elif ! "$cxx" -std=c++17 -fPIC -O1 tests/ui_tui/ksh_probe.cpp -o "$work/ksh_probe" -I"$ksh_inc" \
+            $(pkg-config --cflags Qt6Core Qt6Gui) -lKF6SyntaxHighlighting $(pkg-config --libs Qt6Core Qt6Gui) \
+            2>"$work/probe.cc"; then
+        fail "the KDE probe did not build: $(head -3 "$work/probe.cc")"
+    elif ! ${CC:-cc} -std=c11 -O2 -DHAVE_LIBXML2=1 $(pkg-config --cflags libxml-2.0 libpcre2-8) -Iinclude -Isrc \
+            src/ksyntax.c tests/ui_tui/ksyntax_dump.c -o "$work/ksyntax_dump" \
+            $(pkg-config --libs libxml-2.0 libpcre2-8) 2>"$work/dump.cc"; then
+        fail "the engine's dump driver did not build: $(head -3 "$work/dump.cc")"
+    else
+        kde="$work/kde"
+        mkdir -p "$work/empty-home"
+        export XDG_DATA_HOME="$work/empty-home"
+        "$work/ksh_probe" extract "$kde" >"$work/kde.list"
+        grep -vP '^(theme|nofile)\t' "$work/kde.list" >"$work/defs.tsv"
+        ndefs=$(wc -l <"$work/defs.tsv")
+        # one definition: its own text, both engines, compared
+        cat >"$work/one.sh" <<'ONE'
+#!/usr/bin/env bash
+w=$1; name=$2; file=$3
+t=$(mktemp -d "$w/one.XXXXXX")
+python3 tests/ui_tui/ksh_corpus.py "$w/kde/syntax/$file" 7 200 >"$t/in.txt"
+timeout 60 "$w/ksh_probe" hl "$name" "Breeze Light" "$t/in.txt" >"$t/k" 2>/dev/null
+timeout 60 "$w/ksyntax_dump" "$w/kde" "$name" "Breeze Light" "$t/in.txt" >"$t/o" 2>/dev/null
+if cmp -s "$t/k" "$t/o"; then echo "SAME	$name"; else echo "DIFF	$name	$(diff "$t/k" "$t/o" | grep '^<' | head -1 | cut -c1-120)"; fi
+rm -r "$t"
+ONE
+        jobs=$(nproc 2>/dev/null || echo 4)
+        [ "$jobs" -gt 8 ] && jobs=8
+        awk -F'\t' -v w="$work" '{ printf "%s\0%s\0%s\0", w, $1, $2 }' "$work/defs.tsv" |
+            xargs -0 -n3 -P"$jobs" bash "$work/one.sh" >"$work/corpus.txt"
+        # AND THE TEXTS THAT FOUND THIS ENGINE'S DEFECTS, each (definition,
+        # seed, lines) one that differed before its fix (§3.9): the skip cache
+        # under captures (Elixir), a dynamic StringDetect clearing nothing
+        # (MIB, Elvish), an empty line after a continued one (Gnuplot), a
+        # letter among the letterlike symbols (Julia)
+        cat >"$work/again.sh" <<'AGAIN'
+#!/usr/bin/env bash
+w=$1; name=$2; seed=$3; n=$4
+file=$(awk -F'\t' -v d="$name" '$1 == d { print $2 }' "$w/defs.tsv")
+t=$(mktemp -d "$w/again.XXXXXX")
+python3 tests/ui_tui/ksh_corpus.py "$w/kde/syntax/$file" "$seed" "$n" >"$t/in.txt"
+timeout 60 "$w/ksh_probe" hl "$name" "Breeze Light" "$t/in.txt" >"$t/k" 2>/dev/null
+timeout 60 "$w/ksyntax_dump" "$w/kde" "$name" "Breeze Light" "$t/in.txt" >"$t/o" 2>/dev/null
+if [ -s "$t/k" ] && cmp -s "$t/k" "$t/o"; then echo "SAME	$name $seed"; else echo "DIFF	$name $seed"; fi
+rm -r "$t"
+AGAIN
+        printf '%s\0' "$work" Elixir 14 500 "$work" MIB 7 500 "$work" Elvish 7 500 \
+                     "$work" Gnuplot 13 400 "$work" Julia 21 500 |
+            xargs -0 -n4 -P"$jobs" bash "$work/again.sh" >>"$work/corpus.txt"
+        ndefs=$((ndefs + 5))
+        same=$(grep -c '^SAME' "$work/corpus.txt")
+        if [ "$ndefs" -ge 300 ] && [ "$same" = "$ndefs" ]; then
+            pass "every one of KDE's definitions on text made from its own tokens, and the five texts that found defects ($ndefs runs): identical"
+        else
+            fail "$same of $ndefs definitions identical (want all, and at least 300):"
+            grep -v '^SAME' "$work/corpus.txt" | head -6 | sed 's/^/       /'
+        fi
+        # gBASIC, the definition this repo ships, under every theme KDE has
+        mkdir -p "$work/gb/syntax"
+        cp editors/kate/gbasic.xml "$work/gb/syntax/"
+        bad=""
+        nthemes=0
+        while IFS=$'\t' read -r _ theme _; do
+            nthemes=$((nthemes + 1))
+            KSH_PATH="$work/gb" "$work/ksh_probe" hl gBASIC "$theme" tests/*.bas >"$work/gk" 2>/dev/null
+            "$work/ksyntax_dump" "$work/gb" gBASIC "$theme" tests/*.bas >"$work/go" 2>/dev/null
+            cmp -s "$work/gk" "$work/go" || bad="$bad $theme;"
+        done < <(grep -P '^theme\t' "$work/kde.list")
+        lines=$(grep -c '^L' "$work/go")
+        if [ -z "$bad" ] && [ "$nthemes" -ge 20 ] && [ "$lines" -ge 10000 ]; then
+            pass "gBASIC's own tests ($lines lines) under each of KDE's $nthemes themes: identical"
+        else
+            fail "gBASIC under $nthemes themes differs for:$bad"
+        fi
+        # real files, whose shapes made text does not have: long lines among
+        # them (Markdown's 12,000-character ones needed Qt's JIT stack)
+        for spec in "C:src/ksyntax.c src/term.c src/modules/ui_tui.c" "Bash:tests/run_ui_tui.sh tests/ui_backend.sh" \
+                    "Python:tests/ui_tui/terminal.py tools/make_ksyntax_themes.py" "Markdown:docs/tui_design.md docs/test_suite_history.md" \
+                    "XML:editors/kate/gbasic.xml" "Makefile:Makefile"; do
+            lang=${spec%%:*}
+            # shellcheck disable=SC2086
+            "$work/ksh_probe" hl "$lang" "Breeze Dark" ${spec#*:} >"$work/rk" 2>/dev/null
+            # shellcheck disable=SC2086
+            "$work/ksyntax_dump" "$kde" "$lang" "Breeze Dark" ${spec#*:} >"$work/ro" 2>/dev/null
+            if [ -s "$work/rk" ] && cmp -s "$work/rk" "$work/ro"; then
+                pass "$lang, real files ($(grep -c '^L' "$work/rk") lines): identical"
+            else
+                fail "$lang, real files: $(diff "$work/rk" "$work/ro" | grep -c '^<') lines differ"
+            fi
+        done
+        # the themes this binary carries, held to the library's
+        python3 tools/make_ksyntax_themes.py "$kde" >"$work/themes.h"
+        if cmp -s "$work/themes.h" src/ksyntax_themes.h; then
+            pass "src/ksyntax_themes.h is the library's $nthemes themes, packed"
+        else
+            fail "src/ksyntax_themes.h is not this library's themes: regenerate it (tools/make_ksyntax_themes.py, from ksh_probe extract)"
+        fi
+        unset XDG_DATA_HOME
+    fi
+fi
+
 # ----------------------------------------------------------------- REFUSALS
 printf 'TIER [T] refusals: each by name\n'
 if ui_tier_tui; then
@@ -344,10 +526,11 @@ window w( title: "x" )
 end window
 ui.open(w)
 EOF
-    got=$(GBASIC_UI=tui GBASIC_TUI_SCREEN=50x12 "$GB" "$work/later.bas" 2>&1)
+    # the group withheld, as on a build without libxml2
+    got=$(GBASIC_UI_WITHHOLD=highlighting GBASIC_UI=tui GBASIC_TUI_SCREEN=50x12 "$GB" "$work/later.bas" 2>&1)
     case "$got" in
         *"\`highlighting\`"*)
-            pass "a source with a language needs \`highlighting\`, refused by its group" ;;
+            pass "a source with a language needs \`highlighting\`, refused by its group when it is withheld" ;;
         *) fail "highlighting: $got" ;;
     esac
     printf 'print ui.backend()\n' >"$work/be.bas"
@@ -448,7 +631,7 @@ for t in live live_parts live_dialogs live_editor needs; do
 done
 
 # ----------------------------------------------------------------- VALGRIND
-printf 'TIER [T] valgrind: the drive, parts, dialogs and editor fixtures\n'
+printf 'TIER [T] valgrind: the drive, parts, dialogs, editor and highlight fixtures\n'
 if ui_tier_tui; then
     if ! vg_available; then
         printf '  SKIP (no valgrind -- NOT measured)\n'
@@ -456,8 +639,11 @@ if ui_tier_tui; then
          && GBASIC_UI=tui GBASIC_TUI_SCREEN=60x16 vg_run "$GB" tests/ui_tui/parts.bas >/dev/null 2>>"$work/vg.log" \
          && GBASIC_UI=tui GBASIC_TUI_SCREEN=60x16 GBASIC_TUI_DUMP="$work/vgd.txt" vg_run "$GB" tests/ui_tui/dialogs.bas "$work/pick" </dev/null >/dev/null 2>>"$work/vg.log" \
          && GBASIC_UI=tui GBASIC_TUI_SCREEN=40x20 GBASIC_TUI_DUMP="$work/vge.txt" vg_run "$GB" tests/ui_tui/editor.bas </dev/null >/dev/null 2>>"$work/vg.log" \
-         && GBASIC_UI=tui GBASIC_TUI_SCREEN=40x20 vg_run "$GB" tests/ui_tui/editor_refusals.bas </dev/null >/dev/null 2>>"$work/vg.log"; then
-        pass "the drive, parts, dialogs and editor fixtures: no invalid access, no definite leak, no descriptor left"
+         && GBASIC_UI=tui GBASIC_TUI_SCREEN=40x20 vg_run "$GB" tests/ui_tui/editor_refusals.bas </dev/null >/dev/null 2>>"$work/vg.log" \
+         && QT_ENABLE_REGEXP_JIT=0 XDG_DATA_HOME="$work/empty-home" GBASIC_SYNTAX_PATH=tests/ui_tui/syntax GBASIC_UI=tui GBASIC_TUI_SCREEN=40x16 \
+            GBASIC_TUI_DUMP="$work/vgh.dump" GBASIC_TUI_STYLES="$work/vgh.styles" \
+            vg_run "$GB" tests/ui_tui/highlight.bas </dev/null >/dev/null 2>>"$work/vg.log"; then
+        pass "the drive, parts, dialogs, editor and highlight fixtures: no invalid access, no definite leak, no descriptor left"
     else
         fail "valgrind:"
         grep -E "Invalid|definitely|ERROR SUMMARY|Open file" "$work/vg.log" | head -8 | sed 's/^/       /'
