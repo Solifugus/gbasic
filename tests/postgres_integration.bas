@@ -44,7 +44,9 @@ discarded = pg.exec(db, "select 1")
 print(error.source)
 error.clear()
 
-unsupported = pg.query(db, "select $1", [unknown])
+' a kind Postgres cannot take (until 2026-11-20 this was `unknown`, which now
+' binds as NULL, below)
+unsupported = pg.query(db, "select $1", [5 minutes])
 print(error.source)
 error.clear()
 
@@ -52,6 +54,13 @@ bad_sql = pg.query(db, "select from")
 print(error.source)
 error.clear()
 
+' `unknown` binds as SQL NULL, as G-SQL and pg.insert take it (DOGFOOD
+' 2026-11-18): Postgres's own `is null` counts it, in an array element too
+u = pg.exec(db, "create temp table gb_unknown (id integer, v text)")
+u = pg.exec(db, "insert into gb_unknown values ($1, $2)", [1, unknown])
+u = pg.exec(db, "insert into gb_unknown values ($1, $2)", [2, "x"])
+print(pg.query(db, "select count(*) as n from gb_unknown where v is null")[0].n)
+print(pg.query(db, "select $1::int[] as a", [[1, unknown, 3]])[0].a)
 alias = db
 print(pg.close(db))
 closed = pg.query(alias, "select 1")

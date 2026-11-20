@@ -113,6 +113,15 @@ check("timestamp column reads back", string(first_row.at_time), "2024-03-05 13:4
 second_row = rows[1]
 check("SQL NULL becomes nothing", second_row.note, nothing)
 check("nothing is not the empty string", second_row.note = "", false)
+
+' `unknown` BINDS AS SQL NULL, as G-SQL and odbc.insert take it (DOGFOOD
+' 2026-11-18: it was "unsupported odbc parameter type"). SQL itself is asked.
+r = odbc.exec(db, "create table gb_odbc_u (id integer, v varchar(10))")
+r = odbc.exec(db, "insert into gb_odbc_u (id, v) values (?, ?)", [1, unknown])
+r = odbc.exec(db, "insert into gb_odbc_u (id, v) values (?, ?)", [2, "x"])
+nulls = odbc.query(db, "select count(*) as n from gb_odbc_u where v is null")
+check("unknown binds as SQL NULL, by SQL's own is null", nulls[0].n, 1)
+r = odbc.exec(db, "drop table gb_odbc_u")
 check("bit column reads back false", second_row.flag, false)
 check("second row reads back", second_row.name, "bob")
 

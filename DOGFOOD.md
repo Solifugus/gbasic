@@ -14035,6 +14035,8 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Workaround:** pass `nothing` for a NULL parameter. For the sweep: bind
   `unknown` as NULL in every driver, as G-SQL and `insert` do.
 
+- **Status 2026-11-20: RESOLVED** in the sweep: `pg.exec`/`pg.query` and `odbc.exec`/`odbc.query` bind `unknown` as SQL NULL, an array element too. Held by `tests/odbc_test.bas` (SQLite's ODBC driver asked `is null`) and the opt-in `tests/postgres_integration.bas`, whose refusal case now uses a duration.
+
 ## 2026-11-18 — CC — while: writing the G-SQL readers suite's fixtures
 - **Type:** language-surprise
 - **Severity:** low

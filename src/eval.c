@@ -26762,6 +26762,7 @@ static int odbc_bind_value(SQLHSTMT statement,
 
     switch (value.kind) {
     case VALUE_NULL:
+    case VALUE_UNKNOWN:   /* SQL's NULL, as G-SQL and odbc.insert take it */
         *indicator = SQL_NULL_DATA;
         buffer = (SQLPOINTER)"";
         buffer_length = 0;
@@ -28965,7 +28966,9 @@ static int pg_parameter_list_build(Value value, PgParameterList *out, const Oid 
     }
     for (size_t i = 0; i < value.as.array.store->count; i++) {
         Value item = value.as.array.store->items[i];
-        if (item.kind == VALUE_NULL) {
+        /* `unknown` is SQL's NULL too, as G-SQL and pg.insert take it
+         * (DOGFOOD 2026-11-18): a row copied from a query passes as it is */
+        if (item.kind == VALUE_NULL || item.kind == VALUE_UNKNOWN) {
             out->pointers[i] = NULL;
             continue;
         }
@@ -29145,7 +29148,7 @@ static int pg_array_literal_append(StringBuilder *builder, Value value) {
         if (i > 0) {
             sb_append_char(builder, ',');
         }
-        if (item.kind == VALUE_NULL) {
+        if (item.kind == VALUE_NULL || item.kind == VALUE_UNKNOWN) {
             sb_append_text(builder, "NULL");
             continue;
         }
