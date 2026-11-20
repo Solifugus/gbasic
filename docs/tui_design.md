@@ -6,7 +6,8 @@ The Windows console and the `tui` backend are not. §8 holds the questions for
 Matthew. **Q1 ruled the same day: our own terminal layer, not
 ncurses** (Matthew: "our own terminal layer sounds fine ... time to leave
 that to the history books"). **Q2 ruled 2026-11-19: §4's selection rule** (Matthew: "The terminal is a
-nice fallback"). Q3 to Q6 are open. Matthew, 2026-11-18:
+nice fallback"). **Q3 to Q6 ruled 2026-11-19 as recommended** (Matthew: "yes
+to all"; §8.1 holds what each ruling means). Matthew, 2026-11-18:
 
 > On the TUI. It is important to have one. We should design one. My first
 > thought is to build a basic TUI system that can work across Linux, Mac, and
@@ -346,3 +347,41 @@ should run on `tui` by increment 5.
   as a window option or a verb?
 - **Q6. Where it sits:** 0.13.0 beside whisker, so the common core is defined
   against three backends at once? My recommendation.
+
+
+### 8.1 The rulings (2026-11-19)
+
+Matthew accepted all four recommendations as given:
+
+- **Q3, sizes.** A bare number stays pixels, so every existing program keeps
+  its meaning. A size may also be written in characters (`width: 40 columns`,
+  `height: 12 rows`). The terminal converts pixels at a nominal cell of 8 by
+  16, rounding up; Qt converts columns and rows by the font's metrics. The
+  terminal lays out by content and treats a size as a minimum, and a window's
+  own `width` and `height` mean nothing there, since the window is the screen.
+  `font_size` is ignored in a terminal, and the reference says so. **The
+  condition:** the `40 columns` spelling goes in only if it costs no grammar
+  conflicts, as `10 seconds` did, measured first. Otherwise the spelling is a
+  function, `columns(40)`.
+- **Q4, an icon from a file.** No icon is drawn; the item shows its label, or
+  its name if it has none. `ui.check` warns about an item with an icon and no
+  label. There is no `icon: "a.png" or "💾"` fallback spelling.
+- **Q5, `needs:`.** A `window` option, `needs: ["docking"]`. The automatic
+  choice of backend (§4) skips a backend lacking a named group. `ui.open`
+  refuses up front, naming the group and the backends that have it, and
+  `ui.check` refuses without a display. It is built with the selection rule,
+  in increment 3.
+- **Q6, placement.** 0.13.0 carries increment 3 (layout, `field`, `button`,
+  `check`, `text`, forms, the selection rule, `needs:`) beside whisker.
+  Increments 4 to 7 follow in point releases, and 0.13.0 does not wait for the
+  editor. The Windows console (increment 2) is built when a Windows machine is
+  at hand; until then 0.13.0's notes say `term` is POSIX only.
+
+§5's two whisker questions were answered from whisker's own repository on
+2026-11-19, with no whisker session running. **Whisker does not draw into a
+terminal:** its hosts are SDL and the browser, and the terminal its documents
+name is RV-9's, used for text entry on a board with no keyboard
+(`whisker/docs/decisions.md` D6). **Its groups are this table's:**
+`whisker/docs/ui-backend-gap.md` §4 lists a whisker backend's groups as
+`windows file_dialogs docking`, from the same eight. So this backend is
+gBASIC's alone, and increment 3 waits on nothing.
