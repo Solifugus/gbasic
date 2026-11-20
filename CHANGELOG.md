@@ -25,7 +25,14 @@ reader sees.
   for one record, as projection and a scalar read already do. A name two
   levels both give is refused in G-SQL's words. A call's answer takes braces
   too (`made(x){ a }`): the lexer now reads `{` after `)` as it did after a
-  name or `]`. Brackets that filter plain arrays (`rows[.paid]`) are next.
+  name or `]`.
+- **Brackets on plain data**: `rows[.paid, .amount > 20]` is the rows a
+  condition holds for, as a G-SQL path's filter. `.field` is the row's field
+  (unknown when it has none), a row is kept when every condition is true
+  (so unknown drops it, as SQL's WHERE does), and commas are `and`. Any
+  gBASIC expression may be a condition, brackets inside one filter that row's
+  own array, and in a brace chain a filter is a step:
+  `rows[.paid]{ item, amount }`. An index is still an index.
   - The refusal that braces on a record used to give is gone; braces on a
     G-SQL connection itself say to name a table first.
 - **Escape then Tab leaves a terminal editor forward** (Matthew's ask): Tab

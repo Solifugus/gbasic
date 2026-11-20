@@ -180,6 +180,13 @@ echo "--- TIER 7: braces, G-SQL's spelling on plain data ---"
 # neighbour. G-SQL's own braces are run_gsql_paths'.
 run tests/projection/braces_test.bas 24 "braces on plain data"
 
+echo "--- TIER 8: brackets, G-SQL's filter on plain data ---"
+# `rows[.paid, .amount > 20]`: the rows a condition holds for, unknown
+# dropping one as SQL's WHERE does, commas as `and`, a filter inside a
+# condition, a filter as a step of a brace chain (Matthew, 2026-11-20).
+# The oracle is the loop with an `if` each replaces.
+run tests/projection/brackets_test.bas 20 "brackets on plain data"
+
 echo "--- TIER 6: valgrind ---"
 # A NEW ALLOCATION PATH PER ELEMENT: the projection mallocs an array and
 # `value_copy`s each field out of shared refcounted storage, and the money and
@@ -190,7 +197,8 @@ if vg_available; then
     vg_fail=0
     for f in tests/projection/projection_test.bas \
              tests/projection/ordering_oracle_test.bas \
-             tests/projection/braces_test.bas; do
+             tests/projection/braces_test.bas \
+             tests/projection/brackets_test.bas; do
         GBASIC_PATH=stdlib vg_run ./gbasic "$f" >/dev/null 2>"$tmp/vg.err" </dev/null
         rc=$?
         if [ "$rc" = "$VG_EXIT" ]; then

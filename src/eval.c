@@ -3929,6 +3929,10 @@ static int eval_result_exits_block(EvalResult result) {
  * evaluation, so it reaches the base and nothing the base evaluates in turn
  * (`f(shop.customer[3]).x` reads the row before f sees it). */
 static int g_path_keep;
+/* brackets on plain data (filter_of_value, below) */
+static const Value *g_filter_row;
+static int expr_has_column(const AstExpr *e);
+static Value filter_of_value(Value array, AstExpr *expr);
 
 static Value value_copy(Value value);
 static void value_free(Value value);
@@ -43728,6 +43732,9 @@ static GB_NOINLINE Value eval_expr_case_index(AstExpr *expr, int path_keep) {
             return gsql_path_bracket(array, expr, path_keep && !expr->parenthesized);
         }
 #endif
+        if (!error_action_pending() && expr_has_column(expr->as.index.index)) {
+            return filter_of_value(array, expr);
+        }
         if (expr->as.index.list) {
             value_free(array);
             runtime_error_raise_at("a list in brackets is a G-SQL path's key or filters (`shop.line[17, 2]`); "
@@ -43840,6 +43847,146 @@ static GB_NOINLINE Value eval_expr_case_index(AstExpr *expr, int path_keep) {
         return value_null();
     (void)path_keep;
     return value_null();
+}
+
+
+/* ---- brackets on plain data: `rows[.paid, .amount > 20]` --------------------
+ *
+ * G-SQL'S FILTER ON gBASIC'S OWN DATA (Matthew, 2026-11-20, after the
+ * braces). A condition is any expression with a `.field` in it, evaluated
+ * for each row with `.field` the row's field (unknown when it has none); a
+ * row is kept when every condition is TRUE, as SQL's WHERE keeps it, so an
+ * unknown drops it. Commas are `and`, as in a path's brackets. Unlike a
+ * path's, any gBASIC expression may be a condition, since nothing has to
+ * become SQL. Brackets inside a condition filter that row's own arrays: the
+ * rows stack. */
+
+static const Value *g_filter_row = NULL;
+
+static int expr_has_column(const AstExpr *e) {
+    if (!e) {
+        return 0;
+    }
+    switch (e->kind) {
+    case AST_EXPR_COLUMN:
+        return 1;
+    case AST_EXPR_ARRAY:
+        for (size_t i = 0; i < e->as.array.count; i++) {
+            if (expr_has_column(e->as.array.items[i])) return 1;
+        }
+        return 0;
+    case AST_EXPR_RECORD:
+        for (size_t i = 0; i < e->as.record.count; i++) {
+            if (expr_has_column(e->as.record.items[i].value)) return 1;
+        }
+        return 0;
+    case AST_EXPR_INDEX:
+        return expr_has_column(e->as.index.array) || expr_has_column(e->as.index.index);
+    case AST_EXPR_FIELD:
+        return expr_has_column(e->as.field.object);
+    case AST_EXPR_PROJECT:
+        return expr_has_column(e->as.project.object);
+    case AST_EXPR_CALL:
+    case AST_EXPR_SPAWN:
+        for (size_t i = 0; i < e->as.call.args.count; i++) {
+            if (expr_has_column(e->as.call.args.items[i])) return 1;
+        }
+        return expr_has_column(e->as.call.receiver);
+    case AST_EXPR_BINARY:
+        return expr_has_column(e->as.binary.left) || expr_has_column(e->as.binary.right);
+    case AST_EXPR_UNARY:
+        return expr_has_column(e->as.unary.expr);
+    case AST_EXPR_MODIFIER_APPLY:
+        return expr_has_column(e->as.modifier_apply.value);
+    case AST_EXPR_NEW:
+        return expr_has_column(e->as.derive.proto) || expr_has_column(e->as.derive.with);
+    default:
+        return 0;
+    }
+}
+
+/* whether `row` passes every condition of the brackets `at`: 1 kept, 0
+ * dropped, -1 having raised */
+static int filter_row(const Value *row, const AstExpr *at) {
+    AstExpr *one = at->as.index.index;
+    size_t n = at->as.index.list ? one->as.array.count : 1;
+    AstExpr **conds = at->as.index.list ? one->as.array.items : &one;
+    const Value *outer = g_filter_row;
+    g_filter_row = row;
+    int keep = 1;
+    for (size_t i = 0; i < n && keep == 1; i++) {
+        Value v = eval_expr(conds[i]);
+        if (error_action_pending()) {
+            value_free(v);
+            keep = -1;
+            break;
+        }
+        if (v.kind == VALUE_UNKNOWN) {
+            keep = 0;
+        } else if (v.kind != VALUE_BOOL) {
+            char message[200], phrase[48];
+            snprintf(message, sizeof message,
+                     "a condition in brackets is true or false, and this one is %s -- compare it (`[.amount > 0]`)",
+                     kind_phrase(v.kind, phrase, sizeof phrase));
+            runtime_error_raise_at(message, 1003, "indexing", conds[i]->line, conds[i]->column);
+            keep = -1;
+        } else if (!v.as.boolean) {
+            keep = 0;
+        }
+        value_free(v);
+    }
+    g_filter_row = outer;
+    return keep;
+}
+
+/* brackets with a condition on a value already evaluated: an array's rows
+ * that pass, the rows themselves */
+static Value filter_of_value(Value array, AstExpr *expr) {
+    if (array.kind != VALUE_ARRAY) {
+        char message[220], phrase[48];
+        snprintf(message, sizeof message,
+                 "a condition in brackets chooses rows of an array (`rows[.paid]`), and this is %s",
+                 kind_phrase(array.kind, phrase, sizeof phrase));
+        value_free(array);
+        runtime_error_raise_at(message, 1003, "indexing", expr->line, expr->column);
+        return value_null();
+    }
+    ArrayStorage *st = array.as.array.store;
+    size_t n = st ? st->count : 0;
+    Value *kept = n ? malloc(n * sizeof *kept) : NULL;
+    if (n && !kept) {
+        abort();
+    }
+    size_t m = 0;
+    for (size_t i = 0; i < n; i++) {
+        const Value *row = &st->items[i];
+        if (row->kind != VALUE_RECORD) {
+            char message[220], phrase[48];
+            snprintf(message, sizeof message, "a condition in brackets expects every row to be a record; row %zu is %s",
+                     i, kind_phrase(row->kind, phrase, sizeof phrase));
+            runtime_error_raise_at(message, 1003, "indexing", expr->line, expr->column);
+            for (size_t k = 0; k < m; k++) {
+                value_free(kept[k]);
+            }
+            free(kept);
+            value_free(array);
+            return value_null();
+        }
+        int keep = filter_row(row, expr);
+        if (keep < 0) {
+            for (size_t k = 0; k < m; k++) {
+                value_free(kept[k]);
+            }
+            free(kept);
+            value_free(array);
+            return value_null();
+        }
+        if (keep) {
+            kept[m++] = value_copy(*row);
+        }
+    }
+    value_free(array);
+    return value_array(kept, m);
 }
 
 /* ---- braces on plain data: `rows{ item, amount }.customer{ name }` ----------
@@ -43974,6 +44121,41 @@ static Value pick_plain(Value root, AstExpr **ops, size_t nops, const char *root
     for (size_t i = 0; i < nops; i++) {
         AstExpr *op = ops[i];
         pick_fan_out(&rows, &many);
+        if (op->kind == AST_EXPR_INDEX) {
+            /* a filter: the rows standing on a record that passes, as
+             * filter_of_value keeps them; a row on unknown is dropped */
+            PickRows next = { 0 };
+            for (size_t k = 0; k < rows.n; k++) {
+                PickRow *row = &rows.r[k];
+                int keep = row->cur.kind == VALUE_RECORD ? filter_row(&row->cur, op) : 0;
+                if (row->cur.kind != VALUE_RECORD && row->cur.kind != VALUE_UNKNOWN) {
+                    char message[220], phrase[48];
+                    snprintf(message, sizeof message,
+                             "a condition in brackets expects every row to be a record; row %zu is %s", k,
+                             kind_phrase(row->cur.kind, phrase, sizeof phrase));
+                    runtime_error_raise_at(message, 1003, "indexing", op->line, op->column);
+                    keep = -1;
+                }
+                if (keep < 0) {
+                    for (size_t j = k; j < rows.n; j++) {
+                        pick_rows_add(&next, rows.r[j].cur, rows.r[j].out);
+                    }
+                    free(rows.r);
+                    rows = next;
+                    goto done;
+                }
+                if (keep) {
+                    pick_rows_add(&next, row->cur, row->out);
+                } else {
+                    value_free(row->cur);
+                    value_free(row->out);
+                }
+            }
+            free(rows.r);
+            rows = next;
+            many = 1;
+            continue;
+        }
         if (op->kind == AST_EXPR_FIELD) {
             for (size_t k = 0; k < rows.n; k++) {
                 Value got;
@@ -44069,13 +44251,16 @@ static size_t pick_chain(AstExpr *top, AstExpr **ops, AstExpr **root) {
     size_t n = 0;
     int braces = 0;
     AstExpr *e = top;
-    while (e && (e->kind == AST_EXPR_FIELD || e->kind == AST_EXPR_PROJECT) && (e == top || !e->parenthesized)) {
+    while (e && (e->kind == AST_EXPR_FIELD || e->kind == AST_EXPR_PROJECT ||
+                 (e->kind == AST_EXPR_INDEX && expr_has_column(e->as.index.index))) &&
+           (e == top || !e->parenthesized)) {
         if (n == PICK_MAX) {
             return 0;
         }
         braces |= e->kind == AST_EXPR_PROJECT;
         ops[n++] = e;
-        e = e->kind == AST_EXPR_FIELD ? e->as.field.object : e->as.project.object;
+        e = e->kind == AST_EXPR_FIELD ? e->as.field.object
+            : e->kind == AST_EXPR_PROJECT ? e->as.project.object : e->as.index.array;
     }
     if (!braces) {
         return 0;
@@ -44111,7 +44296,12 @@ static Value eval_pick(AstExpr *top, AstExpr **ops, size_t n, AstExpr *root, int
     if (gsql_is_path(&v) || v.kind == VALUE_GSQL_CONNECTION) {
         for (size_t i = 0; i < n; i++) {
             int keep = i + 1 < n ? 1 : path_keep;
-            v = ops[i]->kind == AST_EXPR_FIELD ? field_of_value(v, ops[i], keep) : project_of_value(v, ops[i], keep);
+            if (ops[i]->kind == AST_EXPR_INDEX) {
+                v = gsql_path_bracket(v, ops[i], keep && !ops[i]->parenthesized);
+            } else {
+                v = ops[i]->kind == AST_EXPR_FIELD ? field_of_value(v, ops[i], keep)
+                                                   : project_of_value(v, ops[i], keep);
+            }
             if (error_action_pending()) {
                 value_free(v);
                 return value_null();
@@ -44449,9 +44639,20 @@ static Value project_of_value(Value object, AstExpr *expr, int path_keep) {
 
 static GB_NOINLINE Value eval_expr_case_column(AstExpr *expr, int path_keep) {
 
+        /* inside a plain array's brackets: the row's field, or unknown */
+        if (g_filter_row) {
+            if (g_filter_row->kind == VALUE_RECORD) {
+                const RecordField *f = record_find_const(g_filter_row, expr->as.ident);
+                if (f) {
+                    return value_copy(*f->value);
+                }
+            }
+            return value_unknown();
+        }
         char message[300];
-        snprintf(message, sizeof message, "`.%s` names a column, and is read only inside a G-SQL path's brackets "
-                 "(`shop.customer[.%s = ...]`)", expr->as.ident, expr->as.ident);
+        snprintf(message, sizeof message, "`.%s` names a row's field, and is read only inside brackets that "
+                 "choose rows (`rows[.%s = ...]`, `shop.customer[.%s = ...]`)", expr->as.ident, expr->as.ident,
+                 expr->as.ident);
         runtime_error_raise_at(message, 1003, "path", expr->line, expr->column);
         return value_null();
     (void)path_keep;

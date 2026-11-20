@@ -224,7 +224,7 @@ check("a column given to a function", message_has(refusal(called), "anything mor
 function column_alone()
     return .name
 end function
-check("a column outside a path", message_has(refusal(column_alone), "`.name` names a column"), true)
+check("a column outside a path", message_has(refusal(column_alone), "`.name` names a row's field"), true)
 
 function array_list()
     a = [1, 2, 3]

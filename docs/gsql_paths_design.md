@@ -10,8 +10,10 @@ Matthew, 2026-11-14:
 
 **Plain data has the braces too** since 2026-11-20 (`docs/reference.md`,
 *Braces -- several fields at once*): one spelling for a path's columns and a
-record's fields, flat across steps as §3.5's join is. Brackets for plain
-arrays (`rows[.paid]`) are the next increment.
+record's fields, flat across steps as §3.5's join is. **And the brackets**
+(*Brackets -- the rows a condition holds for*): `rows[.paid]` filters a plain
+array as `[.paid]` filters a table, with any gBASIC expression allowed, since
+nothing has to become SQL.
 
 The spelling is borrowed from AmorphDB's MBL (`~/development/amorphdb/docs/mbl_reference.md`): dots walk, brackets filter, braces choose. Only the spelling comes over. **Not** AmorphDB's tree of attributes, **not** its history (`[@date]`), stamps or permissions, **not** schema by path. A path reads and writes ordinary G-SQL tables, and the steps between tables are the foreign keys SQL declared.
 

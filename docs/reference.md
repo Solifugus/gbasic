@@ -9128,6 +9128,39 @@ print rows{ item }.lines{ sku }        ' [{"item":"hammer","sku":"h1"},{"item":"
 - To read one field of the answer, parenthesize it: `(r{ item }).item`. A
   dot straight after the braces is a step, not a read.
 
+#### Brackets — the rows a condition holds for
+
+*(after 0.12.0)* Brackets holding a condition on `.field` choose the rows of
+an array it holds for, in the spelling a G-SQL path uses for its filters.
+The rows are whole; braces after them choose fields.
+
+```basic
+rows = [ { item: "hammer", amount: 19.95, paid: true, lines: [ { qty: 2 }, { qty: 5 } ] },
+         { item: "saw", amount: 32.50, paid: false, lines: [] },
+         { item: "nails", amount: 7.00, lines: [ { qty: 9 } ] } ]
+
+print rows[.amount > 10].item                  ' ["hammer","saw"]
+print rows[.paid]{ item, amount }              ' [{"item":"hammer","amount":19.95}]
+print rows[.amount > 5, not .paid].item        ' ["saw"]
+print rows[count(.lines[.qty > 4]) > 0].item   ' ["hammer","nails"]
+```
+
+- **`.field` is the row's field**, nested ones too (`.customer.city`), and
+  `unknown` when the row has none. Anything else in the condition is the
+  program's own: `rows[.amount > limit]` reads the variable `limit`.
+- **A row is kept when every condition is true**, as SQL's `WHERE` keeps it,
+  so a condition that is `unknown` drops the row: the nails above have no
+  `paid`, so neither `.paid` nor `not .paid` keeps them. Commas are `and`.
+- **Any gBASIC expression may be a condition**, unlike a path's, which must
+  become SQL. Brackets inside one filter that row's own array.
+- **In a brace chain a filter is a step**: `rows{ item }.lines[.qty > 3]{ sku }`.
+  After a step to one record it keeps or drops the row.
+- **An index is still an index**: brackets with no `.field` in them are
+  `rows[1]` or `rows[i]` as before.
+- **Refused:** a condition that is neither true nor false (`rows[.amount]`), a
+  filter on one record (it chooses rows of an array), and a row that is not
+  a record, by its index.
+
 #### Array value semantics
 
 Arrays are **value types**. Assigning one array to another, passing an array to

@@ -106,7 +106,7 @@ fi
 printf 'x = .a\n' > "$work/col.bas"
 out=$(./gbasic "$work/col.bas" 2>&1)
 case "$out" in
-    *'`.a` names a column, and is read only inside a G-SQL path'*) pass "grammar: a column outside a path is refused, saying where it belongs" ;;
+    *'`.a` names a row'"'"'s field, and is read only inside brackets that choose rows'*) pass "grammar: a column outside a path is refused, saying where it belongs" ;;
     *) printf '       %s\n' "$out"; fail "grammar: a column outside a path" ;;
 esac
 printf 'a = [1, 2]\nprint a[0, 1]\n' > "$work/list.bas"
