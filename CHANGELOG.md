@@ -16,6 +16,11 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **Escape then Tab leaves a terminal editor forward** (Matthew's ask): Tab
+  types a tab in a `memo` or `source`, and many terminals send Ctrl+Tab as a
+  plain Tab, so Ctrl+Tab could not be relied on to leave. Escape keeps its
+  meaning (a modal window is still rejected by it); pressed quickly, the two
+  arrive as Alt+Tab, which leaves as well. Shift+Tab still leaves backward.
 - **Syntax highlighting in the terminal** (`docs/tui_design.md` increment
   7): a `source` with `language:` is coloured from KDE's syntax definition of
   that name, read by gBASIC's own C reader (`src/ksyntax.c`) and applied by

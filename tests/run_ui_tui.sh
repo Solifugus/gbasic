@@ -347,6 +347,21 @@ if ui_tier_tui; then
     else
         fail "the memo did not wrap at the word"
     fi
+    # ESCAPE THEN TAB LEAVES FORWARD, where many terminals send Ctrl+Tab as
+    # a plain Tab: each line what the keys must do, written by hand (\t a tab)
+    printf '%s\n' 'in: notes' 'Tab types a tab: [\t] notes' 'Escape alone stays: notes, text [\t]' \
+        'Escape then Tab leaves forward: after, text [\t]' 'Shift+Tab back in: notes' \
+        'Escape, a key, then Tab types it: [\ta\t] notes' 'Alt+Tab, a quick Escape then Tab, leaves: after' \
+        'a press between forgets the Escape: [\t\ta\t] notes' 'a modal, Escape in its memo: false' |
+        sed 's/\\t/\t/g' >"$work/esc.want"
+    # bounded: an Escape swallowed leaves the modal unanswered for ever
+    GBASIC_UI=tui GBASIC_TUI_SCREEN=40x16 timeout 30 "$GB" tests/ui_tui/escape.bas </dev/null >"$work/esc.got" 2>&1
+    if cmp -s "$work/esc.got" "$work/esc.want"; then
+        pass "Escape then Tab leaves forward; Escape alone, or a key or a press between, does not; a modal is still rejected"
+    else
+        fail "Escape then Tab:"
+        diff "$work/esc.want" "$work/esc.got" | head -8 | sed 's/^/       /'
+    fi
     cat >"$work/ref.want" <<'EOF'
 notes
 ui.mark: only a `source` has a margin, and `m` is not one

@@ -145,10 +145,14 @@ def tier_live_editor(gbasic, fixtures):
     # a press at the start of line 2, dragged two cells right: "cd"
     r.send(b"\x1b[<0;2;4M\x1b[<32;4;4M\x1b[<0;4;4m", 0.2)
     r.send(b"\x7f", 0.2)                            # Backspace takes the selection
-    r.send(b"\x1b[Z", 0.2)                          # Shift+Tab leaves the memo, round to Done
+    r.send(b"\x1b\t", 0.3)                          # Escape then Tab at once (Alt+Tab): to Done
+    r.send(b"\x1b[Z", 0.2)                          # Shift+Tab back into the memo
+    r.send(b"\x1b", 0.4)                            # Escape, alone long enough to be one
+    r.send(b"\t", 0.3)                              # then Tab leaves forward, to Done
     r.send(b"\r", 0.3)
     check(r.wait_err("text aQb|xy|z caret 2:1", 5),
-          "typed, pasted with its line break, pressed into, dragged across and cut: %r" % r.err())
+          "typed, pasted with its line break, pressed into, dragged across and cut, then left by Escape and Tab "
+          "quickly and slowly: %r" % r.err())
     st = r.finish(10)
     check(st is not None and os.WIFEXITED(st) and os.WEXITSTATUS(st) == 0, "increment 6 live: exit 0")
     check(settings_equal(r.settings(), fresh_settings()), "increment 6 live: the pty's settings after equal a fresh pty's")

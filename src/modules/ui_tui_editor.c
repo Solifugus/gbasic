@@ -89,6 +89,9 @@ static void tuie_free(TuiNode *n) {
     if (tuie_drag == n) {
         tuie_drag = NULL;
     }
+    if (tuie_armed == n) {
+        tuie_armed = NULL;
+    }
     for (int k = 0; k < TUIE_MARKS; k++) {
         free(e->mk[k]);
     }
@@ -999,6 +1002,21 @@ static int tuie_key(TuiNode *n, const TermEvent *ev) {
     tuie_selection_bytes(n, &s0, &s1);
     int has_sel = s0 != s1;
 
+    /* ESCAPE THEN TAB LEAVES, forward, in every terminal: many send
+     * Ctrl+Tab as a plain Tab, so Ctrl+Tab cannot be relied on. The Escape
+     * is only noted and still goes on to the window, where it rejects a
+     * modal one as before. Pressed quickly the two arrive as Alt+Tab, which
+     * leaves too. */
+    int armed = tuie_armed == n;
+    tuie_armed = NULL;
+    if (strcmp(k, "escape") == 0 && !m) {
+        tuie_armed = n;
+        return 0;
+    }
+    if (armed && strcmp(k, "tab") == 0 && !m) {
+        return 0;
+    }
+
     /* moving: the caret goes to `to`, and Shift keeps the anchor */
     long to = -1;
     int keep_goal = 0;
@@ -1093,7 +1111,8 @@ static int tuie_key(TuiNode *n, const TermEvent *ev) {
         return 1;
     }
     if (strcmp(k, "tab") == 0) {
-        /* an editor takes a Tab as Qt's does; Shift+Tab and Ctrl+Tab leave */
+        /* an editor takes a Tab as Qt's does; Shift+Tab, Ctrl+Tab, Alt+Tab
+         * and Escape then Tab leave */
         if (!editable || (m & (TERM_MOD_CTRL | TERM_MOD_SHIFT | TERM_MOD_ALT))) {
             return 0;
         }

@@ -455,7 +455,17 @@ Decided in building:
   sentences: 1-based lines and codepoint columns, a line past the end
   refused with the real length, a column past its line clamped.
 - **Tab is the editor's**, as on Qt; Shift+Tab and Ctrl+Tab leave. A
-  read-only editor lets Tab and Enter go to the window.
+  read-only editor lets Tab and Enter go to the window. **Added after
+  increment 7, at Matthew's asking: Escape then Tab leaves forward**, since
+  many terminals send Ctrl+Tab as a plain Tab, which types one. The editor
+  only notes the Escape and passes it on, so a modal window is still
+  rejected by it; a key or a press between forgets it; pressed quickly the
+  two arrive as Alt+Tab, which leaves too. `tests/ui_tui/escape.bas` holds
+  it by keys, the `live_editor` tier through a real pty at both speeds.
+  Perturbed, each red: no arming (`editor`, and `live_editor`), a press not
+  forgetting it, and the Escape swallowed (the modal is never answered: the
+  fixture runs under a 30-second bound, added when that first hung the
+  suite instead of failing it).
 - **Undo keeps whole texts**, at most 400 steps. Typing joins the step
   before it; a move, a delete, a paste or anything a program does starts a
   new one. `ui.write` clears the history, as Qt's `setPlainText` does, and

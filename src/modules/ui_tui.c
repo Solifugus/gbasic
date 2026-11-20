@@ -149,6 +149,9 @@ static int tuie_set_bool(TuiNode *n, const char *prop, int value);
 static int tuie_set_number(TuiNode *n, const char *prop, double value);
 static int tuie_get(TuiNode *n, const char *prop, char *kind, double *num, char **text);
 static void tuie_theme_colours(const TuiNode *n, uint32_t *base, uint32_t *fg);
+/* the editor an Escape was last pressed in, which the next key may use
+ * (Escape then Tab leaves it); any other key or a mouse press forgets it */
+static TuiNode *tuie_armed = NULL;
 
 static GbUiInvokeFn tui_g_invoke = NULL;
 static GbUiTickFn tui_g_tick = NULL;
@@ -1577,6 +1580,7 @@ static TuiNode *tui_hit(TuiNode *n, int x, int y) {
 }
 
 static void tui_mouse_event(const TermEvent *ev) {
+    tuie_armed = NULL;
     if (tui_dialog_open()) {
         tui_dialog_mouse(ev);
         return;

@@ -6519,8 +6519,11 @@ window is a dialog, on every backend.
   - a paste arrives without its line breaks.
 - **In a `memo` or a `source`:**
   - Enter starts a new line and Tab types a tab, as on Qt, so **Shift+Tab**
-    and **Ctrl+Tab** are how the focus leaves it (a read-only one lets Tab
-    and Enter go to the window);
+    (back) and **Escape then Tab** (forward) are how the focus leaves it.
+    **Ctrl+Tab** leaves forward too where the terminal reports it, but many
+    send it as a plain Tab, which types one. Escape still does what it did
+    (it rejects a modal window), and a key or a press between the two
+    forgets it. A read-only editor lets Tab and Enter go to the window;
   - the arrows move the caret, Up and Down keeping the column they started
     from; Home and End go to the start and end of the row shown, Ctrl+Home
     and Ctrl+End to the start and end of the text, PgUp and PgDn a page;
