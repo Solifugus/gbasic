@@ -215,6 +215,11 @@ diff -u tests/error_model/neg_unchecked_exit.out "$scratch/got" \
     || fail "neg_unchecked_exit (stdout diverged -- the statements after the raise must run)"
 grep -qF "division by zero" "$scratch/err" \
     || fail "neg_unchecked_exit (the pending error was never reported: $(cat "$scratch/err"))"
+# AND IT SAYS IT WAS CAUGHT (DOGFOOD 2026-11-19): word for word it read like an
+# error nothing caught, so a reader concluded `goto next` had not worked.
+# neg_fatal below, an error nobody caught, is the control: byte-identical.
+grep -qF "this error was caught, and nothing checked it: test it with \`if error then\`" "$scratch/err" \
+    || fail "neg_unchecked_exit (the report does not say the error was caught: $(cat "$scratch/err"))"
 printf 'PASS neg_unchecked_exit\n'
 
 # --- the deleted mode is a parse error, not a silent acceptance ------------

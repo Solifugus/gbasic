@@ -135,8 +135,11 @@ end for
 print total
 EOF
 }
-shape_prog 5000 > "$tmp/s1.bas"
-shape_prog 20000 > "$tmp/s4.bas"
+# 20000 and 80000 since 2026-11-20: at 5000 an idle machine ran the small
+# program in 70-80 ms, under the 100 ms this tier needs to form a ratio, so it
+# passed only while the gate's other suites slowed it down
+shape_prog 20000 > "$tmp/s1.bas"
+shape_prog 80000 > "$tmp/s4.bas"
 # A TIMEOUT IS A FAILURE, not a time: the first version timed out the large
 # run of a registry that kept its tombstones at 120 s, and the CAPPED time
 # made the ratio look linear (measured: P1 is 14x for 4x the calls).
@@ -150,9 +153,9 @@ elif [ "$t1" -lt 100 ]; then
 else
     r10=$(( t4 * 10 / t1 ))
     if [ "$r10" -le 80 ]; then
-        printf 'PASS shape (5000 calls %sms, 20000 calls %sms: %s.%sx for 4x the calls)\n' "$t1" "$t4" $(( r10 / 10 )) $(( r10 % 10 ))
+        printf 'PASS shape (20000 calls %sms, 80000 calls %sms: %s.%sx for 4x the calls)\n' "$t1" "$t4" $(( r10 / 10 )) $(( r10 % 10 ))
     else
-        printf 'FAIL shape (5000 calls %sms, 20000 calls %sms: %s.%sx for 4x the calls -- ended watches are being kept)\n' "$t1" "$t4" $(( r10 / 10 )) $(( r10 % 10 ))
+        printf 'FAIL shape (20000 calls %sms, 80000 calls %sms: %s.%sx for 4x the calls -- ended watches are being kept)\n' "$t1" "$t4" $(( r10 / 10 )) $(( r10 % 10 ))
         status=1
     fi
 fi

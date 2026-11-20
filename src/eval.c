@@ -4315,16 +4315,28 @@ static void raise_trace_text(char *out, size_t size) {
     }
 }
 
+/* the raise rule 2 made of an error caught and never checked: its
+ * generation, so the report can say so (DOGFOOD 2026-11-19) */
+static int g_unchecked_generation = -1;
+
 static void raise_report_fatal(void) {
     gb_span span = { current_error.line, current_error.column,
                      current_error.line, current_error.column };
     char frames[1024];
     raise_trace_text(frames, sizeof frames);
+    /* A CAUGHT ERROR NEVER CHECKED reads, word for word, like one never
+     * caught at all, so a reader concludes `goto next` did not catch. It
+     * did; nothing tested it. Said in the report only: `error.message` is
+     * unchanged for a caller that catches the re-raise. */
+    const char *unchecked = g_unchecked_generation == error_generation
+        ? " (this error was caught, and nothing checked it: test it with `if error then`, which handles it; "
+          "reading `error.message` alone does not)"
+        : "";
     char full[2048];
     if (frames[0]) {
-        snprintf(full, sizeof full, "%s%s", current_error.message, frames);
+        snprintf(full, sizeof full, "%s%s%s", current_error.message, unchecked, frames);
     } else {
-        snprintf(full, sizeof full, "%s", current_error.message);
+        snprintf(full, sizeof full, "%s%s", current_error.message, unchecked);
     }
     gb_report(GB_DIAG_RUNTIME_ERROR, current_error.code,
               current_error.path && current_error.path[0] ? current_error.path
@@ -14298,6 +14310,7 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     if (reraise) {
         error_generation++;
         raise_in_flight = 1;
+        g_unchecked_generation = error_generation;
     }
 
     current_env = previous_env;
@@ -49637,6 +49650,7 @@ int eval_program(AstStmtList program) {
     if (result.did_raise || raise_in_flight) {
         raise_report_fatal();
     } else if (base_error_frame.pending) {
+        g_unchecked_generation = error_generation;
         raise_report_fatal();
     }
     int exit_status = (result.did_stop || runtime_stopped) ? 1 : 0;
