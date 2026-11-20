@@ -6433,7 +6433,7 @@ GUI program can run on a headless server.
 
 ### The terminal backend
 
-*After 0.12.0* (`docs/tui_design.md`, increment 3). The same `window`
+*After 0.12.0* (`docs/tui_design.md`, increments 3 and 4). The same `window`
 declaration drawn in a terminal's cells, over the `term` layer (*Term
 Module*), not ncurses. It is chosen when there is no display and standard
 input and output are a terminal, or by `GBASIC_UI=tui` / `--ui=tui`.
@@ -6442,17 +6442,27 @@ input and output are a terminal, or by `GBASIC_UI=tui` / `--ui=tui`.
 - `row`, `column`, `form`, `group` (a box with its title in the border),
   `stretch()` and `separator()`;
 - `field` (a `secret` shows a bullet per character), `button` (`[ OK ]`),
-  `check` (`[x] Send me news`) and `text`;
-- the window's title, on the top line;
+  `check` (`[x] Send me news`), `text` and `choice` (its list drops below
+  it);
+- `table` (held, `to show`, `to edit` and `to ask`, which is asked only for
+  the rows on screen), and `tree` (every row shown, indented by its depth, a
+  parent marked ▾);
+- `tabs` (a line of captions above the page, or below it with `tab_side:
+  "bottom"`), `split` (panes side by side or one above another, divided by a
+  line, sized in proportion), `scroll` (the region scrolls, with a mark of
+  where the view is) and `cells`;
+- the window's furniture: the title on the top line, then the menu bar, then
+  a `toolbar` (its items as buttons), and a `status` bar on the last line; a
+  `popup` opens at a point, or under a part with `ui.popup`;
 - forms bound with `to edit` and `to show`, `ui.subject`, and the events
-  `pressed`, `changed`, `entered`, `context` and `closed`.
+  `pressed`, `changed`, `entered`, `chosen`, `activated`, `context`, `wheel`
+  and `closed`. Every handler connected to an event runs, in order.
 
 **Every other part is refused by name**, naming the increment of
-`docs/tui_design.md` §7 that draws it: "the tui backend does not draw `table`
-yet (docs/tui_design.md §7, increment 4)". Until then a program that needs a
-`table`, a `menu` or a dialog runs on Qt, or in a terminal, refuses there.
-**It has none of the eight groups yet**: `file_dialogs` comes with its
-chooser.
+`docs/tui_design.md` §7 that draws it: "the tui backend does not draw `memo`
+yet (docs/tui_design.md §7, increment 6)". `memo`, `source` and `markdown`
+are increment 6; `ui.open_modal` and the dialogs are 5. **It has none of the
+eight groups yet**: `file_dialogs` comes with its chooser.
 
 **Keys:**
 - **Tab and Shift+Tab** move between fields, buttons and checks. Disabled
@@ -6468,6 +6478,25 @@ chooser.
   - Ctrl+U clears the field;
   - `max_length` stops typing at that many characters;
   - a paste arrives without its line breaks.
+- **A table or a tree** with the focus: Up, Down, PgUp, PgDn, Home and End
+  move the selection (`chosen` fires when it changes), and Enter or Space
+  fires `activated`. A press on a row selects it and fires `activated`, and
+  a right press fires `context` with the row already selected.
+- **A choice**: Up and Down step it (`changed`, then `activated`); Enter or
+  Space opens its list, where the arrows move, Enter picks and Escape closes.
+- **The menu bar**: F10 opens the first menu, Alt and a menu's first letter
+  opens that one. Up and Down move past separators and hidden items, Right
+  opens a submenu or the next menu, Left goes back, Enter presses an item (a
+  checkable one toggles and fires `changed`), and Escape closes. A press on a
+  menu's title opens it. A toolbar item is pressed with the mouse.
+- **Tabs**: Left and Right on the tab line, or Ctrl+PgUp and Ctrl+PgDn from
+  anywhere in the pages, turn the page (`changed`, with `ui.which_tab()` the
+  new index). A press on a caption turns to it; a right press fires
+  `context` without turning.
+- **The wheel** goes to a `wheel` handler first, which may `ui.swallow` it,
+  and otherwise scrolls the nearest `scroll` or table three rows a notch. The
+  focus moving into a scrolled region scrolls it into view, and moving into a
+  page of a `tabs` turns to that page.
 - **Ctrl+Q** closes the window, the terminal's close button: the `closed`
   handler runs, once, and the run ends with the last window.
 - **The mouse** focuses what it clicks, presses a button or a check, and
@@ -6492,8 +6521,12 @@ of that size with no terminal, as `QT_QPA_PLATFORM=offscreen` does for Qt.
 caret's position on a last line. Keys then come from `ui.key` (one
 combination: `"Tab"`, `"Ctrl+U"`, `"é"`) and `ui.click`.
 
+A split's divider cannot be dragged yet; `ui.resize_panes` sets the
+proportions. A tree cannot fold its rows yet.
+
 Tested by `tests/run_ui_tui.sh`:
-- the keys, each held to what it must do;
+- the keys, each held to what it must do, and increment 4's parts by keys
+  and presses;
 - the layout as text;
 - the refusals;
 - Qt's sizes in characters;

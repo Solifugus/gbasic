@@ -52,11 +52,77 @@ struct TuiNode {
     int x, y, w, h;         /* laid out, 0-based cells */
     int kind;               /* a root's: 0 plain, 1 modal, 2 main */
     int shown;              /* a root that is on screen */
+    /* FURNITURE is held by the root but not laid out with its content: a
+     * menu bar, the popups, a toolbar, a status bar (increment 4) */
+    int furniture;
+    /* a table or a tree: headers, cells row-major, the selection and the
+     * first row shown; a tree's depth per row; an asking table's function
+     * and row count */
+    char **headers;
+    char aligns[64];        /* per column: 'l', 'r', 'c' */
+    int ncols;
+    char **cells;
+    int nrows, rows_cap;
+    int *depths;
+    int is_tree, is_virtual;
+    char *cell_fn;
+    long vrows;
+    int selected, top;
+    int headings, striped, sortable, expanders, indent;
+    char *on_chosen, *on_activated, *on_wheel;
+    /* a choice's list */
+    char **items;
+    int nitems, index;
+    /* a menu item: its shortcut and whether it is a check */
+    char *shortcut;
+    int checkable;
+    /* a tabs' page; a split's direction (0 across, 1 down) and pane sizes;
+     * a scroll's offset */
+    int direction;
+    int sizes[16];
+    int nsizes;
+    int offset;
+    int tab_side_bottom, movable, closable;
+    /* a part in `cells`: its place and span */
+    int grid_row, grid_col, across, down;
+    char toolbar_shows[8];
+    char emphasis[10];
 };
+
+/* ---- increment 4 (src/modules/ui_tui_parts.c, included at the end) ------------ */
+
+static int tuip_measure(TuiNode *n, int *w, int *h);
+static int tuip_arrange(TuiNode *n, int x, int y, int w, int h);
+static int tuip_draw(TuiNode *n);
+static int tuip_focusable(const TuiNode *n);
+static int tuip_key(TuiNode *f, const TermEvent *ev);
+static int tuip_mouse(TuiNode *hit, const TermEvent *ev);
+static void tuip_content(TuiNode *root, int *top, int *bottom);
+static void tuip_furniture_draw(TuiNode *root);
+static int tuip_overlay_open(void);
+static int tuip_overlay_key(const TermEvent *ev);
+static int tuip_overlay_mouse(const TermEvent *ev);
+static void tuip_overlay_draw(void);
+static void tuip_overlay_close_all(void);
+static int tuip_window_key(TuiNode *root, const TermEvent *ev);
+static int tuip_window_mouse(TuiNode *root, const TermEvent *ev);
+static void tuip_reveal(TuiNode *n);
+static void *tuip_container(TuiNode *p, const char *word, const char *name, const char *title,
+                            char *err, size_t err_size);
+static int tuip_part(TuiNode *p, const char *word, TuiNode *n, char *err, size_t err_size);
+static int tuip_set_text(TuiNode *n, const char *prop, const char *value, char *err, size_t err_size);
+static int tuip_set_bool(TuiNode *n, const char *prop, int value, char *err, size_t err_size);
+static int tuip_set_number(TuiNode *n, const char *prop, double value, char *err, size_t err_size);
+static int tuip_get(TuiNode *n, const char *prop, char *kind, double *num, char **text);
+static char **tuip_event_slot(TuiNode *n, const char *signal);
+static int tuip_click_row(TuiNode *n, int row, int right, char *err, size_t err_size);
+static void tuip_item_press(TuiNode *item);
+static int tuip_is_grid(const TuiNode *n);
 
 static GbUiInvokeFn tui_g_invoke = NULL;
 static GbUiTickFn tui_g_tick = NULL;
 static GbUiClosedFn tui_g_closed = NULL;
+static GbUiCellFn tui_g_cell = NULL;
 static int tui_depth = 0;
 static int tui_begun = 0;
 static int tui_headless = 0;        /* GBASIC_TUI_SCREEN: a buffer, no terminal */
@@ -77,10 +143,8 @@ static uint32_t tui_bg = TERM_DEFAULT, tui_fg = TERM_DEFAULT, tui_base = TERM_DE
                 tui_line = TERM_DEFAULT, tui_sel = TERM_DEFAULT, tui_on_sel = TERM_DEFAULT;
 
 static const char *const tui_later[][2] = {
-    { "table", "4" }, { "tree", "4" }, { "choice", "4" }, { "menu", "4" },
-    { "popup", "4" }, { "item", "4" }, { "tabs", "4" }, { "tab", "4" },
-    { "split", "4" }, { "scroll", "4" }, { "toolbar", "4" }, { "status", "4" },
-    { "cells", "4" }, { "memo", "6" }, { "source", "6" },
+    { "memo", "6" }, { "source", "6" }, { "markdown", "6" },
+    { "open_modal", "5" }, { "inform", "5" }, { "confirm", "5" }, { "answer", "5" },
     { NULL, NULL }
 };
 
@@ -123,6 +187,12 @@ static TuiNode *tui_node_new(const char *word, const char *name, const char *lab
     n->enabled = 1;
     n->visible = 1;
     n->margin = n->spacing = -1;
+    n->selected = -1;
+    n->headings = 1;
+    n->expanders = 1;
+    n->indent = 2;
+    n->across = n->down = 1;
+    n->grid_row = n->grid_col = -1;
     return n;
 }
 
@@ -180,7 +250,22 @@ static void tui_node_free(TuiNode *n) {
     free(n->kids);
     free(n->name); free(n->label); free(n->text); free(n->hint); free(n->tip); free(n->title);
     free(n->on_pressed); free(n->on_changed); free(n->on_entered); free(n->on_context);
-    free(n->on_closed);
+    free(n->on_closed); free(n->on_chosen); free(n->on_activated); free(n->on_wheel);
+    for (int i = 0; i < n->ncols; i++) {
+        free(n->headers[i]);
+    }
+    free(n->headers);
+    for (long i = 0; i < (long)n->nrows * n->ncols; i++) {
+        free(n->cells[i]);
+    }
+    free(n->cells);
+    free(n->depths);
+    free(n->cell_fn);
+    for (int i = 0; i < n->nitems; i++) {
+        free(n->items[i]);
+    }
+    free(n->items);
+    free(n->shortcut);
     free(n);
 }
 
@@ -205,8 +290,8 @@ static int tui_is(const TuiNode *n, const char *word) {
 }
 
 static int tui_focusable(const TuiNode *n) {
-    return n->visible && n->enabled &&
-           (tui_is(n, "field") || tui_is(n, "button") || tui_is(n, "check"));
+    return n->visible && n->enabled && !n->furniture &&
+           (tui_is(n, "field") || tui_is(n, "button") || tui_is(n, "check") || tuip_focusable(n));
 }
 
 /* ---- the terminal ------------------------------------------------------------ */
@@ -323,7 +408,7 @@ static void tui_set_callbacks(GbUiInvokeFn invoke, GbUiTickFn tick, GbUiClosedFn
     tui_g_invoke = invoke;
     tui_g_tick = tick;
     tui_g_closed = closed;
-    (void)cell;
+    tui_g_cell = cell;
 }
 
 /* ---- sizes ------------------------------------------------------------------- */
@@ -353,9 +438,13 @@ static int tui_text_cells(const char *s) {
 
 /* ---- layout --------------------------------------------------------------------- */
 
+/* what holds laid-out parts: a box, a page of a `tabs`, a pane holder, a
+ * scrolled region, a grid's row */
 static int tui_box(const TuiNode *n) {
     return tui_is(n, "row") || tui_is(n, "column") || tui_is(n, "form") ||
-           tui_is(n, "group") || tui_is(n, "window");
+           tui_is(n, "group") || tui_is(n, "window") || tui_is(n, "tab") ||
+           tui_is(n, "split") || tui_is(n, "scroll") || tui_is(n, "cells") ||
+           tui_is(n, "status") || tui_is(n, "tabs");
 }
 
 static int tui_spacing(const TuiNode *n) {
@@ -402,7 +491,11 @@ static int tui_form_label_width(const TuiNode *n) {
 
 static void tui_measure(TuiNode *n, int *w, int *h) {
     *w = *h = 0;
-    if (!n->visible) {
+    if (!n->visible || n->furniture) {
+        return;
+    }
+    if (tuip_measure(n, w, h)) {
+        tui_clamp(n, w, h);
         return;
     }
     const char *word = n->word;
@@ -490,6 +583,12 @@ static long tui_weight(const TuiNode *k, int along_row, int any_grow) {
     if (tui_is(k, "stretch")) {
         return 1;
     }
+    /* what holds many rows takes the spare room down a column, as Qt's views
+     * and areas expand */
+    if (!along_row && (tui_is(k, "table") || tui_is(k, "tree") || tui_is(k, "tabs") ||
+                       tui_is(k, "split") || tui_is(k, "scroll"))) {
+        return 1;
+    }
     if (along_row && !any_grow && tui_is(k, "field")) {
         return 1;
     }
@@ -512,7 +611,7 @@ static void tui_arrange_line(TuiNode *n, int x, int y, int w, int h, int along_r
     }
     for (int i = 0; i < count; i++) {
         TuiNode *k = n->kids[i];
-        if (!k->visible) {
+        if (!k->visible || k->furniture) {
             continue;
         }
         int kw, kh;
@@ -541,7 +640,7 @@ static void tui_arrange_line(TuiNode *n, int x, int y, int w, int h, int along_r
     shown = 0;
     for (int i = 0; i < count; i++) {
         TuiNode *k = n->kids[i];
-        if (!k->visible) {
+        if (!k->visible || k->furniture) {
             continue;
         }
         if (shown++) {
@@ -568,7 +667,10 @@ static void tui_arrange_line(TuiNode *n, int x, int y, int w, int h, int along_r
 
 static void tui_arrange(TuiNode *n, int x, int y, int w, int h) {
     n->x = x; n->y = y; n->w = w < 0 ? 0 : w; n->h = h < 0 ? 0 : h;
-    if (!n->visible) {
+    if (!n->visible || n->furniture) {
+        return;
+    }
+    if (tuip_arrange(n, x, y, w, h)) {
         return;
     }
     if (tui_is(n, "row")) {
@@ -597,8 +699,11 @@ static void tui_arrange(TuiNode *n, int x, int y, int w, int h) {
 }
 
 static void tui_layout(TuiNode *root) {
-    /* the top row is the window's title; the rest is its content */
-    tui_arrange(root, 0, 1, tui_screen.columns, tui_screen.rows - 1);
+    /* the top row is the window's title, then its menu bar and toolbar;
+     * a status bar is the last row; the rest is its content */
+    int top = 1, bottom = tui_screen.rows;
+    tuip_content(root, &top, &bottom);
+    tui_arrange(root, 0, top, tui_screen.columns, bottom - top);
 }
 
 /* ---- drawing ---------------------------------------------------------------- */
@@ -608,9 +713,25 @@ static TermStyle tui_style(uint32_t fg, uint32_t bg, unsigned attrs) {
     return s;
 }
 
+/* What may be drawn on, in 0-based cells: the screen, or less while a
+ * scrolled region, a pane or a table is drawn (increment 4). */
+static int tui_clip_x0 = 0, tui_clip_y0 = 0, tui_clip_x1 = 100000, tui_clip_y1 = 100000;
+
 static void tui_put_clipped(int x, int y, int w, const char *text, TermStyle st) {
-    if (w <= 0 || !text) {
+    if (w <= 0 || !text || y < tui_clip_y0 || y >= tui_clip_y1) {
         return;
+    }
+    if (x + w > tui_clip_x1) {
+        w = tui_clip_x1 - x;
+    }
+    if (x < tui_clip_x0) {
+        /* a text starting left of the clip is cut at the clip; rare
+         * (a pane narrower than its part), and drawn from its start */
+        w -= tui_clip_x0 - x;
+        x = tui_clip_x0;
+        if (w <= 0) {
+            return;
+        }
     }
     /* write codepoint by codepoint up to w cells, so a long text is cut
      * rather than spilling over its neighbour */
@@ -637,7 +758,21 @@ static void tui_put_clipped(int x, int y, int w, const char *text, TermStyle st)
 }
 
 static void tui_fill(int x, int y, int w, int h, TermStyle st) {
-    if (w <= 0) {
+    if (x < tui_clip_x0) {
+        w -= tui_clip_x0 - x;
+        x = tui_clip_x0;
+    }
+    if (x + w > tui_clip_x1) {
+        w = tui_clip_x1 - x;
+    }
+    if (y < tui_clip_y0) {
+        h -= tui_clip_y0 - y;
+        y = tui_clip_y0;
+    }
+    if (y + h > tui_clip_y1) {
+        h = tui_clip_y1 - y;
+    }
+    if (w <= 0 || h <= 0) {
         return;
     }
     char *spaces = malloc((size_t)w + 1);
@@ -687,7 +822,10 @@ static int tui_caret_cells(const TuiNode *n) {
 }
 
 static void tui_draw(TuiNode *n) {
-    if (!n->visible || n->w <= 0) {
+    if (!n->visible || n->w <= 0 || n->furniture) {
+        return;
+    }
+    if (tuip_draw(n)) {
         return;
     }
     int focused = n == tui_focus;
@@ -872,6 +1010,8 @@ static void tui_render(void) {
         tui_fill(0, 0, tui_screen.columns, 1, bar);
         tui_put_clipped(1, 0, tui_screen.columns - 2, t, bar);
         tui_draw(top);
+        tuip_furniture_draw(top);
+        tuip_overlay_draw();
     }
     tui_dump();
     if (tui_entered) {
@@ -885,13 +1025,32 @@ static void tui_render(void) {
 
 /* ---- events -------------------------------------------------------------------- */
 
-static void tui_fire(const char *handler) {
-    if (!handler || !tui_g_invoke) {
+/* Every handler connected to an event, in the order they were connected:
+ * a slot holds their names one to a line, as Qt runs every slot of a
+ * signal. */
+static void tui_fire(const char *handlers) {
+    if (!handlers || !tui_g_invoke) {
         return;
     }
-    tui_depth++;
-    tui_g_invoke(handler);
-    tui_depth--;
+    for (const char *p = handlers; *p; ) {
+        size_t len = strcspn(p, "\n");
+        char *one = malloc(len + 1);
+        if (!one) {
+            abort();
+        }
+        memcpy(one, p, len);
+        one[len] = 0;
+        if (len) {
+            tui_depth++;
+            tui_g_invoke(one);
+            tui_depth--;
+        }
+        free(one);
+        p += len;
+        if (*p == '\n') {
+            p++;
+        }
+    }
     tui_dirty = 1;
 }
 
@@ -904,13 +1063,17 @@ static int tui_handler_max(void) {
 }
 
 static void tui_collect_focusable(TuiNode *n, TuiNode **out, int *count, int max) {
-    if (!n->visible) {
+    if (!n->visible || n->furniture) {
         return;
     }
     if (tui_focusable(n) && *count < max) {
         out[(*count)++] = n;
     }
     for (int i = 0; i < n->nkids; i++) {
+        /* only the page a `tabs` shows */
+        if (tui_is(n, "tabs") && i != n->index) {
+            continue;
+        }
         tui_collect_focusable(n->kids[i], out, count, max);
     }
 }
@@ -938,6 +1101,7 @@ static void tui_focus_step(int direction) {
     if (tui_is(tui_focus, "field")) {
         tui_focus->caret = tui_focus->text ? strlen(tui_focus->text) : 0;
     }
+    tuip_reveal(tui_focus);
     tui_dirty = 1;
 }
 
@@ -1028,6 +1192,15 @@ static int tui_key_event(const TermEvent *ev) {
     }
     if (tui_focus && !tui_within(tui_focus, top)) {
         tui_focus = NULL;
+    }
+    if (tuip_overlay_open()) {
+        return tuip_overlay_key(ev);
+    }
+    if (tuip_window_key(top, ev)) {
+        return 1;
+    }
+    if (tui_focus && tuip_key(tui_focus, ev)) {
+        return 1;
     }
     const char *k = ev->key;
     unsigned m = ev->mods;
@@ -1213,10 +1386,13 @@ static void tui_paste(const TermEvent *ev) {
 }
 
 static TuiNode *tui_hit(TuiNode *n, int x, int y) {
-    if (!n->visible || x < n->x || y < n->y || x >= n->x + n->w || y >= n->y + n->h) {
+    if (!n->visible || n->furniture || x < n->x || y < n->y || x >= n->x + n->w || y >= n->y + n->h) {
         return NULL;
     }
     for (int i = n->nkids - 1; i >= 0; i--) {
+        if (tui_is(n, "tabs") && i != n->index) {
+            continue;
+        }
         TuiNode *h = tui_hit(n->kids[i], x, y);
         if (h) {
             return h;
@@ -1227,11 +1403,21 @@ static TuiNode *tui_hit(TuiNode *n, int x, int y) {
 
 static void tui_mouse_event(const TermEvent *ev) {
     TuiNode *top = tui_top();
-    if (!top || strcmp(ev->action, "press") != 0) {
+    if (!top) {
+        return;
+    }
+    if (tuip_overlay_open()) {
+        tuip_overlay_mouse(ev);
+        return;
+    }
+    if (tuip_window_mouse(top, ev)) {
         return;
     }
     TuiNode *h = tui_hit(top, ev->column - 1, ev->row - 1);
-    if (!h) {
+    if (h && tuip_mouse(h, ev)) {
+        return;
+    }
+    if (strcmp(ev->action, "press") != 0 || !h) {
         return;
     }
     if (ev->button == 3) {
@@ -1384,6 +1570,11 @@ static void *tui_window(const char *name, const char *title, int width, int heig
 static void *tui_container(void *parent, const char *word, const char *name, const char *title,
                            char *err, size_t err_size) {
     TuiNode *p = parent;
+    err[0] = 0;
+    void *made = tuip_container(p, word, name, title, err, err_size);
+    if (made || err[0]) {
+        return made;
+    }
     if (!(strcmp(word, "row") == 0 || strcmp(word, "column") == 0 || strcmp(word, "form") == 0 ||
           strcmp(word, "group") == 0)) {
         tui_not_yet(word, err, err_size);
@@ -1403,7 +1594,8 @@ static void *tui_part(void *parent, const char *word, const char *name, const ch
                       char *err, size_t err_size) {
     TuiNode *p = parent;
     if (!(strcmp(word, "field") == 0 || strcmp(word, "button") == 0 || strcmp(word, "check") == 0 ||
-          strcmp(word, "text") == 0 || strcmp(word, "stretch") == 0 || strcmp(word, "separator") == 0)) {
+          strcmp(word, "text") == 0 || strcmp(word, "stretch") == 0 || strcmp(word, "separator") == 0 ||
+          strcmp(word, "choice") == 0)) {
         tui_not_yet(word, err, err_size);
         return NULL;
     }
@@ -1412,7 +1604,8 @@ static void *tui_part(void *parent, const char *word, const char *name, const ch
         return NULL;
     }
     if ((strcmp(word, "stretch") == 0 || strcmp(word, "separator") == 0) &&
-        !(tui_is(p, "row") || tui_is(p, "column") || tui_is(p, "group") || tui_is(p, "window"))) {
+        !(tui_is(p, "row") || tui_is(p, "column") || tui_is(p, "group") || tui_is(p, "window") ||
+          tui_is(p, "tab") || tui_is(p, "status"))) {
         TUI_ERR("`%s` needs a `row` or a `column` around it", word);
         return NULL;
     }
@@ -1423,6 +1616,11 @@ static void *tui_part(void *parent, const char *word, const char *name, const ch
         n->text = tui_dup(label ? label : (strcmp(word, "text") != 0 && name ? name : ""));
     }
     tui_add_kid(p, n, -1);
+    if (!tuip_part(p, word, n, err, err_size)) {
+        tui_unlink(n);
+        tui_node_free(n);
+        return NULL;
+    }
     return n;
 }
 
@@ -1435,6 +1633,10 @@ static int tui_say_no(const TuiNode *n, const char *word, char *err, size_t err_
 static int tui_set_text(void *widget, const char *prop, const char *value, char *err, size_t err_size) {
     TuiNode *n = widget;
     tui_dirty = 1;
+    int own = tuip_set_text(n, prop, value, err, err_size);
+    if (own != -1) {
+        return own;
+    }
     if (strcmp(prop, "text") == 0 && !tui_is(n, "window") && !tui_box(n)) {
         tui_set(&n->text, value);
         if (tui_is(n, "field")) {
@@ -1463,6 +1665,7 @@ static int tui_set_text(void *widget, const char *prop, const char *value, char 
             return TUI_ERR("`emphasis:` is none, outline or strong");
         }
         n->bold = strcmp(value, "strong") == 0;
+        snprintf(n->emphasis, sizeof n->emphasis, "%s", value);
         return 1;
     }
     return tui_say_no(n, prop, err, err_size);
@@ -1471,6 +1674,10 @@ static int tui_set_text(void *widget, const char *prop, const char *value, char 
 static int tui_set_number(void *widget, const char *prop, double value, char *err, size_t err_size) {
     TuiNode *n = widget;
     tui_dirty = 1;
+    int own = tuip_set_number(n, prop, value, err, err_size);
+    if (own != -1) {
+        return own;
+    }
     if (strcmp(prop, "max_length") == 0 && tui_is(n, "field")) {
         n->max_length = (int)value;
         return 1;
@@ -1499,6 +1706,10 @@ static int tui_set_number(void *widget, const char *prop, double value, char *er
 static int tui_set_bool(void *widget, const char *prop, int value, char *err, size_t err_size) {
     TuiNode *n = widget;
     tui_dirty = 1;
+    int own = tuip_set_bool(n, prop, value, err, err_size);
+    if (own != -1) {
+        return own;
+    }
     if (strcmp(prop, "visible") == 0) { n->visible = value; return 1; }
     if (strcmp(prop, "enabled") == 0) { n->enabled = value; return 1; }
     if (strcmp(prop, "bold") == 0) { n->bold = value; return 1; }
@@ -1520,10 +1731,13 @@ static int tui_set_bool(void *widget, const char *prop, int value, char *err, si
 
 static int tui_set_text_list(void *widget, const char *prop, const char *const *values, size_t count,
                              char *err, size_t err_size) {
-    (void)values;
-    (void)count;
     if (strcmp(prop, "shortcut") == 0) {
-        return tui_not_yet("shortcut", err, err_size);
+        /* several shortcuts: the first is what an item shows */
+        TuiNode *n = widget;
+        if (count > 0) {
+            tui_set(&n->shortcut, values[0]);
+        }
+        return 1;
     }
     return tui_say_no(widget, prop, err, err_size);
 }
@@ -1553,11 +1767,6 @@ static int tui_grow(void *widget, long weight, char *err, size_t err_size) {
     n->grow_set = 1;
     tui_dirty = 1;
     return 1;
-}
-
-static int tui_span(void *widget, long across, long down, char *err, size_t err_size) {
-    (void)widget; (void)across; (void)down;
-    return tui_not_yet("cells", err, err_size);
 }
 
 static TuiNode *tui_named(void *window, const char *name, char *err, size_t err_size) {
@@ -1600,6 +1809,12 @@ static char *tui_read(void *window, const char *name) {
     if (tui_is(n, "check")) {
         return copy_string(n->checked ? "true" : "false");
     }
+    if (tuip_is_grid(n) || tui_is(n, "tabs")) {
+        return NULL;    /* read by row, column or index, not as one text */
+    }
+    if (tui_is(n, "choice")) {
+        return copy_string(n->index >= 0 && n->index < n->nitems ? n->items[n->index] : "");
+    }
     if (tui_is(n, "window")) {
         return copy_string(n->title ? n->title : "");
     }
@@ -1616,7 +1831,10 @@ static int tui_write(void *window, const char *name, const char *text, char *err
         n->checked = strcmp(text, "true") == 0 || strcmp(text, "1") == 0;
         return 1;
     }
-    if (tui_box(n)) {
+    if (tui_is(n, "choice")) {
+        return tuip_set_text(n, "text", text, err, err_size);
+    }
+    if (tui_box(n) || tuip_is_grid(n)) {
         return tui_say_no(n, "text", err, err_size);
     }
     tui_set(&n->text, text);
@@ -1635,6 +1853,14 @@ static int tui_get(void *window, const char *name, const char *prop, char *kind,
     }
     *kind = 't';
     *text = NULL;
+    /* a size or a place is the layout's, so lay out first */
+    if (tui_dirty && (strcmp(prop, "width") == 0 || strcmp(prop, "height") == 0 ||
+                      strcmp(prop, "x") == 0 || strcmp(prop, "y") == 0)) {
+        tui_render();
+    }
+    if (tuip_get(n, prop, kind, num, text) == 1) {
+        return 1;
+    }
 #define TUI_B(v) do { *kind = 'b'; *num = (v); return 1; } while (0)
 #define TUI_N(v) do { *kind = 'n'; *num = (v); return 1; } while (0)
 #define TUI_T(v) do { *kind = 't'; *text = copy_string((v) ? (v) : ""); return 1; } while (0)
@@ -1644,6 +1870,10 @@ static int tui_get(void *window, const char *name, const char *prop, char *kind,
     if (strcmp(prop, "focused") == 0) TUI_B(tui_focus == n);
     if (strcmp(prop, "font_size") == 0) TUI_N(n->font_size);
     if (strcmp(prop, "tip") == 0) TUI_T(n->tip);
+    if (strcmp(prop, "emphasis") == 0) TUI_T(n->emphasis[0] ? n->emphasis : "none");
+    /* a column is divided by a line running across, a row by one running down */
+    if (tui_is(n, "separator") && strcmp(prop, "direction") == 0)
+        TUI_T(n->parent && tui_is(n->parent, "row") ? "down" : "across");
     /* a field's size is its box's, without the caption beside it, as Qt's
      * line edit is measured without its label */
     if (strcmp(prop, "width") == 0) TUI_N((n->w - (tui_has_caption(n) ? tui_text_cells(n->label) + 1 : 0)) * 8);
@@ -1696,7 +1926,7 @@ static int tui_set_display_only(void *window, const char *name, int on, char *er
     n->display_only = on;
     if (tui_is(n, "field")) {
         n->read_only = on;
-    } else if (tui_is(n, "check")) {
+    } else if (tui_is(n, "check") || tui_is(n, "choice")) {
         n->enabled = !on;
     }
     tui_dirty = 1;
@@ -1722,11 +1952,25 @@ static int tui_connect(void *window, const char *target, const char *signal, con
         slot = &n->on_entered;
     } else if (strcmp(signal, "context") == 0) {
         slot = &n->on_context;
+    } else {
+        slot = tuip_event_slot(n, signal);
     }
     if (!slot) {
         return TUI_ERR("a `%s` has no `%s` event", tui_is(n, "window") ? "window" : n->word, signal);
     }
-    tui_set(slot, handler);
+    /* another handler for the same event joins the ones there */
+    if (*slot && **slot) {
+        size_t len = strlen(*slot) + strlen(handler) + 2;
+        char *both = malloc(len);
+        if (!both) {
+            abort();
+        }
+        snprintf(both, len, "%s\n%s", *slot, handler);
+        free(*slot);
+        *slot = both;
+    } else {
+        tui_set(slot, handler);
+    }
     return 1;
 }
 
@@ -1742,6 +1986,20 @@ static int tui_invoke(void *window, const char *target, const char *method, char
         }
         tui_close_root(n);
         return 1;
+    }
+    if (strcmp(method, "press") == 0 && tui_is(n, "item")) {
+        tuip_item_press(n);
+        return 1;
+    }
+    if (strcmp(method, "clear") == 0 && tuip_is_grid(n) && !n->is_virtual) {
+        for (long i = 0; i < (long)n->nrows * n->ncols; i++) {
+            tui_set(&n->cells[i], "");
+        }
+        tui_dirty = 1;
+        return 1;
+    }
+    if (strcmp(method, "fit_columns") == 0 && tuip_is_grid(n)) {
+        return 1;   /* columns are fitted at every frame here */
     }
     if (strcmp(method, "press") == 0) {
         if (!(tui_is(n, "button") || tui_is(n, "check"))) {
@@ -1859,7 +2117,12 @@ static int tui_click(void *window, const char *name, int row, char *err, size_t 
         return 0;
     }
     if (row >= 0) {
-        return TUI_ERR("a `%s` has no rows to click", n->word);
+        int done = tuip_click_row(n, row, 0, err, err_size);
+        tui_render();
+        return done;
+    }
+    if (tui_is(n, "item")) {
+        return TUI_ERR("`%s` is an `item`, which has nothing to click", name);
     }
     tui_render();
     TermEvent ev = { 0 };
@@ -1879,7 +2142,12 @@ static int tui_right_click(void *window, const char *name, int row, char *err, s
         return 0;
     }
     if (row >= 0) {
-        return TUI_ERR("a `%s` has no rows to click", n->word);
+        int done = tuip_click_row(n, row, 1, err, err_size);
+        tui_render();
+        return done;
+    }
+    if (tui_is(n, "item")) {
+        return TUI_ERR("`%s` is an `item`, which has nothing to click", name);
     }
     for (TuiNode *p = n; p; p = p->parent) {
         if (p->on_context) {
@@ -1918,8 +2186,10 @@ static void tui_show(void *window) {
     root->shown = 1;
     tui_focus = NULL;
     tui_focus_step(1);
+    /* drawn at the run's first turn, or by the next ui.key or ui.click, not
+     * here: an asking table is asked for what it shows while the loop runs,
+     * as Qt paints only in its loop (run_ui_ask holds that) */
     tui_dirty = 1;
-    tui_render();
 }
 
 static int tui_close(void *window, char *err, size_t err_size) {
@@ -2053,6 +2323,11 @@ static int tui_child_caption(void *container, void *child, const char *text, cha
     (void)err;
     (void)err_size;
     TuiNode *k = child;
+    if (tui_is(k, "tab")) {
+        tui_set(&k->title, text);
+        tui_dirty = 1;
+        return 1;
+    }
     tui_set(&k->label, text);
     if (tui_is(k, "button") || tui_is(k, "check") || tui_is(k, "text")) {
         tui_set(&k->text, text);
@@ -2081,91 +2356,6 @@ static char *tui_child_name(void *container, int index) {
 
 #define TUI_REFUSE(what) tui_not_yet(what, err, err_size)
 
-static int tui_cell_of(void *window, const char *name, int *row, int *col, int *across, int *down) {
-    (void)window; (void)name; (void)row; (void)col; (void)across; (void)down;
-    return 0;
-}
-
-static int tui_pane_of(void *window, const char *name, char **kind, char **direction, int *panes,
-                       int *index, int *resizable) {
-    (void)window; (void)name; (void)kind; (void)direction; (void)panes; (void)index; (void)resizable;
-    return 0;
-}
-
-static int tui_column_align(void *table_node, int col, const char *align, char *err, size_t err_size) {
-    (void)table_node; (void)col; (void)align;
-    return TUI_REFUSE("table");
-}
-
-static const char *tui_cell_alignment(void *window, const char *name, int row, int col) {
-    (void)window; (void)name; (void)row; (void)col;
-    return NULL;
-}
-
-static void *tui_menu(void *window, void *parent_menu, const char *title, char *err, size_t err_size) {
-    (void)window; (void)parent_menu; (void)title;
-    TUI_REFUSE("menu");
-    return NULL;
-}
-
-static void *tui_menu_item(void *window, void *menu, const char *name, const char *label, char *err,
-                           size_t err_size) {
-    (void)window; (void)menu; (void)name; (void)label;
-    TUI_REFUSE("item");
-    return NULL;
-}
-
-static int tui_menu_separator(void *menu, char *err, size_t err_size) {
-    (void)menu;
-    return TUI_REFUSE("menu");
-}
-
-static void *tui_popup_menu(void *window, const char *name, char *err, size_t err_size) {
-    (void)window; (void)name;
-    TUI_REFUSE("popup");
-    return NULL;
-}
-
-static int tui_menu_count(void *window) {
-    (void)window;
-    return 0;
-}
-
-static char *tui_menu_title(void *window, int index) {
-    (void)window; (void)index;
-    return NULL;
-}
-
-static int tui_menu_entry_count(void *window, int index) {
-    (void)window; (void)index;
-    return 0;
-}
-
-static char *tui_menu_entry_title(void *window, int index, int entry, int *is_separator) {
-    (void)window; (void)index; (void)entry; (void)is_separator;
-    return NULL;
-}
-
-static int tui_popup_entry_count(void *window, const char *name) {
-    (void)window; (void)name;
-    return -1;
-}
-
-static char *tui_popup_entry_title(void *window, const char *name, int entry, int *is_separator) {
-    (void)window; (void)name; (void)entry; (void)is_separator;
-    return NULL;
-}
-
-static int tui_popup(void *window, const char *name, const char *under, int *shown, char *err,
-                     size_t err_size) {
-    (void)window; (void)name; (void)under; (void)shown;
-    return TUI_REFUSE("popup");
-}
-
-static int tui_which_tab(void) {
-    return -1;
-}
-
 static int tui_copy(const char *text, long len, char *err, size_t err_size) {
     (void)text; (void)len;
     return TUI_REFUSE("copy");
@@ -2174,37 +2364,6 @@ static int tui_copy(const char *text, long len, char *err, size_t err_size) {
 static int tui_clipboard(char **text, long *len, char *err, size_t err_size) {
     (void)text; (void)len;
     return TUI_REFUSE("clipboard");
-}
-
-static int tui_wheel_event(int *dy, int *dx, int *ctrl, int *shift, int *alt) {
-    (void)dy; (void)dx; (void)ctrl; (void)shift; (void)alt;
-    return 0;
-}
-
-static int tui_wheel_exact(double *dy, double *dx) {
-    (void)dy; (void)dx;
-    return 0;
-}
-
-static int tui_swallow(char *err, size_t err_size) {
-    return TUI_REFUSE("swallow");
-}
-
-static int tui_scroll(void *window, const char *name, double notches, int mods, int *claimed, char *err,
-                      size_t err_size) {
-    (void)window; (void)name; (void)notches; (void)mods; (void)claimed;
-    return TUI_REFUSE("scroll");
-}
-
-static int tui_pane_sizes(void *window, const char *name, int *out, int *count, char *err, size_t err_size) {
-    (void)window; (void)name; (void)out; (void)count;
-    return TUI_REFUSE("split");
-}
-
-static int tui_resize_panes(void *window, const char *name, const int *sizes, int count, char *err,
-                            size_t err_size) {
-    (void)window; (void)name; (void)sizes; (void)count;
-    return TUI_REFUSE("split");
 }
 
 static int tui_has_icon(void *window, const char *name, int *has, char *err, size_t err_size) {
@@ -2267,86 +2426,6 @@ static int tui_block_press(void *window, const char *name, const char *id, const
                            const char *target, char *err, size_t err_size) {
     (void)window; (void)name; (void)id; (void)action; (void)target;
     return TUI_ERR("the tui backend has no `notebook` group");
-}
-
-static int tui_scrolled(void *window, const char *name, double *at, char *err, size_t err_size) {
-    (void)window; (void)name; (void)at;
-    return TUI_REFUSE("scroll");
-}
-
-static int tui_scroll_to(void *window, const char *name, double at, char *err, size_t err_size) {
-    (void)window; (void)name; (void)at;
-    return TUI_REFUSE("scroll");
-}
-
-static void *tui_table(void *parent, const char *name, const char *const *headers, int columns, char *err,
-                       size_t err_size) {
-    (void)parent; (void)name; (void)headers; (void)columns;
-    TUI_REFUSE("table");
-    return NULL;
-}
-
-static int tui_choice_clear(void *window, const char *name, char *err, size_t err_size) {
-    (void)window; (void)name;
-    return TUI_REFUSE("choice");
-}
-
-static int tui_choice_add(void *window, const char *name, const char *item, char *err, size_t err_size) {
-    (void)window; (void)name; (void)item;
-    return TUI_REFUSE("choice");
-}
-
-static void *tui_virtual_table(void *parent, const char *name, const char *const *headers, int ncols,
-                               const char *cell_fn, char *err, size_t err_size) {
-    (void)parent; (void)name; (void)headers; (void)ncols; (void)cell_fn;
-    TUI_REFUSE("table");
-    return NULL;
-}
-
-static int tui_virtual_rows(void *window, const char *name, int rows, char *err, size_t err_size) {
-    (void)window; (void)name; (void)rows;
-    return TUI_REFUSE("table");
-}
-
-static int tui_virtual_row_count(void *window, const char *name, int *rows, char *err, size_t err_size) {
-    (void)window; (void)name; (void)rows;
-    return TUI_REFUSE("table");
-}
-
-static int tui_table_size(void *window, const char *name, int rows, char *err, size_t err_size) {
-    (void)window; (void)name; (void)rows;
-    return TUI_REFUSE("table");
-}
-
-static int tui_table_set(void *window, const char *name, int row, int col, const char *text, char *err,
-                         size_t err_size) {
-    (void)window; (void)name; (void)row; (void)col; (void)text;
-    return TUI_REFUSE("table");
-}
-
-static char *tui_table_get(void *window, const char *name, int row, int col) {
-    (void)window; (void)name; (void)row; (void)col;
-    return NULL;
-}
-
-static int tui_table_rows(void *window, const char *name) {
-    (void)window; (void)name;
-    return -1;
-}
-
-static int tui_table_selected(void *window, const char *name) {
-    (void)window; (void)name;
-    return -1;
-}
-
-static char *tui_table_heading(void *window, const char *name, int col) {
-    (void)window; (void)name; (void)col;
-    return NULL;
-}
-
-static int tui_table_select(void *window, const char *name, int row, char *err, size_t err_size) {
-    (void)window; (void)name; (void)row;
-    return TUI_REFUSE("table");
 }
 
 static int tui_has_highlighting(void) {
@@ -2529,67 +2608,7 @@ static int tui_answer_path(const char *path, char *err, size_t err_size) {
     return TUI_ERR("the tui backend has no `file_dialogs` group yet");
 }
 
-static int tui_column_count(void *window, const char *name) {
-    (void)window; (void)name;
-    return -1;
-}
-
-static void *tui_tree(void *parent, const char *name, const char *const *headers, int columns, char *err,
-                      size_t err_size) {
-    (void)parent; (void)name; (void)headers; (void)columns;
-    TUI_REFUSE("tree");
-    return NULL;
-}
-
-static int tui_tree_clear(void *window, const char *name) {
-    (void)window; (void)name;
-    return 0;
-}
-
-static int tui_tree_add(void *window, const char *name, int depth, const char *const *cells, int columns) {
-    (void)window; (void)name; (void)depth; (void)cells; (void)columns;
-    return 0;
-}
-
-static int tui_tree_depth(void *window, const char *name, int row) {
-    (void)window; (void)name; (void)row;
-    return -2;
-}
-
-static int tui_tree_rows(void *window, const char *name) {
-    (void)window; (void)name;
-    return -1;
-}
-
-static char *tui_tree_get(void *window, const char *name, int row, int col) {
-    (void)window; (void)name; (void)row; (void)col;
-    return NULL;
-}
-
-static char *tui_tree_heading(void *window, const char *name, int col) {
-    (void)window; (void)name; (void)col;
-    return NULL;
-}
-
-static int tui_tree_selected(void *window, const char *name) {
-    (void)window; (void)name;
-    return -1;
-}
-
-static int tui_tree_select(void *window, const char *name, int row, char *err, size_t err_size) {
-    (void)window; (void)name; (void)row;
-    return TUI_REFUSE("tree");
-}
-
-static int tui_tab_count(void *window, const char *name) {
-    (void)window; (void)name;
-    return -1;
-}
-
-static char *tui_tab_caption(void *window, const char *name, int index) {
-    (void)window; (void)name; (void)index;
-    return NULL;
-}
+#include "ui_tui_parts.c"
 
 static const GbUiBackend ui_tui_backend = {
     .name = "tui",

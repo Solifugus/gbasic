@@ -329,7 +329,7 @@ refused:
 end program
 BAS
 set +e
-env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u XDG_RUNTIME_DIR \
+env -u DISPLAY -u GBASIC_TUI_SCREEN -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u XDG_RUNTIME_DIR \
     -u XDG_SESSION_TYPE timeout -k 5 60 ./gbasic "$work/nd.bas" \
     > "$work/nd.out" 2>&1
 nd_rc=$?

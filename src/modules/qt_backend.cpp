@@ -4155,8 +4155,8 @@ extern "C" int gb_qt_popup(void *window, const char *name, const char *under,
          * a button or a table where a `popup` was meant, and "no such thing"
          * would be false about a name that is right there. */
         say(err, err_size,
-            QByteArray("`") + (name ? name : "") + "` is a " +
-                o->metaObject()->className() + ", not a popup menu");
+            QByteArray("`") + (name ? name : "") + "` is a `" +
+                word_of(o) + "`, not a popup menu");
         return 0;
     }
     if (menu_visible_entries(m) == 0) {
@@ -4216,8 +4216,8 @@ static int click_aim(void *window, const char *name, int row, QWidget **aimed,
          * rather than silently doing nothing, which is what a cast to
          * QWidget* and a NULL check further down would have produced. */
         say(err, err_size,
-            QByteArray("`") + (name ? name : "") + "` is a " +
-                o->metaObject()->className() + ", which has nothing to click");
+            QByteArray("`") + (name ? name : "") + "` is an `" +
+                word_of(o) + "`, which has nothing to click");
         return 0;
     }
     QWidget *target = mouse_target(w);

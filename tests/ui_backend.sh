@@ -80,6 +80,11 @@ ui_each_backend() {
     fi
     for be in $list; do
         printf '== backend %s\n' "$be"
+        # the terminal backend draws with no terminal at this size, as Qt
+        # draws offscreen: a suite's tiers run headless
+        if [ "$be" = tui ]; then
+            export GBASIC_TUI_SCREEN="${GBASIC_TUI_SCREEN:-120x40}"
+        fi
         UI_SUITE_PASS=1 GBASIC_UI="$be" bash "$suite" "$@"
         rc=$?
         [ "$rc" -gt "$worst" ] && worst=$rc

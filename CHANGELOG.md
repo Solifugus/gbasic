@@ -16,6 +16,20 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **The terminal backend draws tables, trees, menus and tabs** (`docs/tui_design.md`
+  increment 4). Added:
+  - `table`, both held and `to ask`, which is asked only for the rows on
+    screen;
+  - `tree`, `choice` (its list drops below it), menus with submenus and
+    checkable items, `popup`, `toolbar` and `status`;
+  - `tabs`, `split`, `scroll` and `cells`.
+
+  Keys: F10 or Alt+letter opens a menu, Ctrl+PgUp and Ctrl+PgDn turn
+  pages, the arrows walk rows, and the mouse presses rows, captions and
+  entries. Every handler connected to one event now runs, in order. Two
+  of Qt's refusals that named a Qt class name the part instead:
+  "`files` is a `table`, not a popup menu" and "`open_it` is an `item`,
+  which has nothing to click".
 - **Windows in the terminal: the `tui` backend** (docs/reference.md, *The
   terminal backend*; `docs/tui_design.md` increment 3). The same `window`
   declaration, drawn in cells, with:

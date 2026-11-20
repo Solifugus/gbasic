@@ -66,6 +66,35 @@ def tier_live(gbasic, fixtures):
     r.close()
 
 
+def tier_live_parts(gbasic, fixtures):
+    r = Run(gbasic, [os.path.join(fixtures, "live_parts.bas")], cols=40, rows=12, env=NO_DISPLAY)
+    check(r.wait_err("backend tui", 10), "increment 4 live: the terminal was chosen")
+    r.pump(0.5)
+    # row 1 is the title, row 2 the menu bar, row 3 the table's headings, so
+    # the table's second row (Bo) is the terminal's row 5 (1-based)
+    r.send(b"\x1b[<0;2;5M\x1b[<0;2;5m", 0.2)
+    check(r.wait_err("activated Bo", 5), "a press on the second row of the table activated that row (SGR mouse)")
+    r.send(b"\x1bOP", 0.1)        # F1 is not the menu key
+    r.send(b"\x1b[21~", 0.2)      # F10
+    r.send(b"\r", 0.2)
+    check(r.wait_err("hello pressed", 5), "F10 then Enter pressed the first item of the first menu")
+    # the mouse: File's title on the bar (row 2), then Hello, the first entry
+    # of the menu that drops below it (row 4: its box's border is row 3)
+    before = r.err().count("hello pressed")
+    r.send(b"\x1b[<0;3;2M\x1b[<0;3;2m", 0.2)
+    r.send(b"\x1b[<0;4;4M\x1b[<0;4;4m", 0.3)
+    check(r.wait_err("hello pressed\nhello pressed", 5) and r.err().count("hello pressed") == before + 1,
+          "a press on File's title opened it, and a press on its first entry pressed Hello")
+    r.send(b"\x1b[21~", 0.2)
+    r.send(b"\x1b[B", 0.1)
+    r.send(b"\r", 0.3)
+    check(r.wait_err("quit pressed", 5), "F10, Down, Enter: the second item, which stops the run")
+    st = r.finish(10)
+    check(st is not None and os.WIFEXITED(st) and os.WEXITSTATUS(st) == 0, "increment 4 live: exit 0")
+    check(settings_equal(r.settings(), fresh_settings()), "increment 4 live: the pty's settings after equal a fresh pty's")
+    r.close()
+
+
 def tier_needs(gbasic, fixtures):
     prog = os.path.join(fixtures, "needs.bas")
     r = Run(gbasic, [prog], cols=40, rows=12, env=NO_DISPLAY)
@@ -77,7 +106,7 @@ def tier_needs(gbasic, fixtures):
 
 def main():
     tier, gbasic, fixtures = sys.argv[1], sys.argv[2], sys.argv[3]
-    {"live": tier_live, "needs": tier_needs}[tier](gbasic, fixtures)
+    {"live": tier_live, "live_parts": tier_live_parts, "needs": tier_needs}[tier](gbasic, fixtures)
     return 1 if drive.failures else 0
 
 

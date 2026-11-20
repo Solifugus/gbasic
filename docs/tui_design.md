@@ -2,10 +2,11 @@
 
 **Status:** Partial. §7's increment 1, the `term` module on POSIX, is built
 (2026-11-19, §2.4; `docs/reference.md`, *Term Module*; `tests/run_term.sh`),
-and so is increment 3, the `tui` backend's layout and first leaves with the
-selection rule, `needs:` and sizes in characters (2026-11-19, §3.5;
+and so are increment 3, the `tui` backend's layout and first leaves with
+the selection rule, `needs:` and sizes in characters (2026-11-19, §3.5), and
+increment 4, the rows, the furniture and the regions (2026-11-20, §3.6;
 `docs/reference.md`, *The terminal backend*; `tests/run_ui_tui.sh`). The
-Windows console (2) and increments 4 to 7 are not. §8 holds the questions for
+Windows console (2) and increments 5 to 7 are not. §8 holds the questions for
 Matthew. **Q1 ruled the same day: our own terminal layer, not
 ncurses** (Matthew: "our own terminal layer sounds fine ... time to leave
 that to the history books"). **Q2 ruled 2026-11-19: §4's selection rule** (Matthew: "The terminal is a
@@ -284,6 +285,66 @@ increment that draws it. Decisions made in building:
   not running. It is listed now;
 - a bare `stretch` or `separator` is reported seven lines later as
   "unexpected PROGRAM" (DOGFOOD).
+
+### 3.6 What increment 4 built, and what it found
+
+Built 2026-11-20 in `src/modules/ui_tui_parts.c`, included at the end of
+`ui_tui.c`, whose core calls its `tuip_` hooks for measuring, laying out,
+drawing, keys and the mouse. It covers:
+- `table` (held and `to ask`), `tree` and `choice`;
+- the furniture: `menu`, `item` and `popup`, `toolbar` and `status`;
+- the regions: `tabs`, `split`, `scroll` and `cells`.
+
+The keys are in `docs/reference.md`, *The terminal backend*. Decided in
+building:
+
+- **One overlay** serves a choice's list, a menu's entries and a popup. A
+  submenu is a second overlay beside the first. An open overlay takes every
+  key and every press until it closes.
+- **The furniture is held by the root but not laid out with the content.**
+  The title is the top line, then the menu bar, then the toolbar; a status
+  bar is the last line.
+- **An asking table is asked only for the rows on screen**, once a frame,
+  before its columns are measured. Because of that, `show` no longer draws at
+  once: as Qt paints only in its loop, the first frame is the run's first
+  turn or the next `ui.key` or `ui.click`. A size read with `ui.read` lays
+  out first.
+- **A tree shows every row.** Folding waits; so does dragging a split's
+  divider, whose proportions `ui.resize_panes` sets.
+- **Every handler connected to an event runs**, in the order connected, as
+  every Qt slot does. Increment 3 kept only the last, which
+  `qt_which_test`'s two `hold.changed` handlers showed.
+
+**Measured against the contract Qt is already held to.** Each `[C]` fixture
+was run on `tui` with no terminal (`GBASIC_TUI_SCREEN`, which
+`tests/ui_backend.sh` now sets for a `tui` pass).
+- These pass outright: `run_ui_tree`, `run_ui_align`, `run_ui_split`,
+  `run_ui_frame` and `run_ui_children` (except tiers needing `windows`), and
+  in `run_ui_backend` the cells, tabs, menu, properties and loop tiers.
+- Every other fixture stops at a `memo` or a `source`, which increment 6
+  draws. With those swapped for fields in a scratch copy, the which, context,
+  panes and ask fixtures pass every check, and so do choice's 24.
+- So the backend stays out of the other suites' passes until increment 6.
+
+**Found in building:**
+- Two of Qt's refusals named a Qt class (`QTableWidget`, `QAction`), against
+  the seam's rule that a refusal names gBASIC's words. Both name the part now
+  (`table`, `item`).
+- `qt_panes_test` held a split's sizes to a 900-pixel window. A terminal
+  window is the screen, so the check reads the window's own width back.
+- Every tier that unsets the display now also unsets `GBASIC_TUI_SCREEN`, or
+  the terminal backend could still draw.
+- A `separator` in a menu needs `()` too: the DOGFOOD entry on bare
+  `stretch` covers it.
+
+**Perturbed, each red:**
+- the overlay stopping on a separator;
+- `chosen` firing with no change;
+- alignment ignored;
+- F10 removed;
+- only the first handler running;
+- an overlay press one row off, which a live mouse press on a menu entry
+  catches.
 
 ### 3.4 The event-loop contract
 

@@ -3614,9 +3614,10 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
         if (ui == &ui_tui_backend) {
             const char *why = term_open_now ? "the terminal is held by term.open" : term_unusable();
             snprintf(message, sizeof(message),
-                     "no terminal is available (%s), so window `%s` cannot be "
-                     "opened. Set GBASIC_TUI_SCREEN=80x24 to draw without one",
-                     why ? why : "it cannot be used", name ? name : "");
+                     "no display is available, so window `%s` cannot be "
+                     "opened: the tui backend needs a terminal, and %s. Set "
+                     "GBASIC_TUI_SCREEN=80x24 to draw without one",
+                     name ? name : "", why ? why : "it cannot be used");
         }
 #endif
         qt_raise(message);

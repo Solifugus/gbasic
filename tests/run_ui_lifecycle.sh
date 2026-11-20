@@ -435,7 +435,7 @@ program main(args)
 end program
 BAS
 set +e
-env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u XDG_RUNTIME_DIR \
+env -u DISPLAY -u GBASIC_TUI_SCREEN -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u XDG_RUNTIME_DIR \
     -u XDG_SESSION_TYPE timeout -k 5 40 ./gbasic "$work/ask.bas" \
     > "$work/ask.out" 2>&1
 ask_rc=$?

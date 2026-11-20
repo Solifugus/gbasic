@@ -22,6 +22,10 @@
 #                 tests/ui_tui/layout.txt, and what a golden cannot argue
 #                 with: box corners, the stretch's buttons at the right edge,
 #                 a field 30 columns wide.
+#   [T] parts     increment 4 by keys and presses: a table and a tree by
+#                 arrows, a choice's list, menus by F10 and Alt, a submenu, a
+#                 checkable item, a toolbar item, pages by Ctrl+PgDn; and
+#                 the menu bar, toolbar, tab line and status bar drawn.
 #   [T] refusals  a part the increment does not draw names its increment;
 #                 no terminal names itself and GBASIC_TUI_SCREEN; a window
 #                 needing `docking` is refused naming qt; a `needs:` that is
@@ -172,22 +176,71 @@ EOF
     fi
 fi
 
+# -------------------------------------------------------------------- PARTS
+printf 'TIER [T] parts: increment 4 by the keys a person presses, with no terminal\n'
+if ui_tier_tui; then
+    cat >"$work/parts.want" <<'EOF'
+menus ["File","Edit"]
+chosen 0
+chosen 1
+chosen 2
+activated 2
+chosen 0
+chosen 1
+activated 1
+pick changed to green
+pick activated
+pick changed to blue
+pick activated
+pick is blue
+after Escape pick is blue
+open pressed
+one pressed
+wrap now true
+undo pressed
+save pressed
+a toolbar item clicked by name: nothing
+book page 1
+and the second handler
+file src
+file a.c
+depth of row 2 1
+book page 0
+and the second handler
+status done
+EOF
+    GBASIC_UI=tui GBASIC_TUI_SCREEN=60x16 GBASIC_TUI_DUMP="$work/parts.txt" "$GB" tests/ui_tui/parts.bas >"$work/parts.got" 2>&1
+    if cmp -s "$work/parts.got" "$work/parts.want"; then
+        pass "28 lines, each what the keys must do: arrows, End and Home on a table and a tree, a row clicked, a choice stepped and its list picked from and escaped, F10 and Alt into menus past a separator and into a submenu, a checkable item, a toolbar item, Ctrl+PgDn and Ctrl+PgUp between pages, each running both handlers on the page change"
+    else
+        fail "parts differ from what the keys must do:"
+        diff "$work/parts.want" "$work/parts.got" | head -12 | sed 's/^/       /'
+    fi
+    if sed -n 2p "$work/parts.txt" | grep -q '^ File  Edit$' && sed -n 3p "$work/parts.txt" | grep -q '^\[ Save \]$' \
+       && sed -n 4p "$work/parts.txt" | grep -q '^ Orders   Files$' && [ "$(sed -n 16p "$work/parts.txt")" = "ready" ] \
+       && sed -n 6,8p "$work/parts.txt" | tr '\n' '|' | grep -q '^  1 Ann|.*22 Bo|333 Cy|$'; then
+        pass "the menu bar, the toolbar, the tab line, a right-aligned column and the status bar on the last line"
+    else
+        fail "the parts screen: $(tr '\n' '|' < "$work/parts.txt")"
+    fi
+fi
+
 # ----------------------------------------------------------------- REFUSALS
 printf 'TIER [T] refusals: each by name\n'
 if ui_tier_tui; then
     cat >"$work/later.bas" <<'EOF'
 window w( title: "x" )
     column
-        choice c( options: ["a", "b"] )
+        memo c( label: "notes" )
     end column
 end window
 ui.open(w)
 EOF
     got=$(GBASIC_UI=tui GBASIC_TUI_SCREEN=50x12 "$GB" "$work/later.bas" 2>&1)
     case "$got" in
-        *"the tui backend does not draw \`choice\` yet (docs/tui_design.md §7, increment 4)"*)
-            pass "a choice names the increment that draws it" ;;
-        *) fail "choice: $got" ;;
+        *"the tui backend does not draw \`memo\` yet (docs/tui_design.md §7, increment 6)"*)
+            pass "a memo names the increment that draws it" ;;
+        *) fail "memo: $got" ;;
     esac
     printf 'print ui.backend()\n' >"$work/be.bas"
     if [ "$("$GB" --ui=tui "$work/be.bas" 2>&1)" = tui ] && [ "$(GBASIC_UI=tui "$GB" "$work/be.bas" 2>&1)" = tui ]; then
@@ -198,7 +251,7 @@ EOF
     printf 'window w( title: "x" )\n    column\n        text t( label: "hi" )\n    end column\nend window\nui.open(w)\n' >"$work/nt.bas"
     got=$(GBASIC_UI=tui "$GB" "$work/nt.bas" </dev/null 2>&1)
     case "$got" in
-        *"no terminal is available (standard input is not a terminal), so window \`w\` cannot be opened. Set GBASIC_TUI_SCREEN=80x24 to draw without one"*)
+        *"no display is available, so window \`w\` cannot be opened: the tui backend needs a terminal, and standard input is not a terminal. Set GBASIC_TUI_SCREEN=80x24 to draw without one"*)
             pass "no terminal: the sentence names what is missing and how to draw without one" ;;
         *) fail "no terminal: $got" ;;
     esac
@@ -264,7 +317,7 @@ EOF
 fi
 
 # --------------------------------------------------------------- LIVE, NEEDS
-for t in live needs; do
+for t in live live_parts needs; do
     printf 'TIER [T] %s: a real terminal\n' "$t"
     if ! ui_tier_tui; then
         continue
@@ -284,12 +337,13 @@ for t in live needs; do
 done
 
 # ----------------------------------------------------------------- VALGRIND
-printf 'TIER [T] valgrind: the drive fixture\n'
+printf 'TIER [T] valgrind: the drive and parts fixtures\n'
 if ui_tier_tui; then
     if ! vg_available; then
         printf '  SKIP (no valgrind -- NOT measured)\n'
-    elif GBASIC_UI=tui GBASIC_TUI_SCREEN=50x14 vg_run "$GB" tests/ui_tui/drive.bas >/dev/null 2>"$work/vg.log"; then
-        pass "no invalid access, no definite leak, no descriptor left"
+    elif GBASIC_UI=tui GBASIC_TUI_SCREEN=50x14 vg_run "$GB" tests/ui_tui/drive.bas >/dev/null 2>"$work/vg.log" \
+         && GBASIC_UI=tui GBASIC_TUI_SCREEN=60x16 vg_run "$GB" tests/ui_tui/parts.bas >/dev/null 2>>"$work/vg.log"; then
+        pass "the drive and parts fixtures: no invalid access, no definite leak, no descriptor left"
     else
         fail "valgrind:"
         grep -E "Invalid|definitely|ERROR SUMMARY|Open file" "$work/vg.log" | head -8 | sed 's/^/       /'

@@ -81,7 +81,7 @@ fail() { printf '  FAIL %s\n' "$1"; status=1; }
 # NO DISPLAY AT ALL, the recipe run_qt_loop.sh established: Qt's detection
 # reaches further than DISPLAY, so every door has to be shut.
 nodisplay() {
-    env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u XDG_RUNTIME_DIR \
+    env -u DISPLAY -u GBASIC_TUI_SCREEN -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u XDG_RUNTIME_DIR \
         -u XDG_SESSION_TYPE "$@"
 }
 
@@ -918,7 +918,7 @@ program main()
 end program
 EOF
 set +e
-env -u DISPLAY -u WAYLAND_DISPLAY -u XDG_RUNTIME_DIR QT_QPA_PLATFORM= \
+env -u DISPLAY -u GBASIC_TUI_SCREEN -u WAYLAND_DISPLAY -u XDG_RUNTIME_DIR QT_QPA_PLATFORM= \
     timeout -k 5 60 ./gbasic "$work/themenodisp.bas" > "$work/thn.out" 2>&1
 nd_rc=$?
 set -e

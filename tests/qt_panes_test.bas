@@ -87,8 +87,11 @@ program main()
     check("and two sizes", count(outer.sizes), 2)
     ' THEY ADD UP TO THE SPLITTER, near enough: the handle and the margins are
     ' the difference, which is exactly why no check here is exact.
+    ' AGAINST THE WINDOW'S OWN WIDTH, read back: 900 on Qt, the screen on the
+    ' terminal, where a window is the screen (docs/tui_design.md §8.1)
+    wide = ui.read(app, "app", "width")
     total = outer.sizes[0] + outer.sizes[1]
-    check("the sizes fill the split", total > 700 and total < 900, true)
+    check("the sizes fill the split", total > wide * 0.75 and total <= wide, true)
     check("and both panes have room", outer.sizes[0] > 0 and outer.sizes[1] > 0,
           true)
 

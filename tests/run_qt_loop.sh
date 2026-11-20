@@ -218,7 +218,7 @@ fi
 # the answer: a probe that aborted its own process would print nothing at all,
 # so the exit status is asserted separately.
 set +e
-env -u DISPLAY -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u XDG_RUNTIME_DIR     -u XDG_SESSION_TYPE timeout -k 5 60 "$work/probe" probe >/dev/null 2>&1
+env -u DISPLAY -u GBASIC_TUI_SCREEN -u WAYLAND_DISPLAY -u QT_QPA_PLATFORM -u XDG_RUNTIME_DIR     -u XDG_SESSION_TYPE timeout -k 5 60 "$work/probe" probe >/dev/null 2>&1
 probe_rc=$?
 set -e
 if [ "$probe_rc" = "0" ]; then

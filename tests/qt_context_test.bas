@@ -322,7 +322,7 @@ program main()
     ' popup was meant and "no such thing" would be false about a name that is
     ' right there.
     check("a table is not a popup menu", error.message,
-          "ui.popup: `files` is a QTableWidget, not a popup menu")
+          "ui.popup: `files` is a `table`, not a popup menu")
     error.clear()
 
     ui.popup(app, "row_actions", "not_a_part")
@@ -333,7 +333,7 @@ program main()
 
     ui.right_click(app, "open_it")
     check("an item has nothing to click", error.message,
-          "ui.right_click: `open_it` is a QAction, which has nothing to click")
+          "ui.right_click: `open_it` is an `item`, which has nothing to click")
     error.clear()
 
     ui.right_click(app, "files", 99)
