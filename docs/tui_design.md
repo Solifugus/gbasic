@@ -9,7 +9,8 @@ increment 4, the rows, the furniture and the regions (2026-11-20, §3.6;
 increment 5, the dialogs, the file chooser and `open_modal` (2026-11-20,
 §3.7), and increment 6, `memo` and `source` (2026-11-20, §3.8), after which
 every GUI suite runs on this backend too, and increment 7, highlighting from
-KDE's definitions (2026-11-20, §3.9). The Windows console (2) is not. §8 holds the questions for
+KDE's definitions (2026-11-20, §3.9). The Windows console (2) is not; §7.1
+is a brief for the session that will build it. §8 holds the questions for
 Matthew. **Q1 ruled the same day: our own terminal layer, not
 ncurses** (Matthew: "our own terminal layer sounds fine ... time to leave
 that to the history books"). **Q2 ruled 2026-11-19: §4's selection rule** (Matthew: "The terminal is a
@@ -784,6 +785,102 @@ other five (`browser`, `clock`, `dialogs`, `menus`, `tabs`) stop at a
 **Measured at increment 6 (2026-11-20): met.** Ten of the 14 run in check
 mode; the same four are refused by name for their groups (§3.8). **At
 increment 7, eleven:** `editor` runs too, highlighted (§3.9).
+
+### 7.1 Increment 2: a brief for the Windows session
+
+Written 2026-11-20, after increments 1 and 3 to 7, for the session that
+works on Windows (`docs/windows_port_status.md`), which Matthew will start
+with this among other work. Nothing here was built or measured on Windows;
+every statement about this tree was read from it on that date.
+
+**Where it stands.** On Windows the Makefile sets `GBASIC_TERM=0` and builds
+no `src/term.o` (`Makefile`, the `TERM_OBJS` block). So the `term` module
+answers `term.can()` false and refuses `term.open` (`src/modules/term.c`,
+the `#if !GBASIC_TERM` half), and the `tui` backend is not compiled at all:
+`src/modules/ui.c` includes `ui_tui.c` only under `#if GBASIC_TERM`.
+Turning the layer on therefore brings the whole terminal backend with it,
+and since `tui` needs no library it would be in every Windows build.
+
+**What carries over unchanged**, being plain C with no system calls: in
+`src/term.c` everything before `term_unusable()` (about line 760). That is
+the widths (`term_widths.h`), the key decoder (xterm sequences, bracketed
+paste, SGR mouse, a lone Escape), the screen buffer, its redraw into a
+`TermBuf`, and colour depth. Above it, `src/modules/ui_tui*.c` is plain
+C as well, apart from the two waits named below, as is `src/ksyntax.c`.
+**With virtual-terminal input on, the console delivers the same byte
+sequences the decoder already reads**, so keys, the mouse and a paste should
+need no Windows code of their own. That is the premise to check first.
+
+**What has to be written**, the rest of `src/term.c` (about 220 lines), which
+is POSIX: `term_unusable`, `term_write`, holding stderr while the screen is
+up, raw mode and its restoration, the signal handlers, `term_enter`,
+`term_leave`, `term_size` and `term_take_resized`. A split into a portable
+`term.c` and `term_posix.c` / `term_win.c` behind the same `include/term.h`
+is the shape I would expect. The Windows half needs:
+- **Console modes, saved and put back.** Input: virtual-terminal input on;
+  line input, echo and processed input off. Output: virtual-terminal
+  processing on, and probably `DISABLE_NEWLINE_AUTO_RETURN`. UTF-8 code pages
+  for input and output, saved and restored too.
+- **Restoration on every ending**, which on POSIX is ten tested paths
+  (`tests/run_term.sh`, `restore`): a normal end, `term.close`, an uncaught
+  error shown after the screen closes, a killed actor, and the signals. On
+  Windows the counterparts are `atexit`, a console control handler (Ctrl-C,
+  Ctrl-Break, the console window closed, logoff, shutdown), and the
+  uncaught-error path. There is no Ctrl-Z job control to mirror.
+- **Size and resizing.** There is no SIGWINCH. The size comes from the
+  screen buffer's window rectangle, and a resize is a
+  `WINDOW_BUFFER_SIZE_EVENT` among the input records, so input is probably
+  best read as records (`ReadConsoleInputW`), taking the key events'
+  characters as the bytes the decoder wants and noting resizes. Whether
+  conhost and Windows Terminal both deliver SGR mouse reports through VT
+  input has to be measured, not assumed.
+
+**The open design question: the wait.** Three places wait for terminal input
+on file descriptor 0:
+- the `tui` backend's own loop, `poll` on fd 0 then `read(0, ...)`, in
+  `src/modules/ui_tui.c` (search for `struct pollfd pfd = { 0, POLLIN`);
+- the `term` module's service in the interpreter's event loop
+  (`term_poll_timeout_ms` and `term_loop_service` in `src/modules/term.c`,
+  called from `src/eval.c`);
+- `watch(stdin.lines)`, which stands aside while `term` holds standard input
+  (`term_holds_stdin`).
+
+A console handle is not a socket, so `WSAPoll` cannot wait on it beside the
+event loop's sockets. Either the Windows loop waits on handles
+(`WaitForMultipleObjects`, with sockets turned into events), or a thread
+reads console input into something the loop already waits on. Which is
+right depends on how the Windows event loop is built by then. It is that
+session's decision, and the one to make first.
+
+**Two smaller things it will meet:**
+- `src/ksyntax.c` looks for definitions where KDE's library does on Linux
+  (`$XDG_DATA_HOME`, `$XDG_DATA_DIRS`). On Windows, QStandardPaths' generic
+  data location is under `%LOCALAPPDATA%` and `%ProgramData%`, so
+  `search_dirs()` wants a Windows branch. `GBASIC_SYNTAX_PATH` and the
+  path beside the binary (`gb_exe_relative_syntax`) are not KDE's and need
+  nothing. It needs libxml2, which
+  the Windows build links statically, so `highlighting` should come too.
+- `src/lineedit.c`, the prompt's line editor, is POSIX termios as well
+  (`docs/windows_port_status.md` lists it), and could stand on the same
+  console layer once it exists.
+
+**How it is measured.** The pty tiers (`run_term`'s keys, mouse, paste,
+resize and restore; `run_ui_tui`'s live tiers) do not run on Windows. By
+hand on Windows 11, in both Windows Terminal and the old console (conhost):
+- every restoration path leaves the console's modes as they were;
+- keys with Ctrl, Alt and Shift;
+- a bracketed paste with its line breaks;
+- the mouse (a press, a drag, the wheel);
+- a resize;
+- UTF-8 text and wide characters;
+- `examples/ui` in a console;
+- Escape then Tab leaving an editor, and whether Ctrl+Tab arrives as its
+  own key.
+
+What can run there unattended: `run_term`'s `unit` tier (the decoder,
+widths and screen, `tests/term/term_test.c`), and `run_ui_tui`'s no-terminal
+tiers (`GBASIC_TUI_SCREEN`: drive, layout, parts, dialogs, editor, highlight),
+which use no console at all once the backend compiles.
 
 ## 8. Questions for Matthew
 
