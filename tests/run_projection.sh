@@ -171,6 +171,15 @@ amounts = rows.a
 rows[0].a = 99
 print string(rows[0].a) + " " + string(amounts[0])'  '99 1'
 
+echo "--- TIER 7: braces, G-SQL's spelling on plain data ---"
+# `r{ a, b }`, `rows{ item, amount }` and `rows{ item }.customer{ name }`:
+# the fields asked for, one flat record per row, a step into an array a row
+# per element (Matthew, 2026-11-20). The oracle is again the loop each
+# replaces, built by hand in the fixture; then the order of the fields, a
+# missing field, the root evaluated once, and the refusals beside their
+# neighbour. G-SQL's own braces are run_gsql_paths'.
+run tests/projection/braces_test.bas 24 "braces on plain data"
+
 echo "--- TIER 6: valgrind ---"
 # A NEW ALLOCATION PATH PER ELEMENT: the projection mallocs an array and
 # `value_copy`s each field out of shared refcounted storage, and the money and
@@ -180,7 +189,8 @@ echo "--- TIER 6: valgrind ---"
 if vg_available; then
     vg_fail=0
     for f in tests/projection/projection_test.bas \
-             tests/projection/ordering_oracle_test.bas; do
+             tests/projection/ordering_oracle_test.bas \
+             tests/projection/braces_test.bas; do
         GBASIC_PATH=stdlib vg_run ./gbasic "$f" >/dev/null 2>"$tmp/vg.err" </dev/null
         rc=$?
         if [ "$rc" = "$VG_EXIT" ]; then

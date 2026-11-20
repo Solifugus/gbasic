@@ -844,9 +844,13 @@ static Token lexer_scan(Lexer *lexer) {
          * not an assignment clause, which always has `=` after its `}`
          * (`x {date}= s`). A keyword is not a name, so `return {USD}"1"` and
          * `print {date}s` are untouched. Measured 2026-11-17 over every .bas
-         * in the tree: no program had this shape. */
+         * in the tree: no program had this shape. After a `)` too since
+         * 2026-11-20, so a call's answer takes braces (`made(x){ a }`, plain
+         * data's braces): measured then, the tree's two `) {` are a lens
+         * comparison, `(d) {day}= (e)`, which has its `=` and stays one. */
         if ((lexer->last_type == TOKEN_IDENT || lexer->last_type == TOKEN_QUALIFIED_IDENT ||
-             lexer->last_type == TOKEN_RBRACKET) && !brace_clause_follows(lexer->current)) {
+             lexer->last_type == TOKEN_RBRACKET || lexer->last_type == TOKEN_RPAREN) &&
+            !brace_clause_follows(lexer->current)) {
             bracket_open(lexer, '{', line);
             return make_token(lexer, TOKEN_PATH_LBRACE, start, line, column);
         }

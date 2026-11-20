@@ -9091,6 +9091,43 @@ A typo yields an array of absences rather than an error, which is the cost of
 matching record behaviour. The mitigation is the aggregate absence rules rather
 than a different syntax.
 
+#### Braces — several fields at once
+
+*(after 0.12.0)* Braces after a record or an array of records choose fields,
+in the spelling a G-SQL path uses for its columns (`docs/gsql_paths_design.md`
+§3.5). The answer is a new value; the data is not changed.
+
+```basic
+rows = [ { item: "hammer", amount: 19.95, customer: { name: "Ann", city: "Rome" },
+           lines: [ { sku: "h1" }, { sku: "h2" } ] },
+         { item: "saw", amount: 32.50, customer: { name: "Bo", city: "Oslo" }, lines: [] } ]
+
+print rows[0]{ amount, item }          ' {"amount":19.95,"item":"hammer"}
+print rows{ item, amount }             ' [{"item":"hammer","amount":19.95},{"item":"saw","amount":32.5}]
+print rows{ item }.customer{ name }    ' [{"item":"hammer","name":"Ann"},{"item":"saw","name":"Bo"}]
+print rows{ item }.lines{ sku }        ' [{"item":"hammer","sku":"h1"},{"item":"hammer","sku":"h2"}]
+```
+
+- **On a record**, braces give a record of the fields named, in the order
+  named. **On an array**, a record per row.
+- **A dot steps into a field, and braces may follow each step.** The answer
+  is **flat**: one record per row, its fields in path order and then brace
+  order, as G-SQL's join gives. `rows.customer{ name }` gives only `name`;
+  a step without braces contributes no fields.
+- **A step that reaches an array gives a row per element**, as a step from
+  parent to children does in G-SQL. A row whose array is empty gives no
+  row: the saw above has no lines.
+- **A missing field is `unknown` in a row of many, and the row is kept**,
+  as in a projection. On one record it raises (`unknown record field`), as
+  `r.amont` does.
+- **Refused:** a name written twice in one pair of braces, and a name two
+  levels both give (``` `rows` and `rows.customer` both give `name` -- leave
+  one out ```, G-SQL's wording); a row that is not a record, by its index.
+- **The root is evaluated once**, so a call can be braced: `made(x){ a }`.
+- **A value, not a place**: there is nothing to assign through.
+- To read one field of the answer, parenthesize it: `(r{ item }).item`. A
+  dot straight after the braces is a step, not a read.
+
 #### Array value semantics
 
 Arrays are **value types**. Assigning one array to another, passing an array to

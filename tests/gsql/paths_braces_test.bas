@@ -119,11 +119,16 @@ function delete_braced()
     return shop.customer[3]{ name }.delete()
 end function
 check("a delete through braces", message_has(refusal(delete_braced), "a path with braces chooses columns to read"), true)
-function on_a_record()
-    rec = { name: "Ana" }
-    return rec{ name }
+' BRACES ON PLAIN DATA choose a record's fields since 2026-11-20 (the same
+' spelling, run_projection's braces tier), so a record is no longer refused;
+' a value with no fields still is
+rec = { name: "Ana", city: "Rome" }
+check("braces on a record choose its fields", rec{ name }, { name: "Ana" })
+function on_a_number()
+    n = 5
+    return n{ name }
 end function
-check("braces on a record", message_has(refusal(on_a_record), "a record's field is read with a dot"), true)
+check("braces on a number", message_has(refusal(on_a_number), "expects a record"), true)
 
 ' --- what the brace already meant ----------------------------------------------
 d {date}= "2026-03-04"

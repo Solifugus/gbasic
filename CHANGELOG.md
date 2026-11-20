@@ -16,6 +16,18 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **Braces on plain data**: G-SQL's `{ fields }` on gBASIC's own records
+  and arrays (Matthew's ask, for one spelling across both). `r{ a, b }` is a
+  record of those fields; `rows{ item, amount }` a record per row;
+  `rows{ item }.customer{ name }` one flat record per row, the fields in path
+  order then brace order, as G-SQL's join gives; a step into an array gives a
+  row per element. A missing field is `unknown` in a row of many and raises
+  for one record, as projection and a scalar read already do. A name two
+  levels both give is refused in G-SQL's words. A call's answer takes braces
+  too (`made(x){ a }`): the lexer now reads `{` after `)` as it did after a
+  name or `]`. Brackets that filter plain arrays (`rows[.paid]`) are next.
+  - The refusal that braces on a record used to give is gone; braces on a
+    G-SQL connection itself say to name a table first.
 - **Escape then Tab leaves a terminal editor forward** (Matthew's ask): Tab
   types a tab in a `memo` or `source`, and many terminals send Ctrl+Tab as a
   plain Tab, so Ctrl+Tab could not be relied on to leave. Escape keeps its

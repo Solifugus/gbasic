@@ -8,6 +8,11 @@ Matthew, 2026-11-14:
 
 > Not to replace SQL but to supplement it. SQL makes most sense for data analytics, ETL, integrations, and migrations. The paths approach is, however, more practical for applications. The two could work in harmony ... They would talk to the same data -- the G-SQL data store. We are only talking about reading/writing data via paths. G-SQL would still be used to create tables and relationships.
 
+**Plain data has the braces too** since 2026-11-20 (`docs/reference.md`,
+*Braces -- several fields at once*): one spelling for a path's columns and a
+record's fields, flat across steps as §3.5's join is. Brackets for plain
+arrays (`rows[.paid]`) are the next increment.
+
 The spelling is borrowed from AmorphDB's MBL (`~/development/amorphdb/docs/mbl_reference.md`): dots walk, brackets filter, braces choose. Only the spelling comes over. **Not** AmorphDB's tree of attributes, **not** its history (`[@date]`), stamps or permissions, **not** schema by path. A path reads and writes ordinary G-SQL tables, and the steps between tables are the foreign keys SQL declared.
 
 **The dots name tables, always and only** (Matthew, 2026-11-16: *"AmorphDB is not tabular data"*). Columns are named in braces at the end, `{ name, email }`, or inside brackets with a leading dot, `[.city = "Rome"]`. A path with no braces reads every column.

@@ -43842,6 +43842,292 @@ static GB_NOINLINE Value eval_expr_case_index(AstExpr *expr, int path_keep) {
     return value_null();
 }
 
+/* ---- braces on plain data: `rows{ item, amount }.customer{ name }` ----------
+ *
+ * G-SQL'S SPELLING ON gBASIC'S OWN DATA (docs/gsql_paths_design.md §3.5,
+ * Matthew 2026-11-20: "yes to all three"). Braces choose fields; a dot steps
+ * into a field; the answer is one FLAT record per row, the fields in path
+ * order then brace order, as G-SQL's join gives. A step that reaches an array
+ * fans each row out over its elements, as a step from parent to children
+ * does there; an empty one gives that row nothing.
+ *
+ * READ AS ONE CHAIN FROM ITS ROOT, never level by level: `rows{ item }` alone
+ * has lost `customer`, so the inner braces cannot be evaluated first. The
+ * root is evaluated once. A G-SQL root is driven through the same step
+ * functions its recursion used, so a path behaves exactly as before.
+ *
+ * A MISSING FIELD is `unknown` in a row of many and raises for one record,
+ * the rule projection and a scalar read already keep (§ Projection in
+ * docs/reference.md). A name two levels both give is refused, in G-SQL's
+ * words; braces are a value, so there is nothing to write through. */
+
+typedef struct {
+    Value cur;       /* where this row has stepped to */
+    Value out;       /* the fields chosen so far: a record, or null */
+} PickRow;
+
+typedef struct {
+    PickRow *r;
+    size_t n, cap;
+} PickRows;
+
+static void pick_rows_add(PickRows *rows, Value cur, Value out) {
+    if (rows->n == rows->cap) {
+        rows->cap = rows->cap ? rows->cap * 2 : 16;
+        rows->r = realloc(rows->r, rows->cap * sizeof *rows->r);
+        if (!rows->r) {
+            abort();
+        }
+    }
+    rows->r[rows->n].cur = cur;
+    rows->r[rows->n].out = out;
+    rows->n++;
+}
+
+static void pick_rows_free(PickRows *rows) {
+    for (size_t i = 0; i < rows->n; i++) {
+        value_free(rows->r[i].cur);
+        value_free(rows->r[i].out);
+    }
+    free(rows->r);
+    rows->r = NULL;
+    rows->n = rows->cap = 0;
+}
+
+/* each row standing on an array becomes one row per element */
+static void pick_fan_out(PickRows *rows, int *many) {
+    int any = 0;
+    for (size_t i = 0; i < rows->n; i++) {
+        if (rows->r[i].cur.kind == VALUE_ARRAY) {
+            any = 1;
+            break;
+        }
+    }
+    if (!any) {
+        return;
+    }
+    PickRows next = { 0 };
+    for (size_t i = 0; i < rows->n; i++) {
+        PickRow *row = &rows->r[i];
+        if (row->cur.kind != VALUE_ARRAY) {
+            pick_rows_add(&next, row->cur, row->out);
+            continue;
+        }
+        ArrayStorage *st = row->cur.as.array.store;
+        size_t n = st ? st->count : 0;
+        for (size_t k = 0; k < n; k++) {
+            pick_rows_add(&next, value_copy(st->items[k]), value_copy(row->out));
+        }
+        value_free(row->cur);
+        value_free(row->out);
+    }
+    free(rows->r);
+    *rows = next;
+    *many = 1;
+}
+
+/* the field `name` of a row's value: the value, `unknown` (a row of many),
+ * or 0 having raised */
+static int pick_field(const Value *cur, const char *name, int many, size_t row, const AstExpr *at, Value *got) {
+    if (cur->kind == VALUE_UNKNOWN) {
+        *got = value_unknown();
+        return 1;
+    }
+    if (cur->kind != VALUE_RECORD) {
+        char message[200], phrase[48];
+        if (many) {
+            snprintf(message, sizeof message, "`%s` expects every row to be a record; row %zu is %s", name, row,
+                     kind_phrase(cur->kind, phrase, sizeof phrase));
+        } else {
+            snprintf(message, sizeof message, "`%s` expects a record, and this is %s", name,
+                     kind_phrase(cur->kind, phrase, sizeof phrase));
+        }
+        runtime_error_raise_at(message, 1003, "field access", at->line, at->column);
+        return 0;
+    }
+    const RecordField *f = record_find_const(cur, name);
+    if (f) {
+        *got = value_copy(*f->value);
+        return 1;
+    }
+    if (many) {
+        *got = value_unknown();
+        return 1;
+    }
+    char message[256];
+    snprintf(message, sizeof message, "unknown record field: %s", name);
+    runtime_error_raise_at(message, 1003, "field access", at->line, at->column);
+    return 0;
+}
+
+/* `ops` innermost first; `label` names the root for a refusal */
+static Value pick_plain(Value root, AstExpr **ops, size_t nops, const char *root_label) {
+    PickRows rows = { 0 };
+    int many = 0;
+    pick_rows_add(&rows, root, value_null());
+    /* which level gave each chosen name, for the refusal */
+    char label[512];
+    snprintf(label, sizeof label, "%s", root_label);
+    char **given = NULL, **by = NULL;
+    size_t ngiven = 0;
+    Value result = value_null();
+    for (size_t i = 0; i < nops; i++) {
+        AstExpr *op = ops[i];
+        pick_fan_out(&rows, &many);
+        if (op->kind == AST_EXPR_FIELD) {
+            for (size_t k = 0; k < rows.n; k++) {
+                Value got;
+                if (!pick_field(&rows.r[k].cur, op->as.field.field, many, k, op, &got)) {
+                    goto done;
+                }
+                value_free(rows.r[k].cur);
+                rows.r[k].cur = got;
+            }
+            size_t l = strlen(label);
+            snprintf(label + l, sizeof label - l, ".%s", op->as.field.field);
+            continue;
+        }
+        /* braces: the names, each once, none given by a level before */
+        AstNameList *names = &op->as.project.names;
+        for (size_t a = 0; a < names->count; a++) {
+            for (size_t b = 0; b < a; b++) {
+                if (strcmp(names->items[a], names->items[b]) == 0) {
+                    char message[300];
+                    snprintf(message, sizeof message, "`%s` is named twice in one pair of braces", names->items[a]);
+                    runtime_error_raise_at(message, 1003, "field access", op->line, op->column);
+                    goto done;
+                }
+            }
+            for (size_t g = 0; g < ngiven; g++) {
+                if (strcmp(given[g], names->items[a]) == 0) {
+                    char message[1200];
+                    snprintf(message, sizeof message, "`%s` and `%s` both give `%s` -- leave one out", by[g], label,
+                             names->items[a]);
+                    runtime_error_raise_at(message, 1003, "field access", op->line, op->column);
+                    goto done;
+                }
+            }
+        }
+        for (size_t a = 0; a < names->count; a++) {
+            given = realloc(given, (ngiven + 1) * sizeof *given);
+            by = realloc(by, (ngiven + 1) * sizeof *by);
+            if (!given || !by) {
+                abort();
+            }
+            given[ngiven] = names->items[a];
+            by[ngiven] = copy_string(label);
+            ngiven++;
+        }
+        for (size_t k = 0; k < rows.n; k++) {
+            PickRow *row = &rows.r[k];
+            if (row->out.kind != VALUE_RECORD) {
+                value_free(row->out);
+                row->out = value_record(NULL, 0);
+            }
+            for (size_t a = 0; a < names->count; a++) {
+                Value got;
+                if (!pick_field(&row->cur, names->items[a], many, k, op, &got)) {
+                    goto done;
+                }
+                record_set(&row->out, names->items[a], got);
+            }
+        }
+    }
+    /* a last step that reached an array is a row per element, as G-SQL's
+     * last table is */
+    pick_fan_out(&rows, &many);
+    if (many) {
+        Value *items = rows.n ? malloc(rows.n * sizeof *items) : NULL;
+        if (rows.n && !items) {
+            abort();
+        }
+        for (size_t k = 0; k < rows.n; k++) {
+            items[k] = rows.r[k].out;
+            rows.r[k].out = value_null();
+        }
+        result = value_array(items, rows.n);
+    } else {
+        result = rows.r[0].out;
+        rows.r[0].out = value_null();
+    }
+done:
+    pick_rows_free(&rows);
+    for (size_t g = 0; g < ngiven; g++) {
+        free(by[g]);
+    }
+    free(given);
+    free(by);
+    return result;
+}
+
+/* the chain of steps and braces `top` ends, innermost first, and its root:
+ * 0 when there are no braces in it, or when its first step belongs to the
+ * field step's own receivers (`warning`, `error`, a library's name) */
+enum { PICK_MAX = 256 };
+
+static size_t pick_chain(AstExpr *top, AstExpr **ops, AstExpr **root) {
+    size_t n = 0;
+    int braces = 0;
+    AstExpr *e = top;
+    while (e && (e->kind == AST_EXPR_FIELD || e->kind == AST_EXPR_PROJECT) && (e == top || !e->parenthesized)) {
+        if (n == PICK_MAX) {
+            return 0;
+        }
+        braces |= e->kind == AST_EXPR_PROJECT;
+        ops[n++] = e;
+        e = e->kind == AST_EXPR_FIELD ? e->as.field.object : e->as.project.object;
+    }
+    if (!braces) {
+        return 0;
+    }
+    if (e->kind == AST_EXPR_IDENT && ops[n - 1]->kind == AST_EXPR_FIELD &&
+        (strcmp(e->as.ident, "warning") == 0 || strcmp(e->as.ident, "error") == 0 ||
+         !env_lookup_exists(e->as.ident))) {
+        return 0;
+    }
+    for (size_t i = 0; i < n / 2; i++) {
+        AstExpr *t = ops[i];
+        ops[i] = ops[n - 1 - i];
+        ops[n - 1 - i] = t;
+    }
+    *root = e;
+    return n;
+}
+
+static Value field_of_value(Value object, AstExpr *expr, int path_keep);
+static Value project_of_value(Value object, AstExpr *expr, int path_keep);
+
+/* a brace chain: its root evaluated once; a G-SQL root then stepped through
+ * the functions its recursion used, so a path is as it was */
+static Value eval_pick(AstExpr *top, AstExpr **ops, size_t n, AstExpr *root, int path_keep) {
+    g_path_keep = 1;
+    Value v = eval_expr(root);
+    g_path_keep = 0;
+    if (error_action_pending()) {
+        value_free(v);
+        return value_null();
+    }
+#if GBASIC_GSQL
+    if (gsql_is_path(&v) || v.kind == VALUE_GSQL_CONNECTION) {
+        for (size_t i = 0; i < n; i++) {
+            int keep = i + 1 < n ? 1 : path_keep;
+            v = ops[i]->kind == AST_EXPR_FIELD ? field_of_value(v, ops[i], keep) : project_of_value(v, ops[i], keep);
+            if (error_action_pending()) {
+                value_free(v);
+                return value_null();
+            }
+        }
+        return v;
+    }
+#endif
+    (void)top;
+    (void)path_keep;
+    if (v.kind == VALUE_UNKNOWN) {
+        return v;
+    }
+    return pick_plain(v, ops, n, root->kind == AST_EXPR_IDENT ? root->as.ident : "the value");
+}
+
 static GB_NOINLINE Value eval_expr_case_field(AstExpr *expr, int path_keep) {
 
         /* PLAT-WARN: `warning.field` reads the stored warning without claiming
@@ -43904,6 +44190,15 @@ static GB_NOINLINE Value eval_expr_case_field(AstExpr *expr, int path_keep) {
                 }
             }
         }
+        /* BRACES IN THE CHAIN: read from its root as one chain (pick_chain) */
+        if (expr->as.field.object->kind == AST_EXPR_FIELD || expr->as.field.object->kind == AST_EXPR_PROJECT) {
+            AstExpr *ops[PICK_MAX];
+            AstExpr *root = NULL;
+            size_t n = pick_chain(expr, ops, &root);
+            if (n) {
+                return eval_pick(expr, ops, n, root, path_keep);
+            }
+        }
         g_path_keep = 1;
         Value object = eval_expr(expr->as.field.object);
         g_path_keep = 0;
@@ -43911,6 +44206,15 @@ static GB_NOINLINE Value eval_expr_case_field(AstExpr *expr, int path_keep) {
             value_free(object);
             return value_null();
         }
+        return field_of_value(object, expr, path_keep);
+    (void)path_keep;
+    return value_null();
+}
+
+/* The field step on a value already evaluated: what `.name` means for each
+ * kind. Split from eval_expr_case_field so a brace chain, evaluated from its
+ * root once, can take its steps through it (eval_pick). */
+static Value field_of_value(Value object, AstExpr *expr, int path_keep) {
 #if GBASIC_GSQL
         if (gsql_is_path(&object)) {
             return gsql_path_step(object, expr, path_keep && !expr->parenthesized);
@@ -44108,6 +44412,12 @@ static GB_NOINLINE Value eval_expr_case_field(AstExpr *expr, int path_keep) {
 
 static GB_NOINLINE Value eval_expr_case_project(AstExpr *expr, int path_keep) {
 
+        AstExpr *ops[PICK_MAX];
+        AstExpr *root = NULL;
+        size_t n = pick_chain(expr, ops, &root);
+        if (n) {
+            return eval_pick(expr, ops, n, root, path_keep);
+        }
         g_path_keep = 1;
         Value object = eval_expr(expr->as.project.object);
         g_path_keep = 0;
@@ -44115,14 +44425,23 @@ static GB_NOINLINE Value eval_expr_case_project(AstExpr *expr, int path_keep) {
             value_free(object);
             return value_null();
         }
+        return project_of_value(object, expr, path_keep);
+    (void)path_keep;
+    return value_null();
+}
+
+/* Braces on a value already evaluated: a G-SQL path's columns, and anything
+ * else refused (plain data never reaches here; eval_pick takes it). */
+static Value project_of_value(Value object, AstExpr *expr, int path_keep) {
 #if GBASIC_GSQL
         if (gsql_is_path(&object)) {
             return gsql_path_project(object, expr, path_keep && !expr->parenthesized);
         }
 #endif
         value_free(object);
-        runtime_error_raise_at("braces after a value choose a G-SQL path's columns (`shop.customer[3]{ name }`); a "
-                               "record's field is read with a dot", 1003, "path", expr->line, expr->column);
+        runtime_error_raise_at("braces choose a record's fields, a row's, or a G-SQL path's columns; a connection "
+                               "has none -- name a table first (`shop.customer{ name }`)", 1003, "path", expr->line,
+                               expr->column);
         return value_null();
     (void)path_keep;
     return value_null();
