@@ -1,0 +1,95 @@
+{"c": 1, "dir": "F", "t": "Startup", "v": 196608, "params": {"user": "gbasic", "database": "pgcap", "application_name": "psql"}}
+{"c": 1, "dir": "B", "t": "R", "auth": 0}
+{"c": 1, "dir": "B", "t": "S", "param": ["in_hot_standby", "off"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["integer_datetimes", "on"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["TimeZone", "UTC"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["IntervalStyle", "postgres"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["is_superuser", "off"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["application_name", "psql"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["default_transaction_read_only", "off"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["scram_iterations", "4096"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["DateStyle", "ISO, MDY"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["standard_conforming_strings", "on"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["session_authorization", "gbasic"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["client_encoding", "UTF8"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["server_version", "17.10 (Ubuntu 17.10-0ubuntu0.25.10.1)"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["server_encoding", "UTF8"]}
+{"c": 1, "dir": "B", "t": "K"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT\n  d.datname as \"Name\",\n  pg_catalog.pg_get_userbyid(d.datdba) as \"Owner\",\n  pg_catalog.pg_encoding_to_char(d.encoding) as \"Encoding\",\n  CASE d.datlocprovider WHEN 'b' THEN 'builtin' WHEN 'c' THEN 'libc' WHEN 'i' THEN 'icu' END AS \"Locale Provider\",\n  d.datcollate as \"Collate\",\n  d.datctype as \"Ctype\",\n  d.datlocale as \"Locale\",\n  d.daticurules as \"ICU Rules\",\n  CASE WHEN pg_catalog.array_length(d.datacl, 1) = 0 THEN '(none)' ELSE pg_catalog.array_to_string(d.datacl, E'\\n') END AS \"Access privileges\"\nFROM pg_catalog.pg_database d\nORDER BY 1;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["Name", 19, 0], ["Owner", 19, 0], ["Encoding", 19, 0], ["Locale Provider", 25, 0], ["Collate", 25, 0], ["Ctype", 25, 0], ["Locale", 25, 0], ["ICU Rules", 25, 0], ["Access privileges", 25, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 23"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT n.nspname AS \"Name\",\n  pg_catalog.pg_get_userbyid(n.nspowner) AS \"Owner\"\nFROM pg_catalog.pg_namespace n\nWHERE n.nspname !~ '^pg_' AND n.nspname <> 'information_schema'\nORDER BY 1;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["Name", 19, 0], ["Owner", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT n.nspname as \"Schema\",\n  c.relname as \"Name\",\n  CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' WHEN 'i' THEN 'index' WHEN 'S' THEN 'sequence' WHEN 't' THEN 'TOAST table' WHEN 'f' THEN 'foreign table' WHEN 'p' THEN 'partitioned table' WHEN 'I' THEN 'partitioned index' END as \"Type\",\n  pg_catalog.pg_get_userbyid(c.relowner) as \"Owner\"\nFROM pg_catalog.pg_class c\n     LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace\n     LEFT JOIN pg_catalog.pg_am am ON am.oid = c.relam\nWHERE c.relkind IN ('r','p','')\n      AND n.nspname <> 'pg_catalog'\n      AND n.nspname !~ '^pg_toast'\n      AND n.nspname <> 'information_schema'\n  AND pg_catalog.pg_table_is_visible(c.oid)\nORDER BY 1,2;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["Schema", 19, 0], ["Name", 19, 0], ["Type", 25, 0], ["Owner", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 2"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT c.oid,\n  n.nspname,\n  c.relname\nFROM pg_catalog.pg_class c\n     LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace\nWHERE c.relname OPERATOR(pg_catalog.~) '^(customer)$' COLLATE pg_catalog.default\n  AND pg_catalog.pg_table_is_visible(c.oid)\nORDER BY 2, 3;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["oid", 26, 0], ["nspname", 19, 0], ["relname", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT c.relchecks, c.relkind, c.relhasindex, c.relhasrules, c.relhastriggers, c.relrowsecurity, c.relforcerowsecurity, false AS relhasoids, c.relispartition, '', c.reltablespace, CASE WHEN c.reloftype = 0 THEN '' ELSE c.reloftype::pg_catalog.regtype::pg_catalog.text END, c.relpersistence, c.relreplident, am.amname\nFROM pg_catalog.pg_class c\n LEFT JOIN pg_catalog.pg_class tc ON (c.reltoastrelid = tc.oid)\nLEFT JOIN pg_catalog.pg_am am ON (c.relam = am.oid)\nWHERE c.oid = '420267';"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["relchecks", 21, 0], ["relkind", 18, 0], ["relhasindex", 16, 0], ["relhasrules", 16, 0], ["relhastriggers", 16, 0], ["relrowsecurity", 16, 0], ["relforcerowsecurity", 16, 0], ["relhasoids", 16, 0], ["relispartition", 16, 0], ["?column?", 25, 0], ["reltablespace", 26, 0], ["reloftype", 25, 0], ["relpersistence", 18, 0], ["relreplident", 18, 0], ["amname", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT a.attname,\n  pg_catalog.format_type(a.atttypid, a.atttypmod),\n  (SELECT pg_catalog.pg_get_expr(d.adbin, d.adrelid, true)\n   FROM pg_catalog.pg_attrdef d\n   WHERE d.adrelid = a.attrelid AND d.adnum = a.attnum AND a.atthasdef),\n  a.attnotnull,\n  (SELECT c.collname FROM pg_catalog.pg_collation c, pg_catalog.pg_type t\n   WHERE c.oid = a.attcollation AND t.oid = a.atttypid AND a.attcollation <> t.typcollation) AS attcollation,\n  a.attidentity,\n  a.attgenerated\nFROM pg_catalog.pg_attribute a\nWHERE a.attrelid = '420267' AND a.attnum > 0 AND NOT a.attisdropped\nORDER BY a.attnum;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["attname", 19, 0], ["format_type", 25, 0], ["pg_get_expr", 25, 0], ["attnotnull", 16, 0], ["attcollation", 19, 0], ["attidentity", 18, 0], ["attgenerated", 18, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 4"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT c2.relname, i.indisprimary, i.indisunique, i.indisclustered, i.indisvalid, pg_catalog.pg_get_indexdef(i.indexrelid, 0, true),\n  pg_catalog.pg_get_constraintdef(con.oid, true), contype, condeferrable, condeferred, i.indisreplident, c2.reltablespace, false AS conperiod\nFROM pg_catalog.pg_class c, pg_catalog.pg_class c2, pg_catalog.pg_index i\n  LEFT JOIN pg_catalog.pg_constraint con ON (conrelid = i.indrelid AND conindid = i.indexrelid AND contype IN ('p','u','x'))\nWHERE c.oid = '420267' AND c.oid = i.indrelid AND i.indexrelid = c2.oid\nORDER BY i.indisprimary DESC, c2.relname;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["relname", 19, 0], ["indisprimary", 16, 0], ["indisunique", 16, 0], ["indisclustered", 16, 0], ["indisvalid", 16, 0], ["pg_get_indexdef", 25, 0], ["pg_get_constraintdef", 25, 0], ["contype", 18, 0], ["condeferrable", 16, 0], ["condeferred", 16, 0], ["indisreplident", 16, 0], ["reltablespace", 26, 0], ["conperiod", 16, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT true as sametable, conname,\n  pg_catalog.pg_get_constraintdef(r.oid, true) as condef,\n  conrelid::pg_catalog.regclass AS ontable\nFROM pg_catalog.pg_constraint r\nWHERE r.conrelid = '420267' AND r.contype = 'f'\n     AND conparentid = 0\nORDER BY conname"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["sametable", 16, 0], ["conname", 19, 0], ["condef", 25, 0], ["ontable", 2205, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 0"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT conname, conrelid::pg_catalog.regclass AS ontable,\n       pg_catalog.pg_get_constraintdef(oid, true) AS condef\n  FROM pg_catalog.pg_constraint c\n WHERE confrelid IN (SELECT pg_catalog.pg_partition_ancestors('420267')\n                     UNION ALL VALUES ('420267'::pg_catalog.regclass))\n       AND contype = 'f' AND conparentid = 0\nORDER BY conname;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["conname", 19, 0], ["ontable", 2205, 0], ["condef", 25, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT pol.polname, pol.polpermissive,\n  CASE WHEN pol.polroles = '{0}' THEN NULL ELSE pg_catalog.array_to_string(array(select rolname from pg_catalog.pg_roles where oid = any (pol.polroles) order by 1),',') END,\n  pg_catalog.pg_get_expr(pol.polqual, pol.polrelid),\n  pg_catalog.pg_get_expr(pol.polwithcheck, pol.polrelid),\n  CASE pol.polcmd\n    WHEN 'r' THEN 'SELECT'\n    WHEN 'a' THEN 'INSERT'\n    WHEN 'w' THEN 'UPDATE'\n    WHEN 'd' THEN 'DELETE'\n    END AS cmd\nFROM pg_catalog.pg_policy pol\nWHERE pol.polrelid = '420267' ORDER BY 1;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["polname", 19, 0], ["polpermissive", 16, 0], ["array_to_string", 25, 0], ["pg_get_expr", 25, 0], ["pg_get_expr", 25, 0], ["cmd", 25, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 0"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT oid, stxrelid::pg_catalog.regclass, stxnamespace::pg_catalog.regnamespace::pg_catalog.text AS nsp, stxname,\npg_catalog.pg_get_statisticsobjdef_columns(oid) AS columns,\n  'd' = any(stxkind) AS ndist_enabled,\n  'f' = any(stxkind) AS deps_enabled,\n  'm' = any(stxkind) AS mcv_enabled,\nstxstattarget\nFROM pg_catalog.pg_statistic_ext\nWHERE stxrelid = '420267'\nORDER BY nsp, stxname;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["oid", 26, 0], ["stxrelid", 2205, 0], ["nsp", 25, 0], ["stxname", 19, 0], ["columns", 25, 0], ["ndist_enabled", 16, 0], ["deps_enabled", 16, 0], ["mcv_enabled", 16, 0], ["stxstattarget", 21, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 0"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT pubname\n     , NULL\n     , NULL\nFROM pg_catalog.pg_publication p\n     JOIN pg_catalog.pg_publication_namespace pn ON p.oid = pn.pnpubid\n     JOIN pg_catalog.pg_class pc ON pc.relnamespace = pn.pnnspid\nWHERE pc.oid ='420267' and pg_catalog.pg_relation_is_publishable('420267')\nUNION\nSELECT pubname\n     , pg_get_expr(pr.prqual, c.oid)\n     , (CASE WHEN pr.prattrs IS NOT NULL THEN\n         (SELECT string_agg(attname, ', ')\n           FROM pg_catalog.generate_series(0, pg_catalog.array_upper(pr.prattrs::pg_catalog.int2[], 1)) s,\n                pg_catalog.pg_attribute\n          WHERE attrelid = pr.prrelid AND attnum = prattrs[s])\n        ELSE NULL END) FROM pg_catalog.pg_publication p\n     JOIN pg_catalog.pg_publication_rel pr ON p.oid = pr.prpubid\n     JOIN pg_catalog.pg_class c ON c.oid = pr.prrelid\nWHERE pr.prrelid = '420267'\nUNION\nSELECT pubname\n     , NULL\n     , NULL\nFROM pg_catalog.pg_publication p\nWHERE p.puballtables AND pg_catalog.pg_relation_is_publishable('420267')\nORDER BY 1;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["pubname", 19, 0], ["?column?", 25, 0], ["?column?", 25, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 0"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT t.tgname, pg_catalog.pg_get_triggerdef(t.oid, true), t.tgenabled, t.tgisinternal,\n  CASE WHEN t.tgparentid != 0 THEN\n    (SELECT u.tgrelid::pg_catalog.regclass\n     FROM pg_catalog.pg_trigger AS u,\n          pg_catalog.pg_partition_ancestors(t.tgrelid) WITH ORDINALITY AS a(relid, depth)\n     WHERE u.tgname = t.tgname AND u.tgrelid = a.relid\n           AND u.tgparentid = 0\n     ORDER BY a.depth LIMIT 1)\n  END AS parent\nFROM pg_catalog.pg_trigger t\nWHERE t.tgrelid = '420267' AND (NOT t.tgisinternal OR (t.tgisinternal AND t.tgenabled = 'D'))\nORDER BY 1;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["tgname", 19, 0], ["pg_get_triggerdef", 25, 0], ["tgenabled", 18, 0], ["tgisinternal", 16, 0], ["parent", 2205, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 0"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT c.oid::pg_catalog.regclass\nFROM pg_catalog.pg_class c, pg_catalog.pg_inherits i\nWHERE c.oid = i.inhparent AND i.inhrelid = '420267'\n  AND c.relkind != 'p' AND c.relkind != 'I'\nORDER BY inhseqno;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["oid", 2205, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 0"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT c.oid::pg_catalog.regclass, c.relkind, inhdetachpending, pg_catalog.pg_get_expr(c.relpartbound, c.oid)\nFROM pg_catalog.pg_class c, pg_catalog.pg_inherits i\nWHERE c.oid = i.inhrelid AND i.inhparent = '420267'\nORDER BY pg_catalog.pg_get_expr(c.relpartbound, c.oid) = 'DEFAULT', c.oid::pg_catalog.regclass::pg_catalog.text;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["oid", 2205, 0], ["relkind", 18, 0], ["inhdetachpending", 16, 0], ["pg_get_expr", 25, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 0"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT n.nspname as \"Schema\",\n  c.relname as \"Name\",\n  CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' WHEN 'i' THEN 'index' WHEN 'S' THEN 'sequence' WHEN 't' THEN 'TOAST table' WHEN 'f' THEN 'foreign table' WHEN 'p' THEN 'partitioned table' WHEN 'I' THEN 'partitioned index' END as \"Type\",\n  pg_catalog.pg_get_userbyid(c.relowner) as \"Owner\"\nFROM pg_catalog.pg_class c\n     LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace\nWHERE c.relkind IN ('v','')\n      AND n.nspname <> 'pg_catalog'\n      AND n.nspname !~ '^pg_toast'\n      AND n.nspname <> 'information_schema'\n  AND pg_catalog.pg_table_is_visible(c.oid)\nORDER BY 1,2;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["Schema", 19, 0], ["Name", 19, 0], ["Type", 25, 0], ["Owner", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT n.nspname as \"Schema\",\n  c.relname as \"Name\",\n  CASE c.relkind WHEN 'r' THEN 'table' WHEN 'v' THEN 'view' WHEN 'm' THEN 'materialized view' WHEN 'i' THEN 'index' WHEN 'S' THEN 'sequence' WHEN 't' THEN 'TOAST table' WHEN 'f' THEN 'foreign table' WHEN 'p' THEN 'partitioned table' WHEN 'I' THEN 'partitioned index' END as \"Type\",\n  pg_catalog.pg_get_userbyid(c.relowner) as \"Owner\",\n  c2.relname as \"Table\"\nFROM pg_catalog.pg_class c\n     LEFT JOIN pg_catalog.pg_namespace n ON n.oid = c.relnamespace\n     LEFT JOIN pg_catalog.pg_am am ON am.oid = c.relam\n     LEFT JOIN pg_catalog.pg_index i ON i.indexrelid = c.oid\n     LEFT JOIN pg_catalog.pg_class c2 ON i.indrelid = c2.oid\nWHERE c.relkind IN ('i','I','')\n      AND n.nspname <> 'pg_catalog'\n      AND n.nspname !~ '^pg_toast'\n      AND n.nspname <> 'information_schema'\n  AND pg_catalog.pg_table_is_visible(c.oid)\nORDER BY 1,2;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["Schema", 19, 0], ["Name", 19, 0], ["Type", 25, 0], ["Owner", 19, 0], ["Table", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 3"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT n.nspname as \"Schema\",\n  p.proname as \"Name\",\n  pg_catalog.pg_get_function_result(p.oid) as \"Result data type\",\n  pg_catalog.pg_get_function_arguments(p.oid) as \"Argument data types\",\n CASE p.prokind\n  WHEN 'a' THEN 'agg'\n  WHEN 'w' THEN 'window'\n  WHEN 'p' THEN 'proc'\n  ELSE 'func'\n END as \"Type\"\nFROM pg_catalog.pg_proc p\n     LEFT JOIN pg_catalog.pg_namespace n ON n.oid = p.pronamespace\nWHERE pg_catalog.pg_function_is_visible(p.oid)\n      AND n.nspname <> 'pg_catalog'\n      AND n.nspname <> 'information_schema'\nORDER BY 1, 2, 4;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["Schema", 19, 0], ["Name", 19, 0], ["Result data type", 25, 0], ["Argument data types", 25, 0], ["Type", 25, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 114"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT r.rolname, r.rolsuper, r.rolinherit,\n  r.rolcreaterole, r.rolcreatedb, r.rolcanlogin,\n  r.rolconnlimit, r.rolvaliduntil\n, r.rolreplication\n, r.rolbypassrls\nFROM pg_catalog.pg_roles r\nWHERE r.rolname !~ '^pg_'\nORDER BY 1;"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["rolname", 19, 0], ["rolsuper", 16, 0], ["rolinherit", 16, 0], ["rolcreaterole", 16, 0], ["rolcreatedb", 16, 0], ["rolcanlogin", 16, 0], ["rolconnlimit", 23, 0], ["rolvaliduntil", 1184, 0], ["rolreplication", 16, 0], ["rolbypassrls", 16, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 6"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "X"}

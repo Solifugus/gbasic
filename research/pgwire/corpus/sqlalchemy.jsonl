@@ -1,0 +1,267 @@
+{"c": 1, "dir": "F", "t": "Startup", "v": 196608, "params": {"user": "gbasic", "database": "pgcap"}}
+{"c": 1, "dir": "B", "t": "R", "auth": 0}
+{"c": 1, "dir": "B", "t": "S", "param": ["in_hot_standby", "off"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["integer_datetimes", "on"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["TimeZone", "UTC"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["IntervalStyle", "postgres"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["is_superuser", "off"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["application_name", ""]}
+{"c": 1, "dir": "B", "t": "S", "param": ["default_transaction_read_only", "off"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["scram_iterations", "4096"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["DateStyle", "ISO, MDY"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["standard_conforming_strings", "on"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["session_authorization", "gbasic"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["client_encoding", "UTF8"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["server_version", "17.10 (Ubuntu 17.10-0ubuntu0.25.10.1)"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["server_encoding", "UTF8"]}
+{"c": 1, "dir": "B", "t": "K"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "select pg_catalog.version()"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["version", 25, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "select current_schema()"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["current_schema", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "show transaction isolation level"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["transaction_isolation", 25, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SHOW"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "show standard_conforming_strings"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["standard_conforming_strings", 25, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SHOW"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SAVEPOINT \"_pg3_1\""}
+{"c": 1, "dir": "B", "t": "C", "tag": "SAVEPOINT"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT\n    typname AS name, oid, typarray AS array_oid,\n    oid::regtype::text AS regtype, typdelim AS delimiter\nFROM pg_type t\nWHERE t.oid = to_regtype($1)\nORDER BY t.oid\n", "oids": [0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [0], "params": ["hstore"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["name", 19, 0], ["oid", 26, 0], ["array_oid", 26, 0], ["regtype", 25, 0], ["delimiter", 18, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 0"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "RELEASE \"_pg3_1\""}
+{"c": 1, "dir": "B", "t": "C", "tag": "RELEASE"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "C", "tag": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT pg_catalog.pg_class.relname \nFROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace \nWHERE pg_catalog.pg_class.relkind = ANY (ARRAY[$1::VARCHAR, $2::VARCHAR]) AND pg_catalog.pg_class.relpersistence != $3::VARCHAR AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $4::VARCHAR", "oids": [0, 0, 0, 0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [0, 0, 0, 0], "params": ["r", "p", "t", "pg_catalog"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["relname", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 2"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "C", "tag": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT pg_catalog.pg_attribute.attname AS name, pg_catalog.format_type(pg_catalog.pg_attribute.atttypid, pg_catalog.pg_attribute.atttypmod) AS format_type, CASE WHEN pg_catalog.pg_attribute.atthasdef THEN (SELECT pg_catalog.pg_get_expr(pg_catalog.pg_attrdef.adbin, pg_catalog.pg_attrdef.adrelid) AS pg_get_expr_1 \nFROM pg_catalog.pg_attrdef \nWHERE pg_catalog.pg_attribute.atthasdef AND pg_catalog.pg_attrdef.adrelid = pg_catalog.pg_attribute.attrelid AND pg_catalog.pg_attrdef.adnum = pg_catalog.pg_attribute.attnum) ELSE NULL END AS \"default\", pg_catalog.pg_attribute.attnotnull AS not_null, pg_catalog.pg_class.relname AS table_name, pg_catalog.pg_description.description AS comment, pg_catalog.pg_attribute.attgenerated AS generated, CASE WHEN (pg_catalog.pg_attribute.attidentity != $1::VARCHAR) THEN (SELECT json_build_object($2::VARCHAR, pg_catalog.pg_attribute.attidentity = $3::VARCHAR, $4::VARCHAR, pg_catalog.pg_sequence.seqstart, $5::VARCHAR, pg_catalog.pg_sequence.seqincrement, $6::VARCHAR, pg_catalog.pg_sequence.seqmin, $7::VARCHAR, pg_catalog.pg_sequence.seqmax, $8::VARCHAR, pg_catalog.pg_sequence.seqcache, $9::VARCHAR, pg_catalog.pg_sequence.seqcycle) AS json_build_object_1 \nFROM pg_catalog.pg_sequence \nWHERE pg_catalog.pg_attribute.attidentity != $10::VARCHAR AND pg_catalog.pg_sequence.seqrelid = CAST(CAST(pg_catalog.pg_get_serial_sequence(CAST(CAST(pg_catalog.pg_attribute.attrelid AS REGCLASS) AS TEXT), pg_catalog.pg_attribute.attname) AS REGCLASS) AS OID)) ELSE NULL END AS identity_options, CASE WHEN (pg_catalog.pg_attribute.attcollation != $11::INTEGER AND (SELECT pg_catalog.pg_type.typcollation \nFROM pg_catalog.pg_type \nWHERE pg_catalog.pg_type.oid = pg_catalog.pg_attribute.atttypid) != pg_catalog.pg_attribute.attcollation) THEN (SELECT json_build_object($12::VARCHAR, pg_catalog.pg_collation.collname, $13::VARCHAR, CASE WHEN pg_catalog.pg_collation_is_visible(pg_catalog.pg_collation.oid) THEN NULL ELSE pg_catalog.pg_namespace.nspname END) AS json_build_object_9 \nFROM pg_catalog.pg_collation JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_collation.collnamespace \nWHERE pg_catalog.pg_collation.oid = pg_catalog.pg_attribute.attcollation) ELSE NULL END AS collation \nFROM pg_catalog.pg_class LEFT OUTER JOIN pg_catalog.pg_attribute ON pg_catalog.pg_class.oid = pg_catalog.pg_attribute.attrelid AND pg_catalog.pg_attribute.attnum > $14::SMALLINT AND NOT pg_catalog.pg_attribute.attisdropped LEFT OUTER JOIN pg_catalog.pg_description ON pg_catalog.pg_description.objoid = pg_catalog.pg_attribute.attrelid AND pg_catalog.pg_description.objsubid = pg_catalog.pg_attribute.attnum JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace \nWHERE pg_catalog.pg_class.relkind = ANY (ARRAY[$15::VARCHAR, $16::VARCHAR, $17::VARCHAR, $18::VARCHAR, $19::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $20::VARCHAR AND pg_catalog.pg_class.relname IN ($21::VARCHAR) ORDER BY pg_catalog.pg_class.relname, pg_catalog.pg_attribute.attnum", "oids": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21, 0, 0, 21, 0, 0, 0, 0, 0, 0, 0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0], "params": ["", "616c77617973", "61", "7374617274", "696e6372656d656e74", "6d696e76616c7565", "6d617876616c7565", "6361636865", "6379636c65", "", "0000", "6e616d65", "736368656d61", "0000", "72", "70", "66", "76", "6d", "70675f636174616c6f67", "637573746f6d6572"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["name", 19, 0], ["format_type", 25, 0], ["default", 25, 0], ["not_null", 16, 0], ["table_name", 19, 0], ["comment", 25, 0], ["generated", 18, 0], ["identity_options", 114, 0], ["collation", 114, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 4"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "C", "tag": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT pg_catalog.pg_class.oid, pg_catalog.pg_class.relname \nFROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace \nWHERE pg_catalog.pg_class.relkind = ANY (ARRAY[$1::VARCHAR, $2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $6::VARCHAR AND pg_catalog.pg_class.relname IN ($7::VARCHAR)", "oids": [0, 0, 0, 0, 0, 0, 0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [0, 0, 0, 0, 0, 0, 0], "params": ["r", "p", "f", "v", "m", "pg_catalog", "customer"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["oid", 26, 0], ["relname", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT attr.conrelid, array_agg(CAST(attr.attname AS TEXT) ORDER BY attr.ord) AS cols, attr.conname, min(attr.description) AS description, min(attr.indnkeyatts) AS indnkeyatts, bool_and(attr.indnullsnotdistinct) AS indnullsnotdistinct \nFROM (SELECT con.conrelid AS conrelid, con.conname AS conname, con.description AS description, con.ord AS ord, con.indnkeyatts AS indnkeyatts, con.indnullsnotdistinct AS indnullsnotdistinct, pg_catalog.pg_attribute.attname AS attname \nFROM pg_catalog.pg_attribute JOIN (SELECT pg_catalog.pg_constraint.conrelid AS conrelid, pg_catalog.pg_constraint.conname AS conname, unnest(pg_catalog.pg_index.indkey) AS attnum, generate_subscripts(pg_catalog.pg_index.indkey, $1::INTEGER) AS ord, pg_catalog.pg_index.indnkeyatts AS indnkeyatts, pg_catalog.pg_index.indnullsnotdistinct AS indnullsnotdistinct, pg_catalog.pg_description.description AS description \nFROM pg_catalog.pg_constraint JOIN pg_catalog.pg_index ON pg_catalog.pg_constraint.conindid = pg_catalog.pg_index.indexrelid LEFT OUTER JOIN pg_catalog.pg_description ON pg_catalog.pg_description.objoid = pg_catalog.pg_constraint.oid AND pg_catalog.pg_description.classoid = CAST($2 AS REGCLASS) \nWHERE pg_catalog.pg_constraint.contype = $3::VARCHAR AND pg_catalog.pg_constraint.conrelid IN ($4)) AS con ON pg_catalog.pg_attribute.attnum = con.attnum AND pg_catalog.pg_attribute.attrelid = con.conrelid \nWHERE con.conrelid IN ($4)) AS attr GROUP BY attr.conrelid, attr.conname ORDER BY attr.conrelid, attr.conname", "oids": [21, 0, 0, 23]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [1, 0, 0, 1], "params": ["0001", "70675f636174616c6f672e70675f636f6e73747261696e74", "70", "000669ab"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["conrelid", 26, 0], ["cols", 1009, 0], ["conname", 19, 0], ["description", 25, 0], ["indnkeyatts", 21, 0], ["indnullsnotdistinct", 16, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "C", "tag": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT pg_catalog.pg_class.relname, pg_catalog.pg_constraint.conname, CASE WHEN (pg_catalog.pg_constraint.oid IS NOT NULL) THEN pg_catalog.pg_get_constraintdef(pg_catalog.pg_constraint.oid, $1) END AS anon_1, nsp_ref.nspname, pg_catalog.pg_description.description \nFROM pg_catalog.pg_class LEFT OUTER JOIN pg_catalog.pg_constraint ON pg_catalog.pg_class.oid = pg_catalog.pg_constraint.conrelid AND pg_catalog.pg_constraint.contype = $2::VARCHAR LEFT OUTER JOIN pg_catalog.pg_class AS cls_ref ON cls_ref.oid = pg_catalog.pg_constraint.confrelid LEFT OUTER JOIN pg_catalog.pg_namespace AS nsp_ref ON cls_ref.relnamespace = nsp_ref.oid LEFT OUTER JOIN pg_catalog.pg_description ON pg_catalog.pg_description.objoid = pg_catalog.pg_constraint.oid AND pg_catalog.pg_description.classoid = CAST($3 AS REGCLASS) JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace \nWHERE pg_catalog.pg_class.relkind = ANY (ARRAY[$4::VARCHAR, $5::VARCHAR, $6::VARCHAR, $7::VARCHAR, $8::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $9::VARCHAR AND pg_catalog.pg_class.relname IN ($10::VARCHAR) ORDER BY pg_catalog.pg_class.relname, pg_catalog.pg_constraint.conname", "oids": [16, 0, 0, 0, 0, 0, 0, 0, 0, 0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0], "params": ["01", "66", "70675f636174616c6f672e70675f636f6e73747261696e74", "72", "70", "66", "76", "6d", "70675f636174616c6f67", "637573746f6d6572"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["relname", 19, 0], ["conname", 19, 0], ["anon_1", 25, 0], ["nspname", 19, 0], ["description", 25, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "C", "tag": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT pg_catalog.pg_am.oid, pg_catalog.pg_am.amname \nFROM pg_catalog.pg_am \nWHERE pg_catalog.pg_am.amname = $1::VARCHAR", "oids": [0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [0], "params": ["btree"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["oid", 26, 0], ["amname", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SELECT pg_catalog.pg_opclass.oid, pg_catalog.pg_opclass.opcname \nFROM pg_catalog.pg_opclass \nWHERE NOT pg_catalog.pg_opclass.opcdefault"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["oid", 26, 0], ["opcname", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 78"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT pg_catalog.pg_index.indrelid, pg_catalog.pg_class.relname, pg_catalog.pg_index.indisunique, pg_catalog.pg_index.indisvalid, pg_catalog.pg_constraint.conrelid IS NOT NULL AS has_constraint, pg_catalog.pg_index.indoption, pg_catalog.pg_class.reloptions, pg_catalog.pg_class.relam, CASE WHEN (pg_catalog.pg_index.indpred IS NOT NULL) THEN pg_catalog.pg_get_expr(pg_catalog.pg_index.indpred, pg_catalog.pg_index.indrelid) END AS filter_definition, pg_catalog.pg_index.indnkeyatts, pg_catalog.pg_index.indnullsnotdistinct, idx_cols.elements, idx_cols.elements_is_expr, idx_cols.elements_opclass \nFROM pg_catalog.pg_index JOIN pg_catalog.pg_class ON pg_catalog.pg_index.indexrelid = pg_catalog.pg_class.oid LEFT OUTER JOIN (SELECT idx_attr.indexrelid AS indexrelid, min(idx_attr.indrelid) AS min_1, array_agg(idx_attr.element ORDER BY idx_attr.ord) AS elements, array_agg(idx_attr.is_expr ORDER BY idx_attr.ord) AS elements_is_expr, array_agg(idx_attr.att_opclass ORDER BY idx_attr.ord) AS elements_opclass \nFROM (SELECT idx.indexrelid AS indexrelid, idx.indrelid AS indrelid, idx.ord AS ord, CASE WHEN (idx.attnum = $1::INTEGER) THEN pg_catalog.pg_get_indexdef(idx.indexrelid, idx.ord + $2::INTEGER, $3) ELSE CAST(pg_catalog.pg_attribute.attname AS TEXT) END AS element, idx.attnum = $4::INTEGER AS is_expr, CAST(idx.att_opclass AS BIGINT) AS att_opclass \nFROM (SELECT pg_catalog.pg_index.indexrelid AS indexrelid, pg_catalog.pg_index.indrelid AS indrelid, unnest(pg_catalog.pg_index.indkey) AS attnum, unnest(pg_catalog.pg_index.indclass) AS att_opclass, generate_subscripts(pg_catalog.pg_index.indkey, $5::INTEGER) AS ord \nFROM pg_catalog.pg_index \nWHERE NOT pg_catalog.pg_index.indisprimary AND pg_catalog.pg_index.indrelid IN ($6)) AS idx LEFT OUTER JOIN pg_catalog.pg_attribute ON pg_catalog.pg_attribute.attnum = idx.attnum AND pg_catalog.pg_attribute.attrelid = idx.indrelid \nWHERE idx.indrelid IN ($6)) AS idx_attr GROUP BY idx_attr.indexrelid) AS idx_cols ON pg_catalog.pg_index.indexrelid = idx_cols.indexrelid LEFT OUTER JOIN pg_catalog.pg_constraint ON pg_catalog.pg_index.indrelid = pg_catalog.pg_constraint.conrelid AND pg_catalog.pg_index.indexrelid = pg_catalog.pg_constraint.conindid AND pg_catalog.pg_constraint.contype = ANY (ARRAY[$7::VARCHAR, $8::VARCHAR, $9::VARCHAR]) \nWHERE pg_catalog.pg_index.indrelid IN ($6) AND NOT pg_catalog.pg_index.indisprimary ORDER BY pg_catalog.pg_index.indrelid, pg_catalog.pg_class.relname", "oids": [21, 21, 16, 21, 21, 23, 0, 0, 0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [1, 1, 1, 1, 1, 1, 0, 0, 0], "params": ["0000", "0001", "01", "0000", "0001", "000669ab", "70", "75", "78"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["indrelid", 26, 0], ["relname", 19, 0], ["indisunique", 16, 0], ["indisvalid", 16, 0], ["has_constraint", 16, 0], ["indoption", 22, 0], ["reloptions", 1009, 0], ["relam", 26, 0], ["filter_definition", 25, 0], ["indnkeyatts", 21, 0], ["indnullsnotdistinct", 16, 0], ["elements", 1009, 0], ["elements_is_expr", 1000, 0], ["elements_opclass", 1016, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 0"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "C", "tag": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT pg_catalog.pg_attribute.attname AS name, pg_catalog.format_type(pg_catalog.pg_attribute.atttypid, pg_catalog.pg_attribute.atttypmod) AS format_type, CASE WHEN pg_catalog.pg_attribute.atthasdef THEN (SELECT pg_catalog.pg_get_expr(pg_catalog.pg_attrdef.adbin, pg_catalog.pg_attrdef.adrelid) AS pg_get_expr_1 \nFROM pg_catalog.pg_attrdef \nWHERE pg_catalog.pg_attribute.atthasdef AND pg_catalog.pg_attrdef.adrelid = pg_catalog.pg_attribute.attrelid AND pg_catalog.pg_attrdef.adnum = pg_catalog.pg_attribute.attnum) ELSE NULL END AS \"default\", pg_catalog.pg_attribute.attnotnull AS not_null, pg_catalog.pg_class.relname AS table_name, pg_catalog.pg_description.description AS comment, pg_catalog.pg_attribute.attgenerated AS generated, CASE WHEN (pg_catalog.pg_attribute.attidentity != $1::VARCHAR) THEN (SELECT json_build_object($2::VARCHAR, pg_catalog.pg_attribute.attidentity = $3::VARCHAR, $4::VARCHAR, pg_catalog.pg_sequence.seqstart, $5::VARCHAR, pg_catalog.pg_sequence.seqincrement, $6::VARCHAR, pg_catalog.pg_sequence.seqmin, $7::VARCHAR, pg_catalog.pg_sequence.seqmax, $8::VARCHAR, pg_catalog.pg_sequence.seqcache, $9::VARCHAR, pg_catalog.pg_sequence.seqcycle) AS json_build_object_1 \nFROM pg_catalog.pg_sequence \nWHERE pg_catalog.pg_attribute.attidentity != $10::VARCHAR AND pg_catalog.pg_sequence.seqrelid = CAST(CAST(pg_catalog.pg_get_serial_sequence(CAST(CAST(pg_catalog.pg_attribute.attrelid AS REGCLASS) AS TEXT), pg_catalog.pg_attribute.attname) AS REGCLASS) AS OID)) ELSE NULL END AS identity_options, CASE WHEN (pg_catalog.pg_attribute.attcollation != $11::INTEGER AND (SELECT pg_catalog.pg_type.typcollation \nFROM pg_catalog.pg_type \nWHERE pg_catalog.pg_type.oid = pg_catalog.pg_attribute.atttypid) != pg_catalog.pg_attribute.attcollation) THEN (SELECT json_build_object($12::VARCHAR, pg_catalog.pg_collation.collname, $13::VARCHAR, CASE WHEN pg_catalog.pg_collation_is_visible(pg_catalog.pg_collation.oid) THEN NULL ELSE pg_catalog.pg_namespace.nspname END) AS json_build_object_9 \nFROM pg_catalog.pg_collation JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_collation.collnamespace \nWHERE pg_catalog.pg_collation.oid = pg_catalog.pg_attribute.attcollation) ELSE NULL END AS collation \nFROM pg_catalog.pg_class LEFT OUTER JOIN pg_catalog.pg_attribute ON pg_catalog.pg_class.oid = pg_catalog.pg_attribute.attrelid AND pg_catalog.pg_attribute.attnum > $14::SMALLINT AND NOT pg_catalog.pg_attribute.attisdropped LEFT OUTER JOIN pg_catalog.pg_description ON pg_catalog.pg_description.objoid = pg_catalog.pg_attribute.attrelid AND pg_catalog.pg_description.objsubid = pg_catalog.pg_attribute.attnum JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace \nWHERE pg_catalog.pg_class.relkind = ANY (ARRAY[$15::VARCHAR, $16::VARCHAR, $17::VARCHAR, $18::VARCHAR, $19::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $20::VARCHAR AND pg_catalog.pg_class.relname IN ($21::VARCHAR) ORDER BY pg_catalog.pg_class.relname, pg_catalog.pg_attribute.attnum", "oids": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 21, 0, 0, 21, 0, 0, 0, 0, 0, 0, 0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 1, 0, 0, 1, 0, 0, 0, 0, 0, 0, 0], "params": ["", "616c77617973", "61", "7374617274", "696e6372656d656e74", "6d696e76616c7565", "6d617876616c7565", "6361636865", "6379636c65", "", "0000", "6e616d65", "736368656d61", "0000", "72", "70", "66", "76", "6d", "70675f636174616c6f67", "696e766f696365"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["name", 19, 0], ["format_type", 25, 0], ["default", 25, 0], ["not_null", 16, 0], ["table_name", 19, 0], ["comment", 25, 0], ["generated", 18, 0], ["identity_options", 114, 0], ["collation", 114, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 4"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "C", "tag": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT pg_catalog.pg_class.oid, pg_catalog.pg_class.relname \nFROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace \nWHERE pg_catalog.pg_class.relkind = ANY (ARRAY[$1::VARCHAR, $2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $6::VARCHAR AND pg_catalog.pg_class.relname IN ($7::VARCHAR)", "oids": [0, 0, 0, 0, 0, 0, 0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [0, 0, 0, 0, 0, 0, 0], "params": ["r", "p", "f", "v", "m", "pg_catalog", "invoice"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["oid", 26, 0], ["relname", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT attr.conrelid, array_agg(CAST(attr.attname AS TEXT) ORDER BY attr.ord) AS cols, attr.conname, min(attr.description) AS description, min(attr.indnkeyatts) AS indnkeyatts, bool_and(attr.indnullsnotdistinct) AS indnullsnotdistinct \nFROM (SELECT con.conrelid AS conrelid, con.conname AS conname, con.description AS description, con.ord AS ord, con.indnkeyatts AS indnkeyatts, con.indnullsnotdistinct AS indnullsnotdistinct, pg_catalog.pg_attribute.attname AS attname \nFROM pg_catalog.pg_attribute JOIN (SELECT pg_catalog.pg_constraint.conrelid AS conrelid, pg_catalog.pg_constraint.conname AS conname, unnest(pg_catalog.pg_index.indkey) AS attnum, generate_subscripts(pg_catalog.pg_index.indkey, $1::INTEGER) AS ord, pg_catalog.pg_index.indnkeyatts AS indnkeyatts, pg_catalog.pg_index.indnullsnotdistinct AS indnullsnotdistinct, pg_catalog.pg_description.description AS description \nFROM pg_catalog.pg_constraint JOIN pg_catalog.pg_index ON pg_catalog.pg_constraint.conindid = pg_catalog.pg_index.indexrelid LEFT OUTER JOIN pg_catalog.pg_description ON pg_catalog.pg_description.objoid = pg_catalog.pg_constraint.oid AND pg_catalog.pg_description.classoid = CAST($2 AS REGCLASS) \nWHERE pg_catalog.pg_constraint.contype = $3::VARCHAR AND pg_catalog.pg_constraint.conrelid IN ($4)) AS con ON pg_catalog.pg_attribute.attnum = con.attnum AND pg_catalog.pg_attribute.attrelid = con.conrelid \nWHERE con.conrelid IN ($4)) AS attr GROUP BY attr.conrelid, attr.conname ORDER BY attr.conrelid, attr.conname", "oids": [21, 0, 0, 23]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [1, 0, 0, 1], "params": ["0001", "70675f636174616c6f672e70675f636f6e73747261696e74", "70", "000669b4"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["conrelid", 26, 0], ["cols", 1009, 0], ["conname", 19, 0], ["description", 25, 0], ["indnkeyatts", 21, 0], ["indnullsnotdistinct", 16, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "C", "tag": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT pg_catalog.pg_class.relname, pg_catalog.pg_constraint.conname, CASE WHEN (pg_catalog.pg_constraint.oid IS NOT NULL) THEN pg_catalog.pg_get_constraintdef(pg_catalog.pg_constraint.oid, $1) END AS anon_1, nsp_ref.nspname, pg_catalog.pg_description.description \nFROM pg_catalog.pg_class LEFT OUTER JOIN pg_catalog.pg_constraint ON pg_catalog.pg_class.oid = pg_catalog.pg_constraint.conrelid AND pg_catalog.pg_constraint.contype = $2::VARCHAR LEFT OUTER JOIN pg_catalog.pg_class AS cls_ref ON cls_ref.oid = pg_catalog.pg_constraint.confrelid LEFT OUTER JOIN pg_catalog.pg_namespace AS nsp_ref ON cls_ref.relnamespace = nsp_ref.oid LEFT OUTER JOIN pg_catalog.pg_description ON pg_catalog.pg_description.objoid = pg_catalog.pg_constraint.oid AND pg_catalog.pg_description.classoid = CAST($3 AS REGCLASS) JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace \nWHERE pg_catalog.pg_class.relkind = ANY (ARRAY[$4::VARCHAR, $5::VARCHAR, $6::VARCHAR, $7::VARCHAR, $8::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $9::VARCHAR AND pg_catalog.pg_class.relname IN ($10::VARCHAR) ORDER BY pg_catalog.pg_class.relname, pg_catalog.pg_constraint.conname", "oids": [16, 0, 0, 0, 0, 0, 0, 0, 0, 0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [1, 0, 0, 0, 0, 0, 0, 0, 0, 0], "params": ["01", "66", "70675f636174616c6f672e70675f636f6e73747261696e74", "72", "70", "66", "76", "6d", "70675f636174616c6f67", "696e766f696365"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["relname", 19, 0], ["conname", 19, 0], ["anon_1", 25, 0], ["nspname", 19, 0], ["description", 25, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "C", "tag": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT pg_catalog.pg_index.indrelid, pg_catalog.pg_class.relname, pg_catalog.pg_index.indisunique, pg_catalog.pg_index.indisvalid, pg_catalog.pg_constraint.conrelid IS NOT NULL AS has_constraint, pg_catalog.pg_index.indoption, pg_catalog.pg_class.reloptions, pg_catalog.pg_class.relam, CASE WHEN (pg_catalog.pg_index.indpred IS NOT NULL) THEN pg_catalog.pg_get_expr(pg_catalog.pg_index.indpred, pg_catalog.pg_index.indrelid) END AS filter_definition, pg_catalog.pg_index.indnkeyatts, pg_catalog.pg_index.indnullsnotdistinct, idx_cols.elements, idx_cols.elements_is_expr, idx_cols.elements_opclass \nFROM pg_catalog.pg_index JOIN pg_catalog.pg_class ON pg_catalog.pg_index.indexrelid = pg_catalog.pg_class.oid LEFT OUTER JOIN (SELECT idx_attr.indexrelid AS indexrelid, min(idx_attr.indrelid) AS min_1, array_agg(idx_attr.element ORDER BY idx_attr.ord) AS elements, array_agg(idx_attr.is_expr ORDER BY idx_attr.ord) AS elements_is_expr, array_agg(idx_attr.att_opclass ORDER BY idx_attr.ord) AS elements_opclass \nFROM (SELECT idx.indexrelid AS indexrelid, idx.indrelid AS indrelid, idx.ord AS ord, CASE WHEN (idx.attnum = $1::INTEGER) THEN pg_catalog.pg_get_indexdef(idx.indexrelid, idx.ord + $2::INTEGER, $3) ELSE CAST(pg_catalog.pg_attribute.attname AS TEXT) END AS element, idx.attnum = $4::INTEGER AS is_expr, CAST(idx.att_opclass AS BIGINT) AS att_opclass \nFROM (SELECT pg_catalog.pg_index.indexrelid AS indexrelid, pg_catalog.pg_index.indrelid AS indrelid, unnest(pg_catalog.pg_index.indkey) AS attnum, unnest(pg_catalog.pg_index.indclass) AS att_opclass, generate_subscripts(pg_catalog.pg_index.indkey, $5::INTEGER) AS ord \nFROM pg_catalog.pg_index \nWHERE NOT pg_catalog.pg_index.indisprimary AND pg_catalog.pg_index.indrelid IN ($6)) AS idx LEFT OUTER JOIN pg_catalog.pg_attribute ON pg_catalog.pg_attribute.attnum = idx.attnum AND pg_catalog.pg_attribute.attrelid = idx.indrelid \nWHERE idx.indrelid IN ($6)) AS idx_attr GROUP BY idx_attr.indexrelid) AS idx_cols ON pg_catalog.pg_index.indexrelid = idx_cols.indexrelid LEFT OUTER JOIN pg_catalog.pg_constraint ON pg_catalog.pg_index.indrelid = pg_catalog.pg_constraint.conrelid AND pg_catalog.pg_index.indexrelid = pg_catalog.pg_constraint.conindid AND pg_catalog.pg_constraint.contype = ANY (ARRAY[$7::VARCHAR, $8::VARCHAR, $9::VARCHAR]) \nWHERE pg_catalog.pg_index.indrelid IN ($6) AND NOT pg_catalog.pg_index.indisprimary ORDER BY pg_catalog.pg_index.indrelid, pg_catalog.pg_class.relname", "oids": [21, 21, 16, 21, 21, 23, 0, 0, 0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [1, 1, 1, 1, 1, 1, 0, 0, 0], "params": ["0000", "0001", "01", "0000", "0001", "000669b4", "70", "75", "78"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["indrelid", 26, 0], ["relname", 19, 0], ["indisunique", 16, 0], ["indisvalid", 16, 0], ["has_constraint", 16, 0], ["indoption", 22, 0], ["reloptions", 1009, 0], ["relam", 26, 0], ["filter_definition", 25, 0], ["indnkeyatts", 21, 0], ["indnullsnotdistinct", 16, 0], ["elements", 1009, 0], ["elements_is_expr", 1000, 0], ["elements_opclass", 1016, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "C", "tag": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT pg_catalog.pg_class.relname \nFROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace \nWHERE pg_catalog.pg_class.relkind = ANY (ARRAY[$1::VARCHAR]) AND pg_catalog.pg_class.relpersistence != $2::VARCHAR AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $3::VARCHAR", "oids": [0, 0, 0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [0, 0, 0], "params": ["v", "t", "pg_catalog"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["relname", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "C", "tag": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT pg_catalog.pg_namespace.nspname \nFROM pg_catalog.pg_namespace \nWHERE (pg_catalog.pg_namespace.nspname NOT LIKE $1::VARCHAR || '%' ESCAPE '/') ORDER BY pg_catalog.pg_namespace.nspname", "oids": [0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [0], "params": ["pg/_"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["nspname", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 2"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "C", "tag": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "X"}

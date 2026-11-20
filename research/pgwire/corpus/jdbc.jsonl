@@ -1,0 +1,39 @@
+{"c": 1, "dir": "F", "t": "Startup", "v": 196608, "params": {"user": "gbasic", "database": "pgcap", "client_encoding": "UTF8", "DateStyle": "ISO", "TimeZone": "UTC", "extra_float_digits": "3", "application_name": "PostgreSQL JDBC Driver"}}
+{"c": 1, "dir": "B", "t": "R", "auth": 0}
+{"c": 1, "dir": "B", "t": "S", "param": ["in_hot_standby", "off"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["integer_datetimes", "on"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["TimeZone", "UTC"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["IntervalStyle", "postgres"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["is_superuser", "off"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["application_name", "PostgreSQL JDBC Driver"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["default_transaction_read_only", "off"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["scram_iterations", "4096"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["DateStyle", "ISO, MDY"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["standard_conforming_strings", "on"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["session_authorization", "gbasic"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["client_encoding", "UTF8"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["server_version", "17.10 (Ubuntu 17.10-0ubuntu0.25.10.1)"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["server_encoding", "UTF8"]}
+{"c": 1, "dir": "B", "t": "K"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "select id, name, since from customer where id = $1", "oids": [23]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [1], "params": ["00000001"], "result_formats": []}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["id", 23, 0], ["name", 25, 0], ["since", 1082, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "select total from invoice", "oids": []}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [], "params": [], "result_formats": []}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["total", 1700, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 2"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "X"}

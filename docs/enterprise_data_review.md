@@ -122,7 +122,9 @@ psycopg, npgsql and Metabase send at connect, and implement exactly that.
 answered. The mitigation is the same as everywhere here: a corpus of real
 clients' connect traffic, and a test that every query in it is answered.
 
-**The recommendation: yes, after parallel readers, as its own design note,
+**Written 2026-11-19 as `gsql_pgwire_design.md`, whose capture corrected
+this section: no driver queries the catalog to connect. Only tools that
+describe a database do.** **The recommendation: yes, after parallel readers, as its own design note,
 starting with the connect-traffic capture.** It is G1's only route with a
 small surface, and every later integration rides on it. Encryption is
 `net`'s TLS. Authentication is a G-SQL question first: G-SQL trusts the local

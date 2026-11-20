@@ -14034,3 +14034,16 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Workaround:** `break`, and `sleep(...)`. For the ergonomics sweep: give
   both the `elseif` treatment, naming the gBASIC spelling at the token.
 
+
+## 2026-11-19 — CC — while: capturing gBASIC's own pg module through a protocol proxy
+- **Type:** diagnostic-gap
+- **Severity:** low
+- **What:** two refusals on the way to a first `pg.connect` that do not name
+  the fix:
+  - `pg.connect(...)` with no `load pg` says "library not loaded: pg". It
+    should say "write `load pg` before using it" (the same code, 4001, is
+    raised for webserver, smtp, ldap and the rest, so one sentence fixes all);
+  - `dbname:`, libpq's own word and the one every `psql` user types, says
+    "unknown pg.connect config field: dbname". gBASIC's word is `database`;
+    the refusal could name it, as the ui vocabulary's near-miss hints do.
+- **Workaround:** `load pg`, and `database:`. For the ergonomics sweep.

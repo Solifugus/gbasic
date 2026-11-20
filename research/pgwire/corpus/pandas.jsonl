@@ -1,0 +1,125 @@
+{"c": 1, "dir": "F", "t": "Startup", "v": 196608, "params": {"user": "gbasic", "database": "pgcap"}}
+{"c": 1, "dir": "B", "t": "R", "auth": 0}
+{"c": 1, "dir": "B", "t": "S", "param": ["in_hot_standby", "off"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["integer_datetimes", "on"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["TimeZone", "UTC"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["IntervalStyle", "postgres"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["is_superuser", "off"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["application_name", ""]}
+{"c": 1, "dir": "B", "t": "S", "param": ["default_transaction_read_only", "off"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["scram_iterations", "4096"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["DateStyle", "ISO, MDY"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["standard_conforming_strings", "on"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["session_authorization", "gbasic"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["client_encoding", "UTF8"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["server_version", "17.10 (Ubuntu 17.10-0ubuntu0.25.10.1)"]}
+{"c": 1, "dir": "B", "t": "S", "param": ["server_encoding", "UTF8"]}
+{"c": 1, "dir": "B", "t": "K"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "select pg_catalog.version()"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["version", 25, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "select current_schema()"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["current_schema", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "show transaction isolation level"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["transaction_isolation", 25, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SHOW"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "show standard_conforming_strings"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["standard_conforming_strings", 25, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SHOW"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "SAVEPOINT \"_pg3_1\""}
+{"c": 1, "dir": "B", "t": "C", "tag": "SAVEPOINT"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT\n    typname AS name, oid, typarray AS array_oid,\n    oid::regtype::text AS regtype, typdelim AS delimiter\nFROM pg_type t\nWHERE t.oid = to_regtype($1)\nORDER BY t.oid\n", "oids": [0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [0], "params": ["hstore"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["name", 19, 0], ["oid", 26, 0], ["array_oid", 26, 0], ["regtype", 25, 0], ["delimiter", 18, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 0"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "RELEASE \"_pg3_1\""}
+{"c": 1, "dir": "B", "t": "C", "tag": "RELEASE"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "C", "tag": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT pg_catalog.pg_class.relname \nFROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace \nWHERE pg_catalog.pg_class.relname IN ($1::VARCHAR) AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR", "oids": [0, 0, 0, 0, 0, 0, 0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [0, 0, 0, 0, 0, 0, 0], "params": ["select * from invoice", "r", "p", "f", "v", "m", "pg_catalog"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["relname", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 0"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "select * from invoice"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["id", 23, 0], ["customer_id", 23, 0], ["total", 1700, 0], ["issued", 1114, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 2"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "C", "tag": "ROLLBACK"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "", "sql": "SELECT pg_catalog.pg_class.relname \nFROM pg_catalog.pg_class JOIN pg_catalog.pg_namespace ON pg_catalog.pg_namespace.oid = pg_catalog.pg_class.relnamespace \nWHERE pg_catalog.pg_class.relname IN ($1::VARCHAR) AND pg_catalog.pg_class.relkind = ANY (ARRAY[$2::VARCHAR, $3::VARCHAR, $4::VARCHAR, $5::VARCHAR, $6::VARCHAR]) AND pg_catalog.pg_table_is_visible(pg_catalog.pg_class.oid) AND pg_catalog.pg_namespace.nspname != $7::VARCHAR", "oids": [0, 0, 0, 0, 0, 0, 0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "", "param_formats": [0, 0, 0, 0, 0, 0, 0], "params": ["pd_tmp", "r", "p", "f", "v", "m", "pg_catalog"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "T", "cols": [["relname", 19, 0]]}
+{"c": 1, "dir": "B", "t": "C", "tag": "SELECT 0"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "\nCREATE TABLE pd_tmp (\n\ta BIGINT, \n\tb TEXT\n)\n\n"}
+{"c": 1, "dir": "B", "t": "C", "tag": "CREATE TABLE"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "P", "name": "_pg3_0", "sql": "INSERT INTO pd_tmp (a, b) VALUES ($1::BIGINT, $2::VARCHAR)", "oids": [21, 0]}
+{"c": 1, "dir": "F", "t": "B", "stmt": "_pg3_0", "param_formats": [1, 0], "params": ["0001", "78"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "B", "stmt": "_pg3_0", "param_formats": [1, 0], "params": ["0002", "79"], "result_formats": [0]}
+{"c": 1, "dir": "F", "t": "D", "what": "P", "name": ""}
+{"c": 1, "dir": "F", "t": "E", "portal": "", "max": 0}
+{"c": 1, "dir": "F", "t": "S"}
+{"c": 1, "dir": "F", "t": "H"}
+{"c": 1, "dir": "B", "t": "1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "n"}
+{"c": 1, "dir": "B", "t": "C", "tag": "INSERT 0 1"}
+{"c": 1, "dir": "B", "t": "2"}
+{"c": 1, "dir": "B", "t": "n"}
+{"c": 1, "dir": "B", "t": "C", "tag": "INSERT 0 1"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "COMMIT"}
+{"c": 1, "dir": "B", "t": "C", "tag": "COMMIT"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "BEGIN"}
+{"c": 1, "dir": "B", "t": "C", "tag": "BEGIN"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "drop table pd_tmp"}
+{"c": 1, "dir": "B", "t": "C", "tag": "DROP TABLE"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "DEALLOCATE ALL"}
+{"c": 1, "dir": "B", "t": "C", "tag": "DEALLOCATE ALL"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "Q", "sql": "COMMIT"}
+{"c": 1, "dir": "B", "t": "C", "tag": "COMMIT"}
+{"c": 1, "dir": "B", "t": "Z"}
+{"c": 1, "dir": "F", "t": "X"}
