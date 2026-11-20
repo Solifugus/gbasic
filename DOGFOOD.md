@@ -97,7 +97,7 @@ live:
 
 | | what | where |
 |---|---|---|
-| 6 | **A directory entry has no path relative to the directory listed.** With `files(d, "**/*.xlsx")` the record carries `name` (the basename, which collides across subdirectories) and `path` (the whole path), and the thing an archive step needs — the path *under* `d`, to mirror a source tree — has to be recovered by string surgery against `d`, which breaks on a trailing slash. | 2026-10-15 entry |
+| 6 | ~~**A directory entry has no path relative to the directory listed.**~~ **FIXED 2026-11-20**: every entry carries `relative`, the path under the directory listed, joined with `/`, the same with a trailing `/` on the root; `tests/run_glob.sh`'s oracle tier reads it against bash's globstar over twelve patterns. The rest is the history: With `files(d, "**/*.xlsx")` the record carries `name` (the basename, which collides across subdirectories) and `path` (the whole path), and the thing an archive step needs — the path *under* `d`, to mirror a source tree — has to be recovered by string surgery against `d`, which breaks on a trailing slash. | 2026-10-15 entry |
 
 A second was filed the same day while writing the `stem` fixture:
 

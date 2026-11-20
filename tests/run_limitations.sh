@@ -71,7 +71,8 @@ SECTION_END='^## Seed entries'
 # NAMED RATHER THAN SKIPPED QUIETLY: the RANKED table below it is the
 # 2026-10-13 audit's archive, 50 of 52 struck, and the handful of rows still
 # live there (a listing's relative path, `lock` with no non-blocking form, a
-# `duration` from a computed number of seconds) have no probes. Covering them
+# `duration` from a computed number of seconds) had no probes -- and all three
+# were fixed or found fixed in the 2026-11-20 sweep, and struck. Covering them
 # is its own increment -- each needs a measurement of its own, and several may
 # already be as stale as the row this audit found -- so the bound is deliberate
 # and this comment is the record of the remaining gap.

@@ -13783,7 +13783,13 @@ static char *path_join_alloc(const char *folder, const char *name) {
     return path;
 }
 
-/* `{name, path, type, size, modified}`.
+/* `{name, path, type, size, modified, relative}`.
+ *
+ * `relative` IS THE PATH UNDER THE DIRECTORY LISTED, joined with `/`
+ * (`2026/Q1/vendor.xlsx`), the part a recursive glob's `name` loses and its
+ * `path` buries (DOGFOOD 2026-10-15, live-list row 6). The walk already holds
+ * the segments; mirroring a tree into an archive was string surgery against
+ * the root, wrong on a trailing `/`. In a one-level listing it is the `name`.
  *
  * SIZE AND MODIFIED RIDE ALONG FOR NOTHING: the listing already calls `stat` on
  * every entry to decide `type`, and used to throw the rest of the result away.
@@ -13797,13 +13803,13 @@ static char *path_join_alloc(const char *folder, const char *name) {
  * stat failed -- a broken symlink, or an entry removed between readdir and
  * stat, which a long walk really does meet. */
 static Value make_dir_entry(const char *path, const char *name,
-                            const char *type, const struct stat *st) {
-    RecordField *fields = calloc(5, sizeof(RecordField));
+                            const char *type, const struct stat *st, const char *relative) {
+    RecordField *fields = calloc(6, sizeof(RecordField));
     if (!fields) {
         abort();
     }
-    static const char *names[5] = { "name", "path", "type", "size", "modified" };
-    for (size_t i = 0; i < 5; i++) {
+    static const char *names[6] = { "name", "path", "type", "size", "modified", "relative" };
+    for (size_t i = 0; i < 6; i++) {
         fields[i].name = field_name_new(names[i]);
         fields[i].value = cell_alloc();
         if (!fields[i].value) {
@@ -13814,6 +13820,7 @@ static Value make_dir_entry(const char *path, const char *name,
     *fields[0].value = value_string(name);
     *fields[1].value = value_string(path);
     *fields[2].value = value_string(type);
+    *fields[5].value = value_string(relative);
     if (!st) {
         *fields[3].value = value_unknown();
         *fields[4].value = value_unknown();
@@ -13830,7 +13837,7 @@ static Value make_dir_entry(const char *path, const char *name,
             *fields[4].value = value_unknown();
         }
     }
-    return value_record(fields, 5);
+    return value_record(fields, 6);
 }
 
 static int dir_entry_compare(const void *a, const void *b) {
@@ -13935,8 +13942,24 @@ static void glob_walk(GlobWalk *w, const char *dir_path,
                 abort();
             }
             w->items = next;
+            size_t rl = 0;
+            for (size_t k = 0; k < ns; k++) {
+                rl += strlen(segs[k]) + 1;
+            }
+            char *relative = malloc(rl + 1);
+            if (!relative) {
+                abort();
+            }
+            relative[0] = '\0';
+            for (size_t k = 0; k < ns; k++) {
+                if (k) {
+                    strcat(relative, "/");
+                }
+                strcat(relative, segs[k]);
+            }
             w->items[w->count++] = make_dir_entry(path, entry, type,
-                                                  have_stat ? &st : NULL);
+                                                  have_stat ? &st : NULL, relative);
+            free(relative);
         }
 
         /* DESCEND ONLY WITH A PATTERN, so the unpatterned call is exactly the

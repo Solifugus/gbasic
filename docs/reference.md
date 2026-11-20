@@ -9978,8 +9978,13 @@ Listing a directory — two functions, and the difference matters:
   subdirectories at all, so it cannot by itself drive a walk: a directory is
   invisible to it.
 - `list(d [, pattern])` — every entry of a directory, as
-  `{name, path, type, size, modified}` records where `type` is `"file"` or
+  `{name, path, type, size, modified, relative}` records where `type` is `"file"` or
   `"folder"`. `name` is the bare entry name and `path` is the path to it.
+  `relative` (*after 0.12.0*) is the path **under the directory listed**,
+  joined with `/` (`2026/Q1/vendor.xlsx` from a `**` walk, where `name` is
+  `vendor.xlsx` in every month): what mirroring a tree into an archive needs,
+  and the same with or without a trailing `/` on the root. In a one-level
+  listing it is the `name`.
   Takes a **plain string path or a `{dir}` reference** (*since 0.1.0-rc9*), so
   the `d {dir}= p` line in front of a listing is no longer needed — `{dir}=`
   labels a path, it does not check one, and it accepts a missing path or a
@@ -10238,8 +10243,8 @@ Directory functions:
   `folders(folder [, pattern])` — directory entries. With a glob pattern they
   walk; see the listing section above for the pattern language.
 
-Directory entries are records with `name`, `path`, `type`, `size` and
-`modified`, sorted by `path`.
+Directory entries are records with `name`, `path`, `type`, `size`,
+`modified` and `relative`, sorted by `path`.
 
 ## Standard Library
 

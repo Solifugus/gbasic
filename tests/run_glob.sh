@@ -107,8 +107,9 @@ patterns=(
 )
 
 printf 'TIER oracle: twelve patterns against bash globstar\n'
-# gBASIC prints the path RELATIVE to the directory it was given, so the two
-# sides are directly comparable; `list` is used rather than `files` because
+# gBASIC prints each entry's `relative`, the path under the directory it was
+# given, so the two sides are directly comparable (it was string surgery on
+# `path` until the field existed, 2026-11-20, DOGFOOD row 6); `list` is used rather than `files` because
 # bash's pathname expansion does not filter by type and the comparison must be
 # of the MATCHER, not of the type filter (which the ORDER and RECORD tiers
 # cover).
@@ -119,7 +120,7 @@ program main( args )
     d {dir}= args[0]
     out = []
     for each r in list(d, args[1])
-        out = append(out, replace(r.path, args[0] + "/", ""))
+        out = append(out, r.relative)
     end for
     print join(out, "\n")
 end program
@@ -139,6 +140,26 @@ EOF
         fail "oracle: $p disagreed with bash"; oracle_fails=1
     fi
 done
+# AND THE ROOT WRITTEN WITH A TRAILING `/`, which broke the surgery `relative`
+# replaced: the same entries, the same relative paths
+cat > "$work/slash.bas" <<'EOF'
+program main( args )
+    a = []
+    for each r in list(args[0], "**/*")
+        a = append(a, r.relative)
+    end for
+    b = []
+    for each r in list(args[0] + "/", "**/*")
+        b = append(b, r.relative)
+    end for
+    print string(a = b) + " " + string(count(a))
+end program
+EOF
+got=$(./gbasic "$work/slash.bas" "$O" 2>&1)
+case "$got" in
+    "true "[1-9]*) pass "a trailing / on the root leaves every relative path the same ($got)" ;;
+    *) fail "a trailing / on the root: $got" ;;
+esac
 # NON-VACUITY: a tier comparing two empty lists twelve times would be silent
 # and green. At least one pattern must have matched something, and at least one
 # must have matched NOTHING, or the set is not discriminating.
@@ -491,7 +512,7 @@ program main( args )
     d {dir}= args[0]
     out = []
     for each r in list(d, args[1])
-        out = append(out, replace(r.path, args[0] + "/", ""))
+        out = append(out, r.relative)
     end for
     print join(out, " ")
 end program
