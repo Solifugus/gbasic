@@ -10,6 +10,8 @@
 #        tier needs; it asks with `ui_tier_needs <group>` first.
 #   [Q]  Qt's own: a C++ probe linking qt_backend, pixels of Qt's drawing.
 #        It asks `ui_tier_qt` first and is never run under another backend.
+#   [T]  the terminal backend's own (docs/tui_design.md): its screen as text,
+#        a real pty, the selection rule. It asks `ui_tier_tui` first.
 #
 # tests/run_ui_vocabulary.sh `classes` refuses a GUI suite's TIER line with
 # no class, so the sort cannot rot as tiers are added.
@@ -26,7 +28,25 @@
 # THE BUILD'S BACKENDS, asked of the binary: the sentence GBASIC_UI naming no
 # backend is refused with ends "it has: a, b" (run_ui_vocabulary `seam` pins
 # it). A build with none says so differently and lists nothing.
+#
+# A BACKEND STILL BEING BUILT IS LEFT OUT of every suite's passes, named in
+# UI_SUITES_SKIP_BACKENDS (default `tui`): increment 3 of docs/tui_design.md
+# draws the layout and the first leaves, and every [C] tier using a table, a
+# menu or a dialog would fail on it for a reason this harness already knows.
+# tests/run_ui_tui.sh measures it instead. When it covers the core (§7,
+# increment 5) the default empties, and each suite owes it its [C] tiers;
+# UI_SUITES_SKIP_BACKENDS= runs them on it now, to see how far it is.
 ui_backends() {
+    local skip="${UI_SUITES_SKIP_BACKENDS-tui}"
+    ui_backends_built | while read -r be; do
+        case " $skip " in
+            *" $be "*) ;;
+            *) printf '%s\n' "$be" ;;
+        esac
+    done
+}
+
+ui_backends_built() {
     local probe out
     probe="$(mktemp)"
     printf 'program main()\n    ui.run()\nend program\n' > "$probe"
@@ -97,6 +117,16 @@ ui_tier_needs() {
             printf '  SKIP (the %s backend has not:%s -- this tier was NOT measured)\n' \
                 "$(ui_backend_now)" "$missing"
         fi
+        return 1
+    fi
+    return 0
+}
+
+# 0 if this build has the tui backend (built even when no suite pass runs
+# on it: UI_SUITES_SKIP_BACKENDS); else SKIP, 1
+ui_tier_tui() {
+    if ! ui_backends_built | grep -qx tui; then
+        printf '  SKIP (this build has no tui backend -- NOT measured)\n'
         return 1
     fi
     return 0

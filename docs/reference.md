@@ -5442,20 +5442,38 @@ programs for the full surface and worked SEC-filing examples.
 
 ## UI Module
 
-The `ui` module renders a `window` declaration. What draws it is the build's
-GUI backend, today Qt 6 Widgets, available when gBASIC is built with Qt 6 and
-`moc`. On a build with no backend, `ui.check`, `ui.can_display` and
+The `ui` module renders a `window` declaration. What draws it is one of the
+build's backends: Qt 6 Widgets, when gBASIC is built with Qt 6 and `moc`, and
+the terminal (`tui`, after 0.12.0), which every POSIX build has (*The
+terminal backend*, below). On a build with no backend, `ui.check`, `ui.can_display` and
 `ui.is_open` still answer and every other verb raises a clean runtime error
 (`error.source = "ui"`), the way the other optional modules degrade. Every
 verb that takes a window first is also the window's method: `app.open()`,
 `app.read("who", "text")`, `app.close()`.
 
-A program never names a backend. Where a build has more than one, the
-environment variable `GBASIC_UI` chooses (`GBASIC_UI=qt`); unset, the build's
-first is used. Naming one the build lacks is refused at the first verb that
-needs a backend, listing the ones it has, rather than quietly drawing with
-another. `ui.backend()` answers its name (`"qt"`), or `unknown` on a build
-with none.
+A program never names a backend. **With none named, the first that can draw
+here is used**: Qt when a display is reachable, the terminal when standard
+input and output are one, so the same program opens a window at a desk and
+runs in the terminal over SSH. When neither can draw, Qt is kept, and its
+refusal says why. `GBASIC_UI=tui`, or `gbasic --ui=tui prog.bas`, chooses one
+by name; naming one the build lacks is refused at the first verb that needs a
+backend, listing the ones it has, rather than quietly drawing with another.
+`ui.backend()` answers its name (`"qt"`, `"tui"`), or `unknown` when none can
+be had.
+
+**A window may say what it cannot do without**: `window desk( title: "Desk",
+needs: ["docking"] )`. The automatic choice then skips a backend lacking a
+group any declared window needs; run where only such a backend can draw, the
+first verb says which group is missing and which backend has it. A window
+built as a record at run time is held to its `needs:` when it opens. A name
+in `needs:` that is not a group is refused by `ui.check`, naming the nearest.
+
+**A size may be given in characters**: `width: 40 columns`, `min_height: 12
+rows`. Qt multiplies by its font's character width and line height; the
+terminal takes it as that many cells. A bare number is pixels, as always,
+and the terminal turns pixels into cells at 8 by 16. `40 columns` is written
+like a duration and is the record `{ columns: 40 }`; a width takes columns
+and a height rows, and the other way round is refused.
 
 **What one backend can do and another may not** comes in eight capability
 groups, asked with `ui.can("<group>")`, which answers `true` or `false`
@@ -6412,6 +6430,76 @@ a machine with no display: only opening a window needs one, and a `window` block
 still parses, is validated and can be read back as a record with no Qt present.
 Setting `QT_QPA_PLATFORM=offscreen` renders without a display, which is how a
 GUI program can run on a headless server.
+
+### The terminal backend
+
+*After 0.12.0* (`docs/tui_design.md`, increment 3). The same `window`
+declaration drawn in a terminal's cells, over the `term` layer (*Term
+Module*), not ncurses. It is chosen when there is no display and standard
+input and output are a terminal, or by `GBASIC_UI=tui` / `--ui=tui`.
+
+**What it draws so far**:
+- `row`, `column`, `form`, `group` (a box with its title in the border),
+  `stretch()` and `separator()`;
+- `field` (a `secret` shows a bullet per character), `button` (`[ OK ]`),
+  `check` (`[x] Send me news`) and `text`;
+- the window's title, on the top line;
+- forms bound with `to edit` and `to show`, `ui.subject`, and the events
+  `pressed`, `changed`, `entered`, `context` and `closed`.
+
+**Every other part is refused by name**, naming the increment of
+`docs/tui_design.md` §7 that draws it: "the tui backend does not draw `table`
+yet (docs/tui_design.md §7, increment 4)". Until then a program that needs a
+`table`, a `menu` or a dialog runs on Qt, or in a terminal, refuses there.
+**It has none of the eight groups yet**: `file_dialogs` comes with its
+chooser.
+
+**Keys:**
+- **Tab and Shift+Tab** move between fields, buttons and checks. Disabled
+  ones are skipped, and the order wraps.
+- **The arrows** move the focus too, and within a field the caret.
+- **Space** presses a button or toggles a check.
+- **Enter** in a field fires `entered`, or presses the default button when it
+  has no handler. On a check it presses the default button, as a dialog
+  does. On a button it presses that button.
+- **In a field:**
+  - Home and End (and Ctrl+A, Ctrl+E) move the caret;
+  - Backspace and Delete remove a character;
+  - Ctrl+U clears the field;
+  - `max_length` stops typing at that many characters;
+  - a paste arrives without its line breaks.
+- **Ctrl+Q** closes the window, the terminal's close button: the `closed`
+  handler runs, once, and the run ends with the last window.
+- **The mouse** focuses what it clicks, presses a button or a check, and
+  places the caret in a field. A right click fires `context`.
+
+**When `ui.run` returns, the ordinary screen comes back**, so what a program
+prints next can be read. The windows stay open and readable (`ui.read`,
+`ui.subject`), and the next `ui.run` draws them again. While the alternate
+screen is up, standard error is held and shown after it, as with
+`term.open`. A `tui` window and `term.open` refuse each other.
+
+**Sizes are minimums, and the window is the screen.**
+- A window's own `width` and `height`, `x`, `y` and `font_size` are taken
+  and do nothing: the terminal's font is the user's.
+- An `icon:` that is a file draws nothing, so the part shows its label, or
+  its name when it has none. `ui.check` warns about such a part (2124), so a
+  program written for both has something to show.
+
+**Testing with no terminal.** `GBASIC_TUI_SCREEN=80x24` draws into a screen
+of that size with no terminal, as `QT_QPA_PLATFORM=offscreen` does for Qt.
+`GBASIC_TUI_DUMP=path` writes that screen as text after every frame, with the
+caret's position on a last line. Keys then come from `ui.key` (one
+combination: `"Tab"`, `"Ctrl+U"`, `"é"`) and `ui.click`.
+
+Tested by `tests/run_ui_tui.sh`:
+- the keys, each held to what it must do;
+- the layout as text;
+- the refusals;
+- Qt's sizes in characters;
+- a real terminal, with the selection rule, Ctrl-Q and the terminal restored,
+  read back by pyte where it is installed;
+- valgrind.
 
 ### Words
 

@@ -45,6 +45,7 @@
 #include "qt_backend.h"
 
 #include <QApplication>
+#include <cmath>
 #include <algorithm>
 #include <vector>
 #include <QCheckBox>
@@ -8462,5 +8463,24 @@ extern "C" int gb_qt_tree_select(void *window, const char *name, int row,
     }
     t->setCurrentItem(item);
     item->setSelected(true);
+    return 1;
+}
+
+/* PIXELS PER COLUMN AND PER ROW (docs/tui_design.md §8.1, Q3): what `40
+ * columns` and `12 rows` become here, read from the application font, so a
+ * size in characters holds that many of them whatever the font. The average
+ * advance of a digit, as the gutter measures one (above), and the line
+ * height. Before a QApplication exists the default font is still answered. */
+extern "C" int gb_qt_cell_size(int *width, int *height) {
+    QFont f = g_app ? QApplication::font() : QFont();
+    QFontMetricsF m(f);
+    *width = (int)std::ceil(m.horizontalAdvance(QLatin1Char('9')));
+    *height = (int)std::ceil(m.height());
+    if (*width < 1) {
+        *width = 8;
+    }
+    if (*height < 1) {
+        *height = 16;
+    }
     return 1;
 }

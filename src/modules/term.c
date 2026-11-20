@@ -89,6 +89,10 @@ static Value term_eval_call(AstExpr *expr) {
 #define TERM_ESC_WAIT_MS 30
 
 static int term_open_now = 0;
+/* Who has the screen: 0 nobody, 2 the `ui` module's tui backend, whose
+ * windows draw on the same terminal (src/modules/ui_tui.c). term.open and a
+ * tui window refuse each other rather than draw over one another. */
+static int term_screen_owner = 0;
 static TermScreen term_screen;
 static TermDecoder term_decoder;
 static double term_pending_since = 0;   /* when the decoder last took a byte, while it holds some */
@@ -408,6 +412,10 @@ static Value term_open(AstExpr *expr) {
     term_free_args(a, 1);
     if (term_open_now) {
         return term_raise("term.open: the terminal is already open");
+    }
+    if (term_screen_owner == 2) {
+        return term_raise("term.open: a window is open on this terminal (the ui module's tui "
+                          "backend); close it first");
     }
     if (stdin_events_watched()) {
         return term_raise("term.open: standard input is watched as lines (watch(stdin.lines)); "

@@ -49,6 +49,9 @@
 #if HAVE_QT
 #include "ui_qt.c"
 #endif
+#if GBASIC_TERM
+#include "ui_tui.c"
+#endif
 
 static void qt_raise(const char *message) {
     runtime_error_raise(message, QT_ERROR_CODE, "ui");
@@ -78,8 +81,59 @@ static const GbUiBackend *const ui_backends[] = {
 #if HAVE_QT
     &ui_qt_backend,
 #endif
+#if GBASIC_TERM
+    &ui_tui_backend,
+#endif
     NULL
 };
+
+/* WHAT THE PROGRAM'S DECLARED WINDOWS NEED (docs/tui_design.md §8.1, Q5):
+ * the union of every `window` declaration's `needs:`, noted as each becomes
+ * a value, which is before `main` runs. The automatic choice below skips a
+ * backend lacking any of them. A window a program BUILDS at run time is
+ * held to its own `needs:` when it opens, against whichever backend is
+ * already chosen. */
+static char ui_declared_needs[256];
+
+static void ui_note_needs(const char *group) {
+    if (!group || !*group || strlen(ui_declared_needs) + strlen(group) + 2 >= sizeof ui_declared_needs) {
+        return;
+    }
+    size_t n = strlen(group);
+    for (const char *p = ui_declared_needs; (p = strstr(p, group)); p += n) {
+        if ((p == ui_declared_needs || p[-1] == ' ') && (p[n] == ' ' || p[n] == 0)) {
+            return;
+        }
+    }
+    if (*ui_declared_needs) {
+        strcat(ui_declared_needs, " ");
+    }
+    strcat(ui_declared_needs, group);
+}
+
+static int ui_word_in(const char *list, const char *word);
+
+/* Whether a backend has every group in a space-separated list. */
+static int ui_be_has_all(const GbUiBackend *be, const char *needs, const char **missing) {
+    static char one[64];
+    for (const char *p = needs; p && *p; ) {
+        while (*p == ' ') {
+            p++;
+        }
+        size_t len = strcspn(p, " ");
+        if (len) {
+            snprintf(one, sizeof one, "%.*s", (int)len, p);
+            if (!ui_word_in(be->groups, one)) {
+                if (missing) {
+                    *missing = one;
+                }
+                return 0;
+            }
+        }
+        p += len;
+    }
+    return 1;
+}
 static const GbUiBackend *ui = NULL;
 static int ui_be_chosen = 0;
 static char ui_be_problem[256];
@@ -92,6 +146,43 @@ static const GbUiBackend *ui_be_find(void) {
         return NULL;
     }
     if (!want || !*want) {
+        /* THE SELECTION RULE (docs/tui_design.md §4, Matthew 2026-11-19: "The
+         * terminal is a nice fallback"): the first backend that can draw here
+         * -- Qt when a display is reachable, the terminal when stdin and
+         * stdout are one -- and has every group the declared windows need.
+         * When none can, the first is kept, so the refusal a program meets is
+         * the one it always met ("no display is available ..."). */
+        const char *missing = NULL;
+        int any_drawable = 0;
+        for (size_t i = 0; ui_backends[i]; i++) {
+            if (!ui_backends[i]->can_display()) {
+                continue;
+            }
+            any_drawable = 1;
+            if (ui_be_has_all(ui_backends[i], ui_declared_needs, &missing)) {
+                ui = ui_backends[i];
+                return ui;
+            }
+        }
+        if (any_drawable && missing) {
+            char have[128] = "";
+            for (size_t i = 0; ui_backends[i]; i++) {
+                if (ui_word_in(ui_backends[i]->groups, missing)) {
+                    size_t used = strlen(have);
+                    snprintf(have + used, sizeof(have) - used, "%s%s", used ? ", " : "",
+                             ui_backends[i]->name);
+                }
+            }
+            snprintf(ui_be_problem, sizeof(ui_be_problem),
+                     "this program's windows need `%s`, and no backend that can draw here has it%s%s",
+                     missing, *have ? " -- it is " : "", *have ? have : "");
+            if (*have) {
+                size_t used = strlen(ui_be_problem);
+                snprintf(ui_be_problem + used, sizeof(ui_be_problem) - used,
+                         "'s, which cannot draw here");
+            }
+            return NULL;
+        }
         ui = ui_backends[0];
         return ui;
     }
@@ -1111,6 +1202,46 @@ static int qt_fill_choice(void *root, const char *name, Value *list,
 static const char **qt_text_list(Value *arr, size_t *count, char *err,
                                  size_t err_size);
 
+/* A SIZE IN CHARACTERS (docs/tui_design.md §8.1, Q3): `40 columns` and
+ * `12 rows` reach here as the records `{ columns: 40 }` and `{ rows: 12 }`,
+ * and become this backend's pixels by its `cell_size`, so Qt holds that many
+ * characters of its font and the terminal that many cells. A bare number is
+ * pixels, as it always was. 1 and *px for a size record, 0 for any other
+ * value (left to the caller), -1 with `err` for a size that is wrong: on a
+ * word that is no size, or columns for a height. */
+static int ui_size_pixels(const char *word, Value *v, double *px, char *err,
+                          size_t err_size) {
+    if (!v || v->kind != VALUE_RECORD || v->as.record.count != 1) {
+        return 0;
+    }
+    const char *unit = v->as.record.fields[0].name;
+    Value *n = v->as.record.fields[0].value;
+    int columns = strcmp(unit, "columns") == 0;
+    if ((!columns && strcmp(unit, "rows") != 0) || !n || n->kind != VALUE_NUMBER) {
+        return 0;
+    }
+    static const char *const across[] = { "width", "min_width", "max_width", "x", NULL };
+    static const char *const down[] = { "height", "min_height", "max_height", "y", NULL };
+    int is_across = 0, is_down = 0;
+    for (size_t i = 0; across[i]; i++) {
+        is_across |= strcmp(word, across[i]) == 0;
+        is_down |= strcmp(word, down[i]) == 0;
+    }
+    if (!is_across && !is_down) {
+        snprintf(err, err_size, "`%s:` is not a size, so it takes no %s", word, unit);
+        return -1;
+    }
+    if (is_across != columns) {
+        snprintf(err, err_size, "`%s:` is measured %s, so it takes %s, not %s", word,
+                 is_across ? "across" : "down", is_across ? "columns" : "rows", unit);
+        return -1;
+    }
+    int cw = 8, ch = 16;
+    ui->cell_size(&cw, &ch);
+    *px = n->as.num.value * (columns ? cw : ch);
+    return 1;
+}
+
 static int qt_apply_options(void *node, Value *options, const char *word,
                             const char *named, int is_container) {
     char err[QT_ERRBUF];
@@ -1200,6 +1331,13 @@ static int qt_apply_options(void *node, Value *options, const char *word,
          * which is an option silently doing nothing, the defect the window
          * block's closed vocabulary exists to prevent one level up. */
         int ok = 0;
+        double px = 0;
+        int size = ui_size_pixels(f->name, v, &px, err, sizeof(err));
+        if (size == 1) {
+            ok = ui->set_number(node, f->name, px, err, sizeof(err));
+        } else if (size == -1) {
+            ok = 0;
+        } else
         switch (v->kind) {
         case VALUE_STRING:
             ok = ui->set_text(node, f->name, v->as.string, err, sizeof(err));
@@ -3230,6 +3368,86 @@ static int qt_window_record(Value *v, const char *verb) {
  * surface was built to be provable with no display and no toolkit. A program
  * that builds a window on a headless machine and validates it before shipping
  * it is doing exactly what this is for. */
+/* A WINDOW'S `needs:` (docs/tui_design.md §8.1, Q5): a list of group
+ * names, each a group. With `against` set, each must also be the chosen
+ * backend's, or the window is refused before anything is built, naming the
+ * group and the backends this build has that have it. 1, or 0 and `out`. */
+static int ui_needs_check(Value *win, int against, char *out, size_t cap) {
+    RecordField *of = record_find(win, "options");
+    RecordField *nf = of && of->value && of->value->kind == VALUE_RECORD
+                          ? record_find(of->value, "needs") : NULL;
+    const char *wname = qt_record_text(win, "name");
+    if (!nf || !nf->value || nf->value->kind == VALUE_NULL) {
+        return 1;
+    }
+    Value *v = nf->value;
+    if (v->kind != VALUE_ARRAY) {
+        snprintf(out, cap, "window `%s`: `needs:` is a list of capability groups, "
+                 "as [\"docking\"]", wname ? wname : "");
+        return 0;
+    }
+    size_t count = v->as.array.store ? v->as.array.store->count : 0;
+    for (size_t i = 0; i < count; i++) {
+        Value *g = &v->as.array.store->items[i];
+        if (g->kind != VALUE_STRING || !ui_group_known(g->as.string)) {
+            const char *nearest = g->kind == VALUE_STRING ? gb_nearest_word(g->as.string, ui_groups) : NULL;
+            snprintf(out, cap, "window `%s`: `needs:` names `%.40s`, which is not a capability "
+                     "group%s%s%s (they are highlighting, docking, stylesheet, figures, "
+                     "file_dialogs, notebook, icons and windows)", wname ? wname : "",
+                     g->kind == VALUE_STRING ? g->as.string : "?", nearest ? " -- did you mean `" : "",
+                     nearest ? nearest : "", nearest ? "`?" : "");
+            return 0;
+        }
+        if (against && !ui_has(g->as.string)) {
+            char have[128] = "";
+            for (size_t b = 0; ui_backends[b]; b++) {
+                if (ui_word_in(ui_backends[b]->groups, g->as.string)) {
+                    size_t used = strlen(have);
+                    snprintf(have + used, sizeof(have) - used, "%s%s", used ? ", " : "",
+                             ui_backends[b]->name);
+                }
+            }
+            snprintf(out, cap, "window `%s` needs `%s`, which the %s backend does not have%s%s%s",
+                     wname ? wname : "", g->as.string, ui ? ui->name : "",
+                     *have ? " -- this build's " : "", have, *have ? " has it" : "");
+            return 0;
+        }
+    }
+    return 1;
+}
+
+/* AN ICON WITH NOTHING BESIDE IT (docs/tui_design.md §8.1, Q4): a part
+ * carrying `icon:` and neither a label nor a text. Where icons are not drawn
+ * (the terminal) it would show only its name, so `ui.check` says so as a
+ * warning, 2124: the window still opens everywhere. */
+static void ui_icon_label_walk(Value *items, const char *window) {
+    if (!items || items->kind != VALUE_ARRAY || !items->as.array.store) {
+        return;
+    }
+    for (size_t i = 0; i < items->as.array.store->count; i++) {
+        Value *it = &items->as.array.store->items[i];
+        if (it->kind != VALUE_RECORD) {
+            continue;
+        }
+        RecordField *of = record_find(it, "options");
+        Value *opts = of && of->value && of->value->kind == VALUE_RECORD ? of->value : NULL;
+        const char *icon = opts ? qt_record_text(opts, "icon") : NULL;
+        const char *label = qt_record_text(it, "label");
+        const char *olabel = opts ? qt_record_text(opts, "label") : NULL;
+        const char *text = opts ? qt_record_text(opts, "text") : NULL;
+        if (icon && *icon && !(label && *label) && !(olabel && *olabel) && !(text && *text)) {
+            const char *name = qt_record_text(it, "name");
+            warn_fmt(2124, "icon", "window `%s`: `%s` has an icon and no label, so where icons "
+                     "are not drawn (the terminal) it shows only its name -- give it a label",
+                     window ? window : "", name ? name : qt_record_text(it, "word"));
+        }
+        RecordField *sub = record_find(it, "items");
+        if (sub) {
+            ui_icon_label_walk(sub->value, window);
+        }
+    }
+}
+
 static Value qt_check_verb(AstExpr *expr, size_t argc) {
     char message[512];
     if (argc != 1) {
@@ -3271,7 +3489,16 @@ static Value qt_check_verb(AstExpr *expr, size_t argc) {
         }
     }
     message[0] = '\0';
+    if (!ui_needs_check(&win, 0, message, sizeof(message))) {
+        qt_raise(message);
+        value_free(win);
+        return value_null();
+    }
     int problems = qt_check_window_record(&win, message, sizeof(message));
+    if (problems == 0) {
+        RecordField *wi = record_find(&win, "items");
+        ui_icon_label_walk(wi ? wi->value : NULL, qt_record_text(&win, "name"));
+    }
     value_free(win);
     if (problems > 0) {
         char full[640];
@@ -3364,6 +3591,11 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
             value_free(win);
             return 0;
         }
+        if (!ui_needs_check(&win, 1, message, sizeof(message))) {
+            qt_raise(message);
+            value_free(win);
+            return 0;
+        }
     }
     /* THE REFUSAL, BEFORE ANYTHING IS CONSTRUCTED (§0.3). With no display
      * Qt calls `qFatal`, which aborts uncatchably and takes
@@ -3376,6 +3608,17 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
                  "no display is available, so window `%s` cannot be "
                  "opened. Set QT_QPA_PLATFORM=offscreen to render without "
                  "one", name ? name : "");
+#if GBASIC_TERM
+        /* the terminal's own sentence: what it lacks is a terminal, and its
+         * way to draw without one is GBASIC_TUI_SCREEN */
+        if (ui == &ui_tui_backend) {
+            const char *why = term_open_now ? "the terminal is held by term.open" : term_unusable();
+            snprintf(message, sizeof(message),
+                     "no terminal is available (%s), so window `%s` cannot be "
+                     "opened. Set GBASIC_TUI_SCREEN=80x24 to draw without one",
+                     why ? why : "it cannot be used", name ? name : "");
+        }
+#endif
         qt_raise(message);
         value_free(win);
         return 0;
@@ -3440,6 +3683,23 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
         }
         if (hf && hf->value && hf->value->kind == VALUE_NUMBER) {
             height = (long)hf->value->as.num.value;
+        }
+        double px = 0;
+        char serr[160];
+        for (int k = 0; k < 2; k++) {
+            RecordField *sf = k ? hf : wf;
+            int got = sf ? ui_size_pixels(k ? "height" : "width", sf->value, &px,
+                                          serr, sizeof(serr)) : 0;
+            if (got == -1) {
+                char message[256];
+                snprintf(message, sizeof(message), "window `%s`: %s", name ? name : "", serr);
+                qt_raise(message);
+                value_free(win);
+                return 0;
+            }
+            if (got == 1) {
+                *(k ? &height : &width) = (long)px;
+            }
         }
     }
     /* WHETHER THIS WINDOW NEEDS A QMainWindow, decided from the DECLARATION
@@ -4520,6 +4780,14 @@ static Value qt_eval_call(AstExpr *expr) {
          * is, which is the rule `ui.read`'s own refusal already follows. */
         err[0] = '\0';
         int ok = 0;
+        double px = 0;
+        int size = ui_size_pixels(prop.as.string, &v, &px, err, sizeof(err));
+        if (size == 1) {
+            ok = ui->set_part_number(root, which.as.string, prop.as.string, px,
+                                     err, sizeof(err));
+        } else if (size == -1) {
+            ok = 0;
+        } else
         switch (v.kind) {
         case VALUE_STRING:
             ok = ui->set_part_text(root, which.as.string, prop.as.string,

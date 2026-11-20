@@ -16,6 +16,24 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **Windows in the terminal: the `tui` backend** (docs/reference.md, *The
+  terminal backend*; `docs/tui_design.md` increment 3). The same `window`
+  declaration, drawn in cells, with:
+  - `row`, `column`, `form`, `group`, `field`, `button`, `check`, `text`,
+    `stretch()` and `separator()`;
+  - forms bound, Tab and the mouse, and Ctrl-Q to close.
+
+  Other parts are refused, naming the increment that draws them. **With no
+  backend named, the first that can draw is used**: Qt when a display is
+  reachable, the terminal otherwise. `--ui=tui` or `GBASIC_UI=tui` chooses by
+  name. Two new window options come with it:
+  - **`needs: ["docking"]`** makes the choice skip a backend lacking a group;
+  - **sizes in characters**, such as `width: 40 columns` or `min_height: 12
+    rows`. Qt converts them by its font, and a new backend member,
+    `cell_size`, makes that 149 members.
+
+  `ui.check` warns (2124) about a part with an icon and no label.
+  `tests/run_ui_tui.sh`.
 - **`term`: the terminal as a screen of cells** (`load term`; docs/reference.md,
   *Term Module*). Full-screen programs in a terminal, over SSH too, on our own
   layer rather than ncurses:

@@ -9894,6 +9894,13 @@ void gb_print_capabilities(FILE *out) {
  * books, 2026-11-18). Each row's switch is the one guarding that module's
  * "not available in this build" refusal, so the two cannot disagree;
  * tests/run_capabilities.sh and run_packaging.sh hold them to each other. */
+/* The Makefile sets GBASIC_TERM on every build; one compiled without it (the
+ * Windows probe, tools/cross-build-windows.sh, replaces CFLAGS) has no
+ * terminal layer, which is what 0 says. */
+#ifndef GBASIC_TERM
+#define GBASIC_TERM 0
+#endif
+
 void gb_print_modules(FILE *out) {
     static const struct { const char *name; int built; const char *needs; } rows[] = {
         { "gsql",          GBASIC_GSQL,                 "a POSIX system" },
@@ -9908,6 +9915,7 @@ void gb_print_modules(FILE *out) {
         { "xml",           HAVE_LIBXML2,                "libxml2" },
         { "xlsx",          HAVE_ZLIB && HAVE_LIBXML2,   "zlib and libxml2" },
         { "zip",           HAVE_ZLIB,                   "zlib" },
+        /* windows on a display; the terminal backend is `term`'s row */
         { "ui",            HAVE_QT,                     "Qt 6" },
         { "tls",           HAVE_LIBSSL,                 "OpenSSL's libssl" },
         { "crypto",        HAVE_LIBCRYPTO,              "OpenSSL's libcrypto" },
@@ -46152,6 +46160,19 @@ static Value window_literal_value(AstExpr *expr) {
          * 2` and aborted. */
         return value_array(values, expr->as.array.count);
     }
+    /* A SIZE IN CHARACTERS (docs/tui_design.md §8.1): the parser writes
+     * `40 columns` as the record `{ columns: 40 }`, and that one shape is
+     * kept, so the `ui` front can turn it into a backend's pixels. Any other
+     * record literal stays `nothing`, as before. */
+    if (expr->kind == AST_EXPR_RECORD && expr->as.record.count == 1 &&
+        expr->as.record.items[0].value->kind == AST_EXPR_NUMBER &&
+        (strcmp(expr->as.record.items[0].name, "columns") == 0 ||
+         strcmp(expr->as.record.items[0].name, "rows") == 0)) {
+        Value r = value_record(NULL, 0);
+        record_set(&r, expr->as.record.items[0].name,
+                   server_literal_value(expr->as.record.items[0].value));
+        return r;
+    }
     return server_literal_value(expr);
 }
 
@@ -46354,7 +46375,17 @@ static Value window_build_value(AstStmt *stmt) {
     Value options = value_record(NULL, 0);
     for (size_t i = 0; i < stmt->as.window.options.count; i++) {
         AstRecordField *field = &stmt->as.window.options.items[i];
-        record_set(&options, field->name, window_literal_value(field->value));
+        Value v = window_literal_value(field->value);
+        /* what the program's windows need steers the automatic choice of
+         * backend (docs/tui_design.md §8.1, Q5; src/modules/ui.c) */
+        if (strcmp(field->name, "needs") == 0 && v.kind == VALUE_ARRAY && v.as.array.store) {
+            for (size_t k = 0; k < v.as.array.store->count; k++) {
+                if (v.as.array.store->items[k].kind == VALUE_STRING) {
+                    ui_note_needs(v.as.array.store->items[k].as.string);
+                }
+            }
+        }
+        record_set(&options, field->name, v);
     }
     record_set(&window, "options", options);
 

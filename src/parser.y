@@ -1,4 +1,5 @@
 %{
+#include <math.h>
 #include "ast.h"
 #include "gb_decimal.h"
 #include "builtins.h"
@@ -609,6 +610,23 @@ static int unit_is(const char *text, const char *unit) {
 static AstDuration duration_add_unit(AstDuration duration, double amount, char *unit,
                                      char **bad_unit) {
     int value = (int)amount;
+    int was_cells = duration.cells;
+    int terms_before = duration.years || duration.months || duration.weeks || duration.days ||
+                       duration.hours || duration.minutes || duration.seconds || was_cells;
+    if (unit_is(unit, "columns") || unit_is(unit, "column") ||
+        unit_is(unit, "rows") || unit_is(unit, "row")) {
+        /* a size in characters (docs/tui_design.md §8.1): one term, alone */
+        if (terms_before) {
+            duration.cells_mixed = 1;
+        }
+        duration.cells = unit[0] == 'c' ? 1 : 2;
+        duration.cells_amount = amount;
+        free(unit);
+        return duration;
+    }
+    if (was_cells) {
+        duration.cells_mixed = 1;
+    }
     if (unit_is(unit, "year") || unit_is(unit, "years")) {
         duration.years += value;
     } else if (unit_is(unit, "month") || unit_is(unit, "months")) {
@@ -1990,7 +2008,30 @@ primary
     | DOT dot_field_name { $$ = expr_at(ast_column($2), @1.first_line, @1.first_column); }
     | NUMBER { $$ = expr_at(ast_number($1.value, $1.exact, $1.is_exact, $1.scale), @1.first_line, @1.first_column); }
     | WATCHERS LPAREN RPAREN { $$ = expr_at(ast_call(copy_const("watchers"), ast_expr_list_empty()), @1.first_line, @1.first_column); }
-    | duration_terms { $$ = expr_at(ast_duration($1), @1.first_line, @1.first_column); }
+    | duration_terms {
+        if ($1.cells) {
+            /* `40 columns` is the record `{ columns: 40 }`, a size the `ui`
+             * backends convert; one term, a whole number of at least 1 */
+            if ($1.cells_mixed) {
+                report_syntax_error(ctx, @1.first_line, @1.first_column, @1.last_line, @1.last_column,
+                                    "a size in columns or rows is one term on its own, "
+                                    "as `40 columns` or `12 rows`: it cannot join a duration or another size");
+                YYERROR;
+            }
+            if ($1.cells_amount < 1 || $1.cells_amount != floor($1.cells_amount) || $1.cells_amount > 100000) {
+                report_syntax_error(ctx, @1.first_line, @1.first_column, @1.last_line, @1.last_column,
+                                    "a size in columns or rows is a whole number from 1, as `40 columns`");
+                YYERROR;
+            }
+            AstRecordFieldList f = ast_record_field_list_empty();
+            f = ast_record_field_list_append(f, copy_const($1.cells == 1 ? "columns" : "rows"),
+                                             expr_at(ast_number($1.cells_amount, (long long)$1.cells_amount, 1, 0),
+                                                     @1.first_line, @1.first_column));
+            $$ = expr_at(ast_record(f), @1.first_line, @1.first_column);
+        } else {
+            $$ = expr_at(ast_duration($1), @1.first_line, @1.first_column);
+        }
+      }
     | STRING { $$ = expr_at(ast_string($1), @1.first_line, @1.first_column); }
     | variable_name ident_suffix {
         if ($2.kind == IDENT_SUFFIX_CALL) {

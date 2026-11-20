@@ -312,18 +312,23 @@ fi
 
 printf 'TIER [N] classes: every GUI tier says whether a backend owes it\n'
 # docs/ui_design.md §8 step 6 and tests/ui_backend.sh. A GUI suite's TIER line
-# carries [N] (no backend), [C] (every backend with its groups) or [Q] (Qt's
-# own); a suite with a [C] tier runs once per backend and once with every
-# group withheld (ui_each_backend); one with a [Q] tier asks ui_tier_qt. This
+# carries [N] (no backend), [C] (every backend with its groups), [Q] (Qt's
+# own) or [T] (the terminal backend's own, docs/tui_design.md); a suite with a
+# [C] tier runs once per backend and once with every group withheld
+# (ui_each_backend); one with a [Q] tier asks ui_tier_qt, one with a [T] tier
+# ui_tier_tui. This
 # suite is the exception it names: its `groups` tier sets the variable
 # itself, so it runs against the build's first backend alone.
 classes_problems() {   # $@ = suite files; prints what is wrong
     local f
     for f in "$@"; do
-        grep -n "^printf 'TIER " "$f" | grep -vE "^[0-9]+:printf 'TIER \[[NCQ]\] " \
+        grep -n "^printf 'TIER " "$f" | grep -vE "^[0-9]+:printf 'TIER \[[NCQT]\] " \
             | sed "s|^|unclassed: $f:|"
         if grep -q "^printf 'TIER \[Q\]" "$f" && ! grep -q 'ui_tier_qt' "$f"; then
             printf 'Q without ui_tier_qt: %s\n' "$f"
+        fi
+        if grep -q "^printf 'TIER \[T\]" "$f" && ! grep -q 'ui_tier_tui' "$f"; then
+            printf 'T without ui_tier_tui: %s\n' "$f"
         fi
         case "$f" in
             *run_ui_vocabulary.sh) ;;
@@ -335,7 +340,7 @@ classes_problems() {   # $@ = suite files; prints what is wrong
 }
 gui_suites=$(ls tests/run_ui_*.sh tests/run_qt_*.sh tests/run_window.sh)
 problems=$(classes_problems $gui_suites)
-counts=$(cat $gui_suites | grep -oE "^printf 'TIER \[[NCQ]\]" | grep -oE '[NCQ]' | sort | uniq -c | tr -s ' ' | tr '\n' ' ')
+counts=$(cat $gui_suites | grep -oE "^printf 'TIER \[[NCQT]\]" | grep -oE '[NCQT]' | sort | uniq -c | tr -s ' ' | tr '\n' ' ')
 if [ -z "$problems" ]; then
     pass "every tier of $(printf '%s\n' $gui_suites | wc -l) GUI suites is classed:$counts"
 else

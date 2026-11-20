@@ -1380,7 +1380,10 @@ int gb_window_check(const GbWinModel *model, const void *win) {
      * own, not a widget's, so the set is knowable without Qt. A misspelling
      * that was ignored would leave an author believing they had asked for
      * something -- the rule `make_dir` and `webserver.listen` already follow. */
-    static const char *head[] = {"title", "width", "height", NULL};
+    /* `needs:` (docs/tui_design.md §8.1, Q5): the capability groups the
+     * window cannot do without, a list of group names. Which names are
+     * groups is the `ui` front's knowledge, so it checks them. */
+    static const char *head[] = {"title", "width", "height", "needs", NULL};
     const char *wname = model->win_name(win);
     size_t opts = model->win_option_count(win);
     for (size_t i = 0; i < opts; i++) {
@@ -1388,7 +1391,7 @@ int gb_window_check(const GbWinModel *model, const void *win) {
         if (!win_in(head, on ? on : "")) {
             win_error(&run, NULL,
                       "window '%s': unknown option '%s' (the options are title, "
-                      "width and height)", wname ? wname : "?", on ? on : "?");
+                      "width, height and needs)", wname ? wname : "?", on ? on : "?");
         }
     }
     const char *dir = model->win_direction(win);

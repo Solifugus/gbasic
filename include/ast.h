@@ -284,6 +284,13 @@ typedef struct {
     int hours;
     int minutes;
     int seconds;
+    /* A SIZE IN CHARACTERS, not a duration (docs/tui_design.md §8.1, Q3):
+     * `40 columns`, `12 rows`. Read by the same NUMBER IDENT rule, so it cost
+     * no grammar, and the parser turns it into the record `{ columns: 40 }`
+     * rather than a duration; these fields only carry it that far. */
+    int cells;              /* 0 none, 1 columns, 2 rows */
+    double cells_amount;
+    int cells_mixed;        /* more than one term with a size among them */
 } AstDuration;
 
 struct AstExpr {

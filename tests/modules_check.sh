@@ -75,7 +75,11 @@ end if' ;;
     # A REFUSAL AT `load` STOPS THE PROGRAM, so it prints nothing and its
     # sentence is on stderr: read both, and that sentence decides first
     local out
-    out=$(cd "$work" && timeout 30 "$bin" "$name.bas" 2>&1)
+    # the `ui` row is Qt's windows: asked for by name, since a build
+    # without Qt still has the terminal backend (the `term` row)
+    local chosen=""
+    [ "$name" = ui ] && chosen=qt
+    out=$(cd "$work" && GBASIC_UI="$chosen" timeout 30 "$bin" "$name.bas" 2>&1)
     if printf '%s' "$out" | grep -q 'not available in this build'; then
         echo "left out"
     else

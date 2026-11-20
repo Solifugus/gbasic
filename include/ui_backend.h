@@ -121,7 +121,7 @@ typedef struct {
 #define GB_UI_PICK_SAVE   1
 #define GB_UI_PICK_FOLDER 2
 
-/* THE 148 MEMBERS, in qt_backend.h's order, each documented there above its
+/* THE 149 MEMBERS, in qt_backend.h's order, each documented there above its
  * Qt function `gb_qt_<member>`: what it answers, what it refuses and what was
  * measured. */
 typedef struct GbUiBackend {
@@ -377,6 +377,11 @@ typedef struct GbUiBackend {
     char *(*child_name)(void *container, int index);
     int (*tab_count)(void *window, const char *name);
     char *(*tab_caption)(void *window, const char *name, int index);
+    /* PIXELS PER COLUMN AND PER ROW (docs/tui_design.md §8.1, Q3): the front
+     * turns a size in characters (`40 columns`, `12 rows`) into this
+     * backend's pixels with it. Qt reads its font; the terminal answers its
+     * nominal cell, 8 by 16, so its pixels convert back to cells exactly. */
+    int (*cell_size)(int *width, int *height);
 } GbUiBackend;
 
 #ifdef __cplusplus

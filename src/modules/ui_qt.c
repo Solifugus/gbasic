@@ -164,4 +164,5 @@ static const GbUiBackend ui_qt_backend = {
     .child_name         = gb_qt_child_name,
     .tab_count          = gb_qt_tab_count,
     .tab_caption        = gb_qt_tab_caption,
+    .cell_size          = gb_qt_cell_size,
 };

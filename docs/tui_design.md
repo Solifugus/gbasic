@@ -1,8 +1,11 @@
 # A TUI: a terminal layer, then a third `ui` backend
 
 **Status:** Partial. §7's increment 1, the `term` module on POSIX, is built
-(2026-11-19, §2.4; `docs/reference.md`, *Term Module*; `tests/run_term.sh`).
-The Windows console and the `tui` backend are not. §8 holds the questions for
+(2026-11-19, §2.4; `docs/reference.md`, *Term Module*; `tests/run_term.sh`),
+and so is increment 3, the `tui` backend's layout and first leaves with the
+selection rule, `needs:` and sizes in characters (2026-11-19, §3.5;
+`docs/reference.md`, *The terminal backend*; `tests/run_ui_tui.sh`). The
+Windows console (2) and increments 4 to 7 are not. §8 holds the questions for
 Matthew. **Q1 ruled the same day: our own terminal layer, not
 ncurses** (Matthew: "our own terminal layer sounds fine ... time to leave
 that to the history books"). **Q2 ruled 2026-11-19: §4's selection rule** (Matthew: "The terminal is a
@@ -230,6 +233,57 @@ on the TUI.
   colour depth (§2.2). Its icon-file fields draw nothing.
 - **`colors`** reads back the colours actually drawn, after degrading, so a
   program can see what the user sees.
+
+### 3.5 What increment 3 built, and what it decided
+
+Built 2026-11-19: `src/modules/ui_tui.c`, a `GbUiBackend` table setting all
+149 members (the 149th, `cell_size`, was added for sizes in characters, and
+Qt answers it from its font). It covers the containers `row`, `column`,
+`form` and `group`, the leaves `stretch`, `separator`, `field`, `button`,
+`check` and `text`, form binding, and the events `pressed`, `changed`,
+`entered`, `context` and `closed`. Every other part is refused, naming the
+increment that draws it. Decisions made in building:
+
+- **A retained model.** The backend keeps the tree, lays it out in cells
+  (preferred sizes, then spare room by `grow:`, a stretch taking 1 and, in a
+  row with no `grow:`, a field taking 1 as Qt's line edit does), draws it into
+  term.c's screen buffer, and term.c writes only what changed.
+- **Ctrl-Q closes the window**, as a window manager's button does: the
+  `closed` handler once, then the front's bookkeeping. Ctrl-C still
+  interrupts the program.
+- **Enter on a check presses the default button**, as in a dialog. An early
+  version pressed the check, which undid the Space before it: measured in the
+  first live run.
+- **The ordinary screen comes back when `ui.run` returns**, with the windows
+  still open and readable (rule 5). The next `ui.run` draws them again. Output
+  printed after a run would otherwise have vanished with the alternate
+  screen.
+- **No terminal, for a test**: `GBASIC_TUI_SCREEN=COLSxROWS` and
+  `GBASIC_TUI_DUMP=PATH`, this backend's `offscreen`.
+- **Left out of the other GUI suites' passes** (`tests/ui_backend.sh`,
+  `UI_SUITES_SKIP_BACKENDS`) until it covers the core, since each `[C]` tier
+  using a table or a dialog would fail for a reason already known.
+  `tests/run_ui_tui.sh` measures it, with a fourth tier class, `[T]`, for this
+  backend's own tiers.
+- **The automatic choice reads `needs:` from every declared window**, noted
+  as each declaration becomes a value, before `main`. The backend is chosen at
+  the first `ui` verb, which is usually before the window it is for.
+- **A size is a field's own.** A field's caption beside it is not counted,
+  as Qt measures its line edit without the label. `ui.read(w, f, "width")`
+  answers pixels at 8 a cell.
+
+**Measured:**
+- six perturbations each turned the suite red: a disabled part taking focus,
+  Enter pressing a check, the rule never choosing the terminal, the rule
+  ignoring `needs:`, the screen kept after a run, and `max_width` ignored;
+- valgrind reports no invalid access, no definite leak and no descriptor left.
+
+**Found in building:**
+- the Makefile's dependency list for `eval.o` lacked `ui_tui.c`, so a rebuild
+  kept a stale backend, and several probes went to code that was
+  not running. It is listed now;
+- a bare `stretch` or `separator` is reported seven lines later as
+  "unexpected PROGRAM" (DOGFOOD).
 
 ### 3.4 The event-loop contract
 

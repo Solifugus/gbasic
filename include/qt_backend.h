@@ -1157,6 +1157,9 @@ char *gb_qt_child_name(void *container, int index);
 
 int gb_qt_tab_count(void *window, const char *name);
 char *gb_qt_tab_caption(void *window, const char *name, int index);
+/* Pixels per column and per row of the application font: what a size in
+ * characters (`40 columns`) is multiplied by. Always answers. */
+int gb_qt_cell_size(int *width, int *height);
 #ifdef __cplusplus
 }
 #endif

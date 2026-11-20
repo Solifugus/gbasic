@@ -44,6 +44,7 @@ static void print_help(const char *argv0) {
     printf("  --json-diagnostics FILE [args...]  run FILE, emitting diagnostics as JSON\n");
     printf("                   lines to stderr. Runs the program, so it takes program\n");
     printf("                   arguments; the inspect-only modes above do not.\n");
+    printf("  --ui=NAME        draw windows with this ui backend (qt, tui), as GBASIC_UI does\n");
     printf("  --line-buffered  flush stdout at every completed line instead of at buffer\n");
     printf("  --full-trace     list every frame inside a library in a traceback\n");
     printf("                   capacity; combines with any of the above\n");
@@ -1058,6 +1059,23 @@ int main(int argc, char **argv) {
      * output surface prompt. Must run before any output. */
     if (extract_flag(&argc, argv, "--line-buffered")) {
         gb_stdout_line_buffered();   /* Windows cannot line-buffer: platform.h */
+    }
+
+    /* `--ui=NAME`: which `ui` backend draws the windows, as GBASIC_UI says
+     * (docs/tui_design.md §4: a GUI when a display is reachable, the terminal
+     * otherwise, and this or the variable to force one). Before the program,
+     * for the same reason as the flags beside it, and only before FILE. */
+    for (int i = 1; i < argc && argv[i][0] == '-'; i++) {
+        if (strncmp(argv[i], "--ui=", 5) == 0) {
+            if (!argv[i][5]) {
+                fprintf(stderr, "--ui= needs a backend's name, as --ui=tui or --ui=qt\n");
+                return 2;
+            }
+            gb_setenv("GBASIC_UI", argv[i] + 5);
+            memmove(argv + i, argv + i + 1, sizeof(char *) * (size_t)(argc - i));
+            argc--;
+            break;
+        }
     }
 
     /* `--full-trace`: show every frame inside a library instead of collapsing

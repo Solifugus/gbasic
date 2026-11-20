@@ -69,6 +69,7 @@
 /* First part of user prologue.  */
 #line 1 "src/parser.y"
 
+#include <math.h>
 #include "ast.h"
 #include "gb_decimal.h"
 #include "builtins.h"
@@ -679,6 +680,23 @@ static int unit_is(const char *text, const char *unit) {
 static AstDuration duration_add_unit(AstDuration duration, double amount, char *unit,
                                      char **bad_unit) {
     int value = (int)amount;
+    int was_cells = duration.cells;
+    int terms_before = duration.years || duration.months || duration.weeks || duration.days ||
+                       duration.hours || duration.minutes || duration.seconds || was_cells;
+    if (unit_is(unit, "columns") || unit_is(unit, "column") ||
+        unit_is(unit, "rows") || unit_is(unit, "row")) {
+        /* a size in characters (docs/tui_design.md §8.1): one term, alone */
+        if (terms_before) {
+            duration.cells_mixed = 1;
+        }
+        duration.cells = unit[0] == 'c' ? 1 : 2;
+        duration.cells_amount = amount;
+        free(unit);
+        return duration;
+    }
+    if (was_cells) {
+        duration.cells_mixed = 1;
+    }
     if (unit_is(unit, "year") || unit_is(unit, "years")) {
         duration.years += value;
     } else if (unit_is(unit, "month") || unit_is(unit, "months")) {
@@ -705,7 +723,7 @@ static AstDuration duration_add_unit(AstDuration duration, double amount, char *
 
 
 
-#line 709 "src/parser.tab.c"
+#line 727 "src/parser.tab.c"
 
 # ifndef YY_CAST
 #  ifdef __cplusplus
@@ -925,7 +943,7 @@ typedef enum yysymbol_kind_t yysymbol_kind_t;
 
 
 /* Unqualified %code blocks.  */
-#line 729 "src/parser.y"
+#line 747 "src/parser.y"
 
 static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx);
 static void yyerror(YYLTYPE *llocp, gb_parse_ctx *ctx, const char *message);
@@ -1014,7 +1032,7 @@ static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
     return 1;
 }
 
-#line 1018 "src/parser.tab.c"
+#line 1036 "src/parser.tab.c"
 
 #ifdef short
 # undef short
@@ -1408,44 +1426,44 @@ static const yytype_int8 yytranslate[] =
 /* YYRLINE[YYN] -- Source line where rule number YYN was defined.  */
 static const yytype_int16 yyrline[] =
 {
-       0,   901,   901,   905,   906,   907,   911,   912,   913,   914,
-     915,   916,   917,   918,   919,   920,   921,   922,   923,   924,
-     925,   926,   927,   928,   929,   930,   931,   932,   933,   934,
-     935,   936,   937,   938,   939,   945,   956,   961,   962,   978,
-     985,   999,  1000,  1004,  1005,  1006,  1007,  1011,  1012,  1016,
-    1024,  1028,  1029,  1030,  1041,  1041,  1049,  1053,  1054,  1058,
-    1059,  1060,  1061,  1065,  1071,  1075,  1078,  1079,  1085,  1090,
-    1099,  1112,  1141,  1142,  1143,  1147,  1151,  1167,  1172,  1180,
-    1184,  1205,  1211,  1217,  1223,  1226,  1232,  1233,  1237,  1238,
-    1239,  1243,  1244,  1245,  1246,  1247,  1248,  1249,  1250,  1251,
-    1252,  1253,  1254,  1255,  1256,  1257,  1258,  1259,  1260,  1261,
-    1262,  1263,  1264,  1265,  1266,  1267,  1268,  1269,  1275,  1286,
-    1289,  1296,  1305,  1317,  1320,  1326,  1332,  1338,  1339,  1340,
-    1341,  1342,  1343,  1359,  1375,  1396,  1397,  1401,  1405,  1408,
-    1416,  1422,  1429,  1430,  1434,  1435,  1455,  1454,  1462,  1461,
-    1484,  1487,  1490,  1496,  1511,  1515,  1525,  1533,  1534,  1535,
-    1540,  1545,  1549,  1554,  1559,  1573,  1588,  1593,  1604,  1619,
-    1624,  1630,  1631,  1632,  1636,  1639,  1642,  1645,  1648,  1654,
-    1655,  1659,  1660,  1664,  1670,  1671,  1672,  1673,  1678,  1692,
-    1697,  1702,  1712,  1716,  1717,  1721,  1728,  1732,  1741,  1742,
-    1746,  1747,  1751,  1755,  1762,  1765,  1768,  1777,  1787,  1790,
-    1793,  1799,  1806,  1816,  1817,  1818,  1819,  1820,  1821,  1822,
-    1823,  1824,  1825,  1826,  1834,  1835,  1839,  1840,  1844,  1845,
-    1867,  1868,  1872,  1873,  1874,  1880,  1881,  1882,  1886,  1887,
-    1888,  1892,  1893,  1894,  1898,  1899,  1906,  1910,  1911,  1912,
-    1916,  1917,  1921,  1929,  1934,  1937,  1942,  1956,  1957,  1958,
-    1959,  1960,  1961,  1962,  1963,  1964,  1965,  1969,  1990,  1991,
-    1992,  1993,  1994,  1995,  2012,  2018,  2019,  2020,  2021,  2022,
-    2023,  2024,  2025,  2026,  2030,  2031,  2035,  2040,  2045,  2051,
-    2063,  2068,  2076,  2086,  2098,  2099,  2103,  2104,  2108,  2109,
-    2113,  2114,  2128,  2132,  2137,  2138,  2139,  2140,  2141,  2142,
-    2146,  2147,  2150,  2154,  2161,  2168,  2175,  2182,  2197,  2204,
-    2213,  2214,  2218,  2219,  2220,  2221,  2222,  2223,  2224,  2225,
-    2226,  2227,  2228,  2229,  2230,  2231,  2232,  2233,  2234,  2235,
-    2236,  2237,  2238,  2239,  2240,  2241,  2242,  2243,  2244,  2245,
-    2246,  2247,  2248,  2249,  2250,  2251,  2252,  2253,  2254,  2255,
-    2256,  2257,  2258,  2259,  2260,  2261,  2262,  2263,  2264,  2265,
-    2269,  2270,  2271,  2272,  2273,  2274,  2282,  2309,  2328,  2329
+       0,   919,   919,   923,   924,   925,   929,   930,   931,   932,
+     933,   934,   935,   936,   937,   938,   939,   940,   941,   942,
+     943,   944,   945,   946,   947,   948,   949,   950,   951,   952,
+     953,   954,   955,   956,   957,   963,   974,   979,   980,   996,
+    1003,  1017,  1018,  1022,  1023,  1024,  1025,  1029,  1030,  1034,
+    1042,  1046,  1047,  1048,  1059,  1059,  1067,  1071,  1072,  1076,
+    1077,  1078,  1079,  1083,  1089,  1093,  1096,  1097,  1103,  1108,
+    1117,  1130,  1159,  1160,  1161,  1165,  1169,  1185,  1190,  1198,
+    1202,  1223,  1229,  1235,  1241,  1244,  1250,  1251,  1255,  1256,
+    1257,  1261,  1262,  1263,  1264,  1265,  1266,  1267,  1268,  1269,
+    1270,  1271,  1272,  1273,  1274,  1275,  1276,  1277,  1278,  1279,
+    1280,  1281,  1282,  1283,  1284,  1285,  1286,  1287,  1293,  1304,
+    1307,  1314,  1323,  1335,  1338,  1344,  1350,  1356,  1357,  1358,
+    1359,  1360,  1361,  1377,  1393,  1414,  1415,  1419,  1423,  1426,
+    1434,  1440,  1447,  1448,  1452,  1453,  1473,  1472,  1480,  1479,
+    1502,  1505,  1508,  1514,  1529,  1533,  1543,  1551,  1552,  1553,
+    1558,  1563,  1567,  1572,  1577,  1591,  1606,  1611,  1622,  1637,
+    1642,  1648,  1649,  1650,  1654,  1657,  1660,  1663,  1666,  1672,
+    1673,  1677,  1678,  1682,  1688,  1689,  1690,  1691,  1696,  1710,
+    1715,  1720,  1730,  1734,  1735,  1739,  1746,  1750,  1759,  1760,
+    1764,  1765,  1769,  1773,  1780,  1783,  1786,  1795,  1805,  1808,
+    1811,  1817,  1824,  1834,  1835,  1836,  1837,  1838,  1839,  1840,
+    1841,  1842,  1843,  1844,  1852,  1853,  1857,  1858,  1862,  1863,
+    1885,  1886,  1890,  1891,  1892,  1898,  1899,  1900,  1904,  1905,
+    1906,  1910,  1911,  1912,  1916,  1917,  1924,  1928,  1929,  1930,
+    1934,  1935,  1939,  1947,  1952,  1955,  1960,  1974,  1975,  1976,
+    1977,  1978,  1979,  1980,  1981,  1982,  1983,  1987,  2008,  2009,
+    2010,  2011,  2035,  2036,  2053,  2059,  2060,  2061,  2062,  2063,
+    2064,  2065,  2066,  2067,  2071,  2072,  2076,  2081,  2086,  2092,
+    2104,  2109,  2117,  2127,  2139,  2140,  2144,  2145,  2149,  2150,
+    2154,  2155,  2169,  2173,  2178,  2179,  2180,  2181,  2182,  2183,
+    2187,  2188,  2191,  2195,  2202,  2209,  2216,  2223,  2238,  2245,
+    2254,  2255,  2259,  2260,  2261,  2262,  2263,  2264,  2265,  2266,
+    2267,  2268,  2269,  2270,  2271,  2272,  2273,  2274,  2275,  2276,
+    2277,  2278,  2279,  2280,  2281,  2282,  2283,  2284,  2285,  2286,
+    2287,  2288,  2289,  2290,  2291,  2292,  2293,  2294,  2295,  2296,
+    2297,  2298,  2299,  2300,  2301,  2302,  2303,  2304,  2305,  2306,
+    2310,  2311,  2312,  2313,  2314,  2315,  2323,  2350,  2369,  2370
 };
 #endif
 
@@ -3224,519 +3242,519 @@ yydestruct (const char *yymsg,
   switch (yykind)
     {
     case YYSYMBOL_IDENT: /* IDENT  */
-#line 873 "src/parser.y"
-            { free(((*yyvaluep).text)); }
-#line 3230 "src/parser.tab.c"
-        break;
-
-    case YYSYMBOL_STRING: /* STRING  */
-#line 873 "src/parser.y"
-            { free(((*yyvaluep).text)); }
-#line 3236 "src/parser.tab.c"
-        break;
-
-    case YYSYMBOL_LENS_CONTENT: /* LENS_CONTENT  */
-#line 873 "src/parser.y"
-            { free(((*yyvaluep).text)); }
-#line 3242 "src/parser.tab.c"
-        break;
-
-    case YYSYMBOL_QUALIFIED_IDENT: /* QUALIFIED_IDENT  */
-#line 873 "src/parser.y"
+#line 891 "src/parser.y"
             { free(((*yyvaluep).text)); }
 #line 3248 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_MODIFIER_PREFIX: /* MODIFIER_PREFIX  */
-#line 873 "src/parser.y"
+    case YYSYMBOL_STRING: /* STRING  */
+#line 891 "src/parser.y"
             { free(((*yyvaluep).text)); }
 #line 3254 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_MODIFIER_VALUE: /* MODIFIER_VALUE  */
-#line 873 "src/parser.y"
+    case YYSYMBOL_LENS_CONTENT: /* LENS_CONTENT  */
+#line 891 "src/parser.y"
             { free(((*yyvaluep).text)); }
 #line 3260 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_SQL_TEXT: /* SQL_TEXT  */
-#line 873 "src/parser.y"
+    case YYSYMBOL_QUALIFIED_IDENT: /* QUALIFIED_IDENT  */
+#line 891 "src/parser.y"
             { free(((*yyvaluep).text)); }
 #line 3266 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_program: /* program  */
-#line 896 "src/parser.y"
-            { (void) ((*yyvaluep).stmt_list); }
+    case YYSYMBOL_MODIFIER_PREFIX: /* MODIFIER_PREFIX  */
+#line 891 "src/parser.y"
+            { free(((*yyvaluep).text)); }
 #line 3272 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_statement_list: /* statement_list  */
-#line 833 "src/parser.y"
-            { ast_free_program(((*yyvaluep).stmt_list)); }
+    case YYSYMBOL_MODIFIER_VALUE: /* MODIFIER_VALUE  */
+#line 891 "src/parser.y"
+            { free(((*yyvaluep).text)); }
 #line 3278 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_statement: /* statement  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_SQL_TEXT: /* SQL_TEXT  */
+#line 891 "src/parser.y"
+            { free(((*yyvaluep).text)); }
 #line 3284 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_assignment: /* assignment  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_program: /* program  */
+#line 914 "src/parser.y"
+            { (void) ((*yyvaluep).stmt_list); }
 #line 3290 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_type_lock: /* type_lock  */
-#line 886 "src/parser.y"
-            { ast_type_lock_free(((*yyvaluep).type_lock)); }
+    case YYSYMBOL_statement_list: /* statement_list  */
+#line 851 "src/parser.y"
+            { ast_free_program(((*yyvaluep).stmt_list)); }
 #line 3296 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_lvalue: /* lvalue  */
-#line 874 "src/parser.y"
-            { ast_free_expr(((*yyvaluep).expr)); }
+    case YYSYMBOL_statement: /* statement  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3302 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_variable_name: /* variable_name  */
-#line 873 "src/parser.y"
-            { free(((*yyvaluep).text)); }
+    case YYSYMBOL_assignment: /* assignment  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3308 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_comparison_lens: /* comparison_lens  */
-#line 880 "src/parser.y"
-            { ast_free_modifier_use(((*yyvaluep).modifier)); }
+    case YYSYMBOL_type_lock: /* type_lock  */
+#line 904 "src/parser.y"
+            { ast_type_lock_free(((*yyvaluep).type_lock)); }
 #line 3314 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_modifier_name: /* modifier_name  */
-#line 873 "src/parser.y"
-            { free(((*yyvaluep).text)); }
+    case YYSYMBOL_lvalue: /* lvalue  */
+#line 892 "src/parser.y"
+            { ast_free_expr(((*yyvaluep).expr)); }
 #line 3320 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_modifier_word: /* modifier_word  */
-#line 873 "src/parser.y"
+    case YYSYMBOL_variable_name: /* variable_name  */
+#line 891 "src/parser.y"
             { free(((*yyvaluep).text)); }
 #line 3326 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_print_statement: /* print_statement  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_comparison_lens: /* comparison_lens  */
+#line 898 "src/parser.y"
+            { ast_free_modifier_use(((*yyvaluep).modifier)); }
 #line 3332 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_call_statement: /* call_statement  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_modifier_name: /* modifier_name  */
+#line 891 "src/parser.y"
+            { free(((*yyvaluep).text)); }
 #line 3338 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_with_lock_statement: /* with_lock_statement  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_modifier_word: /* modifier_word  */
+#line 891 "src/parser.y"
+            { free(((*yyvaluep).text)); }
 #line 3344 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_for_end: /* for_end  */
-#line 873 "src/parser.y"
-            { free(((*yyvaluep).text)); }
+    case YYSYMBOL_print_statement: /* print_statement  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3350 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_for_each_statement: /* for_each_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_call_statement: /* call_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3356 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_do_loop_statement: /* do_loop_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_with_lock_statement: /* with_lock_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3362 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_while_statement: /* while_statement  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_for_end: /* for_end  */
+#line 891 "src/parser.y"
+            { free(((*yyvaluep).text)); }
 #line 3368 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_consider_statement: /* consider_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_for_each_statement: /* for_each_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3374 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_consider_branch_list: /* consider_branch_list  */
-#line 878 "src/parser.y"
-            { ast_free_consider_branch_list(((*yyvaluep).consider_branch_list)); }
+    case YYSYMBOL_do_loop_statement: /* do_loop_statement  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3380 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_consider_else_opt: /* consider_else_opt  */
-#line 833 "src/parser.y"
-            { ast_free_program(((*yyvaluep).stmt_list)); }
+    case YYSYMBOL_while_statement: /* while_statement  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3386 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_consider_statement_list: /* consider_statement_list  */
-#line 833 "src/parser.y"
-            { ast_free_program(((*yyvaluep).stmt_list)); }
+    case YYSYMBOL_consider_statement: /* consider_statement  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3392 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_consider_body_statement: /* consider_body_statement  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_consider_branch_list: /* consider_branch_list  */
+#line 896 "src/parser.y"
+            { ast_free_consider_branch_list(((*yyvaluep).consider_branch_list)); }
 #line 3398 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_function_statement: /* function_statement  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_consider_else_opt: /* consider_else_opt  */
+#line 851 "src/parser.y"
+            { ast_free_program(((*yyvaluep).stmt_list)); }
 #line 3404 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_modifier_statement: /* modifier_statement  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_consider_statement_list: /* consider_statement_list  */
+#line 851 "src/parser.y"
+            { ast_free_program(((*yyvaluep).stmt_list)); }
 #line 3410 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_program_statement: /* program_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_consider_body_statement: /* consider_body_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3416 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_library_statement: /* library_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_function_statement: /* function_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3422 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_use_statement: /* use_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_modifier_statement: /* modifier_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3428 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_modifier_signature: /* modifier_signature  */
-#line 881 "src/parser.y"
-            { ast_free_modifier_signature(((*yyvaluep).modifier_signature)); }
+    case YYSYMBOL_program_statement: /* program_statement  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3434 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_modifier_context: /* modifier_context  */
-#line 873 "src/parser.y"
-            { free(((*yyvaluep).text)); }
+    case YYSYMBOL_library_statement: /* library_statement  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3440 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_watch_statement: /* watch_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_use_statement: /* use_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3446 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_unwatch_statement: /* unwatch_statement  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_modifier_signature: /* modifier_signature  */
+#line 899 "src/parser.y"
+            { ast_free_modifier_signature(((*yyvaluep).modifier_signature)); }
 #line 3452 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_wait_statement: /* wait_statement  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_modifier_context: /* modifier_context  */
+#line 891 "src/parser.y"
+            { free(((*yyvaluep).text)); }
 #line 3458 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_watch_target_list: /* watch_target_list  */
-#line 879 "src/parser.y"
-            { ast_free_name_list(((*yyvaluep).name_list)); }
+    case YYSYMBOL_watch_statement: /* watch_statement  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3464 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_server_statement: /* server_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_unwatch_statement: /* unwatch_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3470 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_gsql_block: /* gsql_block  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_wait_statement: /* wait_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3476 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_window_block: /* window_block  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_watch_target_list: /* watch_target_list  */
+#line 897 "src/parser.y"
+            { ast_free_name_list(((*yyvaluep).name_list)); }
 #line 3482 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_server_item_list: /* server_item_list  */
-#line 885 "src/parser.y"
-            { ast_free_server_item_list(((*yyvaluep).server_item_list)); }
+    case YYSYMBOL_server_statement: /* server_statement  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3488 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_server_item: /* server_item  */
-#line 884 "src/parser.y"
-            { AstServerItemList one = ast_server_item_list_append(ast_server_item_list_empty(), ((*yyvaluep).server_item)); ast_free_server_item_list(one); }
+    case YYSYMBOL_gsql_block: /* gsql_block  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3494 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_server_string_list: /* server_string_list  */
-#line 879 "src/parser.y"
-            { ast_free_name_list(((*yyvaluep).name_list)); }
+    case YYSYMBOL_window_block: /* window_block  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3500 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_watch_target_path: /* watch_target_path  */
-#line 873 "src/parser.y"
-            { free(((*yyvaluep).text)); }
+    case YYSYMBOL_server_item_list: /* server_item_list  */
+#line 903 "src/parser.y"
+            { ast_free_server_item_list(((*yyvaluep).server_item_list)); }
 #line 3506 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_without_watchers_statement: /* without_watchers_statement  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_server_item: /* server_item  */
+#line 902 "src/parser.y"
+            { AstServerItemList one = ast_server_item_list_append(ast_server_item_list_empty(), ((*yyvaluep).server_item)); ast_free_server_item_list(one); }
 #line 3512 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_on_error_statement: /* on_error_statement  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_server_string_list: /* server_string_list  */
+#line 897 "src/parser.y"
+            { ast_free_name_list(((*yyvaluep).name_list)); }
 #line 3518 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_error_statement: /* error_statement  */
-#line 875 "src/parser.y"
-            { ast_free_stmt(((*yyvaluep).stmt)); }
+    case YYSYMBOL_watch_target_path: /* watch_target_path  */
+#line 891 "src/parser.y"
+            { free(((*yyvaluep).text)); }
 #line 3524 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_return_statement: /* return_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_without_watchers_statement: /* without_watchers_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3530 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_label_statement: /* label_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_on_error_statement: /* on_error_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3536 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_goto_statement: /* goto_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_error_statement: /* error_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3542 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_gosub_statement: /* gosub_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_return_statement: /* return_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3548 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_break_statement: /* break_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_label_statement: /* label_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3554 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_continue_statement: /* continue_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_goto_statement: /* goto_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3560 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_if_statement: /* if_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_gosub_statement: /* gosub_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3566 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_if_block_tail: /* if_block_tail  */
-#line 833 "src/parser.y"
-            { ast_free_program(((*yyvaluep).stmt_list)); }
+    case YYSYMBOL_break_statement: /* break_statement  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3572 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_if_inline_tail: /* if_inline_tail  */
-#line 833 "src/parser.y"
-            { ast_free_program(((*yyvaluep).stmt_list)); }
+    case YYSYMBOL_continue_statement: /* continue_statement  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3578 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_inline_statement: /* inline_statement  */
-#line 875 "src/parser.y"
+    case YYSYMBOL_if_statement: /* if_statement  */
+#line 893 "src/parser.y"
             { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3584 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_expression: /* expression  */
-#line 874 "src/parser.y"
-            { ast_free_expr(((*yyvaluep).expr)); }
+    case YYSYMBOL_if_block_tail: /* if_block_tail  */
+#line 851 "src/parser.y"
+            { ast_free_program(((*yyvaluep).stmt_list)); }
 #line 3590 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_or_expression: /* or_expression  */
-#line 874 "src/parser.y"
-            { ast_free_expr(((*yyvaluep).expr)); }
+    case YYSYMBOL_if_inline_tail: /* if_inline_tail  */
+#line 851 "src/parser.y"
+            { ast_free_program(((*yyvaluep).stmt_list)); }
 #line 3596 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_and_expression: /* and_expression  */
-#line 874 "src/parser.y"
-            { ast_free_expr(((*yyvaluep).expr)); }
+    case YYSYMBOL_inline_statement: /* inline_statement  */
+#line 893 "src/parser.y"
+            { ast_free_stmt(((*yyvaluep).stmt)); }
 #line 3602 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_not_expression: /* not_expression  */
-#line 874 "src/parser.y"
+    case YYSYMBOL_expression: /* expression  */
+#line 892 "src/parser.y"
             { ast_free_expr(((*yyvaluep).expr)); }
 #line 3608 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_comparison_expression: /* comparison_expression  */
-#line 874 "src/parser.y"
+    case YYSYMBOL_or_expression: /* or_expression  */
+#line 892 "src/parser.y"
             { ast_free_expr(((*yyvaluep).expr)); }
 #line 3614 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_set_expression: /* set_expression  */
-#line 874 "src/parser.y"
+    case YYSYMBOL_and_expression: /* and_expression  */
+#line 892 "src/parser.y"
             { ast_free_expr(((*yyvaluep).expr)); }
 #line 3620 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_additive_expression: /* additive_expression  */
-#line 874 "src/parser.y"
+    case YYSYMBOL_not_expression: /* not_expression  */
+#line 892 "src/parser.y"
             { ast_free_expr(((*yyvaluep).expr)); }
 #line 3626 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_multiplicative_expression: /* multiplicative_expression  */
-#line 874 "src/parser.y"
+    case YYSYMBOL_comparison_expression: /* comparison_expression  */
+#line 892 "src/parser.y"
             { ast_free_expr(((*yyvaluep).expr)); }
 #line 3632 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_unary_expression: /* unary_expression  */
-#line 874 "src/parser.y"
+    case YYSYMBOL_set_expression: /* set_expression  */
+#line 892 "src/parser.y"
             { ast_free_expr(((*yyvaluep).expr)); }
 #line 3638 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_postfix_expression: /* postfix_expression  */
-#line 874 "src/parser.y"
+    case YYSYMBOL_additive_expression: /* additive_expression  */
+#line 892 "src/parser.y"
             { ast_free_expr(((*yyvaluep).expr)); }
 #line 3644 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_comparison_operator: /* comparison_operator  */
-#line 873 "src/parser.y"
-            { free(((*yyvaluep).text)); }
+    case YYSYMBOL_multiplicative_expression: /* multiplicative_expression  */
+#line 892 "src/parser.y"
+            { ast_free_expr(((*yyvaluep).expr)); }
 #line 3650 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_primary: /* primary  */
-#line 874 "src/parser.y"
+    case YYSYMBOL_unary_expression: /* unary_expression  */
+#line 892 "src/parser.y"
             { ast_free_expr(((*yyvaluep).expr)); }
 #line 3656 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_record_literal: /* record_literal  */
-#line 874 "src/parser.y"
+    case YYSYMBOL_postfix_expression: /* postfix_expression  */
+#line 892 "src/parser.y"
             { ast_free_expr(((*yyvaluep).expr)); }
 #line 3662 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_ident_suffix: /* ident_suffix  */
-#line 882 "src/parser.y"
-            { free(((*yyvaluep).ident_suffix).name); ast_free_expr_list(((*yyvaluep).ident_suffix).args); }
+    case YYSYMBOL_comparison_operator: /* comparison_operator  */
+#line 891 "src/parser.y"
+            { free(((*yyvaluep).text)); }
 #line 3668 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_ident_dot_suffix: /* ident_dot_suffix  */
-#line 882 "src/parser.y"
-            { free(((*yyvaluep).ident_suffix).name); ast_free_expr_list(((*yyvaluep).ident_suffix).args); }
+    case YYSYMBOL_primary: /* primary  */
+#line 892 "src/parser.y"
+            { ast_free_expr(((*yyvaluep).expr)); }
 #line 3674 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_argument_list_opt: /* argument_list_opt  */
-#line 876 "src/parser.y"
-            { ast_free_expr_list(((*yyvaluep).expr_list)); }
+    case YYSYMBOL_record_literal: /* record_literal  */
+#line 892 "src/parser.y"
+            { ast_free_expr(((*yyvaluep).expr)); }
 #line 3680 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_argument_list: /* argument_list  */
-#line 876 "src/parser.y"
-            { ast_free_expr_list(((*yyvaluep).expr_list)); }
+    case YYSYMBOL_ident_suffix: /* ident_suffix  */
+#line 900 "src/parser.y"
+            { free(((*yyvaluep).ident_suffix).name); ast_free_expr_list(((*yyvaluep).ident_suffix).args); }
 #line 3686 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_array_argument_list: /* array_argument_list  */
-#line 876 "src/parser.y"
-            { ast_free_expr_list(((*yyvaluep).expr_list)); }
+    case YYSYMBOL_ident_dot_suffix: /* ident_dot_suffix  */
+#line 900 "src/parser.y"
+            { free(((*yyvaluep).ident_suffix).name); ast_free_expr_list(((*yyvaluep).ident_suffix).args); }
 #line 3692 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_parameter_list_opt: /* parameter_list_opt  */
-#line 879 "src/parser.y"
-            { ast_free_name_list(((*yyvaluep).name_list)); }
+    case YYSYMBOL_argument_list_opt: /* argument_list_opt  */
+#line 894 "src/parser.y"
+            { ast_free_expr_list(((*yyvaluep).expr_list)); }
 #line 3698 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_parameter_default: /* parameter_default  */
-#line 874 "src/parser.y"
-            { ast_free_expr(((*yyvaluep).expr)); }
+    case YYSYMBOL_argument_list: /* argument_list  */
+#line 894 "src/parser.y"
+            { ast_free_expr_list(((*yyvaluep).expr_list)); }
 #line 3704 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_parameter_list: /* parameter_list  */
-#line 879 "src/parser.y"
-            { ast_free_name_list(((*yyvaluep).name_list)); }
+    case YYSYMBOL_array_argument_list: /* array_argument_list  */
+#line 894 "src/parser.y"
+            { ast_free_expr_list(((*yyvaluep).expr_list)); }
 #line 3710 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_field_name: /* field_name  */
-#line 873 "src/parser.y"
-            { free(((*yyvaluep).text)); }
+    case YYSYMBOL_parameter_list_opt: /* parameter_list_opt  */
+#line 897 "src/parser.y"
+            { ast_free_name_list(((*yyvaluep).name_list)); }
 #line 3716 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_projection_names: /* projection_names  */
-#line 879 "src/parser.y"
-            { ast_free_name_list(((*yyvaluep).name_list)); }
+    case YYSYMBOL_parameter_default: /* parameter_default  */
+#line 892 "src/parser.y"
+            { ast_free_expr(((*yyvaluep).expr)); }
 #line 3722 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_dot_field_name: /* dot_field_name  */
-#line 873 "src/parser.y"
-            { free(((*yyvaluep).text)); }
+    case YYSYMBOL_parameter_list: /* parameter_list  */
+#line 897 "src/parser.y"
+            { ast_free_name_list(((*yyvaluep).name_list)); }
 #line 3728 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_record_field_list: /* record_field_list  */
-#line 877 "src/parser.y"
-            { ast_free_record_field_list(((*yyvaluep).record_field_list)); }
+    case YYSYMBOL_field_name: /* field_name  */
+#line 891 "src/parser.y"
+            { free(((*yyvaluep).text)); }
 #line 3734 "src/parser.tab.c"
         break;
 
-    case YYSYMBOL_field_policy: /* field_policy  */
-#line 883 "src/parser.y"
-            { ast_free_expr(((*yyvaluep).field_policy).reset_expr); }
+    case YYSYMBOL_projection_names: /* projection_names  */
+#line 897 "src/parser.y"
+            { ast_free_name_list(((*yyvaluep).name_list)); }
 #line 3740 "src/parser.tab.c"
+        break;
+
+    case YYSYMBOL_dot_field_name: /* dot_field_name  */
+#line 891 "src/parser.y"
+            { free(((*yyvaluep).text)); }
+#line 3746 "src/parser.tab.c"
+        break;
+
+    case YYSYMBOL_record_field_list: /* record_field_list  */
+#line 895 "src/parser.y"
+            { ast_free_record_field_list(((*yyvaluep).record_field_list)); }
+#line 3752 "src/parser.tab.c"
+        break;
+
+    case YYSYMBOL_field_policy: /* field_policy  */
+#line 901 "src/parser.y"
+            { ast_free_expr(((*yyvaluep).field_policy).reset_expr); }
+#line 3758 "src/parser.tab.c"
         break;
 
       default:
@@ -3833,10 +3851,10 @@ YYLTYPE yylloc = yyloc_default;
 
 
 /* User initialization code.  */
-#line 724 "src/parser.y"
+#line 742 "src/parser.y"
 { (void)yynerrs; }
 
-#line 3840 "src/parser.tab.c"
+#line 3858 "src/parser.tab.c"
 
   yylsp[0] = yylloc;
   goto yysetstate;
@@ -4047,205 +4065,205 @@ yyreduce:
   switch (yyn)
     {
   case 2: /* program: statement_list  */
-#line 901 "src/parser.y"
+#line 919 "src/parser.y"
                      { ctx->parsed_program = (yyvsp[0].stmt_list); (yyval.stmt_list) = (yyvsp[0].stmt_list); }
-#line 4053 "src/parser.tab.c"
-    break;
-
-  case 3: /* statement_list: %empty  */
-#line 905 "src/parser.y"
-             { (yyval.stmt_list) = ast_stmt_list_empty(); }
-#line 4059 "src/parser.tab.c"
-    break;
-
-  case 4: /* statement_list: statement_list NEWLINE  */
-#line 906 "src/parser.y"
-                             { (yyval.stmt_list) = (yyvsp[-1].stmt_list); }
-#line 4065 "src/parser.tab.c"
-    break;
-
-  case 5: /* statement_list: statement_list statement  */
-#line 907 "src/parser.y"
-                               { (yyval.stmt_list) = ast_stmt_list_append((yyvsp[-1].stmt_list), (yyvsp[0].stmt)); }
 #line 4071 "src/parser.tab.c"
     break;
 
-  case 6: /* statement: assignment NEWLINE  */
-#line 911 "src/parser.y"
-                         { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 3: /* statement_list: %empty  */
+#line 923 "src/parser.y"
+             { (yyval.stmt_list) = ast_stmt_list_empty(); }
 #line 4077 "src/parser.tab.c"
     break;
 
-  case 7: /* statement: print_statement NEWLINE  */
-#line 912 "src/parser.y"
-                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 4: /* statement_list: statement_list NEWLINE  */
+#line 924 "src/parser.y"
+                             { (yyval.stmt_list) = (yyvsp[-1].stmt_list); }
 #line 4083 "src/parser.tab.c"
     break;
 
-  case 8: /* statement: call_statement NEWLINE  */
-#line 913 "src/parser.y"
-                             { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 5: /* statement_list: statement_list statement  */
+#line 925 "src/parser.y"
+                               { (yyval.stmt_list) = ast_stmt_list_append((yyvsp[-1].stmt_list), (yyvsp[0].stmt)); }
 #line 4089 "src/parser.tab.c"
     break;
 
-  case 9: /* statement: with_lock_statement  */
-#line 914 "src/parser.y"
-                          { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 6: /* statement: assignment NEWLINE  */
+#line 929 "src/parser.y"
+                         { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4095 "src/parser.tab.c"
     break;
 
-  case 10: /* statement: window_block  */
-#line 915 "src/parser.y"
-                   { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 7: /* statement: print_statement NEWLINE  */
+#line 930 "src/parser.y"
+                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4101 "src/parser.tab.c"
     break;
 
-  case 11: /* statement: gsql_block  */
-#line 916 "src/parser.y"
-                 { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 8: /* statement: call_statement NEWLINE  */
+#line 931 "src/parser.y"
+                             { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4107 "src/parser.tab.c"
     break;
 
-  case 12: /* statement: for_each_statement  */
-#line 917 "src/parser.y"
-                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 9: /* statement: with_lock_statement  */
+#line 932 "src/parser.y"
+                          { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4113 "src/parser.tab.c"
     break;
 
-  case 13: /* statement: while_statement  */
-#line 918 "src/parser.y"
-                      { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 10: /* statement: window_block  */
+#line 933 "src/parser.y"
+                   { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4119 "src/parser.tab.c"
     break;
 
-  case 14: /* statement: do_loop_statement  */
-#line 919 "src/parser.y"
-                        { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 11: /* statement: gsql_block  */
+#line 934 "src/parser.y"
+                 { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4125 "src/parser.tab.c"
     break;
 
-  case 15: /* statement: consider_statement  */
-#line 920 "src/parser.y"
+  case 12: /* statement: for_each_statement  */
+#line 935 "src/parser.y"
                          { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4131 "src/parser.tab.c"
     break;
 
-  case 16: /* statement: function_statement  */
-#line 921 "src/parser.y"
-                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 13: /* statement: while_statement  */
+#line 936 "src/parser.y"
+                      { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4137 "src/parser.tab.c"
     break;
 
-  case 17: /* statement: modifier_statement  */
-#line 922 "src/parser.y"
-                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 14: /* statement: do_loop_statement  */
+#line 937 "src/parser.y"
+                        { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4143 "src/parser.tab.c"
     break;
 
-  case 18: /* statement: program_statement  */
-#line 923 "src/parser.y"
-                        { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 15: /* statement: consider_statement  */
+#line 938 "src/parser.y"
+                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4149 "src/parser.tab.c"
     break;
 
-  case 19: /* statement: library_statement  */
-#line 924 "src/parser.y"
-                        { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 16: /* statement: function_statement  */
+#line 939 "src/parser.y"
+                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4155 "src/parser.tab.c"
     break;
 
-  case 20: /* statement: use_statement NEWLINE  */
-#line 925 "src/parser.y"
-                            { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 17: /* statement: modifier_statement  */
+#line 940 "src/parser.y"
+                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4161 "src/parser.tab.c"
     break;
 
-  case 21: /* statement: watch_statement  */
-#line 926 "src/parser.y"
-                      { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 18: /* statement: program_statement  */
+#line 941 "src/parser.y"
+                        { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4167 "src/parser.tab.c"
     break;
 
-  case 22: /* statement: server_statement  */
-#line 927 "src/parser.y"
-                       { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 19: /* statement: library_statement  */
+#line 942 "src/parser.y"
+                        { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4173 "src/parser.tab.c"
     break;
 
-  case 23: /* statement: unwatch_statement NEWLINE  */
-#line 928 "src/parser.y"
-                                { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 20: /* statement: use_statement NEWLINE  */
+#line 943 "src/parser.y"
+                            { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4179 "src/parser.tab.c"
     break;
 
-  case 24: /* statement: wait_statement NEWLINE  */
-#line 929 "src/parser.y"
-                             { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 21: /* statement: watch_statement  */
+#line 944 "src/parser.y"
+                      { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4185 "src/parser.tab.c"
     break;
 
-  case 25: /* statement: without_watchers_statement  */
-#line 930 "src/parser.y"
-                                 { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 22: /* statement: server_statement  */
+#line 945 "src/parser.y"
+                       { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4191 "src/parser.tab.c"
     break;
 
-  case 26: /* statement: on_error_statement NEWLINE  */
-#line 931 "src/parser.y"
-                                 { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 23: /* statement: unwatch_statement NEWLINE  */
+#line 946 "src/parser.y"
+                                { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4197 "src/parser.tab.c"
     break;
 
-  case 27: /* statement: error_statement NEWLINE  */
-#line 932 "src/parser.y"
-                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 24: /* statement: wait_statement NEWLINE  */
+#line 947 "src/parser.y"
+                             { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4203 "src/parser.tab.c"
     break;
 
-  case 28: /* statement: return_statement NEWLINE  */
-#line 933 "src/parser.y"
-                               { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 25: /* statement: without_watchers_statement  */
+#line 948 "src/parser.y"
+                                 { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4209 "src/parser.tab.c"
     break;
 
-  case 29: /* statement: label_statement NEWLINE  */
-#line 934 "src/parser.y"
-                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 26: /* statement: on_error_statement NEWLINE  */
+#line 949 "src/parser.y"
+                                 { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4215 "src/parser.tab.c"
     break;
 
-  case 30: /* statement: goto_statement NEWLINE  */
-#line 935 "src/parser.y"
-                             { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 27: /* statement: error_statement NEWLINE  */
+#line 950 "src/parser.y"
+                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4221 "src/parser.tab.c"
     break;
 
-  case 31: /* statement: gosub_statement NEWLINE  */
-#line 936 "src/parser.y"
-                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 28: /* statement: return_statement NEWLINE  */
+#line 951 "src/parser.y"
+                               { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4227 "src/parser.tab.c"
     break;
 
-  case 32: /* statement: break_statement NEWLINE  */
-#line 937 "src/parser.y"
+  case 29: /* statement: label_statement NEWLINE  */
+#line 952 "src/parser.y"
                               { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4233 "src/parser.tab.c"
     break;
 
-  case 33: /* statement: continue_statement NEWLINE  */
-#line 938 "src/parser.y"
-                                 { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 30: /* statement: goto_statement NEWLINE  */
+#line 953 "src/parser.y"
+                             { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4239 "src/parser.tab.c"
     break;
 
-  case 34: /* statement: if_statement  */
-#line 939 "src/parser.y"
-                   { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 31: /* statement: gosub_statement NEWLINE  */
+#line 954 "src/parser.y"
+                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4245 "src/parser.tab.c"
     break;
 
+  case 32: /* statement: break_statement NEWLINE  */
+#line 955 "src/parser.y"
+                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+#line 4251 "src/parser.tab.c"
+    break;
+
+  case 33: /* statement: continue_statement NEWLINE  */
+#line 956 "src/parser.y"
+                                 { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+#line 4257 "src/parser.tab.c"
+    break;
+
+  case 34: /* statement: if_statement  */
+#line 957 "src/parser.y"
+                   { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+#line 4263 "src/parser.tab.c"
+    break;
+
   case 35: /* statement: DIM  */
-#line 945 "src/parser.y"
+#line 963 "src/parser.y"
           {
         (yyval.stmt) = NULL;      /* never read: YYERROR unwinds. Set so bison does not
                          * report an unset value and grow the warning list. */
@@ -4254,23 +4272,23 @@ yyreduce:
                             "`dim` is not a gBASIC statement; assign to create a variable (x = 0)");
         YYERROR;
       }
-#line 4258 "src/parser.tab.c"
+#line 4276 "src/parser.tab.c"
     break;
 
   case 36: /* assignment: lvalue OP_EQ expression  */
-#line 956 "src/parser.y"
+#line 974 "src/parser.y"
                               { (yyval.stmt) = ast_assign((yyvsp[-2].expr), ast_modifier_none(), (yyvsp[0].expr)); }
-#line 4264 "src/parser.tab.c"
+#line 4282 "src/parser.tab.c"
     break;
 
   case 37: /* assignment: lvalue compound_op expression  */
-#line 961 "src/parser.y"
+#line 979 "src/parser.y"
                                     { (yyval.stmt) = ast_assign_op((yyvsp[-2].expr), ast_modifier_none(), (yyvsp[0].expr), (yyvsp[-1].op_char)); }
-#line 4270 "src/parser.tab.c"
+#line 4288 "src/parser.tab.c"
     break;
 
   case 38: /* assignment: lvalue comparison_lens compound_op expression  */
-#line 962 "src/parser.y"
+#line 980 "src/parser.y"
                                                     {
         if (!is_modifier_target_expr((yyvsp[-3].expr))) {
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
@@ -4280,11 +4298,11 @@ yyreduce:
         }
         (yyval.stmt) = ast_assign_op((yyvsp[-3].expr), (yyvsp[-2].modifier), (yyvsp[0].expr), (yyvsp[-1].op_char));
       }
-#line 4284 "src/parser.tab.c"
+#line 4302 "src/parser.tab.c"
     break;
 
   case 39: /* assignment: variable_name COLON type_lock OP_EQ expression  */
-#line 978 "src/parser.y"
+#line 996 "src/parser.y"
                                                      {
         if (!type_lock_check(ctx, (yyvsp[-4].text), (yyvsp[-2].type_lock).name, (yyvsp[-2].type_lock).arg, (yylsp[-2]).first_line, (yylsp[-2]).first_column,
                              (yylsp[-2]).last_line, (yylsp[-2]).last_column)) {
@@ -4292,11 +4310,11 @@ yyreduce:
         }
         (yyval.stmt) = ast_assign_locked(expr_at(ast_ident((yyvsp[-4].text)), (yylsp[-4]).first_line, (yylsp[-4]).first_column), (yyvsp[-2].type_lock), (yyvsp[0].expr));
       }
-#line 4296 "src/parser.tab.c"
+#line 4314 "src/parser.tab.c"
     break;
 
   case 40: /* assignment: lvalue comparison_lens OP_EQ expression  */
-#line 985 "src/parser.y"
+#line 1003 "src/parser.y"
                                               {
         if (!is_modifier_target_expr((yyvsp[-3].expr))) {
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
@@ -4306,59 +4324,59 @@ yyreduce:
         }
         (yyval.stmt) = ast_assign((yyvsp[-3].expr), (yyvsp[-2].modifier), (yyvsp[0].expr));
       }
-#line 4310 "src/parser.tab.c"
-    break;
-
-  case 41: /* type_lock: IDENT  */
-#line 999 "src/parser.y"
-            { (yyval.type_lock) = ast_type_lock((yyvsp[0].text), NULL, (yylsp[0]).first_line, (yylsp[0]).first_column); }
-#line 4316 "src/parser.tab.c"
-    break;
-
-  case 42: /* type_lock: IDENT LPAREN IDENT RPAREN  */
-#line 1000 "src/parser.y"
-                                { (yyval.type_lock) = ast_type_lock((yyvsp[-3].text), (yyvsp[-1].text), (yylsp[-3]).first_line, (yylsp[-3]).first_column); }
-#line 4322 "src/parser.tab.c"
-    break;
-
-  case 43: /* compound_op: PLUS_EQ  */
-#line 1004 "src/parser.y"
-               { (yyval.op_char) = '+'; }
 #line 4328 "src/parser.tab.c"
     break;
 
-  case 44: /* compound_op: MINUS_EQ  */
-#line 1005 "src/parser.y"
-               { (yyval.op_char) = '-'; }
+  case 41: /* type_lock: IDENT  */
+#line 1017 "src/parser.y"
+            { (yyval.type_lock) = ast_type_lock((yyvsp[0].text), NULL, (yylsp[0]).first_line, (yylsp[0]).first_column); }
 #line 4334 "src/parser.tab.c"
     break;
 
-  case 45: /* compound_op: STAR_EQ  */
-#line 1006 "src/parser.y"
-               { (yyval.op_char) = '*'; }
+  case 42: /* type_lock: IDENT LPAREN IDENT RPAREN  */
+#line 1018 "src/parser.y"
+                                { (yyval.type_lock) = ast_type_lock((yyvsp[-3].text), (yyvsp[-1].text), (yylsp[-3]).first_line, (yylsp[-3]).first_column); }
 #line 4340 "src/parser.tab.c"
     break;
 
-  case 46: /* compound_op: SLASH_EQ  */
-#line 1007 "src/parser.y"
-               { (yyval.op_char) = '/'; }
+  case 43: /* compound_op: PLUS_EQ  */
+#line 1022 "src/parser.y"
+               { (yyval.op_char) = '+'; }
 #line 4346 "src/parser.tab.c"
     break;
 
-  case 47: /* lvalue: variable_name  */
-#line 1011 "src/parser.y"
-                                 { (yyval.expr) = expr_at(ast_ident((yyvsp[0].text)), (yylsp[0]).first_line, (yylsp[0]).first_column); }
+  case 44: /* compound_op: MINUS_EQ  */
+#line 1023 "src/parser.y"
+               { (yyval.op_char) = '-'; }
 #line 4352 "src/parser.tab.c"
     break;
 
-  case 48: /* lvalue: lvalue LBRACKET expression RBRACKET  */
-#line 1012 "src/parser.y"
-                                                       { (yyval.expr) = expr_at(ast_index((yyvsp[-3].expr), (yyvsp[-1].expr)), (yylsp[-2]).first_line, (yylsp[-2]).first_column); }
+  case 45: /* compound_op: STAR_EQ  */
+#line 1024 "src/parser.y"
+               { (yyval.op_char) = '*'; }
 #line 4358 "src/parser.tab.c"
     break;
 
+  case 46: /* compound_op: SLASH_EQ  */
+#line 1025 "src/parser.y"
+               { (yyval.op_char) = '/'; }
+#line 4364 "src/parser.tab.c"
+    break;
+
+  case 47: /* lvalue: variable_name  */
+#line 1029 "src/parser.y"
+                                 { (yyval.expr) = expr_at(ast_ident((yyvsp[0].text)), (yylsp[0]).first_line, (yylsp[0]).first_column); }
+#line 4370 "src/parser.tab.c"
+    break;
+
+  case 48: /* lvalue: lvalue LBRACKET expression RBRACKET  */
+#line 1030 "src/parser.y"
+                                                       { (yyval.expr) = expr_at(ast_index((yyvsp[-3].expr), (yyvsp[-1].expr)), (yylsp[-2]).first_line, (yylsp[-2]).first_column); }
+#line 4376 "src/parser.tab.c"
+    break;
+
   case 49: /* lvalue: lvalue LBRACKET expression COMMA argument_list RBRACKET  */
-#line 1016 "src/parser.y"
+#line 1034 "src/parser.y"
                                                                            {
         AstExprList items = ast_expr_list_append(ast_expr_list_empty(), (yyvsp[-3].expr));
         for (size_t i = 0; i < (yyvsp[-1].expr_list).count; i++) {
@@ -4367,136 +4385,136 @@ yyreduce:
         free((yyvsp[-1].expr_list).items);
         (yyval.expr) = expr_at(ast_index_list((yyvsp[-5].expr), items), (yylsp[-4]).first_line, (yylsp[-4]).first_column);
       }
-#line 4371 "src/parser.tab.c"
-    break;
-
-  case 50: /* lvalue: lvalue DOT dot_field_name  */
-#line 1024 "src/parser.y"
-                                             { (yyval.expr) = expr_at(ast_field((yyvsp[-2].expr), (yyvsp[0].text)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
-#line 4377 "src/parser.tab.c"
-    break;
-
-  case 51: /* variable_name: IDENT  */
-#line 1028 "src/parser.y"
-                         { (yyval.text) = (yyvsp[0].text); }
-#line 4383 "src/parser.tab.c"
-    break;
-
-  case 52: /* variable_name: END  */
-#line 1029 "src/parser.y"
-                       { (yyval.text) = copy_const("end"); }
 #line 4389 "src/parser.tab.c"
     break;
 
-  case 53: /* variable_name: NEXT  */
-#line 1030 "src/parser.y"
-                        { (yyval.text) = copy_const("next"); }
+  case 50: /* lvalue: lvalue DOT dot_field_name  */
+#line 1042 "src/parser.y"
+                                             { (yyval.expr) = expr_at(ast_field((yyvsp[-2].expr), (yyvsp[0].text)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
 #line 4395 "src/parser.tab.c"
     break;
 
-  case 54: /* $@1: %empty  */
-#line 1041 "src/parser.y"
-             { lexer_begin_lens_content(ctx->active_lexer); }
+  case 51: /* variable_name: IDENT  */
+#line 1046 "src/parser.y"
+                         { (yyval.text) = (yyvsp[0].text); }
 #line 4401 "src/parser.tab.c"
     break;
 
+  case 52: /* variable_name: END  */
+#line 1047 "src/parser.y"
+                       { (yyval.text) = copy_const("end"); }
+#line 4407 "src/parser.tab.c"
+    break;
+
+  case 53: /* variable_name: NEXT  */
+#line 1048 "src/parser.y"
+                        { (yyval.text) = copy_const("next"); }
+#line 4413 "src/parser.tab.c"
+    break;
+
+  case 54: /* $@1: %empty  */
+#line 1059 "src/parser.y"
+             { lexer_begin_lens_content(ctx->active_lexer); }
+#line 4419 "src/parser.tab.c"
+    break;
+
   case 55: /* comparison_lens: LBRACE $@1 LENS_CONTENT RBRACE  */
-#line 1041 "src/parser.y"
+#line 1059 "src/parser.y"
                                                                                   {
         (yyval.modifier) = parse_modifier_use((yyvsp[-1].text));
       }
-#line 4409 "src/parser.tab.c"
-    break;
-
-  case 56: /* comparison_lens: MODIFIER_PREFIX  */
-#line 1049 "src/parser.y"
-                      { (yyval.modifier) = parse_modifier_use((yyvsp[0].text)); }
-#line 4415 "src/parser.tab.c"
-    break;
-
-  case 57: /* modifier_name: modifier_word  */
-#line 1053 "src/parser.y"
-                    { (yyval.text) = (yyvsp[0].text); }
-#line 4421 "src/parser.tab.c"
-    break;
-
-  case 58: /* modifier_name: modifier_name modifier_word  */
-#line 1054 "src/parser.y"
-                                  { (yyval.text) = join_words((yyvsp[-1].text), (yyvsp[0].text)); }
 #line 4427 "src/parser.tab.c"
     break;
 
-  case 59: /* modifier_word: IDENT  */
-#line 1058 "src/parser.y"
-            { (yyval.text) = (yyvsp[0].text); }
+  case 56: /* comparison_lens: MODIFIER_PREFIX  */
+#line 1067 "src/parser.y"
+                      { (yyval.modifier) = parse_modifier_use((yyvsp[0].text)); }
 #line 4433 "src/parser.tab.c"
     break;
 
-  case 60: /* modifier_word: TO  */
-#line 1059 "src/parser.y"
-         { (yyval.text) = copy_const("to"); }
+  case 57: /* modifier_name: modifier_word  */
+#line 1071 "src/parser.y"
+                    { (yyval.text) = (yyvsp[0].text); }
 #line 4439 "src/parser.tab.c"
     break;
 
-  case 61: /* modifier_word: END  */
-#line 1060 "src/parser.y"
-          { (yyval.text) = copy_const("end"); }
+  case 58: /* modifier_name: modifier_name modifier_word  */
+#line 1072 "src/parser.y"
+                                  { (yyval.text) = join_words((yyvsp[-1].text), (yyvsp[0].text)); }
 #line 4445 "src/parser.tab.c"
     break;
 
-  case 62: /* modifier_word: NEXT  */
-#line 1061 "src/parser.y"
-           { (yyval.text) = copy_const("next"); }
+  case 59: /* modifier_word: IDENT  */
+#line 1076 "src/parser.y"
+            { (yyval.text) = (yyvsp[0].text); }
 #line 4451 "src/parser.tab.c"
     break;
 
-  case 63: /* print_statement: PRINT expression  */
-#line 1065 "src/parser.y"
-                       { (yyval.stmt) = ast_print((yyvsp[0].expr)); }
+  case 60: /* modifier_word: TO  */
+#line 1077 "src/parser.y"
+         { (yyval.text) = copy_const("to"); }
 #line 4457 "src/parser.tab.c"
     break;
 
-  case 64: /* print_statement: PRINT TO ERROR_VALUE expression  */
-#line 1071 "src/parser.y"
-                                      { (yyval.stmt) = ast_print_error((yyvsp[0].expr)); }
+  case 61: /* modifier_word: END  */
+#line 1078 "src/parser.y"
+          { (yyval.text) = copy_const("end"); }
 #line 4463 "src/parser.tab.c"
     break;
 
-  case 65: /* call_statement: IDENT LPAREN argument_list_opt RPAREN  */
-#line 1075 "src/parser.y"
-                                            { (yyval.stmt) = ast_expr_stmt(ast_call((yyvsp[-3].text), (yyvsp[-1].expr_list))); }
+  case 62: /* modifier_word: NEXT  */
+#line 1079 "src/parser.y"
+           { (yyval.text) = copy_const("next"); }
 #line 4469 "src/parser.tab.c"
     break;
 
-  case 66: /* call_statement: TRY expression  */
-#line 1078 "src/parser.y"
-                     { (yyval.stmt) = ast_expr_stmt(expr_at(ast_unary(copy_const("try"), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column)); }
+  case 63: /* print_statement: PRINT expression  */
+#line 1083 "src/parser.y"
+                       { (yyval.stmt) = ast_print((yyvsp[0].expr)); }
 #line 4475 "src/parser.tab.c"
     break;
 
+  case 64: /* print_statement: PRINT TO ERROR_VALUE expression  */
+#line 1089 "src/parser.y"
+                                      { (yyval.stmt) = ast_print_error((yyvsp[0].expr)); }
+#line 4481 "src/parser.tab.c"
+    break;
+
+  case 65: /* call_statement: IDENT LPAREN argument_list_opt RPAREN  */
+#line 1093 "src/parser.y"
+                                            { (yyval.stmt) = ast_expr_stmt(ast_call((yyvsp[-3].text), (yyvsp[-1].expr_list))); }
+#line 4487 "src/parser.tab.c"
+    break;
+
+  case 66: /* call_statement: TRY expression  */
+#line 1096 "src/parser.y"
+                     { (yyval.stmt) = ast_expr_stmt(expr_at(ast_unary(copy_const("try"), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column)); }
+#line 4493 "src/parser.tab.c"
+    break;
+
   case 67: /* call_statement: QUALIFIED_IDENT LPAREN argument_list_opt RPAREN  */
-#line 1079 "src/parser.y"
+#line 1097 "src/parser.y"
                                                       {
         char *library = NULL;
         char *name = NULL;
         split_qualified_ident((yyvsp[-3].text), &library, &name);
         (yyval.stmt) = ast_expr_stmt(ast_qualified_call(library, name, (yyvsp[-1].expr_list)));
       }
-#line 4486 "src/parser.tab.c"
+#line 4504 "src/parser.tab.c"
     break;
 
   case 68: /* call_statement: lvalue DOT IDENT LPAREN argument_list_opt RPAREN  */
-#line 1085 "src/parser.y"
+#line 1103 "src/parser.y"
                                                        {
         /* Bare chained-method-call statement with an lvalue receiver ending in a
          * plain IDENT method (e.g. a[0].show()). */
         (yyval.stmt) = ast_expr_stmt(expr_at(ast_method_call((yyvsp[-5].expr), (yyvsp[-3].text), (yyvsp[-1].expr_list)), (yylsp[-4]).first_line, (yylsp[-4]).first_column));
       }
-#line 4496 "src/parser.tab.c"
+#line 4514 "src/parser.tab.c"
     break;
 
   case 69: /* call_statement: lvalue DOT QUALIFIED_IDENT LPAREN argument_list_opt RPAREN  */
-#line 1090 "src/parser.y"
+#line 1108 "src/parser.y"
                                                                  {
         /* Bare chained-method-call statement where the lexer folded the trailing
          * `field.method(` into one QUALIFIED_IDENT (e.g. holder.widget.present()). */
@@ -4506,11 +4524,11 @@ yyreduce:
         AstExpr *recv = expr_at(ast_field((yyvsp[-5].expr), field), (yylsp[-4]).first_line, (yylsp[-4]).first_column);
         (yyval.stmt) = ast_expr_stmt(expr_at(ast_method_call(recv, method, (yyvsp[-1].expr_list)), (yylsp[-4]).first_line, (yylsp[-4]).first_column));
       }
-#line 4510 "src/parser.tab.c"
+#line 4528 "src/parser.tab.c"
     break;
 
   case 70: /* call_statement: ERROR_VALUE DOT IDENT LPAREN argument_list_opt RPAREN  */
-#line 1099 "src/parser.y"
+#line 1117 "src/parser.y"
                                                             {
         size_t length = strlen("error.") + strlen((yyvsp[-3].text));
         char *name = malloc(length + 1);
@@ -4521,11 +4539,11 @@ yyreduce:
         free((yyvsp[-3].text));
         (yyval.stmt) = ast_expr_stmt(ast_call(name, (yyvsp[-1].expr_list)));
       }
-#line 4525 "src/parser.tab.c"
+#line 4543 "src/parser.tab.c"
     break;
 
   case 71: /* with_lock_statement: WITH IDENT LPAREN expression RPAREN NEWLINE statement_list END WITH NEWLINE  */
-#line 1112 "src/parser.y"
+#line 1130 "src/parser.y"
                                                                                   {
         /* The opener word is recognised by POSITION, not reserved -- the same
          * technique the `server` block's verbs use -- so `lock` and
@@ -4544,317 +4562,317 @@ yyreduce:
         free((yyvsp[-8].text));
         (yyval.stmt) = is_lock ? ast_with_lock((yyvsp[-6].expr), (yyvsp[-3].stmt_list)) : ast_with_principal((yyvsp[-6].expr), (yyvsp[-3].stmt_list));
       }
-#line 4548 "src/parser.tab.c"
-    break;
-
-  case 72: /* for_end: END FOR NEWLINE  */
-#line 1141 "src/parser.y"
-                                 { (yyval.text) = NULL; }
-#line 4554 "src/parser.tab.c"
-    break;
-
-  case 73: /* for_end: NEXT NEWLINE  */
-#line 1142 "src/parser.y"
-                                 { (yyval.text) = NULL; }
-#line 4560 "src/parser.tab.c"
-    break;
-
-  case 74: /* for_end: NEXT variable_name NEWLINE  */
-#line 1143 "src/parser.y"
-                                 { (yyval.text) = (yyvsp[-1].text); }
 #line 4566 "src/parser.tab.c"
     break;
 
+  case 72: /* for_end: END FOR NEWLINE  */
+#line 1159 "src/parser.y"
+                                 { (yyval.text) = NULL; }
+#line 4572 "src/parser.tab.c"
+    break;
+
+  case 73: /* for_end: NEXT NEWLINE  */
+#line 1160 "src/parser.y"
+                                 { (yyval.text) = NULL; }
+#line 4578 "src/parser.tab.c"
+    break;
+
+  case 74: /* for_end: NEXT variable_name NEWLINE  */
+#line 1161 "src/parser.y"
+                                 { (yyval.text) = (yyvsp[-1].text); }
+#line 4584 "src/parser.tab.c"
+    break;
+
   case 75: /* for_each_statement: FOR IDENT IN expression NEWLINE statement_list for_end  */
-#line 1147 "src/parser.y"
+#line 1165 "src/parser.y"
                                                              {
         if (!for_end_matches(ctx, (yyvsp[-5].text), (yyvsp[0].text), (yylsp[0]).first_line, (yylsp[0]).first_column)) { YYERROR; }
         (yyval.stmt) = ast_for_each((yyvsp[-5].text), NULL, (yyvsp[-3].expr), (yyvsp[-1].stmt_list));
       }
-#line 4575 "src/parser.tab.c"
+#line 4593 "src/parser.tab.c"
     break;
 
   case 76: /* for_each_statement: FOR EACH IDENT IN expression NEWLINE statement_list for_end  */
-#line 1151 "src/parser.y"
+#line 1169 "src/parser.y"
                                                                   {
         if (!for_end_matches(ctx, (yyvsp[-5].text), (yyvsp[0].text), (yylsp[0]).first_line, (yylsp[0]).first_column)) { YYERROR; }
         (yyval.stmt) = ast_for_each((yyvsp[-5].text), NULL, (yyvsp[-3].expr), (yyvsp[-1].stmt_list));
       }
-#line 4584 "src/parser.tab.c"
+#line 4602 "src/parser.tab.c"
     break;
 
   case 77: /* for_each_statement: FOR IDENT COMMA IDENT IN expression NEWLINE statement_list for_end  */
-#line 1167 "src/parser.y"
+#line 1185 "src/parser.y"
                                                                          {
         if (!for_each_index_distinct(ctx, (yyvsp[-7].text), (yyvsp[-5].text), (yylsp[-5]).first_line, (yylsp[-5]).first_column)) { YYERROR; }
         if (!for_end_matches(ctx, (yyvsp[-7].text), (yyvsp[0].text), (yylsp[0]).first_line, (yylsp[0]).first_column)) { YYERROR; }
         (yyval.stmt) = ast_for_each((yyvsp[-7].text), (yyvsp[-5].text), (yyvsp[-3].expr), (yyvsp[-1].stmt_list));
       }
-#line 4594 "src/parser.tab.c"
+#line 4612 "src/parser.tab.c"
     break;
 
   case 78: /* for_each_statement: FOR EACH IDENT COMMA IDENT IN expression NEWLINE statement_list for_end  */
-#line 1172 "src/parser.y"
+#line 1190 "src/parser.y"
                                                                               {
         if (!for_each_index_distinct(ctx, (yyvsp[-7].text), (yyvsp[-5].text), (yylsp[-5]).first_line, (yylsp[-5]).first_column)) { YYERROR; }
         if (!for_end_matches(ctx, (yyvsp[-7].text), (yyvsp[0].text), (yylsp[0]).first_line, (yylsp[0]).first_column)) { YYERROR; }
         (yyval.stmt) = ast_for_each((yyvsp[-7].text), (yyvsp[-5].text), (yyvsp[-3].expr), (yyvsp[-1].stmt_list));
       }
-#line 4604 "src/parser.tab.c"
+#line 4622 "src/parser.tab.c"
     break;
 
   case 79: /* for_each_statement: FOR IDENT OP_EQ expression TO expression NEWLINE statement_list for_end  */
-#line 1180 "src/parser.y"
+#line 1198 "src/parser.y"
                                                                               {
         if (!for_end_matches(ctx, (yyvsp[-7].text), (yyvsp[0].text), (yylsp[0]).first_line, (yylsp[0]).first_column)) { YYERROR; }
         (yyval.stmt) = ast_for_range((yyvsp[-7].text), (yyvsp[-5].expr), (yyvsp[-3].expr), NULL, (yyvsp[-1].stmt_list));
       }
-#line 4613 "src/parser.tab.c"
+#line 4631 "src/parser.tab.c"
     break;
 
   case 80: /* for_each_statement: FOR IDENT OP_EQ expression TO expression STEP expression NEWLINE statement_list for_end  */
-#line 1184 "src/parser.y"
+#line 1202 "src/parser.y"
                                                                                               {
         if (!for_end_matches(ctx, (yyvsp[-9].text), (yyvsp[0].text), (yylsp[0]).first_line, (yylsp[0]).first_column)) { YYERROR; }
         (yyval.stmt) = ast_for_range((yyvsp[-9].text), (yyvsp[-7].expr), (yyvsp[-5].expr), (yyvsp[-3].expr), (yyvsp[-1].stmt_list));
       }
-#line 4622 "src/parser.tab.c"
+#line 4640 "src/parser.tab.c"
     break;
 
   case 81: /* do_loop_statement: DO NEWLINE statement_list UNTIL expression NEWLINE  */
-#line 1205 "src/parser.y"
+#line 1223 "src/parser.y"
                                                          {
         (yyval.stmt) = ast_do_loop((yyvsp[-3].stmt_list), (yyvsp[-1].expr));
       }
-#line 4630 "src/parser.tab.c"
+#line 4648 "src/parser.tab.c"
     break;
 
   case 82: /* while_statement: WHILE expression NEWLINE statement_list END WHILE NEWLINE  */
-#line 1211 "src/parser.y"
+#line 1229 "src/parser.y"
                                                                 {
         (yyval.stmt) = ast_while((yyvsp[-5].expr), (yyvsp[-3].stmt_list));
       }
-#line 4638 "src/parser.tab.c"
+#line 4656 "src/parser.tab.c"
     break;
 
   case 83: /* consider_statement: CONSIDER expression NEWLINE consider_branch_list consider_else_opt END_CONSIDER NEWLINE  */
-#line 1217 "src/parser.y"
+#line 1235 "src/parser.y"
                                                                                               {
         (yyval.stmt) = ast_consider((yyvsp[-5].expr), (yyvsp[-3].consider_branch_list), (yyvsp[-2].stmt_list));
       }
-#line 4646 "src/parser.tab.c"
+#line 4664 "src/parser.tab.c"
     break;
 
   case 84: /* consider_branch_list: CONSIDER_IF expression THEN NEWLINE consider_statement_list  */
-#line 1223 "src/parser.y"
+#line 1241 "src/parser.y"
                                                                   {
         (yyval.consider_branch_list) = ast_consider_branch_list_append(ast_consider_branch_list_empty(), (yyvsp[-3].expr), (yyvsp[0].stmt_list));
       }
-#line 4654 "src/parser.tab.c"
+#line 4672 "src/parser.tab.c"
     break;
 
   case 85: /* consider_branch_list: consider_branch_list CONSIDER_IF expression THEN NEWLINE consider_statement_list  */
-#line 1226 "src/parser.y"
+#line 1244 "src/parser.y"
                                                                                        {
         (yyval.consider_branch_list) = ast_consider_branch_list_append((yyvsp[-5].consider_branch_list), (yyvsp[-3].expr), (yyvsp[0].stmt_list));
       }
-#line 4662 "src/parser.tab.c"
-    break;
-
-  case 86: /* consider_else_opt: %empty  */
-#line 1232 "src/parser.y"
-             { (yyval.stmt_list) = ast_stmt_list_empty(); }
-#line 4668 "src/parser.tab.c"
-    break;
-
-  case 87: /* consider_else_opt: CONSIDER_ELSE NEWLINE consider_statement_list  */
-#line 1233 "src/parser.y"
-                                                    { (yyval.stmt_list) = (yyvsp[0].stmt_list); }
-#line 4674 "src/parser.tab.c"
-    break;
-
-  case 88: /* consider_statement_list: %empty  */
-#line 1237 "src/parser.y"
-             { (yyval.stmt_list) = ast_stmt_list_empty(); }
 #line 4680 "src/parser.tab.c"
     break;
 
-  case 89: /* consider_statement_list: consider_statement_list NEWLINE  */
-#line 1238 "src/parser.y"
-                                      { (yyval.stmt_list) = (yyvsp[-1].stmt_list); }
+  case 86: /* consider_else_opt: %empty  */
+#line 1250 "src/parser.y"
+             { (yyval.stmt_list) = ast_stmt_list_empty(); }
 #line 4686 "src/parser.tab.c"
     break;
 
-  case 90: /* consider_statement_list: consider_statement_list consider_body_statement  */
-#line 1239 "src/parser.y"
-                                                      { (yyval.stmt_list) = ast_stmt_list_append((yyvsp[-1].stmt_list), (yyvsp[0].stmt)); }
+  case 87: /* consider_else_opt: CONSIDER_ELSE NEWLINE consider_statement_list  */
+#line 1251 "src/parser.y"
+                                                    { (yyval.stmt_list) = (yyvsp[0].stmt_list); }
 #line 4692 "src/parser.tab.c"
     break;
 
-  case 91: /* consider_body_statement: assignment NEWLINE  */
-#line 1243 "src/parser.y"
-                         { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 88: /* consider_statement_list: %empty  */
+#line 1255 "src/parser.y"
+             { (yyval.stmt_list) = ast_stmt_list_empty(); }
 #line 4698 "src/parser.tab.c"
     break;
 
-  case 92: /* consider_body_statement: print_statement NEWLINE  */
-#line 1244 "src/parser.y"
-                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 89: /* consider_statement_list: consider_statement_list NEWLINE  */
+#line 1256 "src/parser.y"
+                                      { (yyval.stmt_list) = (yyvsp[-1].stmt_list); }
 #line 4704 "src/parser.tab.c"
     break;
 
-  case 93: /* consider_body_statement: call_statement NEWLINE  */
-#line 1245 "src/parser.y"
-                             { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 90: /* consider_statement_list: consider_statement_list consider_body_statement  */
+#line 1257 "src/parser.y"
+                                                      { (yyval.stmt_list) = ast_stmt_list_append((yyvsp[-1].stmt_list), (yyvsp[0].stmt)); }
 #line 4710 "src/parser.tab.c"
     break;
 
-  case 94: /* consider_body_statement: with_lock_statement  */
-#line 1246 "src/parser.y"
-                          { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 91: /* consider_body_statement: assignment NEWLINE  */
+#line 1261 "src/parser.y"
+                         { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4716 "src/parser.tab.c"
     break;
 
-  case 95: /* consider_body_statement: window_block  */
-#line 1247 "src/parser.y"
-                   { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 92: /* consider_body_statement: print_statement NEWLINE  */
+#line 1262 "src/parser.y"
+                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4722 "src/parser.tab.c"
     break;
 
-  case 96: /* consider_body_statement: for_each_statement  */
-#line 1248 "src/parser.y"
-                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 93: /* consider_body_statement: call_statement NEWLINE  */
+#line 1263 "src/parser.y"
+                             { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4728 "src/parser.tab.c"
     break;
 
-  case 97: /* consider_body_statement: while_statement  */
-#line 1249 "src/parser.y"
-                      { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 94: /* consider_body_statement: with_lock_statement  */
+#line 1264 "src/parser.y"
+                          { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4734 "src/parser.tab.c"
     break;
 
-  case 98: /* consider_body_statement: do_loop_statement  */
-#line 1250 "src/parser.y"
-                        { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 95: /* consider_body_statement: window_block  */
+#line 1265 "src/parser.y"
+                   { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4740 "src/parser.tab.c"
     break;
 
-  case 99: /* consider_body_statement: consider_statement  */
-#line 1251 "src/parser.y"
+  case 96: /* consider_body_statement: for_each_statement  */
+#line 1266 "src/parser.y"
                          { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4746 "src/parser.tab.c"
     break;
 
-  case 100: /* consider_body_statement: function_statement  */
-#line 1252 "src/parser.y"
-                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 97: /* consider_body_statement: while_statement  */
+#line 1267 "src/parser.y"
+                      { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4752 "src/parser.tab.c"
     break;
 
-  case 101: /* consider_body_statement: modifier_statement  */
-#line 1253 "src/parser.y"
-                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 98: /* consider_body_statement: do_loop_statement  */
+#line 1268 "src/parser.y"
+                        { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4758 "src/parser.tab.c"
     break;
 
-  case 102: /* consider_body_statement: program_statement  */
-#line 1254 "src/parser.y"
-                        { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 99: /* consider_body_statement: consider_statement  */
+#line 1269 "src/parser.y"
+                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4764 "src/parser.tab.c"
     break;
 
-  case 103: /* consider_body_statement: library_statement  */
-#line 1255 "src/parser.y"
-                        { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 100: /* consider_body_statement: function_statement  */
+#line 1270 "src/parser.y"
+                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4770 "src/parser.tab.c"
     break;
 
-  case 104: /* consider_body_statement: use_statement NEWLINE  */
-#line 1256 "src/parser.y"
-                            { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 101: /* consider_body_statement: modifier_statement  */
+#line 1271 "src/parser.y"
+                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4776 "src/parser.tab.c"
     break;
 
-  case 105: /* consider_body_statement: watch_statement  */
-#line 1257 "src/parser.y"
-                      { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 102: /* consider_body_statement: program_statement  */
+#line 1272 "src/parser.y"
+                        { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4782 "src/parser.tab.c"
     break;
 
-  case 106: /* consider_body_statement: unwatch_statement NEWLINE  */
-#line 1258 "src/parser.y"
-                                { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 103: /* consider_body_statement: library_statement  */
+#line 1273 "src/parser.y"
+                        { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4788 "src/parser.tab.c"
     break;
 
-  case 107: /* consider_body_statement: wait_statement NEWLINE  */
-#line 1259 "src/parser.y"
-                             { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 104: /* consider_body_statement: use_statement NEWLINE  */
+#line 1274 "src/parser.y"
+                            { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4794 "src/parser.tab.c"
     break;
 
-  case 108: /* consider_body_statement: without_watchers_statement  */
-#line 1260 "src/parser.y"
-                                 { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 105: /* consider_body_statement: watch_statement  */
+#line 1275 "src/parser.y"
+                      { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4800 "src/parser.tab.c"
     break;
 
-  case 109: /* consider_body_statement: on_error_statement NEWLINE  */
-#line 1261 "src/parser.y"
-                                 { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 106: /* consider_body_statement: unwatch_statement NEWLINE  */
+#line 1276 "src/parser.y"
+                                { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4806 "src/parser.tab.c"
     break;
 
-  case 110: /* consider_body_statement: error_statement NEWLINE  */
-#line 1262 "src/parser.y"
-                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 107: /* consider_body_statement: wait_statement NEWLINE  */
+#line 1277 "src/parser.y"
+                             { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4812 "src/parser.tab.c"
     break;
 
-  case 111: /* consider_body_statement: return_statement NEWLINE  */
-#line 1263 "src/parser.y"
-                               { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 108: /* consider_body_statement: without_watchers_statement  */
+#line 1278 "src/parser.y"
+                                 { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 4818 "src/parser.tab.c"
     break;
 
-  case 112: /* consider_body_statement: label_statement NEWLINE  */
-#line 1264 "src/parser.y"
-                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 109: /* consider_body_statement: on_error_statement NEWLINE  */
+#line 1279 "src/parser.y"
+                                 { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4824 "src/parser.tab.c"
     break;
 
-  case 113: /* consider_body_statement: goto_statement NEWLINE  */
-#line 1265 "src/parser.y"
-                             { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 110: /* consider_body_statement: error_statement NEWLINE  */
+#line 1280 "src/parser.y"
+                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4830 "src/parser.tab.c"
     break;
 
-  case 114: /* consider_body_statement: gosub_statement NEWLINE  */
-#line 1266 "src/parser.y"
-                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 111: /* consider_body_statement: return_statement NEWLINE  */
+#line 1281 "src/parser.y"
+                               { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4836 "src/parser.tab.c"
     break;
 
-  case 115: /* consider_body_statement: break_statement NEWLINE  */
-#line 1267 "src/parser.y"
+  case 112: /* consider_body_statement: label_statement NEWLINE  */
+#line 1282 "src/parser.y"
                               { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4842 "src/parser.tab.c"
     break;
 
-  case 116: /* consider_body_statement: continue_statement NEWLINE  */
-#line 1268 "src/parser.y"
-                                 { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+  case 113: /* consider_body_statement: goto_statement NEWLINE  */
+#line 1283 "src/parser.y"
+                             { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4848 "src/parser.tab.c"
     break;
 
-  case 117: /* consider_body_statement: if_statement  */
-#line 1269 "src/parser.y"
-                   { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 114: /* consider_body_statement: gosub_statement NEWLINE  */
+#line 1284 "src/parser.y"
+                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
 #line 4854 "src/parser.tab.c"
     break;
 
+  case 115: /* consider_body_statement: break_statement NEWLINE  */
+#line 1285 "src/parser.y"
+                              { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+#line 4860 "src/parser.tab.c"
+    break;
+
+  case 116: /* consider_body_statement: continue_statement NEWLINE  */
+#line 1286 "src/parser.y"
+                                 { (yyval.stmt) = ast_stmt_span((yyvsp[-1].stmt), (yylsp[-1]).first_line, (yylsp[-1]).first_column, (yylsp[-1]).last_line, (yylsp[-1]).last_column); }
+#line 4866 "src/parser.tab.c"
+    break;
+
+  case 117: /* consider_body_statement: if_statement  */
+#line 1287 "src/parser.y"
+                   { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+#line 4872 "src/parser.tab.c"
+    break;
+
   case 118: /* consider_body_statement: DIM  */
-#line 1275 "src/parser.y"
+#line 1293 "src/parser.y"
           {
         (yyval.stmt) = NULL;      /* never read: YYERROR unwinds. Set so bison does not
                          * report an unset value and grow the warning list. */
@@ -4863,28 +4881,28 @@ yyreduce:
                             "`dim` is not a gBASIC statement; assign to create a variable (x = 0)");
         YYERROR;
       }
-#line 4867 "src/parser.tab.c"
+#line 4885 "src/parser.tab.c"
     break;
 
   case 119: /* function_statement: FUNCTION IDENT LPAREN parameter_list_opt RPAREN NEWLINE statement_list END FUNCTION NEWLINE  */
-#line 1286 "src/parser.y"
+#line 1304 "src/parser.y"
                                                                                                   {
         (yyval.stmt) = ast_function((yyvsp[-8].text), (yyvsp[-6].name_list), (yyvsp[-3].stmt_list));
       }
-#line 4875 "src/parser.tab.c"
+#line 4893 "src/parser.tab.c"
     break;
 
   case 120: /* function_statement: FUNCTION QUALIFIED_IDENT LPAREN parameter_list_opt RPAREN NEWLINE statement_list END FUNCTION NEWLINE  */
-#line 1289 "src/parser.y"
+#line 1307 "src/parser.y"
                                                                                                             {
         /* Dotted name: define-and-attach sugar. ast_function splits obj.method. */
         (yyval.stmt) = ast_function((yyvsp[-8].text), (yyvsp[-6].name_list), (yyvsp[-3].stmt_list));
       }
-#line 4884 "src/parser.tab.c"
+#line 4902 "src/parser.tab.c"
     break;
 
   case 121: /* function_statement: FUNCTION IDENT LPAREN parameter_list_opt RPAREN COLON type_lock NEWLINE statement_list END FUNCTION NEWLINE  */
-#line 1296 "src/parser.y"
+#line 1314 "src/parser.y"
                                                                                                                   {
         char who[160];
         snprintf(who, sizeof who, "%s(...)", (yyvsp[-10].text));
@@ -4894,11 +4912,11 @@ yyreduce:
         }
         (yyval.stmt) = ast_function_returning((yyvsp[-10].text), (yyvsp[-8].name_list), (yyvsp[-5].type_lock), (yyvsp[-3].stmt_list));
       }
-#line 4898 "src/parser.tab.c"
+#line 4916 "src/parser.tab.c"
     break;
 
   case 122: /* function_statement: FUNCTION QUALIFIED_IDENT LPAREN parameter_list_opt RPAREN COLON type_lock NEWLINE statement_list END FUNCTION NEWLINE  */
-#line 1305 "src/parser.y"
+#line 1323 "src/parser.y"
                                                                                                                             {
         char who[160];
         snprintf(who, sizeof who, "%s(...)", (yyvsp[-10].text));
@@ -4908,73 +4926,73 @@ yyreduce:
         }
         (yyval.stmt) = ast_function_returning((yyvsp[-10].text), (yyvsp[-8].name_list), (yyvsp[-5].type_lock), (yyvsp[-3].stmt_list));
       }
-#line 4912 "src/parser.tab.c"
+#line 4930 "src/parser.tab.c"
     break;
 
   case 123: /* modifier_statement: MODIFIER modifier_signature FOR modifier_context NEWLINE statement_list END MODIFIER NEWLINE  */
-#line 1317 "src/parser.y"
+#line 1335 "src/parser.y"
                                                                                                    {
         (yyval.stmt) = ast_modifier((yyvsp[-7].modifier_signature).name, (yyvsp[-7].modifier_signature).params, (yyvsp[-5].text), 0, (yyvsp[-3].stmt_list));
       }
-#line 4920 "src/parser.tab.c"
+#line 4938 "src/parser.tab.c"
     break;
 
   case 124: /* modifier_statement: EXPORT MODIFIER modifier_signature FOR modifier_context NEWLINE statement_list END MODIFIER NEWLINE  */
-#line 1320 "src/parser.y"
+#line 1338 "src/parser.y"
                                                                                                           {
         (yyval.stmt) = ast_modifier((yyvsp[-7].modifier_signature).name, (yyvsp[-7].modifier_signature).params, (yyvsp[-5].text), 1, (yyvsp[-3].stmt_list));
       }
-#line 4928 "src/parser.tab.c"
+#line 4946 "src/parser.tab.c"
     break;
 
   case 125: /* program_statement: PROGRAM IDENT LPAREN parameter_list_opt RPAREN NEWLINE statement_list END PROGRAM NEWLINE  */
-#line 1326 "src/parser.y"
+#line 1344 "src/parser.y"
                                                                                                 {
         (yyval.stmt) = ast_program((yyvsp[-8].text), (yyvsp[-6].name_list), (yyvsp[-3].stmt_list));
       }
-#line 4936 "src/parser.tab.c"
+#line 4954 "src/parser.tab.c"
     break;
 
   case 126: /* library_statement: LIBRARY IDENT NEWLINE statement_list END LIBRARY NEWLINE  */
-#line 1332 "src/parser.y"
+#line 1350 "src/parser.y"
                                                                {
         (yyval.stmt) = ast_library((yyvsp[-5].text), (yyvsp[-3].stmt_list));
       }
-#line 4944 "src/parser.tab.c"
-    break;
-
-  case 127: /* use_statement: USE IDENT  */
-#line 1338 "src/parser.y"
-                { (yyval.stmt) = ast_use((yyvsp[0].text), NULL, NULL); }
-#line 4950 "src/parser.tab.c"
-    break;
-
-  case 128: /* use_statement: LOAD IDENT  */
-#line 1339 "src/parser.y"
-                 { (yyval.stmt) = ast_use((yyvsp[0].text), NULL, NULL); }
-#line 4956 "src/parser.tab.c"
-    break;
-
-  case 129: /* use_statement: USE STRING  */
-#line 1340 "src/parser.y"
-                 { (yyval.stmt) = ast_use((yyvsp[0].text), NULL, NULL); }
 #line 4962 "src/parser.tab.c"
     break;
 
-  case 130: /* use_statement: LOAD STRING  */
-#line 1341 "src/parser.y"
-                  { (yyval.stmt) = ast_use((yyvsp[0].text), NULL, NULL); }
+  case 127: /* use_statement: USE IDENT  */
+#line 1356 "src/parser.y"
+                { (yyval.stmt) = ast_use((yyvsp[0].text), NULL, NULL); }
 #line 4968 "src/parser.tab.c"
     break;
 
-  case 131: /* use_statement: LOAD IDENT AS IDENT  */
-#line 1342 "src/parser.y"
-                          { (yyval.stmt) = ast_use((yyvsp[-2].text), NULL, (yyvsp[0].text)); }
+  case 128: /* use_statement: LOAD IDENT  */
+#line 1357 "src/parser.y"
+                 { (yyval.stmt) = ast_use((yyvsp[0].text), NULL, NULL); }
 #line 4974 "src/parser.tab.c"
     break;
 
+  case 129: /* use_statement: USE STRING  */
+#line 1358 "src/parser.y"
+                 { (yyval.stmt) = ast_use((yyvsp[0].text), NULL, NULL); }
+#line 4980 "src/parser.tab.c"
+    break;
+
+  case 130: /* use_statement: LOAD STRING  */
+#line 1359 "src/parser.y"
+                  { (yyval.stmt) = ast_use((yyvsp[0].text), NULL, NULL); }
+#line 4986 "src/parser.tab.c"
+    break;
+
+  case 131: /* use_statement: LOAD IDENT AS IDENT  */
+#line 1360 "src/parser.y"
+                          { (yyval.stmt) = ast_use((yyvsp[-2].text), NULL, (yyvsp[0].text)); }
+#line 4992 "src/parser.tab.c"
+    break;
+
   case 132: /* use_statement: USE IDENT IDENT STRING  */
-#line 1343 "src/parser.y"
+#line 1361 "src/parser.y"
                              {
         if (strcmp((yyvsp[-1].text), "from") != 0) {
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
@@ -4991,11 +5009,11 @@ yyreduce:
         free((yyvsp[-1].text));
         (yyval.stmt) = ast_use((yyvsp[-2].text), (yyvsp[0].text), NULL);
       }
-#line 4995 "src/parser.tab.c"
+#line 5013 "src/parser.tab.c"
     break;
 
   case 133: /* use_statement: LOAD IDENT IDENT STRING  */
-#line 1359 "src/parser.y"
+#line 1377 "src/parser.y"
                               {
         if (strcmp((yyvsp[-1].text), "from") != 0) {
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
@@ -5012,11 +5030,11 @@ yyreduce:
         free((yyvsp[-1].text));
         (yyval.stmt) = ast_use((yyvsp[-2].text), (yyvsp[0].text), NULL);
       }
-#line 5016 "src/parser.tab.c"
+#line 5034 "src/parser.tab.c"
     break;
 
   case 134: /* use_statement: LOAD IDENT IDENT STRING AS IDENT  */
-#line 1375 "src/parser.y"
+#line 1393 "src/parser.y"
                                        {
         if (strcmp((yyvsp[-3].text), "from") != 0) {
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
@@ -5035,140 +5053,140 @@ yyreduce:
         free((yyvsp[-3].text));
         (yyval.stmt) = ast_use((yyvsp[-4].text), (yyvsp[-2].text), (yyvsp[0].text));
       }
-#line 5039 "src/parser.tab.c"
-    break;
-
-  case 135: /* modifier_signature: modifier_name  */
-#line 1396 "src/parser.y"
-                    { (yyval.modifier_signature) = ast_modifier_signature((yyvsp[0].text), ast_name_list_empty()); }
-#line 5045 "src/parser.tab.c"
-    break;
-
-  case 136: /* modifier_signature: modifier_name LPAREN parameter_list_opt RPAREN  */
-#line 1397 "src/parser.y"
-                                                     { (yyval.modifier_signature) = ast_modifier_signature((yyvsp[-3].text), (yyvsp[-1].name_list)); }
-#line 5051 "src/parser.tab.c"
-    break;
-
-  case 137: /* modifier_context: IDENT  */
-#line 1401 "src/parser.y"
-            { (yyval.text) = (yyvsp[0].text); }
 #line 5057 "src/parser.tab.c"
     break;
 
+  case 135: /* modifier_signature: modifier_name  */
+#line 1414 "src/parser.y"
+                    { (yyval.modifier_signature) = ast_modifier_signature((yyvsp[0].text), ast_name_list_empty()); }
+#line 5063 "src/parser.tab.c"
+    break;
+
+  case 136: /* modifier_signature: modifier_name LPAREN parameter_list_opt RPAREN  */
+#line 1415 "src/parser.y"
+                                                     { (yyval.modifier_signature) = ast_modifier_signature((yyvsp[-3].text), (yyvsp[-1].name_list)); }
+#line 5069 "src/parser.tab.c"
+    break;
+
+  case 137: /* modifier_context: IDENT  */
+#line 1419 "src/parser.y"
+            { (yyval.text) = (yyvsp[0].text); }
+#line 5075 "src/parser.tab.c"
+    break;
+
   case 138: /* watch_statement: WATCH LPAREN watch_target_list RPAREN NEWLINE statement_list END WATCH NEWLINE  */
-#line 1405 "src/parser.y"
+#line 1423 "src/parser.y"
                                                                                      {
         (yyval.stmt) = ast_watch(NULL, (yyvsp[-6].name_list), (yyvsp[-3].stmt_list));
       }
-#line 5065 "src/parser.tab.c"
+#line 5083 "src/parser.tab.c"
     break;
 
   case 139: /* watch_statement: WATCH watch_target_list NEWLINE statement_list END WATCH NEWLINE  */
-#line 1408 "src/parser.y"
+#line 1426 "src/parser.y"
                                                                        {
         (yyval.stmt) = ast_watch(NULL, (yyvsp[-5].name_list), (yyvsp[-3].stmt_list));
       }
-#line 5073 "src/parser.tab.c"
+#line 5091 "src/parser.tab.c"
     break;
 
   case 140: /* watch_statement: WATCH IDENT LPAREN watch_target_list RPAREN NEWLINE statement_list END WATCH NEWLINE  */
-#line 1416 "src/parser.y"
+#line 1434 "src/parser.y"
                                                                                            {
         (yyval.stmt) = ast_watch((yyvsp[-8].text), (yyvsp[-6].name_list), (yyvsp[-3].stmt_list));
       }
-#line 5081 "src/parser.tab.c"
-    break;
-
-  case 141: /* unwatch_statement: UNWATCH expression  */
-#line 1422 "src/parser.y"
-                         { (yyval.stmt) = ast_unwatch((yyvsp[0].expr)); }
-#line 5087 "src/parser.tab.c"
-    break;
-
-  case 142: /* wait_statement: WAIT UNTIL expression  */
-#line 1429 "src/parser.y"
-                            { (yyval.stmt) = ast_wait((yyvsp[0].expr), NULL); }
-#line 5093 "src/parser.tab.c"
-    break;
-
-  case 143: /* wait_statement: WAIT UNTIL expression FOR expression  */
-#line 1430 "src/parser.y"
-                                           { (yyval.stmt) = ast_wait((yyvsp[-2].expr), (yyvsp[0].expr)); }
 #line 5099 "src/parser.tab.c"
     break;
 
-  case 144: /* watch_target_list: watch_target_path  */
-#line 1434 "src/parser.y"
-                        { (yyval.name_list) = ast_name_list_append(ast_name_list_empty(), (yyvsp[0].text)); }
+  case 141: /* unwatch_statement: UNWATCH expression  */
+#line 1440 "src/parser.y"
+                         { (yyval.stmt) = ast_unwatch((yyvsp[0].expr)); }
 #line 5105 "src/parser.tab.c"
     break;
 
-  case 145: /* watch_target_list: watch_target_list COMMA watch_target_path  */
-#line 1435 "src/parser.y"
-                                                { (yyval.name_list) = ast_name_list_append((yyvsp[-2].name_list), (yyvsp[0].text)); }
+  case 142: /* wait_statement: WAIT UNTIL expression  */
+#line 1447 "src/parser.y"
+                            { (yyval.stmt) = ast_wait((yyvsp[0].expr), NULL); }
 #line 5111 "src/parser.tab.c"
     break;
 
+  case 143: /* wait_statement: WAIT UNTIL expression FOR expression  */
+#line 1448 "src/parser.y"
+                                           { (yyval.stmt) = ast_wait((yyvsp[-2].expr), (yyvsp[0].expr)); }
+#line 5117 "src/parser.tab.c"
+    break;
+
+  case 144: /* watch_target_list: watch_target_path  */
+#line 1452 "src/parser.y"
+                        { (yyval.name_list) = ast_name_list_append(ast_name_list_empty(), (yyvsp[0].text)); }
+#line 5123 "src/parser.tab.c"
+    break;
+
+  case 145: /* watch_target_list: watch_target_list COMMA watch_target_path  */
+#line 1453 "src/parser.y"
+                                                { (yyval.name_list) = ast_name_list_append((yyvsp[-2].name_list), (yyvsp[0].text)); }
+#line 5129 "src/parser.tab.c"
+    break;
+
   case 146: /* @2: %empty  */
-#line 1455 "src/parser.y"
+#line 1473 "src/parser.y"
       { (yyval.stmt) = NULL;   /* the mid-rule carries no value; typed so bison stays quiet */
         server_head_note(ctx, (yyvsp[-5].text), (yylsp[-5]).first_line, (yylsp[-5]).first_column); }
-#line 5118 "src/parser.tab.c"
+#line 5136 "src/parser.tab.c"
     break;
 
   case 147: /* server_statement: IDENT IDENT LPAREN record_field_list RPAREN NEWLINE @2 server_item_list END IDENT NEWLINE  */
-#line 1457 "src/parser.y"
+#line 1475 "src/parser.y"
                                          {
         ctx->bad_block_word[0] = '\0';
         (yyval.stmt) = ast_server((yyvsp[-10].text), (yyvsp[-9].text), (yyvsp[-7].record_field_list), (yyvsp[-3].server_item_list), (yyvsp[-1].text));
       }
-#line 5127 "src/parser.tab.c"
+#line 5145 "src/parser.tab.c"
     break;
 
   case 148: /* @3: %empty  */
-#line 1462 "src/parser.y"
+#line 1480 "src/parser.y"
       { (yyval.stmt) = NULL;   /* the mid-rule carries no value; typed so bison stays quiet */
         server_head_note(ctx, (yyvsp[-4].text), (yylsp[-4]).first_line, (yylsp[-4]).first_column); }
-#line 5134 "src/parser.tab.c"
+#line 5152 "src/parser.tab.c"
     break;
 
   case 149: /* server_statement: IDENT IDENT LPAREN RPAREN NEWLINE @3 server_item_list END IDENT NEWLINE  */
-#line 1464 "src/parser.y"
+#line 1482 "src/parser.y"
                                          {
         ctx->bad_block_word[0] = '\0';
         (yyval.stmt) = ast_server((yyvsp[-9].text), (yyvsp[-8].text), ast_record_field_list_empty(), (yyvsp[-3].server_item_list), (yyvsp[-1].text));
       }
-#line 5143 "src/parser.tab.c"
+#line 5161 "src/parser.tab.c"
     break;
 
   case 150: /* gsql_block: DATABASE_OPEN IDENT LPAREN record_field_list RPAREN NEWLINE  */
-#line 1484 "src/parser.y"
+#line 1502 "src/parser.y"
                                                                   {
         (yyval.stmt) = ast_database((yyvsp[-4].text), (yyvsp[-2].record_field_list), (yylsp[-5]).first_line, (yylsp[-5]).first_column);
       }
-#line 5151 "src/parser.tab.c"
+#line 5169 "src/parser.tab.c"
     break;
 
   case 151: /* gsql_block: DATABASE_OPEN IDENT LPAREN RPAREN NEWLINE  */
-#line 1487 "src/parser.y"
+#line 1505 "src/parser.y"
                                                 {
         (yyval.stmt) = ast_database((yyvsp[-3].text), ast_record_field_list_empty(), (yylsp[-4]).first_line, (yylsp[-4]).first_column);
       }
-#line 5159 "src/parser.tab.c"
+#line 5177 "src/parser.tab.c"
     break;
 
   case 152: /* gsql_block: SQL_OPEN IDENT ON IDENT NEWLINE SQL_TEXT END IDENT NEWLINE  */
-#line 1490 "src/parser.y"
+#line 1508 "src/parser.y"
                                                                  {
         free((yyvsp[-1].text));
         (yyval.stmt) = ast_sql((yyvsp[-7].text), (yyvsp[-5].text), (yyvsp[-3].text), (yylsp[-3]).first_line, (yylsp[-3]).first_column, (yylsp[-8]).first_line, (yylsp[-8]).first_column);
       }
-#line 5168 "src/parser.tab.c"
+#line 5186 "src/parser.tab.c"
     break;
 
   case 153: /* gsql_block: SQL_OPEN IDENT ON IDENT DOT IDENT NEWLINE SQL_TEXT END IDENT NEWLINE  */
-#line 1496 "src/parser.y"
+#line 1514 "src/parser.y"
                                                                            {
         free((yyvsp[-1].text));
         size_t qn = strlen((yyvsp[-7].text)) + strlen((yyvsp[-5].text)) + 2;
@@ -5181,272 +5199,272 @@ yyreduce:
         free((yyvsp[-5].text));
         (yyval.stmt) = ast_sql((yyvsp[-9].text), q, (yyvsp[-3].text), (yylsp[-3]).first_line, (yylsp[-3]).first_column, (yylsp[-10]).first_line, (yylsp[-10]).first_column);
       }
-#line 5185 "src/parser.tab.c"
+#line 5203 "src/parser.tab.c"
     break;
 
   case 154: /* window_block: WINDOW_OPEN IDENT LPAREN record_field_list RPAREN NEWLINE window_item_list END IDENT NEWLINE  */
-#line 1511 "src/parser.y"
+#line 1529 "src/parser.y"
                                                                                                    {
         ctx->window_depth--;
         (yyval.stmt) = ast_window((yyvsp[-8].text), (yyvsp[-6].record_field_list), (yyvsp[-3].window_item_list), (yyvsp[-1].text), NULL, NULL, NULL, (yylsp[-9]).first_line, (yylsp[-9]).first_column);
       }
-#line 5194 "src/parser.tab.c"
+#line 5212 "src/parser.tab.c"
     break;
 
   case 155: /* window_block: WINDOW_OPEN IDENT LPAREN RPAREN NEWLINE window_item_list END IDENT NEWLINE  */
-#line 1515 "src/parser.y"
+#line 1533 "src/parser.y"
                                                                                  {
         ctx->window_depth--;
         (yyval.stmt) = ast_window((yyvsp[-7].text), ast_record_field_list_empty(), (yyvsp[-3].window_item_list), (yyvsp[-1].text), NULL, NULL, NULL,
                         (yylsp[-8]).first_line, (yylsp[-8]).first_column);
       }
-#line 5204 "src/parser.tab.c"
+#line 5222 "src/parser.tab.c"
     break;
 
   case 156: /* window_block: WINDOW_OPEN IDENT LPAREN record_field_list RPAREN TO IDENT IDENT NEWLINE window_item_list END IDENT NEWLINE  */
-#line 1525 "src/parser.y"
+#line 1543 "src/parser.y"
                                                                                                                   {
         ctx->window_depth--;
         (yyval.stmt) = ast_window((yyvsp[-11].text), (yyvsp[-9].record_field_list), (yyvsp[-3].window_item_list), (yyvsp[-1].text), copy_const("to"), (yyvsp[-6].text), (yyvsp[-5].text),
                         (yylsp[-12]).first_line, (yylsp[-12]).first_column);
       }
-#line 5214 "src/parser.tab.c"
-    break;
-
-  case 157: /* window_item_list: %empty  */
-#line 1533 "src/parser.y"
-             { (yyval.window_item_list) = ast_window_item_list_empty(); }
-#line 5220 "src/parser.tab.c"
-    break;
-
-  case 158: /* window_item_list: window_item_list NEWLINE  */
-#line 1534 "src/parser.y"
-                               { (yyval.window_item_list) = (yyvsp[-1].window_item_list); }
-#line 5226 "src/parser.tab.c"
-    break;
-
-  case 159: /* window_item_list: window_item_list window_item  */
-#line 1535 "src/parser.y"
-                                   { (yyval.window_item_list) = ast_window_item_list_append((yyvsp[-1].window_item_list), (yyvsp[0].window_item)); }
 #line 5232 "src/parser.tab.c"
     break;
 
+  case 157: /* window_item_list: %empty  */
+#line 1551 "src/parser.y"
+             { (yyval.window_item_list) = ast_window_item_list_empty(); }
+#line 5238 "src/parser.tab.c"
+    break;
+
+  case 158: /* window_item_list: window_item_list NEWLINE  */
+#line 1552 "src/parser.y"
+                               { (yyval.window_item_list) = (yyvsp[-1].window_item_list); }
+#line 5244 "src/parser.tab.c"
+    break;
+
+  case 159: /* window_item_list: window_item_list window_item  */
+#line 1553 "src/parser.y"
+                                   { (yyval.window_item_list) = ast_window_item_list_append((yyvsp[-1].window_item_list), (yyvsp[0].window_item)); }
+#line 5250 "src/parser.tab.c"
+    break;
+
   case 160: /* window_item: IDENT LPAREN RPAREN NEWLINE  */
-#line 1540 "src/parser.y"
+#line 1558 "src/parser.y"
                                   {
         (yyval.window_item) = ast_window_leaf((yyvsp[-3].text), NULL, ast_record_field_list_empty(),
                              (yylsp[-3]).first_line, (yylsp[-3]).first_column);
       }
-#line 5241 "src/parser.tab.c"
+#line 5259 "src/parser.tab.c"
     break;
 
   case 161: /* window_item: IDENT IDENT LPAREN record_field_list RPAREN NEWLINE  */
-#line 1545 "src/parser.y"
+#line 1563 "src/parser.y"
                                                           {
         (yyval.window_item) = ast_window_leaf((yyvsp[-5].text), (yyvsp[-4].text), (yyvsp[-2].record_field_list), (yylsp[-5]).first_line, (yylsp[-5]).first_column);
-      }
-#line 5249 "src/parser.tab.c"
-    break;
-
-  case 162: /* window_item: IDENT IDENT LPAREN RPAREN NEWLINE  */
-#line 1549 "src/parser.y"
-                                        {
-        (yyval.window_item) = ast_window_leaf((yyvsp[-4].text), (yyvsp[-3].text), ast_record_field_list_empty(),
-                             (yylsp[-4]).first_line, (yylsp[-4]).first_column);
-      }
-#line 5258 "src/parser.tab.c"
-    break;
-
-  case 163: /* window_item: IDENT NEWLINE window_item_list END IDENT NEWLINE  */
-#line 1554 "src/parser.y"
-                                                       {
-        (yyval.window_item) = ast_window_container((yyvsp[-5].text), NULL, ast_record_field_list_empty(), (yyvsp[-3].window_item_list), (yyvsp[-1].text),
-                                  (yylsp[-5]).first_line, (yylsp[-5]).first_column);
       }
 #line 5267 "src/parser.tab.c"
     break;
 
+  case 162: /* window_item: IDENT IDENT LPAREN RPAREN NEWLINE  */
+#line 1567 "src/parser.y"
+                                        {
+        (yyval.window_item) = ast_window_leaf((yyvsp[-4].text), (yyvsp[-3].text), ast_record_field_list_empty(),
+                             (yylsp[-4]).first_line, (yylsp[-4]).first_column);
+      }
+#line 5276 "src/parser.tab.c"
+    break;
+
+  case 163: /* window_item: IDENT NEWLINE window_item_list END IDENT NEWLINE  */
+#line 1572 "src/parser.y"
+                                                       {
+        (yyval.window_item) = ast_window_container((yyvsp[-5].text), NULL, ast_record_field_list_empty(), (yyvsp[-3].window_item_list), (yyvsp[-1].text),
+                                  (yylsp[-5]).first_line, (yylsp[-5]).first_column);
+      }
+#line 5285 "src/parser.tab.c"
+    break;
+
   case 164: /* window_item: IDENT LPAREN record_field_list RPAREN NEWLINE window_item_list END IDENT NEWLINE  */
-#line 1559 "src/parser.y"
+#line 1577 "src/parser.y"
                                                                                        {
         (yyval.window_item) = ast_window_container((yyvsp[-8].text), NULL, (yyvsp[-6].record_field_list), (yyvsp[-3].window_item_list), (yyvsp[-1].text), (yylsp[-8]).first_line, (yylsp[-8]).first_column);
-      }
-#line 5275 "src/parser.tab.c"
-    break;
-
-  case 165: /* window_item: IDENT IDENT NEWLINE window_item_list END IDENT NEWLINE  */
-#line 1573 "src/parser.y"
-                                                             {
-        (yyval.window_item) = ast_window_named_form((yyvsp[-6].text), (yyvsp[-5].text), NULL, NULL, NULL, (yyvsp[-3].window_item_list), (yyvsp[-1].text),
-                                   (yylsp[-6]).first_line, (yylsp[-6]).first_column);
-      }
-#line 5284 "src/parser.tab.c"
-    break;
-
-  case 166: /* window_item: IDENT IDENT STRING NEWLINE window_item_list END IDENT NEWLINE  */
-#line 1588 "src/parser.y"
-                                                                    {
-        (yyval.window_item) = ast_window_named_container((yyvsp[-7].text), (yyvsp[-6].text), (yyvsp[-5].text), (yyvsp[-3].window_item_list), (yyvsp[-1].text),
-                                        (yylsp[-7]).first_line, (yylsp[-7]).first_column);
       }
 #line 5293 "src/parser.tab.c"
     break;
 
-  case 167: /* window_item: IDENT STRING NEWLINE window_item_list END IDENT NEWLINE  */
-#line 1593 "src/parser.y"
-                                                              {
-        (yyval.window_item) = ast_window_container((yyvsp[-6].text), (yyvsp[-5].text), ast_record_field_list_empty(), (yyvsp[-3].window_item_list), (yyvsp[-1].text),
-                                  (yylsp[-6]).first_line, (yylsp[-6]).first_column);
+  case 165: /* window_item: IDENT IDENT NEWLINE window_item_list END IDENT NEWLINE  */
+#line 1591 "src/parser.y"
+                                                             {
+        (yyval.window_item) = ast_window_named_form((yyvsp[-6].text), (yyvsp[-5].text), NULL, NULL, NULL, (yyvsp[-3].window_item_list), (yyvsp[-1].text),
+                                   (yylsp[-6]).first_line, (yylsp[-6]).first_column);
       }
 #line 5302 "src/parser.tab.c"
     break;
 
-  case 168: /* window_item: IDENT TO IDENT IDENT NEWLINE window_item_list END IDENT NEWLINE  */
-#line 1604 "src/parser.y"
-                                                                      {
-        (yyval.window_item) = ast_window_form((yyvsp[-8].text), copy_const("to"), (yyvsp[-6].text), (yyvsp[-5].text), (yyvsp[-3].window_item_list), (yyvsp[-1].text),
-                             (yylsp[-8]).first_line, (yylsp[-8]).first_column);
+  case 166: /* window_item: IDENT IDENT STRING NEWLINE window_item_list END IDENT NEWLINE  */
+#line 1606 "src/parser.y"
+                                                                    {
+        (yyval.window_item) = ast_window_named_container((yyvsp[-7].text), (yyvsp[-6].text), (yyvsp[-5].text), (yyvsp[-3].window_item_list), (yyvsp[-1].text),
+                                        (yylsp[-7]).first_line, (yylsp[-7]).first_column);
       }
 #line 5311 "src/parser.tab.c"
     break;
 
-  case 169: /* window_item: IDENT IDENT TO IDENT IDENT NEWLINE window_item_list END IDENT NEWLINE  */
-#line 1619 "src/parser.y"
-                                                                            {
-        (yyval.window_item) = ast_window_named_form((yyvsp[-9].text), (yyvsp[-8].text), copy_const("to"), (yyvsp[-6].text), (yyvsp[-5].text), (yyvsp[-3].window_item_list), (yyvsp[-1].text),
-                                   (yylsp[-9]).first_line, (yylsp[-9]).first_column);
+  case 167: /* window_item: IDENT STRING NEWLINE window_item_list END IDENT NEWLINE  */
+#line 1611 "src/parser.y"
+                                                              {
+        (yyval.window_item) = ast_window_container((yyvsp[-6].text), (yyvsp[-5].text), ast_record_field_list_empty(), (yyvsp[-3].window_item_list), (yyvsp[-1].text),
+                                  (yylsp[-6]).first_line, (yylsp[-6]).first_column);
       }
 #line 5320 "src/parser.tab.c"
     break;
 
+  case 168: /* window_item: IDENT TO IDENT IDENT NEWLINE window_item_list END IDENT NEWLINE  */
+#line 1622 "src/parser.y"
+                                                                      {
+        (yyval.window_item) = ast_window_form((yyvsp[-8].text), copy_const("to"), (yyvsp[-6].text), (yyvsp[-5].text), (yyvsp[-3].window_item_list), (yyvsp[-1].text),
+                             (yylsp[-8]).first_line, (yylsp[-8]).first_column);
+      }
+#line 5329 "src/parser.tab.c"
+    break;
+
+  case 169: /* window_item: IDENT IDENT TO IDENT IDENT NEWLINE window_item_list END IDENT NEWLINE  */
+#line 1637 "src/parser.y"
+                                                                            {
+        (yyval.window_item) = ast_window_named_form((yyvsp[-9].text), (yyvsp[-8].text), copy_const("to"), (yyvsp[-6].text), (yyvsp[-5].text), (yyvsp[-3].window_item_list), (yyvsp[-1].text),
+                                   (yylsp[-9]).first_line, (yylsp[-9]).first_column);
+      }
+#line 5338 "src/parser.tab.c"
+    break;
+
   case 170: /* window_item: ON IDENT DOT IDENT NEWLINE statement_list END ON NEWLINE  */
-#line 1624 "src/parser.y"
+#line 1642 "src/parser.y"
                                                                {
         (yyval.window_item) = ast_window_handler((yyvsp[-7].text), (yyvsp[-5].text), (yyvsp[-3].stmt_list), (yylsp[-8]).first_line, (yylsp[-8]).first_column);
       }
-#line 5328 "src/parser.tab.c"
-    break;
-
-  case 171: /* server_item_list: %empty  */
-#line 1630 "src/parser.y"
-             { (yyval.server_item_list) = ast_server_item_list_empty(); }
-#line 5334 "src/parser.tab.c"
-    break;
-
-  case 172: /* server_item_list: server_item_list NEWLINE  */
-#line 1631 "src/parser.y"
-                               { (yyval.server_item_list) = (yyvsp[-1].server_item_list); }
-#line 5340 "src/parser.tab.c"
-    break;
-
-  case 173: /* server_item_list: server_item_list server_item  */
-#line 1632 "src/parser.y"
-                                   { (yyval.server_item_list) = ast_server_item_list_append((yyvsp[-1].server_item_list), (yyvsp[0].server_item)); }
 #line 5346 "src/parser.tab.c"
     break;
 
+  case 171: /* server_item_list: %empty  */
+#line 1648 "src/parser.y"
+             { (yyval.server_item_list) = ast_server_item_list_empty(); }
+#line 5352 "src/parser.tab.c"
+    break;
+
+  case 172: /* server_item_list: server_item_list NEWLINE  */
+#line 1649 "src/parser.y"
+                               { (yyval.server_item_list) = (yyvsp[-1].server_item_list); }
+#line 5358 "src/parser.tab.c"
+    break;
+
+  case 173: /* server_item_list: server_item_list server_item  */
+#line 1650 "src/parser.y"
+                                   { (yyval.server_item_list) = ast_server_item_list_append((yyvsp[-1].server_item_list), (yyvsp[0].server_item)); }
+#line 5364 "src/parser.tab.c"
+    break;
+
   case 174: /* server_item: IDENT server_string_list NEWLINE  */
-#line 1636 "src/parser.y"
+#line 1654 "src/parser.y"
                                        {
         (yyval.server_item) = ast_server_directive((yyvsp[-2].text), (yyvsp[-1].name_list), (yylsp[-2]).first_line, (yylsp[-2]).first_column);
       }
-#line 5354 "src/parser.tab.c"
+#line 5372 "src/parser.tab.c"
     break;
 
   case 175: /* server_item: IDENT STRING LPAREN parameter_list_opt RPAREN NEWLINE statement_list END IDENT NEWLINE  */
-#line 1639 "src/parser.y"
+#line 1657 "src/parser.y"
                                                                                              {
         (yyval.server_item) = ast_server_handler((yyvsp[-9].text), (yyvsp[-8].text), (yyvsp[-6].name_list), (yyvsp[-3].stmt_list), (yyvsp[-1].text), (yylsp[-9]).first_line, (yylsp[-9]).first_column);
       }
-#line 5362 "src/parser.tab.c"
+#line 5380 "src/parser.tab.c"
     break;
 
   case 176: /* server_item: IDENT IDENT LPAREN record_field_list RPAREN NEWLINE server_item_list END IDENT NEWLINE  */
-#line 1642 "src/parser.y"
+#line 1660 "src/parser.y"
                                                                                              {
         (yyval.server_item) = ast_server_site((yyvsp[-9].text), (yyvsp[-8].text), (yyvsp[-6].record_field_list), (yyvsp[-3].server_item_list), (yyvsp[-1].text), (yylsp[-9]).first_line, (yylsp[-9]).first_column);
       }
-#line 5370 "src/parser.tab.c"
+#line 5388 "src/parser.tab.c"
     break;
 
   case 177: /* server_item: IDENT IDENT LPAREN RPAREN NEWLINE server_item_list END IDENT NEWLINE  */
-#line 1645 "src/parser.y"
+#line 1663 "src/parser.y"
                                                                            {
         (yyval.server_item) = ast_server_site((yyvsp[-8].text), (yyvsp[-7].text), ast_record_field_list_empty(), (yyvsp[-3].server_item_list), (yyvsp[-1].text), (yylsp[-8]).first_line, (yylsp[-8]).first_column);
       }
-#line 5378 "src/parser.tab.c"
+#line 5396 "src/parser.tab.c"
     break;
 
   case 178: /* server_item: ON IDENT NEWLINE statement_list END ON NEWLINE  */
-#line 1648 "src/parser.y"
+#line 1666 "src/parser.y"
                                                      {
         (yyval.server_item) = ast_server_hook((yyvsp[-5].text), (yyvsp[-3].stmt_list), (yylsp[-6]).first_line, (yylsp[-6]).first_column);
       }
-#line 5386 "src/parser.tab.c"
-    break;
-
-  case 179: /* server_string_list: STRING  */
-#line 1654 "src/parser.y"
-             { (yyval.name_list) = ast_name_list_append(ast_name_list_empty(), (yyvsp[0].text)); }
-#line 5392 "src/parser.tab.c"
-    break;
-
-  case 180: /* server_string_list: server_string_list COMMA STRING  */
-#line 1655 "src/parser.y"
-                                      { (yyval.name_list) = ast_name_list_append((yyvsp[-2].name_list), (yyvsp[0].text)); }
-#line 5398 "src/parser.tab.c"
-    break;
-
-  case 181: /* watch_target_path: variable_name  */
-#line 1659 "src/parser.y"
-                    { (yyval.text) = (yyvsp[0].text); }
 #line 5404 "src/parser.tab.c"
     break;
 
-  case 182: /* watch_target_path: watch_target_path DOT IDENT  */
-#line 1660 "src/parser.y"
-                                  { (yyval.text) = join_watch_path((yyvsp[-2].text), (yyvsp[0].text)); }
+  case 179: /* server_string_list: STRING  */
+#line 1672 "src/parser.y"
+             { (yyval.name_list) = ast_name_list_append(ast_name_list_empty(), (yyvsp[0].text)); }
 #line 5410 "src/parser.tab.c"
     break;
 
+  case 180: /* server_string_list: server_string_list COMMA STRING  */
+#line 1673 "src/parser.y"
+                                      { (yyval.name_list) = ast_name_list_append((yyvsp[-2].name_list), (yyvsp[0].text)); }
+#line 5416 "src/parser.tab.c"
+    break;
+
+  case 181: /* watch_target_path: variable_name  */
+#line 1677 "src/parser.y"
+                    { (yyval.text) = (yyvsp[0].text); }
+#line 5422 "src/parser.tab.c"
+    break;
+
+  case 182: /* watch_target_path: watch_target_path DOT IDENT  */
+#line 1678 "src/parser.y"
+                                  { (yyval.text) = join_watch_path((yyvsp[-2].text), (yyvsp[0].text)); }
+#line 5428 "src/parser.tab.c"
+    break;
+
   case 183: /* without_watchers_statement: WITHOUT WATCHERS NEWLINE statement_list END WITHOUT NEWLINE  */
-#line 1664 "src/parser.y"
+#line 1682 "src/parser.y"
                                                                   {
         (yyval.stmt) = ast_without_watchers((yyvsp[-3].stmt_list));
       }
-#line 5418 "src/parser.tab.c"
-    break;
-
-  case 184: /* on_error_statement: ON ERROR_VALUE GOTO IDENT  */
-#line 1670 "src/parser.y"
-                                { (yyval.stmt) = ast_on_error_goto((yyvsp[0].text)); }
-#line 5424 "src/parser.tab.c"
-    break;
-
-  case 185: /* on_error_statement: ON ERROR_VALUE GOTO NEXT  */
-#line 1671 "src/parser.y"
-                               { (yyval.stmt) = ast_on_error_goto_next(); }
-#line 5430 "src/parser.tab.c"
-    break;
-
-  case 186: /* on_error_statement: ON ERROR_VALUE STOP  */
-#line 1672 "src/parser.y"
-                          { (yyval.stmt) = ast_on_error_stop(); }
 #line 5436 "src/parser.tab.c"
     break;
 
+  case 184: /* on_error_statement: ON ERROR_VALUE GOTO IDENT  */
+#line 1688 "src/parser.y"
+                                { (yyval.stmt) = ast_on_error_goto((yyvsp[0].text)); }
+#line 5442 "src/parser.tab.c"
+    break;
+
+  case 185: /* on_error_statement: ON ERROR_VALUE GOTO NEXT  */
+#line 1689 "src/parser.y"
+                               { (yyval.stmt) = ast_on_error_goto_next(); }
+#line 5448 "src/parser.tab.c"
+    break;
+
+  case 186: /* on_error_statement: ON ERROR_VALUE STOP  */
+#line 1690 "src/parser.y"
+                          { (yyval.stmt) = ast_on_error_stop(); }
+#line 5454 "src/parser.tab.c"
+    break;
+
   case 187: /* on_error_statement: ON IDENT GOTO NEXT  */
-#line 1673 "src/parser.y"
+#line 1691 "src/parser.y"
                          {
         if (!warn_channel_ok(ctx, (yyvsp[-2].text), (yylsp[-2]).first_line, (yylsp[-2]).first_column)) { YYERROR; }
         free((yyvsp[-2].text));
         (yyval.stmt) = ast_on_warning(WARN_MODE_NEXT);
       }
-#line 5446 "src/parser.tab.c"
+#line 5464 "src/parser.tab.c"
     break;
 
   case 188: /* on_error_statement: ON IDENT GOTO IDENT  */
-#line 1678 "src/parser.y"
+#line 1696 "src/parser.y"
                           {
         /* A warning fires from a statement that SUCCEEDED, so a label jump
          * would mean leaving successful code on an advisory signal. Refused
@@ -5461,31 +5479,31 @@ yyreduce:
         (yyval.stmt) = NULL;   /* never used: YYERROR discards it, but bison asks every rule to set one */
         YYERROR;
       }
-#line 5465 "src/parser.tab.c"
+#line 5483 "src/parser.tab.c"
     break;
 
   case 189: /* on_error_statement: ON IDENT STOP  */
-#line 1692 "src/parser.y"
+#line 1710 "src/parser.y"
                     {
         if (!warn_channel_ok(ctx, (yyvsp[-1].text), (yylsp[-1]).first_line, (yylsp[-1]).first_column)) { YYERROR; }
         free((yyvsp[-1].text));
         (yyval.stmt) = ast_on_warning(WARN_MODE_STOP);
       }
-#line 5475 "src/parser.tab.c"
+#line 5493 "src/parser.tab.c"
     break;
 
   case 190: /* on_error_statement: ON IDENT PRINT  */
-#line 1697 "src/parser.y"
+#line 1715 "src/parser.y"
                      {
         if (!warn_channel_ok(ctx, (yyvsp[-1].text), (yylsp[-1]).first_line, (yylsp[-1]).first_column)) { YYERROR; }
         free((yyvsp[-1].text));
         (yyval.stmt) = ast_on_warning(WARN_MODE_PRINT);
       }
-#line 5485 "src/parser.tab.c"
+#line 5503 "src/parser.tab.c"
     break;
 
   case 191: /* on_error_statement: ON IDENT IDENT  */
-#line 1702 "src/parser.y"
+#line 1720 "src/parser.y"
                      {
         if (!warn_channel_ok(ctx, (yyvsp[-1].text), (yylsp[-1]).first_line, (yylsp[-1]).first_column)) { YYERROR; }
         int mode = warn_mode_word(ctx, (yyvsp[0].text), (yylsp[0]).first_line, (yylsp[0]).first_column);
@@ -5493,113 +5511,113 @@ yyreduce:
         free((yyvsp[-1].text)); free((yyvsp[0].text));
         (yyval.stmt) = ast_on_warning(mode);
       }
-#line 5497 "src/parser.tab.c"
-    break;
-
-  case 192: /* error_statement: ERROR_VALUE expression  */
-#line 1712 "src/parser.y"
-                             { (yyval.stmt) = ast_error((yyvsp[0].expr)); }
-#line 5503 "src/parser.tab.c"
-    break;
-
-  case 193: /* return_statement: RETURN  */
-#line 1716 "src/parser.y"
-             { (yyval.stmt) = ast_return(NULL); }
-#line 5509 "src/parser.tab.c"
-    break;
-
-  case 194: /* return_statement: RETURN expression  */
-#line 1717 "src/parser.y"
-                        { (yyval.stmt) = ast_return((yyvsp[0].expr)); }
 #line 5515 "src/parser.tab.c"
     break;
 
-  case 195: /* label_statement: variable_name COLON  */
-#line 1721 "src/parser.y"
-                          { (yyval.stmt) = ast_label((yyvsp[-1].text)); }
+  case 192: /* error_statement: ERROR_VALUE expression  */
+#line 1730 "src/parser.y"
+                             { (yyval.stmt) = ast_error((yyvsp[0].expr)); }
 #line 5521 "src/parser.tab.c"
     break;
 
-  case 196: /* goto_statement: GOTO variable_name  */
-#line 1728 "src/parser.y"
-                         { (yyval.stmt) = ast_goto((yyvsp[0].text)); }
+  case 193: /* return_statement: RETURN  */
+#line 1734 "src/parser.y"
+             { (yyval.stmt) = ast_return(NULL); }
 #line 5527 "src/parser.tab.c"
     break;
 
-  case 197: /* gosub_statement: GOSUB variable_name  */
-#line 1732 "src/parser.y"
-                          { (yyval.stmt) = ast_gosub((yyvsp[0].text)); }
+  case 194: /* return_statement: RETURN expression  */
+#line 1735 "src/parser.y"
+                        { (yyval.stmt) = ast_return((yyvsp[0].expr)); }
 #line 5533 "src/parser.tab.c"
     break;
 
-  case 198: /* break_statement: BREAK  */
-#line 1741 "src/parser.y"
-            { (yyval.stmt) = ast_break(NULL); }
+  case 195: /* label_statement: variable_name COLON  */
+#line 1739 "src/parser.y"
+                          { (yyval.stmt) = ast_label((yyvsp[-1].text)); }
 #line 5539 "src/parser.tab.c"
     break;
 
-  case 199: /* break_statement: BREAK IDENT  */
-#line 1742 "src/parser.y"
-                  { (yyval.stmt) = ast_break((yyvsp[0].text)); }
+  case 196: /* goto_statement: GOTO variable_name  */
+#line 1746 "src/parser.y"
+                         { (yyval.stmt) = ast_goto((yyvsp[0].text)); }
 #line 5545 "src/parser.tab.c"
     break;
 
-  case 200: /* continue_statement: CONTINUE  */
-#line 1746 "src/parser.y"
-               { (yyval.stmt) = ast_continue(NULL); }
+  case 197: /* gosub_statement: GOSUB variable_name  */
+#line 1750 "src/parser.y"
+                          { (yyval.stmt) = ast_gosub((yyvsp[0].text)); }
 #line 5551 "src/parser.tab.c"
     break;
 
-  case 201: /* continue_statement: CONTINUE IDENT  */
-#line 1747 "src/parser.y"
-                     { (yyval.stmt) = ast_continue((yyvsp[0].text)); }
+  case 198: /* break_statement: BREAK  */
+#line 1759 "src/parser.y"
+            { (yyval.stmt) = ast_break(NULL); }
 #line 5557 "src/parser.tab.c"
     break;
 
+  case 199: /* break_statement: BREAK IDENT  */
+#line 1760 "src/parser.y"
+                  { (yyval.stmt) = ast_break((yyvsp[0].text)); }
+#line 5563 "src/parser.tab.c"
+    break;
+
+  case 200: /* continue_statement: CONTINUE  */
+#line 1764 "src/parser.y"
+               { (yyval.stmt) = ast_continue(NULL); }
+#line 5569 "src/parser.tab.c"
+    break;
+
+  case 201: /* continue_statement: CONTINUE IDENT  */
+#line 1765 "src/parser.y"
+                     { (yyval.stmt) = ast_continue((yyvsp[0].text)); }
+#line 5575 "src/parser.tab.c"
+    break;
+
   case 202: /* if_statement: IF expression THEN NEWLINE statement_list if_block_tail  */
-#line 1751 "src/parser.y"
+#line 1769 "src/parser.y"
                                                               {
         (yyval.stmt) = ast_if((yyvsp[-4].expr), (yyvsp[-1].stmt_list));
         (yyval.stmt)->as.if_stmt.else_body = (yyvsp[0].stmt_list);
       }
-#line 5566 "src/parser.tab.c"
+#line 5584 "src/parser.tab.c"
     break;
 
   case 203: /* if_statement: IF expression THEN inline_statement NEWLINE if_inline_tail  */
-#line 1755 "src/parser.y"
+#line 1773 "src/parser.y"
                                                                  {
         (yyval.stmt) = ast_if((yyvsp[-4].expr), ast_stmt_list_append(ast_stmt_list_empty(), (yyvsp[-2].stmt)));
         (yyval.stmt)->as.if_stmt.else_body = (yyvsp[0].stmt_list);
       }
-#line 5575 "src/parser.tab.c"
+#line 5593 "src/parser.tab.c"
     break;
 
   case 204: /* if_block_tail: END IF NEWLINE  */
-#line 1762 "src/parser.y"
+#line 1780 "src/parser.y"
                      {
         (yyval.stmt_list) = ast_stmt_list_empty();
       }
-#line 5583 "src/parser.tab.c"
+#line 5601 "src/parser.tab.c"
     break;
 
   case 205: /* if_block_tail: ELSE inline_statement NEWLINE  */
-#line 1765 "src/parser.y"
+#line 1783 "src/parser.y"
                                     {
         (yyval.stmt_list) = ast_stmt_list_append(ast_stmt_list_empty(), (yyvsp[-1].stmt));
       }
-#line 5591 "src/parser.tab.c"
+#line 5609 "src/parser.tab.c"
     break;
 
   case 206: /* if_block_tail: ELSE NEWLINE statement_list END IF NEWLINE  */
-#line 1768 "src/parser.y"
+#line 1786 "src/parser.y"
                                                  {
         (yyval.stmt_list) = (yyvsp[-3].stmt_list);
       }
-#line 5599 "src/parser.tab.c"
+#line 5617 "src/parser.tab.c"
     break;
 
   case 207: /* if_block_tail: ELSE IF expression THEN NEWLINE statement_list if_block_tail  */
-#line 1777 "src/parser.y"
+#line 1795 "src/parser.y"
                                                                    {
         AstStmt *inner = ast_if((yyvsp[-4].expr), (yyvsp[-1].stmt_list));
         inner->as.if_stmt.else_body = (yyvsp[0].stmt_list);
@@ -5607,35 +5625,35 @@ yyreduce:
                  ast_stmt_span(inner, (yylsp[-5]).first_line, (yylsp[-5]).first_column,
                                       (yylsp[-5]).last_line, (yylsp[-5]).last_column));
       }
-#line 5611 "src/parser.tab.c"
+#line 5629 "src/parser.tab.c"
     break;
 
   case 208: /* if_inline_tail: %empty  */
-#line 1787 "src/parser.y"
+#line 1805 "src/parser.y"
                                    {
         (yyval.stmt_list) = ast_stmt_list_empty();
       }
-#line 5619 "src/parser.tab.c"
+#line 5637 "src/parser.tab.c"
     break;
 
   case 209: /* if_inline_tail: ELSE inline_statement NEWLINE  */
-#line 1790 "src/parser.y"
+#line 1808 "src/parser.y"
                                     {
         (yyval.stmt_list) = ast_stmt_list_append(ast_stmt_list_empty(), (yyvsp[-1].stmt));
       }
-#line 5627 "src/parser.tab.c"
+#line 5645 "src/parser.tab.c"
     break;
 
   case 210: /* if_inline_tail: ELSE NEWLINE statement_list END IF NEWLINE  */
-#line 1793 "src/parser.y"
+#line 1811 "src/parser.y"
                                                  {
         (yyval.stmt_list) = (yyvsp[-3].stmt_list);
       }
-#line 5635 "src/parser.tab.c"
+#line 5653 "src/parser.tab.c"
     break;
 
   case 211: /* if_inline_tail: ELSE IF expression THEN inline_statement NEWLINE if_inline_tail  */
-#line 1799 "src/parser.y"
+#line 1817 "src/parser.y"
                                                                       {
         AstStmt *inner = ast_if((yyvsp[-4].expr), ast_stmt_list_append(ast_stmt_list_empty(), (yyvsp[-2].stmt)));
         inner->as.if_stmt.else_body = (yyvsp[0].stmt_list);
@@ -5643,11 +5661,11 @@ yyreduce:
                  ast_stmt_span(inner, (yylsp[-5]).first_line, (yylsp[-5]).first_column,
                                       (yylsp[-5]).last_line, (yylsp[-5]).last_column));
       }
-#line 5647 "src/parser.tab.c"
+#line 5665 "src/parser.tab.c"
     break;
 
   case 212: /* if_inline_tail: ELSE IF expression THEN NEWLINE statement_list if_block_tail  */
-#line 1806 "src/parser.y"
+#line 1824 "src/parser.y"
                                                                    {
         AstStmt *inner = ast_if((yyvsp[-4].expr), (yyvsp[-1].stmt_list));
         inner->as.if_stmt.else_body = (yyvsp[0].stmt_list);
@@ -5655,250 +5673,250 @@ yyreduce:
                  ast_stmt_span(inner, (yylsp[-5]).first_line, (yylsp[-5]).first_column,
                                       (yylsp[-5]).last_line, (yylsp[-5]).last_column));
       }
-#line 5659 "src/parser.tab.c"
-    break;
-
-  case 213: /* inline_statement: assignment  */
-#line 1816 "src/parser.y"
-                 { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
-#line 5665 "src/parser.tab.c"
-    break;
-
-  case 214: /* inline_statement: print_statement  */
-#line 1817 "src/parser.y"
-                      { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
-#line 5671 "src/parser.tab.c"
-    break;
-
-  case 215: /* inline_statement: call_statement  */
-#line 1818 "src/parser.y"
-                     { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 5677 "src/parser.tab.c"
     break;
 
-  case 216: /* inline_statement: use_statement  */
-#line 1819 "src/parser.y"
-                    { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 213: /* inline_statement: assignment  */
+#line 1834 "src/parser.y"
+                 { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 5683 "src/parser.tab.c"
     break;
 
-  case 217: /* inline_statement: on_error_statement  */
-#line 1820 "src/parser.y"
-                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 214: /* inline_statement: print_statement  */
+#line 1835 "src/parser.y"
+                      { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 5689 "src/parser.tab.c"
     break;
 
-  case 218: /* inline_statement: error_statement  */
-#line 1821 "src/parser.y"
-                      { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 215: /* inline_statement: call_statement  */
+#line 1836 "src/parser.y"
+                     { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 5695 "src/parser.tab.c"
     break;
 
-  case 219: /* inline_statement: return_statement  */
-#line 1822 "src/parser.y"
-                       { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 216: /* inline_statement: use_statement  */
+#line 1837 "src/parser.y"
+                    { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 5701 "src/parser.tab.c"
     break;
 
-  case 220: /* inline_statement: goto_statement  */
-#line 1823 "src/parser.y"
-                     { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 217: /* inline_statement: on_error_statement  */
+#line 1838 "src/parser.y"
+                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 5707 "src/parser.tab.c"
     break;
 
-  case 221: /* inline_statement: gosub_statement  */
-#line 1824 "src/parser.y"
+  case 218: /* inline_statement: error_statement  */
+#line 1839 "src/parser.y"
                       { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 5713 "src/parser.tab.c"
     break;
 
-  case 222: /* inline_statement: break_statement  */
-#line 1825 "src/parser.y"
-                      { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 219: /* inline_statement: return_statement  */
+#line 1840 "src/parser.y"
+                       { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 5719 "src/parser.tab.c"
     break;
 
-  case 223: /* inline_statement: continue_statement  */
-#line 1826 "src/parser.y"
-                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
+  case 220: /* inline_statement: goto_statement  */
+#line 1841 "src/parser.y"
+                     { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 5725 "src/parser.tab.c"
     break;
 
-  case 224: /* expression: or_expression  */
-#line 1834 "src/parser.y"
-                    { (yyval.expr) = (yyvsp[0].expr); }
+  case 221: /* inline_statement: gosub_statement  */
+#line 1842 "src/parser.y"
+                      { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 5731 "src/parser.tab.c"
     break;
 
-  case 225: /* expression: TRY expression  */
-#line 1835 "src/parser.y"
-                     { (yyval.expr) = expr_at(ast_unary(copy_const("try"), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
+  case 222: /* inline_statement: break_statement  */
+#line 1843 "src/parser.y"
+                      { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 5737 "src/parser.tab.c"
     break;
 
-  case 226: /* or_expression: and_expression  */
-#line 1839 "src/parser.y"
-                     { (yyval.expr) = (yyvsp[0].expr); }
+  case 223: /* inline_statement: continue_statement  */
+#line 1844 "src/parser.y"
+                         { (yyval.stmt) = ast_stmt_span((yyvsp[0].stmt), (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column); }
 #line 5743 "src/parser.tab.c"
     break;
 
-  case 227: /* or_expression: or_expression OR and_expression  */
-#line 1840 "src/parser.y"
-                                      { (yyval.expr) = expr_at(ast_binary(copy_const("or"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
+  case 224: /* expression: or_expression  */
+#line 1852 "src/parser.y"
+                    { (yyval.expr) = (yyvsp[0].expr); }
 #line 5749 "src/parser.tab.c"
     break;
 
-  case 228: /* and_expression: not_expression  */
-#line 1844 "src/parser.y"
-                     { (yyval.expr) = (yyvsp[0].expr); }
+  case 225: /* expression: TRY expression  */
+#line 1853 "src/parser.y"
+                     { (yyval.expr) = expr_at(ast_unary(copy_const("try"), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
 #line 5755 "src/parser.tab.c"
     break;
 
-  case 229: /* and_expression: and_expression AND not_expression  */
-#line 1845 "src/parser.y"
-                                        { (yyval.expr) = expr_at(ast_binary(copy_const("and"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
+  case 226: /* or_expression: and_expression  */
+#line 1857 "src/parser.y"
+                     { (yyval.expr) = (yyvsp[0].expr); }
 #line 5761 "src/parser.tab.c"
     break;
 
-  case 230: /* not_expression: comparison_expression  */
-#line 1867 "src/parser.y"
-                            { (yyval.expr) = (yyvsp[0].expr); }
+  case 227: /* or_expression: or_expression OR and_expression  */
+#line 1858 "src/parser.y"
+                                      { (yyval.expr) = expr_at(ast_binary(copy_const("or"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
 #line 5767 "src/parser.tab.c"
     break;
 
-  case 231: /* not_expression: NOT not_expression  */
-#line 1868 "src/parser.y"
-                         { (yyval.expr) = expr_at(ast_unary(copy_const("not"), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
+  case 228: /* and_expression: not_expression  */
+#line 1862 "src/parser.y"
+                     { (yyval.expr) = (yyvsp[0].expr); }
 #line 5773 "src/parser.tab.c"
     break;
 
-  case 232: /* comparison_expression: set_expression  */
-#line 1872 "src/parser.y"
-                     { (yyval.expr) = (yyvsp[0].expr); }
+  case 229: /* and_expression: and_expression AND not_expression  */
+#line 1863 "src/parser.y"
+                                        { (yyval.expr) = expr_at(ast_binary(copy_const("and"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
 #line 5779 "src/parser.tab.c"
     break;
 
-  case 233: /* comparison_expression: set_expression comparison_operator set_expression  */
-#line 1873 "src/parser.y"
-                                                        { (yyval.expr) = expr_at(ast_binary((yyvsp[-1].text), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
+  case 230: /* not_expression: comparison_expression  */
+#line 1885 "src/parser.y"
+                            { (yyval.expr) = (yyvsp[0].expr); }
 #line 5785 "src/parser.tab.c"
     break;
 
+  case 231: /* not_expression: NOT not_expression  */
+#line 1886 "src/parser.y"
+                         { (yyval.expr) = expr_at(ast_unary(copy_const("not"), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
+#line 5791 "src/parser.tab.c"
+    break;
+
+  case 232: /* comparison_expression: set_expression  */
+#line 1890 "src/parser.y"
+                     { (yyval.expr) = (yyvsp[0].expr); }
+#line 5797 "src/parser.tab.c"
+    break;
+
+  case 233: /* comparison_expression: set_expression comparison_operator set_expression  */
+#line 1891 "src/parser.y"
+                                                        { (yyval.expr) = expr_at(ast_binary((yyvsp[-1].text), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
+#line 5803 "src/parser.tab.c"
+    break;
+
   case 234: /* comparison_expression: set_expression comparison_lens comparison_operator set_expression  */
-#line 1874 "src/parser.y"
+#line 1892 "src/parser.y"
                                                                         {
         (yyval.expr) = expr_at(ast_binary((yyvsp[-1].text), (yyvsp[-2].modifier), (yyvsp[-3].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column);
       }
-#line 5793 "src/parser.tab.c"
-    break;
-
-  case 235: /* set_expression: additive_expression  */
-#line 1880 "src/parser.y"
-                          { (yyval.expr) = (yyvsp[0].expr); }
-#line 5799 "src/parser.tab.c"
-    break;
-
-  case 236: /* set_expression: set_expression EXCLUDING additive_expression  */
-#line 1881 "src/parser.y"
-                                                   { (yyval.expr) = expr_at(ast_binary(copy_const("excluding"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
-#line 5805 "src/parser.tab.c"
-    break;
-
-  case 237: /* set_expression: set_expression INTERSECTING additive_expression  */
-#line 1882 "src/parser.y"
-                                                      { (yyval.expr) = expr_at(ast_binary(copy_const("intersecting"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
 #line 5811 "src/parser.tab.c"
     break;
 
-  case 238: /* additive_expression: multiplicative_expression  */
-#line 1886 "src/parser.y"
-                                { (yyval.expr) = (yyvsp[0].expr); }
+  case 235: /* set_expression: additive_expression  */
+#line 1898 "src/parser.y"
+                          { (yyval.expr) = (yyvsp[0].expr); }
 #line 5817 "src/parser.tab.c"
     break;
 
-  case 239: /* additive_expression: additive_expression PLUS multiplicative_expression  */
-#line 1887 "src/parser.y"
-                                                         { (yyval.expr) = expr_at(ast_binary(copy_const("+"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
+  case 236: /* set_expression: set_expression EXCLUDING additive_expression  */
+#line 1899 "src/parser.y"
+                                                   { (yyval.expr) = expr_at(ast_binary(copy_const("excluding"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
 #line 5823 "src/parser.tab.c"
     break;
 
-  case 240: /* additive_expression: additive_expression MINUS multiplicative_expression  */
-#line 1888 "src/parser.y"
-                                                          { (yyval.expr) = expr_at(ast_binary(copy_const("-"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
+  case 237: /* set_expression: set_expression INTERSECTING additive_expression  */
+#line 1900 "src/parser.y"
+                                                      { (yyval.expr) = expr_at(ast_binary(copy_const("intersecting"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
 #line 5829 "src/parser.tab.c"
     break;
 
-  case 241: /* multiplicative_expression: unary_expression  */
-#line 1892 "src/parser.y"
-                       { (yyval.expr) = (yyvsp[0].expr); }
+  case 238: /* additive_expression: multiplicative_expression  */
+#line 1904 "src/parser.y"
+                                { (yyval.expr) = (yyvsp[0].expr); }
 #line 5835 "src/parser.tab.c"
     break;
 
-  case 242: /* multiplicative_expression: multiplicative_expression STAR unary_expression  */
-#line 1893 "src/parser.y"
-                                                      { (yyval.expr) = expr_at(ast_binary(copy_const("*"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
+  case 239: /* additive_expression: additive_expression PLUS multiplicative_expression  */
+#line 1905 "src/parser.y"
+                                                         { (yyval.expr) = expr_at(ast_binary(copy_const("+"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
 #line 5841 "src/parser.tab.c"
     break;
 
-  case 243: /* multiplicative_expression: multiplicative_expression SLASH unary_expression  */
-#line 1894 "src/parser.y"
-                                                       { (yyval.expr) = expr_at(ast_binary(copy_const("/"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
+  case 240: /* additive_expression: additive_expression MINUS multiplicative_expression  */
+#line 1906 "src/parser.y"
+                                                          { (yyval.expr) = expr_at(ast_binary(copy_const("-"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
 #line 5847 "src/parser.tab.c"
     break;
 
-  case 244: /* unary_expression: postfix_expression  */
-#line 1898 "src/parser.y"
-                         { (yyval.expr) = (yyvsp[0].expr); }
+  case 241: /* multiplicative_expression: unary_expression  */
+#line 1910 "src/parser.y"
+                       { (yyval.expr) = (yyvsp[0].expr); }
 #line 5853 "src/parser.tab.c"
     break;
 
-  case 245: /* unary_expression: MINUS unary_expression  */
-#line 1899 "src/parser.y"
-                             { (yyval.expr) = expr_at(ast_unary(copy_const("-"), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
+  case 242: /* multiplicative_expression: multiplicative_expression STAR unary_expression  */
+#line 1911 "src/parser.y"
+                                                      { (yyval.expr) = expr_at(ast_binary(copy_const("*"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
 #line 5859 "src/parser.tab.c"
     break;
 
+  case 243: /* multiplicative_expression: multiplicative_expression SLASH unary_expression  */
+#line 1912 "src/parser.y"
+                                                       { (yyval.expr) = expr_at(ast_binary(copy_const("/"), ast_modifier_none(), (yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
+#line 5865 "src/parser.tab.c"
+    break;
+
+  case 244: /* unary_expression: postfix_expression  */
+#line 1916 "src/parser.y"
+                         { (yyval.expr) = (yyvsp[0].expr); }
+#line 5871 "src/parser.tab.c"
+    break;
+
+  case 245: /* unary_expression: MINUS unary_expression  */
+#line 1917 "src/parser.y"
+                             { (yyval.expr) = expr_at(ast_unary(copy_const("-"), (yyvsp[0].expr)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
+#line 5877 "src/parser.tab.c"
+    break;
+
   case 246: /* unary_expression: MODIFIER_PREFIX unary_expression  */
-#line 1906 "src/parser.y"
+#line 1924 "src/parser.y"
                                        {
         (yyval.expr) = expr_at(ast_modifier_apply(parse_modifier_use((yyvsp[-1].text)), (yyvsp[0].expr)),
                      (yylsp[-1]).first_line, (yylsp[-1]).first_column);
       }
-#line 5868 "src/parser.tab.c"
-    break;
-
-  case 247: /* unary_expression: NEW postfix_expression  */
-#line 1910 "src/parser.y"
-                             { (yyval.expr) = expr_at(ast_new((yyvsp[0].expr), NULL), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
-#line 5874 "src/parser.tab.c"
-    break;
-
-  case 248: /* unary_expression: NEW postfix_expression WITH record_literal  */
-#line 1911 "src/parser.y"
-                                                 { (yyval.expr) = expr_at(ast_new((yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-3]).first_line, (yylsp[-3]).first_column); }
-#line 5880 "src/parser.tab.c"
-    break;
-
-  case 249: /* unary_expression: SPAWN IDENT LPAREN argument_list_opt RPAREN  */
-#line 1912 "src/parser.y"
-                                                  { (yyval.expr) = expr_at(ast_spawn((yyvsp[-3].text), (yyvsp[-1].expr_list)), (yylsp[-4]).first_line, (yylsp[-4]).first_column); }
 #line 5886 "src/parser.tab.c"
     break;
 
-  case 250: /* postfix_expression: primary  */
-#line 1916 "src/parser.y"
-              { (yyval.expr) = (yyvsp[0].expr); }
+  case 247: /* unary_expression: NEW postfix_expression  */
+#line 1928 "src/parser.y"
+                             { (yyval.expr) = expr_at(ast_new((yyvsp[0].expr), NULL), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
 #line 5892 "src/parser.tab.c"
     break;
 
-  case 251: /* postfix_expression: postfix_expression LBRACKET expression RBRACKET  */
-#line 1917 "src/parser.y"
-                                                      { (yyval.expr) = expr_at(ast_index((yyvsp[-3].expr), (yyvsp[-1].expr)), (yylsp[-2]).first_line, (yylsp[-2]).first_column); }
+  case 248: /* unary_expression: NEW postfix_expression WITH record_literal  */
+#line 1929 "src/parser.y"
+                                                 { (yyval.expr) = expr_at(ast_new((yyvsp[-2].expr), (yyvsp[0].expr)), (yylsp[-3]).first_line, (yylsp[-3]).first_column); }
 #line 5898 "src/parser.tab.c"
     break;
 
+  case 249: /* unary_expression: SPAWN IDENT LPAREN argument_list_opt RPAREN  */
+#line 1930 "src/parser.y"
+                                                  { (yyval.expr) = expr_at(ast_spawn((yyvsp[-3].text), (yyvsp[-1].expr_list)), (yylsp[-4]).first_line, (yylsp[-4]).first_column); }
+#line 5904 "src/parser.tab.c"
+    break;
+
+  case 250: /* postfix_expression: primary  */
+#line 1934 "src/parser.y"
+              { (yyval.expr) = (yyvsp[0].expr); }
+#line 5910 "src/parser.tab.c"
+    break;
+
+  case 251: /* postfix_expression: postfix_expression LBRACKET expression RBRACKET  */
+#line 1935 "src/parser.y"
+                                                      { (yyval.expr) = expr_at(ast_index((yyvsp[-3].expr), (yyvsp[-1].expr)), (yylsp[-2]).first_line, (yylsp[-2]).first_column); }
+#line 5916 "src/parser.tab.c"
+    break;
+
   case 252: /* postfix_expression: postfix_expression LBRACKET expression COMMA argument_list RBRACKET  */
-#line 1921 "src/parser.y"
+#line 1939 "src/parser.y"
                                                                           {
         AstExprList items = ast_expr_list_append(ast_expr_list_empty(), (yyvsp[-3].expr));
         for (size_t i = 0; i < (yyvsp[-1].expr_list).count; i++) {
@@ -5907,35 +5925,35 @@ yyreduce:
         free((yyvsp[-1].expr_list).items);
         (yyval.expr) = expr_at(ast_index_list((yyvsp[-5].expr), items), (yylsp[-4]).first_line, (yylsp[-4]).first_column);
       }
-#line 5911 "src/parser.tab.c"
+#line 5929 "src/parser.tab.c"
     break;
 
   case 253: /* postfix_expression: postfix_expression DOT dot_field_name  */
-#line 1929 "src/parser.y"
+#line 1947 "src/parser.y"
                                             { (yyval.expr) = expr_at(ast_field((yyvsp[-2].expr), (yyvsp[0].text)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
-#line 5917 "src/parser.tab.c"
+#line 5935 "src/parser.tab.c"
     break;
 
   case 254: /* postfix_expression: postfix_expression PATH_LBRACE projection_names RBRACE  */
-#line 1934 "src/parser.y"
+#line 1952 "src/parser.y"
                                                              {
         (yyval.expr) = expr_at(ast_project((yyvsp[-3].expr), (yyvsp[-1].name_list)), (yylsp[-2]).first_line, (yylsp[-2]).first_column);
       }
-#line 5925 "src/parser.tab.c"
+#line 5943 "src/parser.tab.c"
     break;
 
   case 255: /* postfix_expression: postfix_expression DOT IDENT LPAREN argument_list_opt RPAREN  */
-#line 1937 "src/parser.y"
+#line 1955 "src/parser.y"
                                                                    {
         /* Method call on an expression receiver where the method name is a bare
          * IDENT (the receiver ends in ) or ], e.g. make().show(), a[0].show()). */
         (yyval.expr) = expr_at(ast_method_call((yyvsp[-5].expr), (yyvsp[-3].text), (yyvsp[-1].expr_list)), (yylsp[-4]).first_line, (yylsp[-4]).first_column);
       }
-#line 5935 "src/parser.tab.c"
+#line 5953 "src/parser.tab.c"
     break;
 
   case 256: /* postfix_expression: postfix_expression DOT QUALIFIED_IDENT LPAREN argument_list_opt RPAREN  */
-#line 1942 "src/parser.y"
+#line 1960 "src/parser.y"
                                                                              {
         /* Method call on an expression receiver where the lexer folded the final
          * `field.method(` into one QUALIFIED_IDENT (e.g. a.b.method(): the
@@ -5947,71 +5965,71 @@ yyreduce:
         AstExpr *recv = expr_at(ast_field((yyvsp[-5].expr), field), (yylsp[-4]).first_line, (yylsp[-4]).first_column);
         (yyval.expr) = expr_at(ast_method_call(recv, method, (yyvsp[-1].expr_list)), (yylsp[-4]).first_line, (yylsp[-4]).first_column);
       }
-#line 5951 "src/parser.tab.c"
-    break;
-
-  case 257: /* comparison_operator: OP_EQ  */
-#line 1956 "src/parser.y"
-            { (yyval.text) = copy_const("="); }
-#line 5957 "src/parser.tab.c"
-    break;
-
-  case 258: /* comparison_operator: OP_NE  */
-#line 1957 "src/parser.y"
-            { (yyval.text) = copy_const("!="); }
-#line 5963 "src/parser.tab.c"
-    break;
-
-  case 259: /* comparison_operator: OP_GT  */
-#line 1958 "src/parser.y"
-            { (yyval.text) = copy_const(">"); }
 #line 5969 "src/parser.tab.c"
     break;
 
-  case 260: /* comparison_operator: OP_LT  */
-#line 1959 "src/parser.y"
-            { (yyval.text) = copy_const("<"); }
+  case 257: /* comparison_operator: OP_EQ  */
+#line 1974 "src/parser.y"
+            { (yyval.text) = copy_const("="); }
 #line 5975 "src/parser.tab.c"
     break;
 
-  case 261: /* comparison_operator: OP_GE  */
-#line 1960 "src/parser.y"
-            { (yyval.text) = copy_const(">="); }
+  case 258: /* comparison_operator: OP_NE  */
+#line 1975 "src/parser.y"
+            { (yyval.text) = copy_const("!="); }
 #line 5981 "src/parser.tab.c"
     break;
 
-  case 262: /* comparison_operator: OP_LE  */
-#line 1961 "src/parser.y"
-            { (yyval.text) = copy_const("<="); }
+  case 259: /* comparison_operator: OP_GT  */
+#line 1976 "src/parser.y"
+            { (yyval.text) = copy_const(">"); }
 #line 5987 "src/parser.tab.c"
     break;
 
-  case 263: /* comparison_operator: OP_NGT  */
-#line 1962 "src/parser.y"
-             { (yyval.text) = copy_const("!>"); }
+  case 260: /* comparison_operator: OP_LT  */
+#line 1977 "src/parser.y"
+            { (yyval.text) = copy_const("<"); }
 #line 5993 "src/parser.tab.c"
     break;
 
-  case 264: /* comparison_operator: OP_NLT  */
-#line 1963 "src/parser.y"
-             { (yyval.text) = copy_const("!<"); }
+  case 261: /* comparison_operator: OP_GE  */
+#line 1978 "src/parser.y"
+            { (yyval.text) = copy_const(">="); }
 #line 5999 "src/parser.tab.c"
     break;
 
-  case 265: /* comparison_operator: OP_NGE  */
-#line 1964 "src/parser.y"
-             { (yyval.text) = copy_const("!>="); }
+  case 262: /* comparison_operator: OP_LE  */
+#line 1979 "src/parser.y"
+            { (yyval.text) = copy_const("<="); }
 #line 6005 "src/parser.tab.c"
     break;
 
-  case 266: /* comparison_operator: OP_NLE  */
-#line 1965 "src/parser.y"
-             { (yyval.text) = copy_const("!<="); }
+  case 263: /* comparison_operator: OP_NGT  */
+#line 1980 "src/parser.y"
+             { (yyval.text) = copy_const("!>"); }
 #line 6011 "src/parser.tab.c"
     break;
 
+  case 264: /* comparison_operator: OP_NLT  */
+#line 1981 "src/parser.y"
+             { (yyval.text) = copy_const("!<"); }
+#line 6017 "src/parser.tab.c"
+    break;
+
+  case 265: /* comparison_operator: OP_NGE  */
+#line 1982 "src/parser.y"
+             { (yyval.text) = copy_const("!>="); }
+#line 6023 "src/parser.tab.c"
+    break;
+
+  case 266: /* comparison_operator: OP_NLE  */
+#line 1983 "src/parser.y"
+             { (yyval.text) = copy_const("!<="); }
+#line 6029 "src/parser.tab.c"
+    break;
+
   case 267: /* primary: MODIFIER_VALUE  */
-#line 1969 "src/parser.y"
+#line 1987 "src/parser.y"
                      {
         /* A DECLARATION IS NOT AN EXPRESSION CONTEXT, which is the line the
          * `server` block's literal-only head already draws. `type: {USD}`
@@ -6030,41 +6048,64 @@ yyreduce:
         }
         (yyval.expr) = expr_at(ast_string((yyvsp[0].text)), (yylsp[0]).first_line, (yylsp[0]).first_column);
       }
-#line 6034 "src/parser.tab.c"
-    break;
-
-  case 268: /* primary: DOT dot_field_name  */
-#line 1990 "src/parser.y"
-                         { (yyval.expr) = expr_at(ast_column((yyvsp[0].text)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
-#line 6040 "src/parser.tab.c"
-    break;
-
-  case 269: /* primary: NUMBER  */
-#line 1991 "src/parser.y"
-             { (yyval.expr) = expr_at(ast_number((yyvsp[0].numlit).value, (yyvsp[0].numlit).exact, (yyvsp[0].numlit).is_exact, (yyvsp[0].numlit).scale), (yylsp[0]).first_line, (yylsp[0]).first_column); }
-#line 6046 "src/parser.tab.c"
-    break;
-
-  case 270: /* primary: WATCHERS LPAREN RPAREN  */
-#line 1992 "src/parser.y"
-                             { (yyval.expr) = expr_at(ast_call(copy_const("watchers"), ast_expr_list_empty()), (yylsp[-2]).first_line, (yylsp[-2]).first_column); }
 #line 6052 "src/parser.tab.c"
     break;
 
-  case 271: /* primary: duration_terms  */
-#line 1993 "src/parser.y"
-                     { (yyval.expr) = expr_at(ast_duration((yyvsp[0].duration)), (yylsp[0]).first_line, (yylsp[0]).first_column); }
+  case 268: /* primary: DOT dot_field_name  */
+#line 2008 "src/parser.y"
+                         { (yyval.expr) = expr_at(ast_column((yyvsp[0].text)), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
 #line 6058 "src/parser.tab.c"
     break;
 
-  case 272: /* primary: STRING  */
-#line 1994 "src/parser.y"
-             { (yyval.expr) = expr_at(ast_string((yyvsp[0].text)), (yylsp[0]).first_line, (yylsp[0]).first_column); }
+  case 269: /* primary: NUMBER  */
+#line 2009 "src/parser.y"
+             { (yyval.expr) = expr_at(ast_number((yyvsp[0].numlit).value, (yyvsp[0].numlit).exact, (yyvsp[0].numlit).is_exact, (yyvsp[0].numlit).scale), (yylsp[0]).first_line, (yylsp[0]).first_column); }
 #line 6064 "src/parser.tab.c"
     break;
 
+  case 270: /* primary: WATCHERS LPAREN RPAREN  */
+#line 2010 "src/parser.y"
+                             { (yyval.expr) = expr_at(ast_call(copy_const("watchers"), ast_expr_list_empty()), (yylsp[-2]).first_line, (yylsp[-2]).first_column); }
+#line 6070 "src/parser.tab.c"
+    break;
+
+  case 271: /* primary: duration_terms  */
+#line 2011 "src/parser.y"
+                     {
+        if ((yyvsp[0].duration).cells) {
+            /* `40 columns` is the record `{ columns: 40 }`, a size the `ui`
+             * backends convert; one term, a whole number of at least 1 */
+            if ((yyvsp[0].duration).cells_mixed) {
+                report_syntax_error(ctx, (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column,
+                                    "a size in columns or rows is one term on its own, "
+                                    "as `40 columns` or `12 rows`: it cannot join a duration or another size");
+                YYERROR;
+            }
+            if ((yyvsp[0].duration).cells_amount < 1 || (yyvsp[0].duration).cells_amount != floor((yyvsp[0].duration).cells_amount) || (yyvsp[0].duration).cells_amount > 100000) {
+                report_syntax_error(ctx, (yylsp[0]).first_line, (yylsp[0]).first_column, (yylsp[0]).last_line, (yylsp[0]).last_column,
+                                    "a size in columns or rows is a whole number from 1, as `40 columns`");
+                YYERROR;
+            }
+            AstRecordFieldList f = ast_record_field_list_empty();
+            f = ast_record_field_list_append(f, copy_const((yyvsp[0].duration).cells == 1 ? "columns" : "rows"),
+                                             expr_at(ast_number((yyvsp[0].duration).cells_amount, (long long)(yyvsp[0].duration).cells_amount, 1, 0),
+                                                     (yylsp[0]).first_line, (yylsp[0]).first_column));
+            (yyval.expr) = expr_at(ast_record(f), (yylsp[0]).first_line, (yylsp[0]).first_column);
+        } else {
+            (yyval.expr) = expr_at(ast_duration((yyvsp[0].duration)), (yylsp[0]).first_line, (yylsp[0]).first_column);
+        }
+      }
+#line 6099 "src/parser.tab.c"
+    break;
+
+  case 272: /* primary: STRING  */
+#line 2035 "src/parser.y"
+             { (yyval.expr) = expr_at(ast_string((yyvsp[0].text)), (yylsp[0]).first_line, (yylsp[0]).first_column); }
+#line 6105 "src/parser.tab.c"
+    break;
+
   case 273: /* primary: variable_name ident_suffix  */
-#line 1995 "src/parser.y"
+#line 2036 "src/parser.y"
                                  {
         if ((yyvsp[0].ident_suffix).kind == IDENT_SUFFIX_CALL) {
             (yyval.expr) = expr_at(ast_call((yyvsp[-1].text), (yyvsp[0].ident_suffix).args), (yylsp[-1]).first_line, (yylsp[-1]).first_column);
@@ -6082,119 +6123,119 @@ yyreduce:
             (yyval.expr) = expr_at(ast_ident((yyvsp[-1].text)), (yylsp[-1]).first_line, (yylsp[-1]).first_column);
         }
       }
-#line 6086 "src/parser.tab.c"
+#line 6127 "src/parser.tab.c"
     break;
 
   case 274: /* primary: QUALIFIED_IDENT LPAREN argument_list_opt RPAREN  */
-#line 2012 "src/parser.y"
+#line 2053 "src/parser.y"
                                                       {
         char *library = NULL;
         char *name = NULL;
         split_qualified_ident((yyvsp[-3].text), &library, &name);
         (yyval.expr) = expr_at(ast_qualified_call(library, name, (yyvsp[-1].expr_list)), (yylsp[-3]).first_line, (yylsp[-3]).first_column);
       }
-#line 6097 "src/parser.tab.c"
+#line 6138 "src/parser.tab.c"
     break;
 
   case 275: /* primary: ERROR_VALUE  */
-#line 2018 "src/parser.y"
+#line 2059 "src/parser.y"
                   { (yyval.expr) = expr_at(ast_ident(copy_const("error")), (yylsp[0]).first_line, (yylsp[0]).first_column); }
-#line 6103 "src/parser.tab.c"
+#line 6144 "src/parser.tab.c"
     break;
 
   case 276: /* primary: TRUE  */
-#line 2019 "src/parser.y"
+#line 2060 "src/parser.y"
            { (yyval.expr) = expr_at(ast_bool(1), (yylsp[0]).first_line, (yylsp[0]).first_column); }
-#line 6109 "src/parser.tab.c"
+#line 6150 "src/parser.tab.c"
     break;
 
   case 277: /* primary: FALSE  */
-#line 2020 "src/parser.y"
+#line 2061 "src/parser.y"
             { (yyval.expr) = expr_at(ast_bool(0), (yylsp[0]).first_line, (yylsp[0]).first_column); }
-#line 6115 "src/parser.tab.c"
+#line 6156 "src/parser.tab.c"
     break;
 
   case 278: /* primary: NOTHING  */
-#line 2021 "src/parser.y"
+#line 2062 "src/parser.y"
               { (yyval.expr) = expr_at(ast_null(), (yylsp[0]).first_line, (yylsp[0]).first_column); }
-#line 6121 "src/parser.tab.c"
+#line 6162 "src/parser.tab.c"
     break;
 
   case 279: /* primary: UNKNOWN_VALUE  */
-#line 2022 "src/parser.y"
+#line 2063 "src/parser.y"
                     { (yyval.expr) = expr_at(ast_unknown(), (yylsp[0]).first_line, (yylsp[0]).first_column); }
-#line 6127 "src/parser.tab.c"
+#line 6168 "src/parser.tab.c"
     break;
 
   case 280: /* primary: LPAREN expression RPAREN  */
-#line 2023 "src/parser.y"
+#line 2064 "src/parser.y"
                                { (yyval.expr) = (yyvsp[-1].expr); (yyval.expr)->parenthesized = 1; }
-#line 6133 "src/parser.tab.c"
+#line 6174 "src/parser.tab.c"
     break;
 
   case 281: /* primary: LBRACKET optional_newlines RBRACKET  */
-#line 2024 "src/parser.y"
+#line 2065 "src/parser.y"
                                           { (yyval.expr) = expr_at(ast_array(ast_expr_list_empty()), (yylsp[-2]).first_line, (yylsp[-2]).first_column); }
-#line 6139 "src/parser.tab.c"
+#line 6180 "src/parser.tab.c"
     break;
 
   case 282: /* primary: LBRACKET optional_newlines array_argument_list optional_newlines RBRACKET  */
-#line 2025 "src/parser.y"
+#line 2066 "src/parser.y"
                                                                                 { (yyval.expr) = expr_at(ast_array((yyvsp[-2].expr_list)), (yylsp[-4]).first_line, (yylsp[-4]).first_column); }
-#line 6145 "src/parser.tab.c"
+#line 6186 "src/parser.tab.c"
     break;
 
   case 283: /* primary: record_literal  */
-#line 2026 "src/parser.y"
+#line 2067 "src/parser.y"
                      { (yyval.expr) = (yyvsp[0].expr); }
-#line 6151 "src/parser.tab.c"
+#line 6192 "src/parser.tab.c"
     break;
 
   case 284: /* record_literal: LBRACE optional_newlines RBRACE  */
-#line 2030 "src/parser.y"
+#line 2071 "src/parser.y"
                                       { (yyval.expr) = expr_at(ast_record(ast_record_field_list_empty()), (yylsp[-2]).first_line, (yylsp[-2]).first_column); }
-#line 6157 "src/parser.tab.c"
+#line 6198 "src/parser.tab.c"
     break;
 
   case 285: /* record_literal: LBRACE optional_newlines record_field_list optional_newlines RBRACE  */
-#line 2031 "src/parser.y"
+#line 2072 "src/parser.y"
                                                                           { (yyval.expr) = expr_at(ast_record((yyvsp[-2].record_field_list)), (yylsp[-4]).first_line, (yylsp[-4]).first_column); }
-#line 6163 "src/parser.tab.c"
+#line 6204 "src/parser.tab.c"
     break;
 
   case 286: /* ident_suffix: %empty  */
-#line 2035 "src/parser.y"
+#line 2076 "src/parser.y"
                           {
         (yyval.ident_suffix).kind = IDENT_SUFFIX_NONE;
         (yyval.ident_suffix).name = NULL;
         (yyval.ident_suffix).args = ast_expr_list_empty();
       }
-#line 6173 "src/parser.tab.c"
+#line 6214 "src/parser.tab.c"
     break;
 
   case 287: /* ident_suffix: LPAREN argument_list_opt RPAREN  */
-#line 2040 "src/parser.y"
+#line 2081 "src/parser.y"
                                       {
         (yyval.ident_suffix).kind = IDENT_SUFFIX_CALL;
         (yyval.ident_suffix).name = NULL;
         (yyval.ident_suffix).args = (yyvsp[-1].expr_list);
       }
-#line 6183 "src/parser.tab.c"
+#line 6224 "src/parser.tab.c"
     break;
 
   case 288: /* ident_suffix: DOT dot_field_name ident_dot_suffix  */
-#line 2045 "src/parser.y"
+#line 2086 "src/parser.y"
                                           {
         /* dot_field_name, not IDENT: a keyword is a legal FIELD name after a
          * dot, because nothing but a name can appear there. */
         (yyval.ident_suffix) = (yyvsp[0].ident_suffix);
         (yyval.ident_suffix).name = (yyvsp[-1].text);
       }
-#line 6194 "src/parser.tab.c"
+#line 6235 "src/parser.tab.c"
     break;
 
   case 289: /* ident_suffix: DOT QUALIFIED_IDENT LPAREN argument_list_opt RPAREN  */
-#line 2051 "src/parser.y"
+#line 2092 "src/parser.y"
                                                           {
         /* var.field.method(args): the lexer folds the trailing `field.method(` into
          * one QUALIFIED_IDENT, so after `var DOT` we see it directly. This is the
@@ -6204,31 +6245,31 @@ yyreduce:
         (yyval.ident_suffix).name = (yyvsp[-3].text);
         (yyval.ident_suffix).args = (yyvsp[-1].expr_list);
       }
-#line 6208 "src/parser.tab.c"
+#line 6249 "src/parser.tab.c"
     break;
 
   case 290: /* ident_dot_suffix: %empty  */
-#line 2063 "src/parser.y"
+#line 2104 "src/parser.y"
              {
         (yyval.ident_suffix).kind = IDENT_SUFFIX_FIELD;
         (yyval.ident_suffix).name = NULL;
         (yyval.ident_suffix).args = ast_expr_list_empty();
       }
-#line 6218 "src/parser.tab.c"
+#line 6259 "src/parser.tab.c"
     break;
 
   case 291: /* ident_dot_suffix: LPAREN argument_list_opt RPAREN  */
-#line 2068 "src/parser.y"
+#line 2109 "src/parser.y"
                                       {
         (yyval.ident_suffix).kind = IDENT_SUFFIX_QUALIFIED_CALL;
         (yyval.ident_suffix).name = NULL;
         (yyval.ident_suffix).args = (yyvsp[-1].expr_list);
       }
-#line 6228 "src/parser.tab.c"
+#line 6269 "src/parser.tab.c"
     break;
 
   case 292: /* duration_terms: NUMBER IDENT  */
-#line 2076 "src/parser.y"
+#line 2117 "src/parser.y"
                    {
         AstDuration duration = {0};
         char *bad = NULL;
@@ -6239,11 +6280,11 @@ yyreduce:
             YYERROR;
         }
       }
-#line 6243 "src/parser.tab.c"
+#line 6284 "src/parser.tab.c"
     break;
 
   case 293: /* duration_terms: duration_terms NUMBER IDENT  */
-#line 2086 "src/parser.y"
+#line 2127 "src/parser.y"
                                   {
         char *bad = NULL;
         (yyval.duration) = duration_add_unit((yyvsp[-2].duration), (yyvsp[-1].numlit).value, (yyvsp[0].text), &bad);
@@ -6253,131 +6294,131 @@ yyreduce:
             YYERROR;
         }
       }
-#line 6257 "src/parser.tab.c"
+#line 6298 "src/parser.tab.c"
     break;
 
   case 294: /* argument_list_opt: %empty  */
-#line 2098 "src/parser.y"
+#line 2139 "src/parser.y"
              { (yyval.expr_list) = ast_expr_list_empty(); }
-#line 6263 "src/parser.tab.c"
+#line 6304 "src/parser.tab.c"
     break;
 
   case 295: /* argument_list_opt: argument_list  */
-#line 2099 "src/parser.y"
+#line 2140 "src/parser.y"
                     { (yyval.expr_list) = (yyvsp[0].expr_list); }
-#line 6269 "src/parser.tab.c"
+#line 6310 "src/parser.tab.c"
     break;
 
   case 296: /* argument_list: expression  */
-#line 2103 "src/parser.y"
+#line 2144 "src/parser.y"
                  { (yyval.expr_list) = ast_expr_list_append(ast_expr_list_empty(), (yyvsp[0].expr)); }
-#line 6275 "src/parser.tab.c"
+#line 6316 "src/parser.tab.c"
     break;
 
   case 297: /* argument_list: argument_list COMMA expression  */
-#line 2104 "src/parser.y"
+#line 2145 "src/parser.y"
                                      { (yyval.expr_list) = ast_expr_list_append((yyvsp[-2].expr_list), (yyvsp[0].expr)); }
-#line 6281 "src/parser.tab.c"
+#line 6322 "src/parser.tab.c"
     break;
 
   case 298: /* array_argument_list: expression  */
-#line 2108 "src/parser.y"
+#line 2149 "src/parser.y"
                  { (yyval.expr_list) = ast_expr_list_append(ast_expr_list_empty(), (yyvsp[0].expr)); }
-#line 6287 "src/parser.tab.c"
+#line 6328 "src/parser.tab.c"
     break;
 
   case 299: /* array_argument_list: array_argument_list COMMA optional_newlines expression  */
-#line 2109 "src/parser.y"
+#line 2150 "src/parser.y"
                                                              { (yyval.expr_list) = ast_expr_list_append((yyvsp[-3].expr_list), (yyvsp[0].expr)); }
-#line 6293 "src/parser.tab.c"
+#line 6334 "src/parser.tab.c"
     break;
 
   case 300: /* parameter_list_opt: %empty  */
-#line 2113 "src/parser.y"
+#line 2154 "src/parser.y"
              { (yyval.name_list) = ast_name_list_empty(); }
-#line 6299 "src/parser.tab.c"
+#line 6340 "src/parser.tab.c"
     break;
 
   case 301: /* parameter_list_opt: parameter_list  */
-#line 2114 "src/parser.y"
+#line 2155 "src/parser.y"
                      { (yyval.name_list) = (yyvsp[0].name_list); }
-#line 6305 "src/parser.tab.c"
+#line 6346 "src/parser.tab.c"
     break;
 
   case 302: /* parameter_default: NUMBER  */
-#line 2128 "src/parser.y"
+#line 2169 "src/parser.y"
              { (yyval.expr) = expr_at(ast_number((yyvsp[0].numlit).value, (yyvsp[0].numlit).exact, (yyvsp[0].numlit).is_exact, (yyvsp[0].numlit).scale), (yylsp[0]).first_line, (yylsp[0]).first_column); }
-#line 6311 "src/parser.tab.c"
+#line 6352 "src/parser.tab.c"
     break;
 
   case 303: /* parameter_default: MINUS NUMBER  */
-#line 2132 "src/parser.y"
+#line 2173 "src/parser.y"
                    { (yyval.expr) = expr_at(ast_number(-(yyvsp[0].numlit).value,
                                              (yyvsp[0].numlit).exact == LLONG_MIN ? 0 : -(yyvsp[0].numlit).exact,
                                              (yyvsp[0].numlit).exact == LLONG_MIN ? 0 : (yyvsp[0].numlit).is_exact,
                                              (yyvsp[0].numlit).exact == LLONG_MIN ? 0 : (yyvsp[0].numlit).scale),
                                   (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
-#line 6321 "src/parser.tab.c"
+#line 6362 "src/parser.tab.c"
     break;
 
   case 304: /* parameter_default: PLUS NUMBER  */
-#line 2137 "src/parser.y"
+#line 2178 "src/parser.y"
                   { (yyval.expr) = expr_at(ast_number((yyvsp[0].numlit).value, (yyvsp[0].numlit).exact, (yyvsp[0].numlit).is_exact, (yyvsp[0].numlit).scale), (yylsp[-1]).first_line, (yylsp[-1]).first_column); }
-#line 6327 "src/parser.tab.c"
+#line 6368 "src/parser.tab.c"
     break;
 
   case 305: /* parameter_default: STRING  */
-#line 2138 "src/parser.y"
+#line 2179 "src/parser.y"
              { (yyval.expr) = expr_at(ast_string((yyvsp[0].text)), (yylsp[0]).first_line, (yylsp[0]).first_column); }
-#line 6333 "src/parser.tab.c"
+#line 6374 "src/parser.tab.c"
     break;
 
   case 306: /* parameter_default: TRUE  */
-#line 2139 "src/parser.y"
+#line 2180 "src/parser.y"
            { (yyval.expr) = expr_at(ast_bool(1), (yylsp[0]).first_line, (yylsp[0]).first_column); }
-#line 6339 "src/parser.tab.c"
+#line 6380 "src/parser.tab.c"
     break;
 
   case 307: /* parameter_default: FALSE  */
-#line 2140 "src/parser.y"
+#line 2181 "src/parser.y"
             { (yyval.expr) = expr_at(ast_bool(0), (yylsp[0]).first_line, (yylsp[0]).first_column); }
-#line 6345 "src/parser.tab.c"
+#line 6386 "src/parser.tab.c"
     break;
 
   case 308: /* parameter_default: NOTHING  */
-#line 2141 "src/parser.y"
+#line 2182 "src/parser.y"
               { (yyval.expr) = expr_at(ast_null(), (yylsp[0]).first_line, (yylsp[0]).first_column); }
-#line 6351 "src/parser.tab.c"
+#line 6392 "src/parser.tab.c"
     break;
 
   case 309: /* parameter_default: UNKNOWN_VALUE  */
-#line 2142 "src/parser.y"
+#line 2183 "src/parser.y"
                     { (yyval.expr) = expr_at(ast_unknown(), (yylsp[0]).first_line, (yylsp[0]).first_column); }
-#line 6357 "src/parser.tab.c"
+#line 6398 "src/parser.tab.c"
     break;
 
   case 310: /* parameter_list: IDENT  */
-#line 2146 "src/parser.y"
+#line 2187 "src/parser.y"
             { (yyval.name_list) = ast_name_list_append(ast_name_list_empty(), (yyvsp[0].text)); }
-#line 6363 "src/parser.tab.c"
+#line 6404 "src/parser.tab.c"
     break;
 
   case 311: /* parameter_list: IDENT OP_EQ parameter_default  */
-#line 2147 "src/parser.y"
+#line 2188 "src/parser.y"
                                     {
         (yyval.name_list) = ast_name_list_append_default(ast_name_list_empty(), (yyvsp[-2].text), (yyvsp[0].expr));
       }
-#line 6371 "src/parser.tab.c"
+#line 6412 "src/parser.tab.c"
     break;
 
   case 312: /* parameter_list: parameter_list COMMA IDENT  */
-#line 2150 "src/parser.y"
+#line 2191 "src/parser.y"
                                  { (yyval.name_list) = ast_name_list_append((yyvsp[-2].name_list), (yyvsp[0].text)); }
-#line 6377 "src/parser.tab.c"
+#line 6418 "src/parser.tab.c"
     break;
 
   case 313: /* parameter_list: IDENT COLON type_lock  */
-#line 2154 "src/parser.y"
+#line 2195 "src/parser.y"
                             {
         if (!type_lock_check(ctx, (yyvsp[-2].text), (yyvsp[0].type_lock).name, (yyvsp[0].type_lock).arg, (yylsp[0]).first_line, (yylsp[0]).first_column,
                              (yylsp[0]).last_line, (yylsp[0]).last_column)) {
@@ -6385,11 +6426,11 @@ yyreduce:
         }
         (yyval.name_list) = ast_name_list_lock_last(ast_name_list_append(ast_name_list_empty(), (yyvsp[-2].text)), (yyvsp[0].type_lock));
       }
-#line 6389 "src/parser.tab.c"
+#line 6430 "src/parser.tab.c"
     break;
 
   case 314: /* parameter_list: IDENT COLON type_lock OP_EQ parameter_default  */
-#line 2161 "src/parser.y"
+#line 2202 "src/parser.y"
                                                     {
         if (!type_lock_check(ctx, (yyvsp[-4].text), (yyvsp[-2].type_lock).name, (yyvsp[-2].type_lock).arg, (yylsp[-2]).first_line, (yylsp[-2]).first_column,
                              (yylsp[-2]).last_line, (yylsp[-2]).last_column)) {
@@ -6397,11 +6438,11 @@ yyreduce:
         }
         (yyval.name_list) = ast_name_list_lock_last(ast_name_list_append_default(ast_name_list_empty(), (yyvsp[-4].text), (yyvsp[0].expr)), (yyvsp[-2].type_lock));
       }
-#line 6401 "src/parser.tab.c"
+#line 6442 "src/parser.tab.c"
     break;
 
   case 315: /* parameter_list: parameter_list COMMA IDENT COLON type_lock  */
-#line 2168 "src/parser.y"
+#line 2209 "src/parser.y"
                                                  {
         if (!type_lock_check(ctx, (yyvsp[-2].text), (yyvsp[0].type_lock).name, (yyvsp[0].type_lock).arg, (yylsp[0]).first_line, (yylsp[0]).first_column,
                              (yylsp[0]).last_line, (yylsp[0]).last_column)) {
@@ -6409,11 +6450,11 @@ yyreduce:
         }
         (yyval.name_list) = ast_name_list_lock_last(ast_name_list_append((yyvsp[-4].name_list), (yyvsp[-2].text)), (yyvsp[0].type_lock));
       }
-#line 6413 "src/parser.tab.c"
+#line 6454 "src/parser.tab.c"
     break;
 
   case 316: /* parameter_list: parameter_list COMMA IDENT COLON type_lock OP_EQ parameter_default  */
-#line 2175 "src/parser.y"
+#line 2216 "src/parser.y"
                                                                          {
         if (!type_lock_check(ctx, (yyvsp[-4].text), (yyvsp[-2].type_lock).name, (yyvsp[-2].type_lock).arg, (yylsp[-2]).first_line, (yylsp[-2]).first_column,
                              (yylsp[-2]).last_line, (yylsp[-2]).last_column)) {
@@ -6421,367 +6462,367 @@ yyreduce:
         }
         (yyval.name_list) = ast_name_list_lock_last(ast_name_list_append_default((yyvsp[-6].name_list), (yyvsp[-4].text), (yyvsp[0].expr)), (yyvsp[-2].type_lock));
       }
-#line 6425 "src/parser.tab.c"
+#line 6466 "src/parser.tab.c"
     break;
 
   case 317: /* parameter_list: parameter_list COMMA IDENT OP_EQ parameter_default  */
-#line 2182 "src/parser.y"
+#line 2223 "src/parser.y"
                                                          {
         (yyval.name_list) = ast_name_list_append_default((yyvsp[-4].name_list), (yyvsp[-2].text), (yyvsp[0].expr));
       }
-#line 6433 "src/parser.tab.c"
+#line 6474 "src/parser.tab.c"
     break;
 
   case 318: /* field_name: dot_field_name  */
-#line 2197 "src/parser.y"
+#line 2238 "src/parser.y"
                      { (yyval.text) = (yyvsp[0].text); }
-#line 6439 "src/parser.tab.c"
+#line 6480 "src/parser.tab.c"
     break;
 
   case 319: /* field_name: STRING  */
-#line 2204 "src/parser.y"
+#line 2245 "src/parser.y"
              { (yyval.text) = (yyvsp[0].text); }
-#line 6445 "src/parser.tab.c"
+#line 6486 "src/parser.tab.c"
     break;
 
   case 320: /* projection_names: dot_field_name  */
-#line 2213 "src/parser.y"
+#line 2254 "src/parser.y"
                      { (yyval.name_list) = ast_name_list_append(ast_name_list_empty(), (yyvsp[0].text)); }
-#line 6451 "src/parser.tab.c"
+#line 6492 "src/parser.tab.c"
     break;
 
   case 321: /* projection_names: projection_names COMMA dot_field_name  */
-#line 2214 "src/parser.y"
+#line 2255 "src/parser.y"
                                             { (yyval.name_list) = ast_name_list_append((yyvsp[-2].name_list), (yyvsp[0].text)); }
-#line 6457 "src/parser.tab.c"
+#line 6498 "src/parser.tab.c"
     break;
 
   case 322: /* dot_field_name: IDENT  */
-#line 2218 "src/parser.y"
+#line 2259 "src/parser.y"
             { (yyval.text) = (yyvsp[0].text); }
-#line 6463 "src/parser.tab.c"
+#line 6504 "src/parser.tab.c"
     break;
 
   case 323: /* dot_field_name: AS  */
-#line 2219 "src/parser.y"
+#line 2260 "src/parser.y"
                      { (yyval.text) = kw_name("as"); }
-#line 6469 "src/parser.tab.c"
+#line 6510 "src/parser.tab.c"
     break;
 
   case 324: /* dot_field_name: NEXT  */
-#line 2220 "src/parser.y"
+#line 2261 "src/parser.y"
                      { (yyval.text) = kw_name("next"); }
-#line 6475 "src/parser.tab.c"
+#line 6516 "src/parser.tab.c"
     break;
 
   case 325: /* dot_field_name: STOP  */
-#line 2221 "src/parser.y"
+#line 2262 "src/parser.y"
                      { (yyval.text) = kw_name("stop"); }
-#line 6481 "src/parser.tab.c"
+#line 6522 "src/parser.tab.c"
     break;
 
   case 326: /* dot_field_name: ERROR_VALUE  */
-#line 2222 "src/parser.y"
+#line 2263 "src/parser.y"
                      { (yyval.text) = kw_name("error"); }
-#line 6487 "src/parser.tab.c"
+#line 6528 "src/parser.tab.c"
     break;
 
   case 327: /* dot_field_name: END  */
-#line 2223 "src/parser.y"
+#line 2264 "src/parser.y"
                      { (yyval.text) = kw_name("end"); }
-#line 6493 "src/parser.tab.c"
+#line 6534 "src/parser.tab.c"
     break;
 
   case 328: /* dot_field_name: TO  */
-#line 2224 "src/parser.y"
+#line 2265 "src/parser.y"
                      { (yyval.text) = kw_name("to"); }
-#line 6499 "src/parser.tab.c"
+#line 6540 "src/parser.tab.c"
     break;
 
   case 329: /* dot_field_name: IN  */
-#line 2225 "src/parser.y"
+#line 2266 "src/parser.y"
                      { (yyval.text) = kw_name("in"); }
-#line 6505 "src/parser.tab.c"
+#line 6546 "src/parser.tab.c"
     break;
 
   case 330: /* dot_field_name: ON  */
-#line 2226 "src/parser.y"
+#line 2267 "src/parser.y"
                      { (yyval.text) = kw_name("on"); }
-#line 6511 "src/parser.tab.c"
+#line 6552 "src/parser.tab.c"
     break;
 
   case 331: /* dot_field_name: NEW  */
-#line 2227 "src/parser.y"
+#line 2268 "src/parser.y"
                      { (yyval.text) = kw_name("new"); }
-#line 6517 "src/parser.tab.c"
+#line 6558 "src/parser.tab.c"
     break;
 
   case 332: /* dot_field_name: EACH  */
-#line 2228 "src/parser.y"
+#line 2269 "src/parser.y"
                      { (yyval.text) = kw_name("each"); }
-#line 6523 "src/parser.tab.c"
+#line 6564 "src/parser.tab.c"
     break;
 
   case 333: /* dot_field_name: WITH  */
-#line 2229 "src/parser.y"
+#line 2270 "src/parser.y"
                      { (yyval.text) = kw_name("with"); }
-#line 6529 "src/parser.tab.c"
+#line 6570 "src/parser.tab.c"
     break;
 
   case 334: /* dot_field_name: WITHOUT  */
-#line 2230 "src/parser.y"
+#line 2271 "src/parser.y"
                      { (yyval.text) = kw_name("without"); }
-#line 6535 "src/parser.tab.c"
+#line 6576 "src/parser.tab.c"
     break;
 
   case 335: /* dot_field_name: THEN  */
-#line 2231 "src/parser.y"
+#line 2272 "src/parser.y"
                      { (yyval.text) = kw_name("then"); }
-#line 6541 "src/parser.tab.c"
+#line 6582 "src/parser.tab.c"
     break;
 
   case 336: /* dot_field_name: ELSE  */
-#line 2232 "src/parser.y"
+#line 2273 "src/parser.y"
                      { (yyval.text) = kw_name("else"); }
-#line 6547 "src/parser.tab.c"
+#line 6588 "src/parser.tab.c"
     break;
 
   case 337: /* dot_field_name: FOR  */
-#line 2233 "src/parser.y"
+#line 2274 "src/parser.y"
                      { (yyval.text) = kw_name("for"); }
-#line 6553 "src/parser.tab.c"
+#line 6594 "src/parser.tab.c"
     break;
 
   case 338: /* dot_field_name: IF  */
-#line 2234 "src/parser.y"
+#line 2275 "src/parser.y"
                      { (yyval.text) = kw_name("if"); }
-#line 6559 "src/parser.tab.c"
+#line 6600 "src/parser.tab.c"
     break;
 
   case 339: /* dot_field_name: WHILE  */
-#line 2235 "src/parser.y"
+#line 2276 "src/parser.y"
                      { (yyval.text) = kw_name("while"); }
-#line 6565 "src/parser.tab.c"
+#line 6606 "src/parser.tab.c"
     break;
 
   case 340: /* dot_field_name: DO  */
-#line 2236 "src/parser.y"
+#line 2277 "src/parser.y"
                      { (yyval.text) = kw_name("do"); }
-#line 6571 "src/parser.tab.c"
+#line 6612 "src/parser.tab.c"
     break;
 
   case 341: /* dot_field_name: UNTIL  */
-#line 2237 "src/parser.y"
+#line 2278 "src/parser.y"
                      { (yyval.text) = kw_name("until"); }
-#line 6577 "src/parser.tab.c"
+#line 6618 "src/parser.tab.c"
     break;
 
   case 342: /* dot_field_name: PRINT  */
-#line 2238 "src/parser.y"
+#line 2279 "src/parser.y"
                      { (yyval.text) = kw_name("print"); }
-#line 6583 "src/parser.tab.c"
+#line 6624 "src/parser.tab.c"
     break;
 
   case 343: /* dot_field_name: RETURN  */
-#line 2239 "src/parser.y"
+#line 2280 "src/parser.y"
                      { (yyval.text) = kw_name("return"); }
-#line 6589 "src/parser.tab.c"
+#line 6630 "src/parser.tab.c"
     break;
 
   case 344: /* dot_field_name: LOAD  */
-#line 2240 "src/parser.y"
+#line 2281 "src/parser.y"
                      { (yyval.text) = kw_name("load"); }
-#line 6595 "src/parser.tab.c"
+#line 6636 "src/parser.tab.c"
     break;
 
   case 345: /* dot_field_name: USE  */
-#line 2241 "src/parser.y"
+#line 2282 "src/parser.y"
                      { (yyval.text) = kw_name("use"); }
-#line 6601 "src/parser.tab.c"
+#line 6642 "src/parser.tab.c"
     break;
 
   case 346: /* dot_field_name: NOT  */
-#line 2242 "src/parser.y"
+#line 2283 "src/parser.y"
                      { (yyval.text) = kw_name("not"); }
-#line 6607 "src/parser.tab.c"
+#line 6648 "src/parser.tab.c"
     break;
 
   case 347: /* dot_field_name: TRY  */
-#line 2243 "src/parser.y"
+#line 2284 "src/parser.y"
                      { (yyval.text) = kw_name("try"); }
-#line 6613 "src/parser.tab.c"
+#line 6654 "src/parser.tab.c"
     break;
 
   case 348: /* dot_field_name: AND  */
-#line 2244 "src/parser.y"
+#line 2285 "src/parser.y"
                      { (yyval.text) = kw_name("and"); }
-#line 6619 "src/parser.tab.c"
+#line 6660 "src/parser.tab.c"
     break;
 
   case 349: /* dot_field_name: OR  */
-#line 2245 "src/parser.y"
+#line 2286 "src/parser.y"
                      { (yyval.text) = kw_name("or"); }
-#line 6625 "src/parser.tab.c"
+#line 6666 "src/parser.tab.c"
     break;
 
   case 350: /* dot_field_name: TRUE  */
-#line 2246 "src/parser.y"
+#line 2287 "src/parser.y"
                      { (yyval.text) = kw_name("true"); }
-#line 6631 "src/parser.tab.c"
+#line 6672 "src/parser.tab.c"
     break;
 
   case 351: /* dot_field_name: FALSE  */
-#line 2247 "src/parser.y"
+#line 2288 "src/parser.y"
                      { (yyval.text) = kw_name("false"); }
-#line 6637 "src/parser.tab.c"
+#line 6678 "src/parser.tab.c"
     break;
 
   case 352: /* dot_field_name: NOTHING  */
-#line 2248 "src/parser.y"
+#line 2289 "src/parser.y"
                      { (yyval.text) = kw_name("nothing"); }
-#line 6643 "src/parser.tab.c"
+#line 6684 "src/parser.tab.c"
     break;
 
   case 353: /* dot_field_name: BREAK  */
-#line 2249 "src/parser.y"
+#line 2290 "src/parser.y"
                      { (yyval.text) = kw_name("break"); }
-#line 6649 "src/parser.tab.c"
+#line 6690 "src/parser.tab.c"
     break;
 
   case 354: /* dot_field_name: CONTINUE  */
-#line 2250 "src/parser.y"
+#line 2291 "src/parser.y"
                      { (yyval.text) = kw_name("continue"); }
-#line 6655 "src/parser.tab.c"
+#line 6696 "src/parser.tab.c"
     break;
 
   case 355: /* dot_field_name: GOTO  */
-#line 2251 "src/parser.y"
+#line 2292 "src/parser.y"
                      { (yyval.text) = kw_name("goto"); }
-#line 6661 "src/parser.tab.c"
+#line 6702 "src/parser.tab.c"
     break;
 
   case 356: /* dot_field_name: GOSUB  */
-#line 2252 "src/parser.y"
+#line 2293 "src/parser.y"
                      { (yyval.text) = kw_name("gosub"); }
-#line 6667 "src/parser.tab.c"
+#line 6708 "src/parser.tab.c"
     break;
 
   case 357: /* dot_field_name: SPAWN  */
-#line 2253 "src/parser.y"
+#line 2294 "src/parser.y"
                      { (yyval.text) = kw_name("spawn"); }
-#line 6673 "src/parser.tab.c"
+#line 6714 "src/parser.tab.c"
     break;
 
   case 358: /* dot_field_name: EXPORT  */
-#line 2254 "src/parser.y"
+#line 2295 "src/parser.y"
                      { (yyval.text) = kw_name("export"); }
-#line 6679 "src/parser.tab.c"
+#line 6720 "src/parser.tab.c"
     break;
 
   case 359: /* dot_field_name: LIBRARY  */
-#line 2255 "src/parser.y"
+#line 2296 "src/parser.y"
                      { (yyval.text) = kw_name("library"); }
-#line 6685 "src/parser.tab.c"
+#line 6726 "src/parser.tab.c"
     break;
 
   case 360: /* dot_field_name: FUNCTION  */
-#line 2256 "src/parser.y"
+#line 2297 "src/parser.y"
                      { (yyval.text) = kw_name("function"); }
-#line 6691 "src/parser.tab.c"
+#line 6732 "src/parser.tab.c"
     break;
 
   case 361: /* dot_field_name: MODIFIER  */
-#line 2257 "src/parser.y"
+#line 2298 "src/parser.y"
                      { (yyval.text) = kw_name("modifier"); }
-#line 6697 "src/parser.tab.c"
+#line 6738 "src/parser.tab.c"
     break;
 
   case 362: /* dot_field_name: PROGRAM  */
-#line 2258 "src/parser.y"
+#line 2299 "src/parser.y"
                      { (yyval.text) = kw_name("program"); }
-#line 6703 "src/parser.tab.c"
+#line 6744 "src/parser.tab.c"
     break;
 
   case 363: /* dot_field_name: WATCH  */
-#line 2259 "src/parser.y"
+#line 2300 "src/parser.y"
                      { (yyval.text) = kw_name("watch"); }
-#line 6709 "src/parser.tab.c"
+#line 6750 "src/parser.tab.c"
     break;
 
   case 364: /* dot_field_name: WATCHERS  */
-#line 2260 "src/parser.y"
+#line 2301 "src/parser.y"
                      { (yyval.text) = kw_name("watchers"); }
-#line 6715 "src/parser.tab.c"
+#line 6756 "src/parser.tab.c"
     break;
 
   case 365: /* dot_field_name: CONSIDER  */
-#line 2261 "src/parser.y"
+#line 2302 "src/parser.y"
                      { (yyval.text) = kw_name("consider"); }
-#line 6721 "src/parser.tab.c"
+#line 6762 "src/parser.tab.c"
     break;
 
   case 366: /* dot_field_name: STEP  */
-#line 2262 "src/parser.y"
+#line 2303 "src/parser.y"
                      { (yyval.text) = kw_name("step"); }
-#line 6727 "src/parser.tab.c"
+#line 6768 "src/parser.tab.c"
     break;
 
   case 367: /* dot_field_name: UNWATCH  */
-#line 2263 "src/parser.y"
+#line 2304 "src/parser.y"
                      { (yyval.text) = kw_name("unwatch"); }
-#line 6733 "src/parser.tab.c"
+#line 6774 "src/parser.tab.c"
     break;
 
   case 368: /* dot_field_name: UNKNOWN_VALUE  */
-#line 2264 "src/parser.y"
+#line 2305 "src/parser.y"
                      { (yyval.text) = kw_name("unknown"); }
-#line 6739 "src/parser.tab.c"
+#line 6780 "src/parser.tab.c"
     break;
 
   case 369: /* dot_field_name: DIM  */
-#line 2265 "src/parser.y"
+#line 2306 "src/parser.y"
                      { (yyval.text) = kw_name("dim"); }
-#line 6745 "src/parser.tab.c"
+#line 6786 "src/parser.tab.c"
     break;
 
   case 370: /* record_field_list: field_name OP_EQ expression  */
-#line 2269 "src/parser.y"
+#line 2310 "src/parser.y"
                                   { (yyval.record_field_list) = ast_record_field_list_append(ast_record_field_list_empty(), (yyvsp[-2].text), (yyvsp[0].expr)); }
-#line 6751 "src/parser.tab.c"
+#line 6792 "src/parser.tab.c"
     break;
 
   case 371: /* record_field_list: field_name COLON expression  */
-#line 2270 "src/parser.y"
+#line 2311 "src/parser.y"
                                   { (yyval.record_field_list) = ast_record_field_list_append(ast_record_field_list_empty(), (yyvsp[-2].text), (yyvsp[0].expr)); }
-#line 6757 "src/parser.tab.c"
+#line 6798 "src/parser.tab.c"
     break;
 
   case 372: /* record_field_list: IDENT LPAREN field_policy RPAREN COLON expression  */
-#line 2271 "src/parser.y"
+#line 2312 "src/parser.y"
                                                         { (yyval.record_field_list) = ast_record_field_list_append_policy(ast_record_field_list_empty(), (yyvsp[-5].text), (yyvsp[0].expr), (yyvsp[-3].field_policy).policy, (yyvsp[-3].field_policy).reset_expr); }
-#line 6763 "src/parser.tab.c"
+#line 6804 "src/parser.tab.c"
     break;
 
   case 373: /* record_field_list: record_field_list COMMA optional_newlines field_name OP_EQ expression  */
-#line 2272 "src/parser.y"
+#line 2313 "src/parser.y"
                                                                             { (yyval.record_field_list) = ast_record_field_list_append((yyvsp[-5].record_field_list), (yyvsp[-2].text), (yyvsp[0].expr)); }
-#line 6769 "src/parser.tab.c"
+#line 6810 "src/parser.tab.c"
     break;
 
   case 374: /* record_field_list: record_field_list COMMA optional_newlines field_name COLON expression  */
-#line 2273 "src/parser.y"
+#line 2314 "src/parser.y"
                                                                             { (yyval.record_field_list) = ast_record_field_list_append((yyvsp[-5].record_field_list), (yyvsp[-2].text), (yyvsp[0].expr)); }
-#line 6775 "src/parser.tab.c"
+#line 6816 "src/parser.tab.c"
     break;
 
   case 375: /* record_field_list: record_field_list COMMA optional_newlines IDENT LPAREN field_policy RPAREN COLON expression  */
-#line 2274 "src/parser.y"
+#line 2315 "src/parser.y"
                                                                                                   { (yyval.record_field_list) = ast_record_field_list_append_policy((yyvsp[-8].record_field_list), (yyvsp[-5].text), (yyvsp[0].expr), (yyvsp[-3].field_policy).policy, (yyvsp[-3].field_policy).reset_expr); }
-#line 6781 "src/parser.tab.c"
+#line 6822 "src/parser.tab.c"
     break;
 
   case 376: /* field_policy: IDENT  */
-#line 2282 "src/parser.y"
+#line 2323 "src/parser.y"
             {
         FieldPolicySpec spec;
         spec.reset_expr = NULL;
@@ -6809,11 +6850,11 @@ yyreduce:
         free((yyvsp[0].text));
         (yyval.field_policy) = spec;
       }
-#line 6813 "src/parser.tab.c"
+#line 6854 "src/parser.tab.c"
     break;
 
   case 377: /* field_policy: IDENT expression  */
-#line 2309 "src/parser.y"
+#line 2350 "src/parser.y"
                        {
         FieldPolicySpec spec;
         if (strcmp((yyvsp[-1].text), "reset") == 0) {
@@ -6830,11 +6871,11 @@ yyreduce:
         free((yyvsp[-1].text));
         (yyval.field_policy) = spec;
       }
-#line 6834 "src/parser.tab.c"
+#line 6875 "src/parser.tab.c"
     break;
 
 
-#line 6838 "src/parser.tab.c"
+#line 6879 "src/parser.tab.c"
 
       default: break;
     }
@@ -7063,7 +7104,7 @@ yyreturnlab:
   return yyresult;
 }
 
-#line 2332 "src/parser.y"
+#line 2373 "src/parser.y"
 
 
 /* Reentrant parse core: all mutable parser state lives in a stack-allocated

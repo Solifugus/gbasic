@@ -14061,3 +14061,18 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Workaround:** `if error then ... end if` around the read. For the
   ergonomics sweep: either count a read of `error` as acknowledging it, or
   word the re-raise as the unchecked catch it is.
+
+## 2026-11-19 — CC — while: writing the first tui backend fixture
+- **Type:** diagnostic-gap
+- **Severity:** medium
+- **What:** a `stretch` written without parentheses inside a `window` is not
+  refused where it stands. The parser reads on and reports the error at the
+  next `program` (or whatever follows the window), as "syntax error,
+  unexpected PROGRAM, expecting IDENT or END or ON or NEWLINE -- 'program' is
+  a reserved word and cannot be used as a name". In my fixture that was seven
+  lines after the cause, and it named the wrong word. Bisecting the window
+  found it. Every example writes `stretch()`, and the reference does too.
+  A bare `separator` does the same, measured in the next fixture I wrote.
+- **Workaround:** `stretch()` and `separator()`. For the ergonomics sweep:
+  either accept the bare words (neither needs a name or options), or refuse
+  them at their own line, naming `stretch()`.
