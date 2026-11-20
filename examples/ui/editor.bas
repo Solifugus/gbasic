@@ -71,8 +71,13 @@ window app( title: "gBASIC editor", width: 760, height: 520 )
     on act_open.pressed
         load_self()
     end on
+    ' THE THEME RECORD, which every backend draws its own way; a stylesheet
+    ' string is Qt's alone, and on the terminal it was refused inside this
+    ' handler, which ended the program
     on act_dark.pressed
-        ui.theme("QWidget { background: #2e3440; color: #eceff4; }")
+        ui.theme({ bg: "#2e3440", base: "#242933", ctl: "#3b4252", hi: "#434c5e",
+                   fg: "#eceff4", faint: "#7b8394", line: "#4c566a",
+                   sel: "#5e81ac", on_sel: "#ffffff" })
     end on
     on act_light.pressed
         ui.theme("")
@@ -135,6 +140,10 @@ program main(args)
                "  memo=" + string(app.read("plain", "fixed_width")))
         print "memo has none:  " + string(is_unknown(app.highlighting("plain")))
 
+        ' THE DARK THEME, pressed as a person would: a theme record, which
+        ' every backend takes (a stylesheet string was Qt's alone)
+        r = ui.invoke(app, "act_dark", "press")
+        print "dark theme:     " + string(ui.theme() != "")
         print "-- and it is an editor, not a view"
         print "read back:      " + string(len(app.read("code"))) + " bytes"
         print "editable:       " + string(not app.read("code", "read_only"))
