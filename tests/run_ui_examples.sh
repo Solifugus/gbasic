@@ -104,7 +104,11 @@ for f in $examples; do
     # ("Could not load the Qt platform plugin") still reddens this.
     grep -v -e 'This plugin does not support' -e 'built without KSyntaxHighlighting, so it will work as a plain editor' "$work/$b.err" > "$work/$b.err2" || true
     lines=$(grep -c . "$work/$b.out" || true)
-    if g=$(ui_group_refused "$work/$b.err2"); then
+    # A REFUSED PROGRAM STOPPED, so only a nonzero exit is a skip: one that
+    # exits 0 with a refusal on stderr RAN, the refusal contained in a handler
+    # -- the editor example's Dark item did that on the terminal, and this
+    # skipped it as unmeasured (found by perturbing, 2026-11-20)
+    if [ "$rc" != "0" ] && g=$(ui_group_refused "$work/$b.err2"); then
         printf '  SKIP %s (the backend has not `%s` -- NOT measured)\n' "$b" "$g"
     elif [ "$rc" = "124" ] || [ "$rc" = "137" ]; then
         fail "$b HUNG -- it reached ui.run() with nobody to close it"

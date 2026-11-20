@@ -50,6 +50,8 @@ cookbook_recipe_skip() {
 # with the group cannot produce it.
 COOKBOOK_SKIP_PATTERN='needs `[a-z_]+`, which the [a-z_]+ backend does not have -- ask ui\.can\('
 COOKBOOK_SKIP_REASON='the GUI backend under test lacks a capability group the recipe uses'
+# a refused recipe stops; one that exits 0 with the refusal ran (see the harness)
+COOKBOOK_SKIP_ONLY_ON_FAILURE=1
 
 COOKBOOK=ui
 RECIPE_GLOB='examples/ui_cookbook/*.bas'

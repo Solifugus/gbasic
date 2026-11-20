@@ -152,7 +152,11 @@ for r in $recipes; do
     # build but the machine cannot supply what it needs (no driver, no server).
     # Reporting that as a failure would report a fact about the machine as a
     # defect in the cookbook.
-    if [ -n "${COOKBOOK_SKIP_PATTERN:-}" ] && grep -qE "$COOKBOOK_SKIP_PATTERN" "$errf"; then
+    # COOKBOOK_SKIP_ONLY_ON_FAILURE: the pattern skips only a recipe that
+    # stopped; one exiting 0 with it on stderr ran, a refusal contained in a
+    # handler, and is measured (and fails on its stderr)
+    if [ -n "${COOKBOOK_SKIP_PATTERN:-}" ] && grep -qE "$COOKBOOK_SKIP_PATTERN" "$errf" &&
+       { [ -z "${COOKBOOK_SKIP_ONLY_ON_FAILURE:-}" ] || [ "$rc" != "0" ]; }; then
         printf 'SKIP %s (%s)\n' "$bas" "${COOKBOOK_SKIP_REASON:-unavailable on this machine}"
         skip=$((skip + 1))
         rm -f "$actual" "$errf"
