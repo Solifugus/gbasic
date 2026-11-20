@@ -1006,17 +1006,19 @@ static Token lexer_scan(Lexer *lexer) {
     /* There is no money literal, and '$' is the guess everyone makes first.
      * A targeted message teaches the modifier form instead of just refusing:
      * sigils privilege one currency and change over time, so money is a
-     * modifier from a plain number -- p(USD)= 19.99 (see reference.md).
+     * modifier from a plain number -- p {USD}= 19.99 (see reference.md; the
+     * advice named the paren spelling, refused since PLAT-BRACE, until
+     * 2026-11-20, and nothing ran it).
      *
      * SPLIT BY POSITION 2026-09-30: `a$ = "x"` is not a money guess at all, it
-     * is QBasic's string sigil, and answering it with advice about `p(USD)=`
+     * is QBasic's string sigil, and answering it with advice about `p {USD}=`
      * names a remedy for a mistake the reader did not make. */
     case '$':
         if (follows_identifier(lexer, start)) {
             return sigil_error(lexer, start, line, column, '$');
         }
         return error_token_message(lexer, start, line, column,
-                                   "'$' is not a money literal; write p(USD)= 19.99 -- money is a modifier from a plain number");
+                                   "'$' is not a money literal; write p {USD}= 19.99 -- money is a modifier from a plain number");
     /* The QBasic arithmetic a reader types before they have read anything.
      * Each names a call that EXISTS -- measured: pow(2,3) is 8, floor(7/2) is 3,
      * mod(-7,3) is 2 -- because web.configure shipped a refusal naming a remedy
@@ -1029,6 +1031,12 @@ static Token lexer_scan(Lexer *lexer) {
     case '^':
         return error_token_message(lexer, start, line, column,
                                    "'^' is not an operator; exponentiation is pow(a, b)");
+    /* C's and JavaScript's conditional, `c ? a : b` (DOGFOOD 2026-11-20):
+       the bare "unexpected token" named neither the absence nor the fix. A
+       `?` is used nowhere else in gBASIC, so the sentence cannot misfire. */
+    case '?':
+        return error_token_message(lexer, start, line, column,
+                                   "gBASIC has no `c ? a : b`; set the variable in an if block");
     case '%':
         if (follows_identifier(lexer, start)) {
             return sigil_error(lexer, start, line, column, '%');

@@ -16,7 +16,7 @@
 #   7 \ 2      unexpected token
 #   2 ^ 3      unexpected token
 #   7 % 3      unexpected token
-#   a$ = "x"   '$' is not a money literal; write p(USD)= 19.99
+#   a$ = "x"   '$' is not a money literal; write p {USD}= 19.99
 #   a% = 5     unexpected token
 #   "a" & "b"  unexpected token
 #
@@ -28,7 +28,7 @@
 #
 # The `$` one is subtler and is the reason POSITION is a tier of its own: one
 # character, two different mistakes. `$19.99` is a money guess; `a$` is a string
-# sigil. Answering the second with `p(USD)= 19.99` names a remedy for a mistake
+# sigil. Answering the second with `p {USD}= 19.99` names a remedy for a mistake
 # the reader did not make.
 #
 # SELF-CHECKING, not golden: every one of these is a MESSAGE, and a golden
@@ -149,6 +149,21 @@ pwant 'prompt <>'    'print 1 <> 2' "not-equal is !="
 # original and the wrapper both say "unexpected" and only the position differs.
 pwant 'prompt position' 'let x = 1'  '<prompt>:1:'
 
+echo "--- TIER 1d: other languages' statements (the 2026-11-20 sweep) ---"
+# Each was bison's own sentence naming the token after the mistake: `?` was a
+# bare "unexpected token", `exit for` "unexpected FOR", `sleep 0.1`
+# "unexpected NUMBER". Each beside a control that must keep working.
+want 'a conditional expression' 'y = 1 > 0 ? "a" : "b"' 'gBASIC has no `c ? a : b`'
+want 'exit for'      $'for each i in [1]\n    exit for\nnext' '`exit for` is not gBASIC; leave a loop with `break`'
+want 'exit while'    $'while true\n    exit while\nend while' '`exit while` is not gBASIC'
+want 'exit function' $'function f()\n    exit function\nend function' 'leave a function with `return`'
+want 'a builtin called bare' 'sleep 0.1' '`sleep` is a function, so its arguments go in parentheses'
+want 'and another'   $'x = 5\nlen x' '`len` is a function'
+lacks 'another error on a print line is not called a function' $'x = 1\nprint x y' 'is a function'
+want 'control: sleep(...) still runs' $'sleep(0.01)\nprint "slept"' 'slept'
+want 'control: a builtin name assigned is a variable' $'max = 3\nprint max' '3'
+want 'control: exit(code) is still the call' $'print "before"\nexit(0)' 'before'
+
 echo "--- TIER 2: the five type sigils ---"
 for pair in 'a$ = "x":$' 'a% = 5:%' 'a! = 5:!' 'a# = 5:#' 'a& = 5:&'; do
     src="${pair%:*}"; ch="${pair##*:}"
@@ -159,7 +174,7 @@ echo "--- TIER 3: POSITION, asserted as a difference ---"
 # One character, two mistakes. Either assertion ALONE passes on a build that
 # always gives the same answer, so both are required and they must DIFFER.
 want  'dollar after name' 'a$ = "x"'   'type sigil'
-lacks 'dollar after name is not money advice' 'a$ = "x"' 'p(USD)'
+lacks 'dollar after name is not money advice' 'a$ = "x"' '{USD}'
 want  'dollar before digits' 'p = $19.99' 'is not a money literal'
 lacks 'dollar before digits is not sigil advice' 'p = $19.99' 'type sigil'
 want  'percent after name' 'a% = 5'     'type sigil'
@@ -168,6 +183,18 @@ want  'percent alone'      'print 7 % 3' 'the remainder'
 lacks 'percent alone is not sigil advice' 'print 7 % 3' 'type sigil'
 
 echo "--- TIER 4: EVERY REMEDY A MESSAGE NAMES MUST RUN ---"
+# A STATEMENT-SHAPED REMEDY TOO, which the function scrape below cannot see:
+# the money advice named `p(USD)= 19.99`, a spelling refused since PLAT-BRACE,
+# for two months with every tier green (found 2026-11-20). The statement after
+# "write " is cut out of what the binary said and run.
+money_fix="$(say 'p = $19.99' | sed -n 's/.*write \(.*\) -- .*/\1/p')"
+printf '%s\nprint p\n' "$money_fix" >"$tmp/money_fix.bas"
+if [ -n "$money_fix" ] && [ "$(./gbasic "$tmp/money_fix.bas" 2>&1)" = "19.99" ]; then
+    printf 'ok  the money advice runs as written: %s\n' "$money_fix"
+else
+    printf 'MISMATCH the money advice does not run as written: [%s] -> %s\n' "$money_fix" "$(./gbasic "$tmp/money_fix.bas" 2>&1 | head -1)"
+    status=1
+fi
 # THE LOAD-BEARING TIER. web.configure shipped a refusal naming a remedy that
 # did not exist, and a message is the one kind of code nothing executes -- so a
 # hint can rot into a lie with every other tier green.

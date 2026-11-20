@@ -7305,6 +7305,36 @@ static const char *syntax_error_basic_word(gb_parse_ctx *ctx) {
         p++;
     }
     const char *w = p;
+    /* A BUILT-IN FUNCTION WRITTEN AS A STATEMENT, `sleep 0.1` (DOGFOOD
+       2026-11-18): QBasic's SLEEP takes its argument bare, and bison's
+       `unexpected NUMBER` names neither the word nor the parentheses. A name
+       followed by `(`, `=`, `.`, `[` or a line's end is something else. */
+    {
+        const char *q = p;
+        while ((*q >= 'a' && *q <= 'z') || (*q >= 'A' && *q <= 'Z') || (*q >= '0' && *q <= '9') || *q == '_') {
+            q++;
+        }
+        size_t fn = (size_t)(q - p);
+        const char *after = q;
+        while (*after == ' ' || *after == '\t') {
+            after++;
+        }
+        static _Thread_local char call_advice[200];
+        /* not `exit`, whose classic `exit for` is answered below */
+        int classic_exit = fn == 4 && tolower((unsigned char)p[0]) == 'e' && tolower((unsigned char)p[1]) == 'x' &&
+                           tolower((unsigned char)p[2]) == 'i' && tolower((unsigned char)p[3]) == 't';
+        if (!classic_exit && fn > 0 && fn < 40 && after > q && *after != '(' && *after != '=' && *after != '.' &&
+            *after != '[' && *after != '\n' && *after != '\r' && *after != '\0' && *after != '\'') {
+            char name[40];
+            memcpy(name, p, fn);
+            name[fn] = '\0';
+            if (gbasic_builtin_function(name)) {
+                snprintf(call_advice, sizeof call_advice,
+                         "`%s` is a function, so its arguments go in parentheses: write `%s(...)`", name, name);
+                return call_advice;
+            }
+        }
+    }
     while ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z')) {
         p++;
     }
@@ -7334,6 +7364,22 @@ static const char *syntax_error_basic_word(gb_parse_ctx *ctx) {
     }
     if (*p == '(') {
         return NULL;       /* a call, not a classic-BASIC statement */
+    }
+    /* QBasic's and VB's loop exits (DOGFOOD 2026-11-18): `exit for` said
+       `unexpected FOR`, which names the half that is right */
+    if (strcmp(word, "exit") == 0) {
+        if (strncmp(p, "function", 8) == 0 || strncmp(p, "sub", 3) == 0) {
+            return "`exit function` is not gBASIC; leave a function with `return`";
+        }
+        static _Thread_local char exit_advice[220];
+        const char *nx = p;
+        while ((*nx >= 'a' && *nx <= 'z') || (*nx >= 'A' && *nx <= 'Z')) {
+            nx++;
+        }
+        snprintf(exit_advice, sizeof exit_advice,
+                 "`exit %.*s` is not gBASIC; leave a loop with `break` (a `for` by its variable, `break i`)",
+                 (int)(nx - p), p);
+        return exit_advice;
     }
     if (strcmp(word, "let") == 0) {
         return "`let` is not a gBASIC statement; assign directly (x = 1)";
