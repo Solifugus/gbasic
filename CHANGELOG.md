@@ -20,6 +20,14 @@ reader sees.
   - **`{duration}`**: a duration from a number of whole seconds or from its
     text (`{duration}"2 hours 30 minutes"`), the typed modifiers' missing
     way in.
+  - **`mid(s, start)`** runs to the end, as VB's `Mid` and a slice do.
+  - **`pg` and `odbc` bind `unknown` as SQL NULL**, as G-SQL and their own
+    `insert` verbs already did.
+  - **Directory entries carry `relative`**, the path under the directory
+    listed, for mirroring a tree.
+  - **Warning `2125`**: a function that changes a field of a record
+    parameter and never reads or returns it loses the change, since the
+    parameter is a copy; now it is said, at the write.
   - **Messages that name the fix**: `c ? a : b` (gBASIC has no conditional
     expression), `exit for` (write `break`), a built-in called bare
     (`sleep 0.1`), a VB trailing `_`, `pg.connect`'s `dbname` (write

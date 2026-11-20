@@ -469,6 +469,11 @@ struct AstStmt {
              * into the type or is refused. Unset (name NULL) for a function
              * with no declared return type. */
             AstTypeLock returns;
+            /* Warning 2125, worked out at the first call: for each parameter,
+             * the line and column of a field write to it that nothing in the
+             * body reads afterwards (0 when none), two ints a parameter. */
+            int *param_dead;
+            signed char param_dead_checked;
         } function;
         AstExpr *return_expr;
         char *label;

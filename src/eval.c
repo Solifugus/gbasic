@@ -1209,6 +1209,7 @@ static const char *library_shown(const char *identity, char *buf, size_t size);
 static void method_ensure_internal_name(AstStmt *stmt);
 static void register_method_bodies_in(AstStmtList list);
 static void register_hoistable_declarations(AstStmtList program);
+static void param_copy_check(AstStmt *stmt);
 
 
 static int path_equal(const char *left, const char *right) {
@@ -14259,6 +14260,9 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
         env_set(stmt->as.function.params.items[i], v);
     }
     free(args);
+    if (!bind_failed) {
+        param_copy_check(stmt);
+    }
 
     /* PLAT-ERR: a fresh error frame per invocation, in the DEFAULT state
      * whatever the caller armed -- the property the process-global model
@@ -47580,6 +47584,9 @@ typedef struct {
     int last_write_line;   /* the latest write rooted at the name */
     int last_write_column;
     int unanalysable;      /* a jump, or a construct this walk does not model */
+    /* 2125's stricter reading (param_copy_check); 2107 leaves both 0 */
+    int params_mode;       /* a rebinding (`p = ...`) or a write in a loop refuses judgment */
+    int loop_depth;
 } DeadScan;
 
 static void dead_scan_expr(const AstExpr *e, DeadScan *s);
@@ -47676,7 +47683,12 @@ static void dead_scan_stmt(const AstStmt *st, DeadScan *s) {
                 }
             }
         }
-        if (root && strcmp(root, s->name) == 0) {
+        if (root && strcmp(root, s->name) == 0 && s->params_mode &&
+            (lvalue_hops(st->as.assign.target) == 0 || s->loop_depth > 0)) {
+            /* a parameter rebound is a local in use, and a write in a loop
+             * may be read on its next pass by a line above it */
+            s->unanalysable = 1;
+        } else if (root && strcmp(root, s->name) == 0) {
             if (lvalue_hops(st->as.assign.target) > 1) {
                 /* Not judged (see lvalue_hops), and counted as a MENTION: at
                  * two hops the statement genuinely reads `item` to find what
@@ -47705,21 +47717,29 @@ static void dead_scan_stmt(const AstStmt *st, DeadScan *s) {
         break;
     case AST_STMT_WHILE:
         dead_scan_expr(st->as.while_stmt.condition, s);
+        s->loop_depth++;
         dead_scan_list(st->as.while_stmt.body, s);
+        s->loop_depth--;
         break;
     case AST_STMT_DO_LOOP:
         dead_scan_expr(st->as.do_loop.condition, s);
+        s->loop_depth++;
         dead_scan_list(st->as.do_loop.body, s);
+        s->loop_depth--;
         break;
     case AST_STMT_FOR_EACH:
         dead_scan_expr(st->as.for_each.iterable, s);
+        s->loop_depth++;
         dead_scan_list(st->as.for_each.body, s);
+        s->loop_depth--;
         break;
     case AST_STMT_FOR_RANGE:
         dead_scan_expr(st->as.for_range.start, s);
         dead_scan_expr(st->as.for_range.limit, s);
         dead_scan_expr(st->as.for_range.step, s);
+        s->loop_depth++;
         dead_scan_list(st->as.for_range.body, s);
+        s->loop_depth--;
         break;
     case AST_STMT_CONSIDER:
         dead_scan_expr(st->as.consider.subject, s);
@@ -47767,6 +47787,71 @@ static void dead_scan_stmt(const AstStmt *st, DeadScan *s) {
 static void dead_scan_list(AstStmtList body, DeadScan *s) {
     for (size_t i = 0; i < body.count; i++) {
         dead_scan_stmt(body.items[i], s);
+    }
+}
+
+/* ---- PLAT-WARN 2125: a field write to a record PARAMETER nothing reads -----
+ *
+ * The same discard as 2107, one door over (DOGFOOD 2026-11-06, from
+ * Transward): a function's parameter is a COPY of the caller's value, so
+ * `helper(this, p)` setting `p.seq = p.seq + 1` changed nothing anyone saw,
+ * and SSH sequence numbers vanished with no word. The same scan: a one-hop
+ * write to the parameter that no later line reads -- a `return p` is a read,
+ * so the right shape is silent.
+ *
+ * STRICTER THAN 2107 (measured: its first draft fired once in the tree's
+ * 1,520 programs, on stdlib/websocket.bas rebinding `st` inside a `while`
+ * whose condition, a line above, reads it each pass): only a field write
+ * counts, and a parameter rebound anywhere, or written inside a loop, is
+ * not judged.
+ *
+ * DECIDED BY THE ARGUMENT, NOT THE SOURCE: a parameter may hold a handle, and
+ * `db.max_recursion = 10` on a G-SQL connection is a real change the caller
+ * sees. So the scan finds candidates once per function, and the warning fires
+ * only when the value bound is a record or an array, which really is a copy. */
+static void param_copy_check(AstStmt *stmt) {
+    AstNameList *params = &stmt->as.function.params;
+    if (!stmt->as.function.param_dead_checked) {
+        stmt->as.function.param_dead_checked = 1;
+        if (params->count) {
+            stmt->as.function.param_dead = calloc(params->count * 2, sizeof(int));
+            if (!stmt->as.function.param_dead) {
+                abort();
+            }
+            for (size_t i = 0; i < params->count; i++) {
+                DeadScan sc;
+                memset(&sc, 0, sizeof sc);
+                sc.name = params->items[i];
+                sc.params_mode = 1;
+                dead_scan_list(stmt->as.function.body, &sc);
+                if (!sc.unanalysable && sc.last_write_line > 0 && sc.max_mention_line <= sc.last_write_line) {
+                    stmt->as.function.param_dead[2 * i] = sc.last_write_line;
+                    stmt->as.function.param_dead[2 * i + 1] = sc.last_write_column;
+                    stmt->as.function.param_dead_checked = 2;
+                }
+            }
+        }
+    }
+    if (stmt->as.function.param_dead_checked != 2) {
+        return;
+    }
+    for (size_t i = 0; i < params->count; i++) {
+        int line = stmt->as.function.param_dead[2 * i];
+        if (!line) {
+            continue;
+        }
+        Symbol *sym = env_find_in_frame(current_env, params->items[i]);
+        if (!sym || (sym->value.kind != VALUE_RECORD && sym->value.kind != VALUE_ARRAY)) {
+            continue;
+        }
+        warn_fmt_at(2125, "discarded write", line, stmt->as.function.param_dead[2 * i + 1],
+                    "this changes `%s`, a COPY of what the caller passed (a gBASIC function cannot change its "
+                    "caller), and nothing in `%s` reads it afterwards -- the change is lost when it returns. "
+                    "Return it (`return %s`) and assign it at the call (`x = %s(x)`).",
+                    params->items[i], stmt->as.function.name, params->items[i], stmt->as.function.name);
+        /* once per write: the warning names the site, and each call of a
+         * hot helper would repeat it */
+        stmt->as.function.param_dead[2 * i] = 0;
     }
 }
 

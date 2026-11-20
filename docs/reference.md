@@ -645,6 +645,12 @@ single pass rewrites what it walks. The index is an ordinary number in the
 enclosing scope and survives the loop, exactly as the element and the counted
 loop's counter do. The element and the index may not share a name.
 
+**A write to a function's record parameter that nothing reads is reported too**
+(warning `2125`, *after 0.12.0*): a parameter is a copy of what the caller
+passed, so `r.n = r.n + 1` in a function that neither reads nor returns `r`
+afterwards changes nothing the caller sees. Return it (`return r`) and assign
+it at the call (`x = bump(x)`).
+
 **A write the loop never reads is reported** (warning `2107`). Because the
 element is a copy, `item.x = 1` with nothing reading `item` afterwards is
 discarded when the iteration ends — silently, which is the one failure in this

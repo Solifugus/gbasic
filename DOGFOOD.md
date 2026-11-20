@@ -13366,6 +13366,8 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   `mod`), `max(a, b)` (takes an array), `+` on arrays (use `concat`), `new`
   reserved.
 
+- **Status 2026-11-20: RESOLVED** in the sweep: warning `2125` reports a field write to a record parameter that nothing in the function reads afterwards, once, when the argument really is a record or array. Measured silent across the tree's 1,520 programs; held by `tests/run_warning_model.sh` (`warn_param_copy`, five legitimate shapes and a handle as controls).
+
 ## 2026-11-06 — CC — while: testing MCP's Streamable HTTP across two workers (Transward §7.4)
 - **Type:** bug
 - **Severity:** medium

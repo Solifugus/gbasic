@@ -314,3 +314,60 @@ end function'
 [ -n "$wm_out" ] || fail "an intra-program helper could not soften the program's mode (main did not continue)"
 printf 'PASS warn_library_boundary control 4 (intra-program nearest-wins is unchanged)\n'
 rm -rf "$wm_dir"
+
+# --- 2125: a field write to a record parameter that nothing reads ----------
+# DOGFOOD 2026-11-06, from Transward: a helper given a record as an argument
+# changed a COPY, and its sequence-number updates vanished with no word. The
+# warning must fire on that shape and stay silent on the right ones, so it is
+# asserted as a DIFFERENCE and the controls outnumber the positive case.
+# Measured before it shipped: silent across the tree's 1,520 programs (its
+# first draft fired once, falsely, on a parameter rebound inside a loop).
+w25() {
+    printf '%s\n' "$1" > "$scratch/w25.bas"
+    ./gbasic "$scratch/w25.bas" 2>&1 >/dev/null </dev/null | grep -c '\[2125\]' || true
+}
+[ "$(w25 'function bump(r)
+    r.n = r.n + 1
+end function
+x = { n: 1 }
+bump(x)
+bump(x)')" = 1 ] || fail "2125: a field write to a record parameter nothing reads was not reported once"
+[ "$(w25 'function bump(r)
+    r.n = r.n + 1
+    return r
+end function
+x = { n: 1 }
+x = bump(x)')" = 0 ] || fail "2125 control: a parameter returned after the write was reported"
+[ "$(w25 'function show(r)
+    r.n = r.n + 1
+    print r.n
+end function
+show({ n: 1 })')" = 0 ] || fail "2125 control: a write read afterwards was reported"
+[ "$(w25 'function count_up(r)
+    while r.n < 3
+        r.n = r.n + 1
+    end while
+end function
+count_up({ n: 1 })')" = 0 ] || fail "2125 control: a write inside a loop was judged"
+[ "$(w25 'function rebind(r)
+    r = { n: 0 }
+    r.n = 5
+end function
+rebind({ n: 1 })')" = 0 ] || fail "2125 control: a rebound parameter was judged"
+[ "$(w25 'function bump(r)
+    r.n = r.n + 1
+end function
+bump(7)')" = 0 ] || fail "2125 control: a value that is not a record (no copy to lose) was reported"
+printf 'PASS warn_param_copy (2125 reports a lost write to a record parameter, once, and not five legitimate shapes)\n'
+# a HANDLE is not a copy: setting a G-SQL connection's attribute in a function
+# changes the caller's connection, so it must stay silent (skipped without G-SQL)
+if ./gbasic --modules 2>/dev/null | grep -q '^gsql	built'; then
+    [ "$(w25 "load gsql
+function tune(db)
+    db.max_recursion = 10
+end function
+shop = gsql.connect(\"$scratch/w25db\", { create: true, linger: 0 })
+tune(shop)
+print shop.max_recursion")" = 0 ] || fail "2125 control: a handle's attribute set in a function was reported"
+    printf 'PASS warn_param_copy handle (a G-SQL connection set in a function is not a lost copy)\n'
+fi
