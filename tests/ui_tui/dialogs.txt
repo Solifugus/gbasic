@@ -1,0 +1,153 @@
+--- a question, No the default
+| Dialogs
+|under the boxes
+|
+|
+|
+|                ┌ Dialogs ────────────────┐
+|                │ Delete the three files? │
+|                │                         │
+|                │     [ Yes ]  [ No ]     │
+|                └─────────────────────────┘
+|
+|
+|
+|
+|
+|
+Enter on the default: false
+Left, then Enter: true
+y: true
+Escape: false
+--- a statement wraps at its words
+| Dialogs
+|under the boxes
+|
+|
+|
+|  ┌ Dialogs ─────────────────────────────────────────────┐
+|  │ Saved. The ledger was written to its folder, and the │
+|  │ old copy kept beside it as a backup.                 │
+|  │                                                      │
+|  │                        [ OK ]                        │
+|  └──────────────────────────────────────────────────────┘
+|
+|
+|
+|
+|
+inform: true
+--- the chooser: folders first, hidden files and other kinds left out
+| Dialogs
+|un┌ Open a note ─────────────────────────────────────────┐
+|  │ Folder: WORK │
+|  │ ../                                                  │
+|  │ docs/                                                │
+|  │ notes.txt                                            │
+|  │                                                      │
+|  │                                                      │
+|  │                                                      │
+|  │                                                      │
+|  │ Name:                                                │
+|  │ Filter: < Text (*.txt) >                             │
+|  │                                                      │
+|  │                                 [ Open ]  [ Cancel ] │
+|  └──────────────────────────────────────────────────────┘
+|
+--- into docs, where the filter shows a.txt only
+| Dialogs
+|un┌ Open a note ─────────────────────────────────────────┐
+|  │ Folder: WORK/docs │
+|  │ ../                                                  │
+|  │ a.txt                                                │
+|  │                                                      │
+|  │                                                      │
+|  │                                                      │
+|  │                                                      │
+|  │                                                      │
+|  │ Name:                                                │
+|  │ Filter: < Text (*.txt) >                             │
+|  │                                                      │
+|  │                                 [ Open ]  [ Cancel ] │
+|  └──────────────────────────────────────────────────────┘
+|
+--- the second filter, All, shows b.md
+| Dialogs
+|un┌ Open a note ─────────────────────────────────────────┐
+|  │ Folder: WORK/docs │
+|  │ ../                                                  │
+|  │ a.txt                                                │
+|  │ b.md                                                 │
+|  │                                                      │
+|  │                                                      │
+|  │                                                      │
+|  │                                                      │
+|  │ Name:                                                │
+|  │ Filter: < All (*) >                                  │
+|  │                                                      │
+|  │                                 [ Open ]  [ Cancel ] │
+|  └──────────────────────────────────────────────────────┘
+|
+chosen PICK/docs/a.txt
+--- moving onto a file names it
+| Dialogs
+|un┌ Dialogs ─────────────────────────────────────────────┐
+|  │ Folder: WORK │
+|  │ ../                                                  │
+|  │ docs/                                                │
+|  │ notes.txt                                            │
+|  │                                                      │
+|  │                                                      │
+|  │                                                      │
+|  │                                                      │
+|  │ Name: notes.txt                                      │
+|  │ Filter: Text (*.txt)                                 │
+|  │                                                      │
+|  │                                 [ Open ]  [ Cancel ] │
+|  └──────────────────────────────────────────────────────┘
+|
+chosen by the list PICK/notes.txt
+--- a name that is not there is refused in the box
+| Dialogs
+|un┌ Dialogs ─────────────────────────────────────────────┐
+|  │ Folder: WORK │
+|  │ ../                                                  │
+|  │ docs/                                                │
+|  │ c.md                                                 │
+|  │ notes.txt                                            │
+|  │                                                      │
+|  │                                                      │
+|  │                                                      │
+|  │                                                      │
+|  │ Name: nope.txt                                       │
+|  │ Not taken: `nope.txt`, which is not there            │
+|  │                                 [ Open ]  [ Cancel ] │
+|  └──────────────────────────────────────────────────────┘
+|
+|cursor 19,12
+then Escape: unknown true
+saved as PICK/out.txt
+folder PICK/docs
+--- a modal window is a box over the window under it
+| Dialogs
+|under the boxes
+|
+|
+|
+|
+|               ┌ Edit ─────────────────────┐
+|               │ Name Zed                  │
+|               │ [ OK ] [ Cancel ]         │
+|               └───────────────────────────┘
+|
+|
+|
+|
+|
+|
+|cursor 26,8
+closed, the name read Zed
+modal, Enter on the default button: true
+closed, the name read Amy
+modal, Escape: false
+done

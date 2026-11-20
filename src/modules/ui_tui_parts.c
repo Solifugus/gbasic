@@ -407,7 +407,7 @@ static void tuip_content(TuiNode *root, int *top, int *bottom) {
 
 /* where each bar menu's title starts, 0-based */
 static int tuip_bar_x(TuiNode *bar, int index) {
-    int x = 1;
+    int x = (bar->parent ? bar->parent->fx : 0) + 1;
     for (int i = 0; i < index && i < bar->nkids; i++) {
         x += tui_text_cells(bar->kids[i]->title) + 2;
     }
@@ -420,16 +420,16 @@ static void tuip_open_bar_menu(TuiNode *root, int index) {
         return;
     }
     tuip_nov = 0;
-    tuip_overlay_push(bar->kids[index], tuip_bar_x(bar, index) - 1, 2, index);
+    tuip_overlay_push(bar->kids[index], tuip_bar_x(bar, index) - 1, root->fy + 2, index);
 }
 
 static void tuip_furniture_draw(TuiNode *root) {
-    int row = 1;
+    int row = root->fy + 1;
     TuiNode *bar = tuip_menubar(root);
     TermStyle plain = tui_style(tui_fg, tui_bg, 0);
     TermStyle barst = tui_style(tui_fg, tui_ctl, tui_ctl == TERM_DEFAULT ? TERM_REVERSE : 0);
     if (bar && bar->nkids) {
-        tui_fill(0, row, tui_screen.columns, 1, barst);
+        tui_fill(root->fx, row, root->fw, 1, barst);
         for (int i = 0; i < bar->nkids; i++) {
             TermStyle st = barst;
             if (tuip_nov && tuip_ov[0].bar_index == i) {
@@ -442,7 +442,7 @@ static void tuip_furniture_draw(TuiNode *root) {
     }
     TuiNode *tb = tuip_furniture(root, "toolbar");
     if (tb && tb->visible) {
-        int x = 0;
+        int x = root->fx;
         for (int i = 0; i < tb->nkids; i++) {
             TuiNode *e = tb->kids[i];
             e->x = x;
@@ -473,12 +473,12 @@ static void tuip_furniture_draw(TuiNode *root) {
     }
     TuiNode *st = tuip_furniture(root, "status");
     if (st && st->visible) {
-        int y = tui_screen.rows - 1;
+        int y = root->fy + root->fh - 1;
         TermStyle sst = tui_style(tui_fg, tui_ctl, tui_ctl == TERM_DEFAULT ? TERM_REVERSE : 0);
-        tui_fill(0, y, tui_screen.columns, 1, sst);
+        tui_fill(root->fx, y, root->fw, 1, sst);
         /* the status bar's texts, laid out as a row with its stretches */
         st->furniture = 0;
-        tui_arrange_line(st, 0, y, tui_screen.columns, 1, 1);
+        tui_arrange_line(st, root->fx, y, root->fw, 1, 1);
         st->furniture = 1;
         for (int i = 0; i < st->nkids; i++) {
             TuiNode *k = st->kids[i];
@@ -528,7 +528,7 @@ static int tuip_window_mouse(TuiNode *root, const TermEvent *ev) {
     }
     int x = ev->column - 1, y = ev->row - 1;
     TuiNode *bar = tuip_menubar(root);
-    int row = 1;
+    int row = root->fy + 1;
     if (bar && bar->nkids) {
         if (y == row) {
             for (int i = 0; i < bar->nkids; i++) {

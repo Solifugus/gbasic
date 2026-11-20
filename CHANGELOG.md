@@ -16,6 +16,18 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **Dialogs, the file chooser and modal windows in the terminal**
+  (`docs/tui_design.md` increment 5). `ui.inform`, `ui.confirm`,
+  `ui.answer` and `ui.dialog()` draw and answer a box over the window; the
+  chooser is the terminal's own, so the `tui` backend now has the
+  `file_dialogs` group; `ui.open_modal` draws the window as a box over the
+  one under it.
+  - **`ui.open_modal` no longer needs the `windows` group** on any backend:
+    a modal window is a dialog over its owner, not a second window. Only
+    `ui.open` of a second window asks for `windows`.
+  - Fixed in the terminal backend: a handler that closed its own window
+    (`ui.close` from a menu item) freed it while the press was still being
+    handled.
 - **The terminal backend draws tables, trees, menus and tabs** (`docs/tui_design.md`
   increment 4). Added:
   - `table`, both held and `to ask`, which is asked only for the rows on

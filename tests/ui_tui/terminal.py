@@ -95,6 +95,43 @@ def tier_live_parts(gbasic, fixtures):
     r.close()
 
 
+def tier_live_dialogs(gbasic, fixtures):
+    folder = os.environ["TUI_PICK"]
+    r = Run(gbasic, [os.path.join(fixtures, "live_dialogs.bas"), folder], cols=40, rows=12, env=NO_DISPLAY)
+    check(r.wait_err("backend tui", 10), "increment 5 live: the terminal was chosen")
+    r.pump(0.5)
+    r.send(b"\r", 0.3)               # Enter on Ask, which has the focus
+    check(b"Sure?" in r.out and b"Yes" in r.out, "Enter on Ask put the question up in a box (its words; the redraw skips cells already blank)")
+    r.send(b"\r", 0.3)               # No is the default
+    check(r.wait_err("answer false", 5), "Enter at once answers No, the safe default")
+    r.send(b"\r", 0.3)
+    r.send(b"\x1b[D", 0.1)          # Left, to Yes
+    r.send(b"\r", 0.3)
+    check(r.wait_err("answer true", 5), "Left, then Enter, answers Yes")
+    # Tell: a box 10 cells wide and 5 high, centred on 40 by 12, so its OK
+    # button is the terminal's row 7, columns 18 to 23 (1-based)
+    r.send(b"\t", 0.1)
+    r.send(b"\r", 0.3)
+    r.send(b"\x1b[<0;19;7M\x1b[<0;19;7m", 0.3)
+    check(r.wait_err("told true", 5), "a mouse press on the OK button answered the statement")
+    r.send(b"\t", 0.1)
+    r.send(b"\r", 0.4)               # Pick
+    check(b"a.txt" in r.out and b"b.txt" in r.out, "the chooser listed the folder")
+    r.send(b"\x1b[B", 0.1)          # Down: a.txt (.. is first)
+    r.send(b"\x1b[B", 0.1)          # Down: b.txt
+    r.send(b"\r", 0.3)
+    check(r.wait_err("picked PICK/b.txt", 5), "Down, Down, Enter chose the second file")
+    r.send(b"\r", 0.4)
+    r.send(b"\x1b", 0.5)            # a lone Escape: the decoder's wait decides it
+    check(r.wait_err("picked nothing", 5), "a lone Escape cancelled the chooser: unknown")
+    r.send(b"\t", 0.1)
+    r.send(b"\r", 0.3)               # Quit
+    st = r.finish(10)
+    check(st is not None and os.WIFEXITED(st) and os.WEXITSTATUS(st) == 0, "increment 5 live: exit 0")
+    check(settings_equal(r.settings(), fresh_settings()), "increment 5 live: the pty's settings after equal a fresh pty's")
+    r.close()
+
+
 def tier_needs(gbasic, fixtures):
     prog = os.path.join(fixtures, "needs.bas")
     r = Run(gbasic, [prog], cols=40, rows=12, env=NO_DISPLAY)
@@ -106,7 +143,8 @@ def tier_needs(gbasic, fixtures):
 
 def main():
     tier, gbasic, fixtures = sys.argv[1], sys.argv[2], sys.argv[3]
-    {"live": tier_live, "live_parts": tier_live_parts, "needs": tier_needs}[tier](gbasic, fixtures)
+    {"live": tier_live, "live_parts": tier_live_parts, "live_dialogs": tier_live_dialogs,
+     "needs": tier_needs}[tier](gbasic, fixtures)
     return 1 if drive.failures else 0
 
 

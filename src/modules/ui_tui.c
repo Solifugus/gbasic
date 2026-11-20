@@ -33,6 +33,8 @@ static int tui_say(char *err, size_t err_size, const char *fmt, ...) {
 }
 #define TUI_ERR(...) tui_say(err, err_size, __VA_ARGS__)
 
+#include <fnmatch.h>
+
 typedef struct TuiNode TuiNode;
 struct TuiNode {
     char word[16];          /* the part word, or "window" for a root */
@@ -52,6 +54,9 @@ struct TuiNode {
     int x, y, w, h;         /* laid out, 0-based cells */
     int kind;               /* a root's: 0 plain, 1 modal, 2 main */
     int shown;              /* a root that is on screen */
+    /* a root's frame, 0-based cells: its title row is fy, its furniture and
+     * content the rows under it; the screen, or a modal window's box */
+    int fx, fy, fw, fh;
     /* FURNITURE is held by the root but not laid out with its content: a
      * menu bar, the popups, a toolbar, a status bar (increment 4) */
     int furniture;
@@ -136,6 +141,8 @@ static double tui_pending_since = 0;
 static TuiNode *tui_roots[8];
 static int tui_nroots = 0;
 static TuiNode *tui_focus = NULL;
+static TuiNode *tui_retired[64];    /* closed under a handler, freed by retire_drain */
+static int tui_nretired = 0;
 static int tui_dirty = 1;
 /* the theme record's colours; TERM_DEFAULT where the terminal's own is kept */
 static uint32_t tui_bg = TERM_DEFAULT, tui_fg = TERM_DEFAULT, tui_base = TERM_DEFAULT,
@@ -144,7 +151,6 @@ static uint32_t tui_bg = TERM_DEFAULT, tui_fg = TERM_DEFAULT, tui_base = TERM_DE
 
 static const char *const tui_later[][2] = {
     { "memo", "6" }, { "source", "6" }, { "markdown", "6" },
-    { "open_modal", "5" }, { "inform", "5" }, { "confirm", "5" }, { "answer", "5" },
     { NULL, NULL }
 };
 
@@ -391,6 +397,10 @@ static int tui_begin(char *err, size_t err_size) {
 
 static void tui_end(void) {
     tui_leave_screen();
+    for (int i = 0; i < tui_nretired; i++) {
+        tui_node_free(tui_retired[i]);
+    }
+    tui_nretired = 0;
     for (int i = 0; i < tui_nroots; i++) {
         tui_node_free(tui_roots[i]);
     }
@@ -698,12 +708,45 @@ static void tui_arrange(TuiNode *n, int x, int y, int w, int h) {
     }
 }
 
+/* A MODAL WINDOW IS A BOX OVER THE WINDOW UNDER IT (increment 5), sized by
+ * its content, as a dialog is: its title is in the top border. */
+static void tui_modal_frame(TuiNode *root) {
+    int w, h, top = 0, bottom = 0;
+    tui_measure(root, &w, &h);
+    tuip_content(root, &top, &bottom);
+    int tw = tui_text_cells(root->title ? root->title : root->name) + 4;
+    if (tw > w) {
+        w = tw;
+    }
+    int bw = w + 4, bh = h + (top - bottom) + 2;     /* a cell inside each side */
+    if (bw > tui_screen.columns) {
+        bw = tui_screen.columns;
+    }
+    if (bh > tui_screen.rows) {
+        bh = tui_screen.rows;
+    }
+    int bx = (tui_screen.columns - bw) / 2, by = (tui_screen.rows - bh) / 2;
+    root->fx = bx + 1;
+    root->fy = by;
+    root->fw = bw - 2;
+    root->fh = bh - 1;
+}
+
 static void tui_layout(TuiNode *root) {
     /* the top row is the window's title, then its menu bar and toolbar;
      * a status bar is the last row; the rest is its content */
-    int top = 1, bottom = tui_screen.rows;
+    if (root->kind == 1) {
+        tui_modal_frame(root);
+    } else {
+        root->fx = 0;
+        root->fy = 0;
+        root->fw = tui_screen.columns;
+        root->fh = tui_screen.rows;
+    }
+    int top = root->fy + 1, bottom = root->fy + root->fh;
     tuip_content(root, &top, &bottom);
-    tui_arrange(root, 0, top, tui_screen.columns, bottom - top);
+    int inset = root->kind == 1 ? 1 : 0;
+    tui_arrange(root, root->fx + inset, top, root->fw - 2 * inset, bottom - top);
 }
 
 /* ---- drawing ---------------------------------------------------------------- */
@@ -950,15 +993,34 @@ static void tui_draw(TuiNode *n) {
     }
 }
 
-/* The window on top: the last shown. */
-static TuiNode *tui_top(void) {
+/* The window under the boxes: the last shown that is not modal. */
+static TuiNode *tui_under(void) {
     for (int i = tui_nroots - 1; i >= 0; i--) {
-        if (tui_roots[i]->shown) {
+        if (tui_roots[i]->shown && tui_roots[i]->kind != 1) {
             return tui_roots[i];
         }
     }
     return NULL;
 }
+
+/* The window on top, which takes the keys: the last modal window shown, as a
+ * modal window holds the input in Qt too; otherwise the last shown. */
+static TuiNode *tui_top(void) {
+    for (int i = tui_nroots - 1; i >= 0; i--) {
+        if (tui_roots[i]->shown && tui_roots[i]->kind == 1) {
+            return tui_roots[i];
+        }
+    }
+    return tui_under();
+}
+
+static void tui_box_draw(int x, int y, int w, int h, const char *title, TermStyle st, TermStyle ttl);
+static void tui_dialogs_draw(void);
+static int tui_dialog_open(void);
+static int tui_dialog_key(const TermEvent *ev);
+static void tui_dialog_mouse(const TermEvent *ev);
+static void tui_dialogs_end_for(TuiNode *root);
+static int tui_answer_modal(void *window, int accept, char *err, size_t err_size);
 
 static void tui_dump(void) {
     const char *path = getenv("GBASIC_TUI_DUMP");
@@ -1000,19 +1062,32 @@ static void tui_render(void) {
     if (!tui_dirty) {
         return;
     }
-    TuiNode *top = tui_top();
+    TuiNode *base = tui_under();
     term_screen_clear(&tui_screen, tui_style(tui_fg, tui_bg, 0));
     tui_screen.cursor_visible = 0;
-    if (top) {
-        tui_layout(top);
-        const char *t = top->title ? top->title : (top->name ? top->name : "");
+    if (base) {
+        tui_layout(base);
+        const char *t = base->title ? base->title : (base->name ? base->name : "");
         TermStyle bar = tui_style(tui_on_sel, tui_sel, tui_sel == TERM_DEFAULT ? TERM_REVERSE : 0);
         tui_fill(0, 0, tui_screen.columns, 1, bar);
         tui_put_clipped(1, 0, tui_screen.columns - 2, t, bar);
-        tui_draw(top);
-        tuip_furniture_draw(top);
-        tuip_overlay_draw();
+        tui_draw(base);
+        tuip_furniture_draw(base);
     }
+    /* each modal window in the order shown, a box over what is under it */
+    for (int i = 0; i < tui_nroots; i++) {
+        TuiNode *m = tui_roots[i];
+        if (!m->shown || m->kind != 1) {
+            continue;
+        }
+        tui_layout(m);
+        tui_box_draw(m->fx - 1, m->fy, m->fw + 2, m->fh + 1, m->title ? m->title : m->name,
+                     tui_style(tui_fg, tui_bg, 0), tui_style(tui_fg, tui_bg, TERM_BOLD));
+        tui_draw(m);
+        tuip_furniture_draw(m);
+    }
+    tuip_overlay_draw();
+    tui_dialogs_draw();
     tui_dump();
     if (tui_entered) {
         TermBuf b = { 0 };
@@ -1125,6 +1200,7 @@ static void tui_close_root(TuiNode *root) {
         return;
     }
     root->shown = 0;
+    tui_dialogs_end_for(root);
     char *handler = root->on_closed ? copy_string(root->on_closed) : NULL;
     tui_fire(handler);
     free(handler);
@@ -1141,7 +1217,15 @@ static void tui_close_root(TuiNode *root) {
     if (tui_focus && tui_within(tui_focus, root)) {
         tui_focus = NULL;
     }
-    tui_node_free(root);
+    tuip_overlay_close_all();
+    /* NOT FREED UNDER A HANDLER (rule 7): a handler that closed its own
+     * window returns into the press that fired it, which still reads its
+     * part, so the tree waits for `retire_drain` (run_ui_modal valgrind) */
+    if (tui_depth > 0 && tui_nretired < (int)(sizeof tui_retired / sizeof tui_retired[0])) {
+        tui_retired[tui_nretired++] = root;
+    } else {
+        tui_node_free(root);
+    }
     tui_dirty = 1;
     if (!tui_top()) {
         tui_render();
@@ -1186,6 +1270,9 @@ static size_t tui_codepoints(const char *s) {
 
 /* One key on the focused part, or on the window. 1 when it was used. */
 static int tui_key_event(const TermEvent *ev) {
+    if (tui_dialog_open()) {
+        return tui_dialog_key(ev);
+    }
     TuiNode *top = tui_top();
     if (!top) {
         return 0;
@@ -1211,6 +1298,12 @@ static int tui_key_event(const TermEvent *ev) {
     if ((m & TERM_MOD_CTRL) && strcmp(k, "q") == 0) {
         /* Ctrl-Q closes the window, the terminal's window-manager button */
         tui_close_root(top);
+        return 1;
+    }
+    if (top->kind == 1 && strcmp(k, "escape") == 0) {
+        /* Esc rejects a modal window, as it does a QDialog */
+        char err[200];
+        tui_answer_modal(top, 0, err, sizeof err);
         return 1;
     }
     TuiNode *f = tui_focus;
@@ -1366,7 +1459,7 @@ static int tui_key_event(const TermEvent *ev) {
  * holds one line). */
 static void tui_paste(const TermEvent *ev) {
     TuiNode *f = tui_focus;
-    if (!f || !tui_is(f, "field") || f->read_only || !f->enabled) {
+    if (!tui_dialog_open() && (!f || !tui_is(f, "field") || f->read_only || !f->enabled)) {
         return;
     }
     for (size_t i = 0; i < ev->data_len;) {
@@ -1402,6 +1495,10 @@ static TuiNode *tui_hit(TuiNode *n, int x, int y) {
 }
 
 static void tui_mouse_event(const TermEvent *ev) {
+    if (tui_dialog_open()) {
+        tui_dialog_mouse(ev);
+        return;
+    }
     TuiNode *top = tui_top();
     if (!top) {
         return;
@@ -1472,23 +1569,31 @@ static void tui_dispatch(const TermEvent *ev) {
 
 /* ---- the loop -------------------------------------------------------------------- */
 
-static int tui_run(int tick_ms) {
-    if (tick_ms < 1) {
-        tick_ms = 50;
-    }
-    tui_stop_asked = 0;
-    tui_running = 1;
-    /* back on the terminal if a run before this one left it */
-    if (tui_top()) {
-        char err[200];
-        if (!tui_enter_screen(err, sizeof err)) {
-            tui_running = 0;
-            return 1;
-        }
-        tui_dirty = 1;
+static int tui_in_tick = 0;     /* gBASIC's tick is on the stack */
+
+/* Whether the loop's turning is over: `ui.run`'s when no window is left; a
+ * dialog's or a modal window's when it has its answer; every one when it is
+ * stopped, as Qt's `exit()` ends each nested loop and the box with it. */
+static int tui_loop_over(const int *done) {
+    return tui_stop_asked || (done ? *done : !tui_top());
+}
+
+/* THE LOOP, ONE COPY. `ui.run` turns it, and a dialog or a modal window turns
+ * it again inside, until `*done`, which is rule 2: gBASIC's sources are
+ * served while a box is up, as Qt's pump serves them inside `exec()`.
+ *
+ * A STOP ENDS EVERY TURNING, the innermost first: `ui.stop()`, or a tick
+ * answering 0 (gBASIC's loop is over: a raise in a watcher body stopped the
+ * program). Measured: with a nested loop deaf to it, a fixture whose watcher
+ * raised sat with its box up for ever. A box ended so is a cancel, `*done`
+ * still 0; the terminal going away is one too. */
+static void tui_loop(int *done, int tick_ms) {
+    int stopped_outside = tui_stop_asked;
+    if (done) {
+        tui_stop_asked = 0;     /* a stop already acted on ends nothing new */
     }
     double next_tick = tui_now_ms() + tick_ms;
-    while (!tui_stop_asked && tui_top()) {
+    while (!tui_loop_over(done)) {
         tui_render();
         double now = tui_now_ms();
         long wait = (long)(next_tick - now);
@@ -1517,7 +1622,7 @@ static int tui_run(int tick_ms) {
             int flush = term_decoder_pending(&tui_decoder) &&
                         tui_now_ms() - tui_pending_since >= 30;
             TermEvent ev;
-            while (!tui_stop_asked && tui_top() && term_decoder_next(&tui_decoder, flush, &ev)) {
+            while (!tui_loop_over(done) && term_decoder_next(&tui_decoder, flush, &ev)) {
                 tui_dispatch(&ev);
                 term_event_free(&ev);
                 tui_render();
@@ -1532,13 +1637,43 @@ static int tui_run(int tick_ms) {
         } else {
             poll(NULL, 0, (int)wait);
         }
-        if (tui_now_ms() >= next_tick) {
+        /* NOT RE-ENTERED: a dialog raised from inside a tick (a watcher body)
+         * turns this loop with that tick still on the stack, and running
+         * gBASIC's loop inside its own iteration is a path nothing holds.
+         * Qt's timers are not re-entered either, so a box raised there stalls
+         * every source on both backends alike (run_ui_dialog `modal
+         * extent`, include/ui_backend.h rule 2). */
+        if (tui_now_ms() >= next_tick && !tui_in_tick) {
             next_tick = tui_now_ms() + tick_ms;
-            if (tui_g_tick && !tui_g_tick()) {
-                break;
+            tui_in_tick = 1;
+            int more = tui_g_tick ? tui_g_tick() : 1;
+            tui_in_tick = 0;
+            if (!more) {
+                tui_stop_asked = 1;
             }
         }
     }
+    if (done && stopped_outside) {
+        tui_stop_asked = 1;
+    }
+}
+
+static int tui_run(int tick_ms) {
+    if (tick_ms < 1) {
+        tick_ms = 50;
+    }
+    tui_stop_asked = 0;
+    tui_running = 1;
+    /* back on the terminal if a run before this one left it */
+    if (tui_top()) {
+        char err[200];
+        if (!tui_enter_screen(err, sizeof err)) {
+            tui_running = 0;
+            return 1;
+        }
+        tui_dirty = 1;
+    }
+    tui_loop(NULL, tick_ms);
     tui_running = 0;
     tui_render();
     /* WHEN THE RUN ENDS, THE ORDINARY SCREEN COMES BACK, and the windows
@@ -1554,6 +1689,13 @@ static void tui_stop(void) {
 }
 
 static void tui_retire_drain(void) {
+    if (tui_depth > 0) {
+        return;
+    }
+    for (int i = 0; i < tui_nretired; i++) {
+        tui_node_free(tui_retired[i]);
+    }
+    tui_nretired = 0;
 }
 
 /* ---- building --------------------------------------------------------------------- */
@@ -2199,16 +2341,6 @@ static int tui_close(void *window, char *err, size_t err_size) {
     return 1;
 }
 
-static int tui_show_modal(void *window, int *accepted, char *err, size_t err_size) {
-    (void)window; (void)accepted;
-    return tui_not_yet("open_modal", err, err_size);
-}
-
-static int tui_answer_modal(void *window, int accept, char *err, size_t err_size) {
-    (void)window; (void)accept;
-    return tui_not_yet("open_modal", err, err_size);
-}
-
 /* ---- the theme --------------------------------------------------------------------- */
 
 static int tui_theme_set(const char *css, char *err, size_t err_size) {
@@ -2572,49 +2704,1221 @@ static char *tui_highlight_theme(void *window, const char *name) {
     return NULL;
 }
 
+/* ---- dialogs (increment 5) --------------------------------------------------------
+ *
+ * A MESSAGE BOX AND A FILE CHOOSER ARE BOXES DRAWN OVER THE WINDOW, and each
+ * turns the loop again inside (tui_loop) until it has its answer, as Qt's
+ * `exec()` does, so gBASIC's sources are served while one is up and a timer
+ * can answer it (`ui.answer`). One stack, because a handler run inside the
+ * first may ask its own question; the innermost takes the keys. */
+
+typedef struct {
+    int chooser;            /* 0 a message box, 1 a file chooser */
+    TuiNode *window;        /* what it hangs off */
+    char *title, *text;
+    int ask;                /* a confirm: Yes and No, No the default */
+    int done, yes;
+    int button;             /* a message box's focused button: 0 the first */
+    /* a chooser */
+    int pick;               /* GB_UI_PICK_* */
+    char *folder;           /* absolute */
+    char **filters;
+    int nfilters, filter;
+    char **names;           /* the folder's entries, ".." first, then folders */
+    unsigned char *dirs;
+    int nnames, sel, top;
+    char *name;             /* the name field */
+    size_t caret;
+    int focus;              /* 0 the list, 1 the name, 2 the filter, 3 accept, 4 cancel */
+    char *chosen, *note;
+    /* where it was drawn, 0-based cells, for the mouse */
+    int x, y, w, h, list_y, list_h, name_y, filter_y, buttons_y;
+    int b0x, b0w, b1x, b1w;
+} TuiDialog;
+
+static TuiDialog *tui_dialogs[8];
+static int tui_ndialogs = 0;
+
+/* A modal window's turn of the loop: what `ui.accept`/`ui.reject` answer and
+ * what a close ends. */
+typedef struct {
+    TuiNode *root;
+    int done, accepted;
+} TuiModal;
+
+static TuiModal *tui_modals[8];
+static int tui_nmodals = 0;
+
+static TuiDialog *tui_dialog_top(void) {
+    return tui_ndialogs ? tui_dialogs[tui_ndialogs - 1] : NULL;
+}
+
+static int tui_dialog_open(void) {
+    return tui_ndialogs > 0;
+}
+
+/* A window closing ends what hangs off it: its dialogs are cancelled, as Qt
+ * deletes a box with its parent, and its own modal turn ends unanswered. */
+static void tui_dialogs_end_for(TuiNode *root) {
+    for (int i = 0; i < tui_ndialogs; i++) {
+        if (tui_dialogs[i]->window == root) {
+            tui_dialogs[i]->done = 1;
+            tui_dialogs[i]->yes = 0;
+        }
+    }
+    for (int i = 0; i < tui_nmodals; i++) {
+        if (tui_modals[i]->root == root) {
+            tui_modals[i]->done = 1;
+        }
+    }
+}
+
 static int tui_dialog_depth(void) {
+    return tui_ndialogs;
+}
+
+/* The box's frame: a border with the title in its top edge. */
+static void tui_box_draw(int x, int y, int w, int h, const char *title, TermStyle st, TermStyle ttl) {
+    if (w < 2 || h < 2) {
+        return;
+    }
+    tui_fill(x, y, w, h, st);
+    for (int c = 1; c < w - 1; c++) {
+        tui_put_clipped(x + c, y, 1, "\xE2\x94\x80", st);
+        tui_put_clipped(x + c, y + h - 1, 1, "\xE2\x94\x80", st);
+    }
+    for (int r = 1; r < h - 1; r++) {
+        tui_put_clipped(x, y + r, 1, "\xE2\x94\x82", st);
+        tui_put_clipped(x + w - 1, y + r, 1, "\xE2\x94\x82", st);
+    }
+    tui_put_clipped(x, y, 1, "\xE2\x94\x8C", st);
+    tui_put_clipped(x + w - 1, y, 1, "\xE2\x94\x90", st);
+    tui_put_clipped(x, y + h - 1, 1, "\xE2\x94\x94", st);
+    tui_put_clipped(x + w - 1, y + h - 1, 1, "\xE2\x94\x98", st);
+    if (title && *title && w > 4) {
+        size_t len = strlen(title) + 3;
+        char *s = malloc(len);
+        if (!s) {
+            abort();
+        }
+        snprintf(s, len, " %s ", title);
+        tui_put_clipped(x + 1, y, w - 2, s, ttl);
+        free(s);
+    }
+}
+
+/* A text in lines no wider than `width` cells, broken at spaces; a word
+ * wider than the line is cut when drawn. Lines are malloc'd. */
+static int tui_wrap(const char *text, int width, char ***out) {
+    char **lines = NULL;
+    int n = 0, cap = 0;
+    const char *p = text ? text : "";
+    for (;;) {
+        size_t para = strcspn(p, "\n");
+        const char *end = p + para;
+        const char *q = p;
+        do {
+            /* as many words as fit */
+            const char *line_end = q, *scan = q;
+            while (scan < end) {
+                const char *w_end = scan;
+                while (w_end < end && *w_end != ' ') {
+                    w_end++;
+                }
+                char *trial = malloc((size_t)(w_end - q) + 1);
+                if (!trial) {
+                    abort();
+                }
+                memcpy(trial, q, (size_t)(w_end - q));
+                trial[w_end - q] = 0;
+                int cells = tui_text_cells(trial);
+                free(trial);
+                if (cells > width && line_end > q) {
+                    break;
+                }
+                line_end = w_end;
+                scan = w_end;
+                while (scan < end && *scan == ' ') {
+                    scan++;
+                }
+                if (cells > width) {
+                    break;
+                }
+            }
+            if (n == cap) {
+                cap = cap ? cap * 2 : 8;
+                lines = realloc(lines, sizeof *lines * (size_t)cap);
+                if (!lines) {
+                    abort();
+                }
+            }
+            lines[n] = malloc((size_t)(line_end - q) + 1);
+            if (!lines[n]) {
+                abort();
+            }
+            memcpy(lines[n], q, (size_t)(line_end - q));
+            lines[n][line_end - q] = 0;
+            n++;
+            q = line_end;
+            while (q < end && *q == ' ') {
+                q++;
+            }
+        } while (q < end);
+        if (!*end) {
+            break;
+        }
+        p = end + 1;
+    }
+    *out = lines;
+    return n;
+}
+
+static void tui_lines_free(char **lines, int n) {
+    for (int i = 0; i < n; i++) {
+        free(lines[i]);
+    }
+    free(lines);
+}
+
+static const char *tui_accept_word(const TuiDialog *d) {
+    return d->pick == GB_UI_PICK_SAVE ? "Save" : (d->pick == GB_UI_PICK_FOLDER ? "Choose" : "Open");
+}
+
+/* Two buttons centred, or right-aligned in a chooser; their places kept for
+ * the mouse. */
+static void tui_dialog_buttons(TuiDialog *d, const char *b0, const char *b1, int focus0, int focus1,
+                               int right) {
+    TermStyle plain = tui_style(tui_fg, tui_bg, 0);
+    TermStyle lit = tui_style(tui_on_sel, tui_sel, tui_sel == TERM_DEFAULT ? TERM_REVERSE : 0);
+    char s0[48], s1[48];
+    snprintf(s0, sizeof s0, "[ %s ]", b0);
+    snprintf(s1, sizeof s1, "[ %s ]", b1 ? b1 : "");
+    d->b0w = tui_text_cells(s0);
+    d->b1w = b1 ? tui_text_cells(s1) : 0;
+    int all = d->b0w + (b1 ? 2 + d->b1w : 0);
+    int x0 = right ? d->x + d->w - 2 - all : d->x + (d->w - all) / 2;
+    d->b0x = x0;
+    d->b1x = x0 + d->b0w + 2;
+    tui_put_clipped(d->b0x, d->buttons_y, d->b0w, s0, focus0 ? lit : plain);
+    if (b1) {
+        tui_put_clipped(d->b1x, d->buttons_y, d->b1w, s1, focus1 ? lit : plain);
+    }
+}
+
+static void tui_message_draw(TuiDialog *d) {
+    int width = tui_screen.columns - 8;
+    if (width > 60) {
+        width = 60;
+    }
+    if (width < 10) {
+        width = 10;
+    }
+    char **lines;
+    int n = tui_wrap(d->text, width, &lines);
+    int inner = d->ask ? 18 : 6;
+    for (int i = 0; i < n; i++) {
+        int c = tui_text_cells(lines[i]);
+        if (c > inner) {
+            inner = c;
+        }
+    }
+    int tw = tui_text_cells(d->title) + 2;
+    if (tw > inner) {
+        inner = tw;
+    }
+    d->w = inner + 4;
+    d->h = n + 4;
+    if (d->w > tui_screen.columns) {
+        d->w = tui_screen.columns;
+    }
+    if (d->h > tui_screen.rows) {
+        d->h = tui_screen.rows;
+    }
+    d->x = (tui_screen.columns - d->w) / 2;
+    d->y = (tui_screen.rows - d->h) / 2;
+    TermStyle st = tui_style(tui_fg, tui_bg, 0);
+    tui_box_draw(d->x, d->y, d->w, d->h, d->title, st, tui_style(tui_fg, tui_bg, TERM_BOLD));
+    for (int i = 0; i < n; i++) {
+        tui_put_clipped(d->x + 2, d->y + 1 + i, d->w - 4, lines[i], st);
+    }
+    tui_lines_free(lines, n);
+    d->buttons_y = d->y + d->h - 2;
+    if (d->ask) {
+        tui_dialog_buttons(d, "Yes", "No", d->button == 0, d->button == 1, 0);
+    } else {
+        tui_dialog_buttons(d, "OK", NULL, 1, 0, 0);
+    }
+}
+
+static void tui_chooser_draw(TuiDialog *d) {
+    d->w = tui_screen.columns - 4;
+    if (d->w > 72) {
+        d->w = 72;
+    }
+    d->h = tui_screen.rows - 2;
+    if (d->h > 20) {
+        d->h = 20;
+    }
+    if (d->w < 20) {
+        d->w = tui_screen.columns;
+    }
+    if (d->h < 8) {
+        d->h = tui_screen.rows;
+    }
+    d->x = (tui_screen.columns - d->w) / 2;
+    d->y = (tui_screen.rows - d->h) / 2;
+    TermStyle st = tui_style(tui_fg, tui_bg, 0);
+    TermStyle faint = tui_style(tui_faint, tui_bg, tui_faint == TERM_DEFAULT ? TERM_DIM : 0);
+    TermStyle lit = tui_style(tui_on_sel, tui_sel, tui_sel == TERM_DEFAULT ? TERM_REVERSE : 0);
+    TermStyle field = tui_style(tui_fg, tui_base, tui_base == TERM_DEFAULT ? TERM_UNDERLINE : 0);
+    tui_box_draw(d->x, d->y, d->w, d->h, d->title, st, tui_style(tui_fg, tui_bg, TERM_BOLD));
+    int inner = d->w - 4, row = d->y + 1;
+    /* the folder, its tail when it is too long to show whole */
+    const char *f = d->folder;
+    int lw = tui_text_cells("Folder: ");
+    while (tui_text_cells(f) > inner - lw && strchr(f + 1, '/')) {
+        f = strchr(f + 1, '/');
+    }
+    tui_put_clipped(d->x + 2, row, lw, "Folder: ", faint);
+    tui_put_clipped(d->x + 2 + lw, row, inner - lw, f, st);
+    row++;
+    int below = 1 + (d->nfilters ? 1 : 0) + 1 + 1;     /* name, filter, note, buttons */
+    d->list_y = row;
+    d->list_h = d->y + d->h - 1 - row - below;
+    if (d->list_h < 1) {
+        d->list_h = 1;
+    }
+    if (d->sel < d->top) {
+        d->top = d->sel;
+    }
+    if (d->sel >= d->top + d->list_h) {
+        d->top = d->sel - d->list_h + 1;
+    }
+    for (int i = 0; i < d->list_h; i++) {
+        int at = d->top + i;
+        if (at >= d->nnames) {
+            break;
+        }
+        char *s = malloc(strlen(d->names[at]) + 2);
+        if (!s) {
+            abort();
+        }
+        sprintf(s, "%s%s", d->names[at], d->dirs[at] ? "/" : "");
+        TermStyle es = at == d->sel ? (d->focus == 0 ? lit : tui_style(tui_fg, tui_bg, TERM_BOLD)) : st;
+        if (at == d->sel) {
+            tui_fill(d->x + 2, row + i, inner, 1, es);
+        }
+        tui_put_clipped(d->x + 2, row + i, inner, s, es);
+        free(s);
+    }
+    if (!d->nnames) {
+        tui_put_clipped(d->x + 2, row, inner, "(nothing here)", faint);
+    }
+    row = d->list_y + d->list_h;
+    d->name_y = row;
+    int nw = tui_text_cells("Name: ");
+    tui_put_clipped(d->x + 2, row, nw, "Name: ", faint);
+    tui_fill(d->x + 2 + nw, row, inner - nw, 1, field);
+    const char *name = d->name ? d->name : "";
+    int caret_cells = 0;
+    {
+        char *upto = malloc(d->caret + 1);
+        if (!upto) {
+            abort();
+        }
+        memcpy(upto, name, d->caret);
+        upto[d->caret] = 0;
+        caret_cells = tui_text_cells(upto);
+        free(upto);
+    }
+    int shown_from = caret_cells >= inner - nw ? caret_cells - (inner - nw) + 1 : 0;
+    const char *from = name;
+    for (int skip = 0; *from && skip < shown_from; ) {
+        size_t k = 1;
+        while (from[k] && ((unsigned char)from[k] & 0xC0) == 0x80) {
+            k++;
+        }
+        char one[8] = { 0 };
+        memcpy(one, from, k < 7 ? k : 7);
+        skip += tui_text_cells(one);
+        from += k;
+    }
+    tui_put_clipped(d->x + 2 + nw, row, inner - nw, from, field);
+    if (d->focus == 1) {
+        tui_screen.cursor_column = d->x + 2 + nw + caret_cells - shown_from + 1;
+        tui_screen.cursor_row = row + 1;
+        tui_screen.cursor_visible = 1;
+    }
+    row++;
+    d->filter_y = -1;
+    if (d->nfilters) {
+        d->filter_y = row;
+        int fw = tui_text_cells("Filter: ");
+        tui_put_clipped(d->x + 2, row, fw, "Filter: ", faint);
+        char *s = malloc(strlen(d->filters[d->filter]) + 8);
+        if (!s) {
+            abort();
+        }
+        sprintf(s, d->nfilters > 1 ? "< %s >" : "%s", d->filters[d->filter]);
+        tui_put_clipped(d->x + 2 + fw, row, inner - fw, s, d->focus == 2 ? lit : st);
+        free(s);
+        row++;
+    }
+    if (d->note) {
+        tui_put_clipped(d->x + 2, row, inner, d->note, tui_style(tui_fg, tui_bg, TERM_BOLD));
+    }
+    row++;
+    d->buttons_y = row;
+    tui_dialog_buttons(d, tui_accept_word(d), "Cancel", d->focus == 3, d->focus == 4, 1);
+}
+
+static void tui_dialogs_draw(void) {
+    for (int i = 0; i < tui_ndialogs; i++) {
+        TuiDialog *d = tui_dialogs[i];
+        tui_screen.cursor_visible = 0;      /* only the innermost's caret shows */
+        if (d->chooser) {
+            tui_chooser_draw(d);
+        } else {
+            tui_message_draw(d);
+        }
+    }
+}
+
+/* ---- the chooser's folder ---------------------------------------------------------- */
+
+/* An absolute path with `.`, `..` and doubled slashes taken out, by its
+ * letters: a folder is shown as the program named it, links unresolved, as
+ * Qt's `absolutePath()` gives it. */
+static char *tui_path_clean(const char *path) {
+    size_t len = strlen(path);
+    char *out = malloc(len + 2);
+    if (!out) {
+        abort();
+    }
+    size_t o = 0;
+    out[o++] = '/';
+    const char *p = path;
+    while (*p) {
+        while (*p == '/') {
+            p++;
+        }
+        size_t n = strcspn(p, "/");
+        if (n == 0) {
+            break;
+        }
+        if (n == 1 && p[0] == '.') {
+            /* nothing */
+        } else if (n == 2 && p[0] == '.' && p[1] == '.') {
+            if (o > 1) {
+                o--;
+                while (o > 1 && out[o - 1] != '/') {
+                    o--;
+                }
+            }
+        } else {
+            if (o > 1) {
+                out[o++] = '/';
+            }
+            memcpy(out + o, p, n);
+            o += n;
+        }
+        p += n;
+    }
+    if (o > 1 && out[o - 1] == '/') {
+        o--;
+    }
+    out[o] = 0;
+    return out;
+}
+
+/* `name` in `folder`, or `name` itself when it is absolute; cleaned. */
+static char *tui_path_in(const char *folder, const char *name) {
+    if (name[0] == '/') {
+        return tui_path_clean(name);
+    }
+    size_t len = strlen(folder) + strlen(name) + 2;
+    char *joined = malloc(len);
+    if (!joined) {
+        abort();
+    }
+    snprintf(joined, len, "%s/%s", folder, name);
+    char *out = tui_path_clean(joined);
+    free(joined);
+    return out;
+}
+
+static char *tui_cwd(void) {
+    char buf[4096];
+    return tui_path_clean(getcwd(buf, sizeof buf) ? buf : "/");
+}
+
+static int tui_is_dir(const char *path) {
+    struct stat st;
+    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+/* A filter's patterns: those in its brackets, `Text (*.txt *.md)`, or the
+ * whole of it when it has none, as Qt reads a name filter. */
+static int tui_filter_matches(const char *filter, const char *name) {
+    if (!filter) {
+        return 1;
+    }
+    const char *open = strrchr(filter, '(');
+    const char *p = open ? open + 1 : filter;
+    const char *end = open && strchr(open, ')') ? strchr(open, ')') : p + strlen(p);
+    while (p < end) {
+        while (p < end && (*p == ' ' || *p == ';')) {
+            p++;
+        }
+        size_t n = 0;
+        while (p + n < end && p[n] != ' ' && p[n] != ';') {
+            n++;
+        }
+        if (n) {
+            char pat[256];
+            snprintf(pat, sizeof pat, "%.*s", (int)n, p);
+#ifdef FNM_CASEFOLD
+            if (fnmatch(pat, name, FNM_CASEFOLD) == 0) {
+#else
+            if (fnmatch(pat, name, 0) == 0) {
+#endif
+                return 1;
+            }
+        }
+        p += n;
+    }
     return 0;
+}
+
+static int tui_name_order(const void *a, const void *b) {
+    return strcmp(*(char *const *)a, *(char *const *)b);
+}
+
+static void tui_chooser_list(TuiDialog *d) {
+    for (int i = 0; i < d->nnames; i++) {
+        free(d->names[i]);
+    }
+    free(d->names);
+    free(d->dirs);
+    d->names = NULL;
+    d->dirs = NULL;
+    d->nnames = d->sel = d->top = 0;
+    char **dirs = NULL, **files = NULL;
+    int nd = 0, nf = 0, cd = 0, cf = 0;
+    DIR *dir = opendir(d->folder);
+    if (dir) {
+        struct dirent *e;
+        while ((e = readdir(dir)) != NULL) {
+            if (e->d_name[0] == '.') {
+                continue;       /* hidden, as Qt's chooser hides them */
+            }
+            char *full = tui_path_in(d->folder, e->d_name);
+            int is_dir = tui_is_dir(full);
+            free(full);
+            if (!is_dir && (d->pick == GB_UI_PICK_FOLDER ||
+                            !tui_filter_matches(d->nfilters ? d->filters[d->filter] : NULL, e->d_name))) {
+                continue;
+            }
+            char ***list = is_dir ? &dirs : &files;
+            int *count = is_dir ? &nd : &nf, *cap = is_dir ? &cd : &cf;
+            if (*count == *cap) {
+                *cap = *cap ? *cap * 2 : 16;
+                *list = realloc(*list, sizeof **list * (size_t)*cap);
+                if (!*list) {
+                    abort();
+                }
+            }
+            (*list)[(*count)++] = tui_dup(e->d_name);
+        }
+        closedir(dir);
+    }
+    qsort(dirs, (size_t)nd, sizeof *dirs, tui_name_order);
+    qsort(files, (size_t)nf, sizeof *files, tui_name_order);
+    int up = strcmp(d->folder, "/") != 0;
+    int total = up + nd + nf;
+    d->names = malloc(sizeof *d->names * (size_t)(total ? total : 1));
+    d->dirs = malloc((size_t)(total ? total : 1));
+    if (!d->names || !d->dirs) {
+        abort();
+    }
+    if (up) {
+        d->names[d->nnames] = tui_dup("..");
+        d->dirs[d->nnames++] = 1;
+    }
+    for (int i = 0; i < nd; i++) {
+        d->names[d->nnames] = dirs[i];
+        d->dirs[d->nnames++] = 1;
+    }
+    for (int i = 0; i < nf; i++) {
+        d->names[d->nnames] = files[i];
+        d->dirs[d->nnames++] = 0;
+    }
+    free(dirs);
+    free(files);
+    /* on the named file, when it is here */
+    for (int i = 0; d->name && i < d->nnames; i++) {
+        if (strcmp(d->names[i], d->name) == 0) {
+            d->sel = i;
+        }
+    }
+    tui_dirty = 1;
+}
+
+static void tui_chooser_name(TuiDialog *d, const char *name) {
+    tui_set(&d->name, name);
+    d->caret = d->name ? strlen(d->name) : 0;
+}
+
+static void tui_chooser_into(TuiDialog *d, const char *folder) {
+    free(d->folder);
+    d->folder = tui_path_clean(folder);
+    if (d->pick != GB_UI_PICK_SAVE) {
+        tui_chooser_name(d, "");
+    }
+    tui_chooser_list(d);
+}
+
+/* TAKE A NAME, the one rule for a person's Open and for `ui.answer(path)`:
+ * 1 taken; 0 a folder, gone into (Qt's Open on a folder does that); -1 not
+ * taken, with why. */
+static int tui_chooser_take(TuiDialog *d, const char *typed, char *why, size_t why_size) {
+    why[0] = 0;
+    if (!typed || !*typed) {
+        if (d->pick == GB_UI_PICK_FOLDER) {
+            d->chosen = tui_dup(d->folder);
+            d->yes = 1;
+            d->done = 1;
+            return 1;
+        }
+        snprintf(why, why_size, "type a name, or choose one from the list");
+        return -1;
+    }
+    char *full = tui_path_in(d->folder, typed);
+    struct stat st;
+    int there = stat(full, &st) == 0;
+    if (there && S_ISDIR(st.st_mode)) {
+        if (d->pick == GB_UI_PICK_FOLDER) {
+            d->chosen = full;
+            d->yes = 1;
+            d->done = 1;
+            return 1;
+        }
+        tui_chooser_into(d, full);
+        free(full);
+        return 0;
+    }
+    if (d->pick == GB_UI_PICK_FOLDER || d->pick == GB_UI_PICK_OPEN) {
+        if (!there) {
+            snprintf(why, why_size, "this chooser will not take `%s`, which is not there", typed);
+        } else if (d->pick == GB_UI_PICK_FOLDER) {
+            snprintf(why, why_size, "this chooser will not take `%s`, which is not a folder", typed);
+        } else if (!S_ISREG(st.st_mode)) {
+            snprintf(why, why_size, "this chooser will not take `%s`", typed);
+        }
+        if (why[0]) {
+            free(full);
+            return -1;
+        }
+    } else {
+        /* a file to save need not be there, but its folder must */
+        char *slash = strrchr(full, '/');
+        char *parent = slash == full ? tui_dup("/") : tui_dup(full);
+        if (slash != full) {
+            parent[slash - full] = 0;
+        }
+        int ok = tui_is_dir(parent);
+        free(parent);
+        if (!ok) {
+            snprintf(why, why_size, "this chooser will not take `%s`, whose folder is not there", typed);
+            free(full);
+            return -1;
+        }
+    }
+    d->chosen = full;
+    d->yes = 1;
+    d->done = 1;
+    return 1;
+}
+
+/* A person's Open: a refusal is shown in the box, not raised. */
+static void tui_chooser_go(TuiDialog *d, const char *typed) {
+    char why[512];
+    free(d->note);
+    d->note = NULL;
+    if (tui_chooser_take(d, typed, why, sizeof why) < 0) {
+        /* the box has one line for it, so the sentence `ui.answer` raises
+         * is said shorter here */
+        static const char lead[] = "this chooser will not take ";
+        if (strncmp(why, lead, sizeof lead - 1) == 0) {
+            char shorter[sizeof why + 16];
+            snprintf(shorter, sizeof shorter, "Not taken: %s", why + sizeof lead - 1);
+            d->note = tui_dup(shorter);
+        } else {
+            d->note = tui_dup(why);
+        }
+    }
+    tui_dirty = 1;
+}
+
+/* The list's entry under the selection, as a person moving onto it sees it
+ * in the name field (Qt's chooser does the same). */
+static void tui_chooser_pointed(TuiDialog *d) {
+    if (d->sel < 0 || d->sel >= d->nnames) {
+        return;
+    }
+    if (strcmp(d->names[d->sel], "..") == 0) {
+        return;
+    }
+    if (d->dirs[d->sel] ? d->pick == GB_UI_PICK_FOLDER : d->pick != GB_UI_PICK_FOLDER) {
+        tui_chooser_name(d, d->names[d->sel]);
+    }
+}
+
+static void tui_chooser_enter_entry(TuiDialog *d) {
+    if (d->sel < 0 || d->sel >= d->nnames) {
+        return;
+    }
+    if (d->dirs[d->sel]) {
+        char *to = tui_path_in(d->folder, d->names[d->sel]);
+        tui_chooser_into(d, to);
+        free(to);
+        return;
+    }
+    tui_chooser_go(d, d->names[d->sel]);
+}
+
+/* The name field's editing: typing, deleting, the caret. 1 when used. */
+static int tui_chooser_edit(TuiDialog *d, const TermEvent *ev) {
+    const char *k = ev->key;
+    size_t len = d->name ? strlen(d->name) : 0;
+    if (ev->text[0] && !(ev->mods & (TERM_MOD_CTRL | TERM_MOD_ALT))) {
+        size_t add = strlen(ev->text);
+        char *s = malloc(len + add + 1);
+        if (!s) {
+            abort();
+        }
+        memcpy(s, d->name ? d->name : "", d->caret);
+        memcpy(s + d->caret, ev->text, add);
+        memcpy(s + d->caret + add, d->name ? d->name + d->caret : "", len - d->caret + 1);
+        free(d->name);
+        d->name = s;
+        d->caret += add;
+        return 1;
+    }
+    if (strcmp(k, "backspace") == 0 && d->caret > 0) {
+        size_t from = d->caret - 1;
+        while (from > 0 && ((unsigned char)d->name[from] & 0xC0) == 0x80) {
+            from--;
+        }
+        memmove(d->name + from, d->name + d->caret, len - d->caret + 1);
+        d->caret = from;
+        return 1;
+    }
+    if (strcmp(k, "delete") == 0 && d->caret < len) {
+        size_t to = d->caret + 1;
+        while (to < len && ((unsigned char)d->name[to] & 0xC0) == 0x80) {
+            to++;
+        }
+        memmove(d->name + d->caret, d->name + to, len - to + 1);
+        return 1;
+    }
+    if (strcmp(k, "left") == 0 && d->caret > 0) {
+        d->caret--;
+        while (d->caret > 0 && ((unsigned char)d->name[d->caret] & 0xC0) == 0x80) {
+            d->caret--;
+        }
+        return 1;
+    }
+    if (strcmp(k, "right") == 0 && d->caret < len) {
+        d->caret++;
+        while (d->caret < len && ((unsigned char)d->name[d->caret] & 0xC0) == 0x80) {
+            d->caret++;
+        }
+        return 1;
+    }
+    if (strcmp(k, "home") == 0) {
+        d->caret = 0;
+        return 1;
+    }
+    if (strcmp(k, "end") == 0) {
+        d->caret = len;
+        return 1;
+    }
+    return 0;
+}
+
+static void tui_chooser_filter_step(TuiDialog *d, int by) {
+    if (d->nfilters > 1) {
+        d->filter = (d->filter + by + d->nfilters) % d->nfilters;
+        tui_chooser_list(d);
+    }
+}
+
+static int tui_chooser_key(TuiDialog *d, const TermEvent *ev) {
+    const char *k = ev->key;
+    if (strcmp(k, "escape") == 0 || ((ev->mods & TERM_MOD_CTRL) && strcmp(k, "q") == 0)) {
+        d->done = 1;
+        d->yes = 0;
+        return 1;
+    }
+    if (strcmp(k, "tab") == 0) {
+        int by = ev->mods & TERM_MOD_SHIFT ? -1 : 1;
+        do {
+            d->focus = (d->focus + by + 5) % 5;
+        } while (d->focus == 2 && d->nfilters < 2);
+        return 1;
+    }
+    switch (d->focus) {
+    case 0:
+        if (strcmp(k, "up") == 0 || strcmp(k, "down") == 0 || strcmp(k, "page_up") == 0 ||
+            strcmp(k, "page_down") == 0 || strcmp(k, "home") == 0 || strcmp(k, "end") == 0) {
+            int page = d->list_h > 1 ? d->list_h - 1 : 1;
+            int to = d->sel;
+            if (strcmp(k, "up") == 0) to--;
+            else if (strcmp(k, "down") == 0) to++;
+            else if (strcmp(k, "page_up") == 0) to -= page;
+            else if (strcmp(k, "page_down") == 0) to += page;
+            else if (strcmp(k, "home") == 0) to = 0;
+            else to = d->nnames - 1;
+            if (to >= d->nnames) to = d->nnames - 1;
+            if (to < 0) to = 0;
+            d->sel = to;
+            tui_chooser_pointed(d);
+            return 1;
+        }
+        if (strcmp(k, "enter") == 0) {
+            tui_chooser_enter_entry(d);
+            return 1;
+        }
+        if (strcmp(k, "backspace") == 0 && strcmp(d->folder, "/") != 0) {
+            char *to = tui_path_in(d->folder, "..");
+            tui_chooser_into(d, to);
+            free(to);
+            return 1;
+        }
+        if (ev->text[0] && !(ev->mods & (TERM_MOD_CTRL | TERM_MOD_ALT))) {
+            /* typing goes to the name */
+            d->focus = 1;
+            tui_chooser_name(d, "");
+            return tui_chooser_edit(d, ev);
+        }
+        return 0;
+    case 1:
+        if (strcmp(k, "enter") == 0) {
+            char *typed = tui_dup(d->name ? d->name : "");
+            tui_chooser_go(d, typed);
+            free(typed);
+            return 1;
+        }
+        if (strcmp(k, "up") == 0 || strcmp(k, "down") == 0) {
+            d->focus = 0;
+            return tui_chooser_key(d, ev);
+        }
+        return tui_chooser_edit(d, ev);
+    case 2:
+        if (strcmp(k, "left") == 0 || strcmp(k, "right") == 0 || strcmp(k, "space") == 0) {
+            tui_chooser_filter_step(d, strcmp(k, "left") == 0 ? -1 : 1);
+            return 1;
+        }
+        return 0;
+    default:
+        if (strcmp(k, "left") == 0 || strcmp(k, "right") == 0) {
+            d->focus = d->focus == 3 ? 4 : 3;
+            return 1;
+        }
+        if (strcmp(k, "enter") == 0 || strcmp(k, "space") == 0) {
+            if (d->focus == 4) {
+                d->done = 1;
+                d->yes = 0;
+            } else {
+                char *typed = tui_dup(d->name ? d->name : "");
+                tui_chooser_go(d, typed);
+                free(typed);
+            }
+            return 1;
+        }
+        return 0;
+    }
+}
+
+static int tui_message_key(TuiDialog *d, const TermEvent *ev) {
+    const char *k = ev->key;
+    if (strcmp(k, "escape") == 0 || ((ev->mods & TERM_MOD_CTRL) && strcmp(k, "q") == 0)) {
+        d->yes = 0;
+        d->done = 1;
+        return 1;
+    }
+    if (d->ask && (strcmp(k, "left") == 0 || strcmp(k, "right") == 0 || strcmp(k, "tab") == 0)) {
+        d->button = !d->button;
+        return 1;
+    }
+    if (strcmp(k, "enter") == 0 || strcmp(k, "space") == 0) {
+        d->yes = d->ask ? d->button == 0 : 1;
+        d->done = 1;
+        return 1;
+    }
+    if (d->ask && !(ev->mods & (TERM_MOD_CTRL | TERM_MOD_ALT)) &&
+        (strcmp(k, "y") == 0 || strcmp(k, "n") == 0)) {
+        d->yes = k[0] == 'y';
+        d->done = 1;
+        return 1;
+    }
+    return 0;
+}
+
+/* The keys while a dialog is up go to the innermost, as a box holds the
+ * input; 1 when one was used. */
+static int tui_dialog_key(const TermEvent *ev) {
+    TuiDialog *d = tui_dialog_top();
+    int used = d->chooser ? tui_chooser_key(d, ev) : tui_message_key(d, ev);
+    tui_dirty = 1;
+    return used;
+}
+
+static void tui_dialog_mouse(const TermEvent *ev) {
+    TuiDialog *d = tui_dialog_top();
+    int x = ev->column - 1, y = ev->row - 1;
+    if (d->chooser && strcmp(ev->action, "wheel") == 0) {
+        int to = d->sel + (ev->button == 4 ? -3 : 3);
+        d->sel = to < 0 ? 0 : (to >= d->nnames ? d->nnames - 1 : to);
+        tui_dirty = 1;
+        return;
+    }
+    if (strcmp(ev->action, "press") != 0 || ev->button != 1) {
+        return;
+    }
+    if (y == d->buttons_y && x >= d->b0x && x < d->b0x + d->b0w) {
+        if (d->chooser) {
+            d->focus = 3;
+            char *typed = tui_dup(d->name ? d->name : "");
+            tui_chooser_go(d, typed);
+            free(typed);
+        } else {
+            d->yes = 1;
+            d->done = 1;
+        }
+    } else if (d->b1w && y == d->buttons_y && x >= d->b1x && x < d->b1x + d->b1w) {
+        d->yes = 0;
+        d->done = 1;
+    } else if (d->chooser && y >= d->list_y && y < d->list_y + d->list_h && x > d->x && x < d->x + d->w - 1) {
+        int at = d->top + (y - d->list_y);
+        if (at < d->nnames) {
+            d->focus = 0;
+            if (at == d->sel) {
+                tui_chooser_enter_entry(d);   /* a second press opens it */
+            } else {
+                d->sel = at;
+                tui_chooser_pointed(d);
+            }
+        }
+    } else if (d->chooser && y == d->name_y && x > d->x && x < d->x + d->w - 1) {
+        d->focus = 1;
+    } else if (d->chooser && y == d->filter_y && x > d->x && x < d->x + d->w - 1) {
+        d->focus = 2;
+        tui_chooser_filter_step(d, 1);
+    }
+    tui_dirty = 1;
+}
+
+static void tui_dialog_free(TuiDialog *d) {
+    free(d->title);
+    free(d->text);
+    free(d->folder);
+    for (int i = 0; i < d->nfilters; i++) {
+        free(d->filters[i]);
+    }
+    free(d->filters);
+    for (int i = 0; i < d->nnames; i++) {
+        free(d->names[i]);
+    }
+    free(d->names);
+    free(d->dirs);
+    free(d->name);
+    free(d->chosen);
+    free(d->note);
+}
+
+/* PUT A DIALOG UP AND TURN THE LOOP UNTIL IT HAS ITS ANSWER. The terminal
+ * is entered for it if a run before left it (a dialog from `main` after
+ * `ui.run` returned), and left again afterwards. */
+static int tui_dialog_run(TuiDialog *d, char *err, size_t err_size) {
+    if (tui_ndialogs >= (int)(sizeof tui_dialogs / sizeof tui_dialogs[0])) {
+        return TUI_ERR("eight dialogs are open already, one over another");
+    }
+    int entered_here = !tui_headless && !tui_entered;
+    if (!tui_enter_screen(err, err_size)) {
+        return 0;
+    }
+    tui_dialogs[tui_ndialogs++] = d;
+    tui_dirty = 1;
+    tui_loop(&d->done, 50);
+    tui_ndialogs--;
+    tui_dirty = 1;
+    tui_render();
+    if (entered_here && !tui_running) {
+        tui_leave_screen();
+    }
+    return 1;
+}
+
+static const char *tui_window_title(const TuiNode *root) {
+    return root->title ? root->title : (root->name ? root->name : "");
+}
+
+static int tui_show_box(void *window, const char *text, int ask, int *answer, char *err, size_t err_size) {
+    TuiNode *root = window;
+    if (!root || !root->shown) {
+        return TUI_ERR("that is not an open window");
+    }
+    TuiDialog d = { 0 };
+    d.window = root;
+    d.title = tui_dup(tui_window_title(root));
+    d.text = tui_dup(text ? text : "");
+    d.ask = ask;
+    d.button = ask ? 1 : 0;     /* THE SAFE ONE IS THE DEFAULT, as in Qt */
+    int ok = tui_dialog_run(&d, err, err_size);
+    if (answer) {
+        *answer = ok && d.done && d.yes;
+    }
+    tui_dialog_free(&d);
+    return ok;
 }
 
 static int tui_inform(void *window, const char *text, char *err, size_t err_size) {
-    (void)window; (void)text;
-    return TUI_REFUSE("inform");
+    return tui_show_box(window, text, 0, NULL, err, err_size);
 }
 
 static int tui_confirm(void *window, const char *text, int *answer, char *err, size_t err_size) {
-    (void)window; (void)text; (void)answer;
-    return TUI_REFUSE("confirm");
+    return tui_show_box(window, text, 1, answer, err, err_size);
 }
 
 static int tui_answer(int value, char *err, size_t err_size) {
-    (void)value;
-    return TUI_REFUSE("answer");
+    TuiDialog *d = tui_dialog_top();
+    if (!d) {
+        return TUI_ERR("no dialog is open");
+    }
+    if (d->chooser) {
+        if (value) {
+            return TUI_ERR("the open dialog is a file chooser, so `true` does not say which "
+                           "file -- give ui.answer the path instead");
+        }
+        d->yes = 0;
+        d->done = 1;
+        return 1;
+    }
+    /* an `inform` has one button, so it is answered either way */
+    d->yes = d->ask ? value != 0 : 1;
+    d->done = 1;
+    return 1;
 }
 
 static int tui_dialog_info(char **kind, char **title, char **text, char **folder, char **filter) {
-    (void)kind; (void)title; (void)text; (void)folder; (void)filter;
-    return 0;
+    if (kind)   { *kind = NULL; }
+    if (title)  { *title = NULL; }
+    if (text)   { *text = NULL; }
+    if (folder) { *folder = NULL; }
+    if (filter) { *filter = NULL; }
+    TuiDialog *d = tui_dialog_top();
+    if (!d) {
+        return 0;
+    }
+    if (title) {
+        *title = copy_string(d->title ? d->title : "");
+    }
+    if (kind) {
+        *kind = copy_string(d->chooser ? "chooser" : "message");
+    }
+    if (d->chooser) {
+        if (folder) {
+            *folder = copy_string(d->folder);
+        }
+        if (filter) {
+            size_t len = 1;
+            for (int i = 0; i < d->nfilters; i++) {
+                len += strlen(d->filters[i]) + 2;
+            }
+            char *s = malloc(len);
+            if (!s) {
+                abort();
+            }
+            s[0] = 0;
+            for (int i = 0; i < d->nfilters; i++) {
+                if (i) {
+                    strcat(s, ";;");
+                }
+                strcat(s, d->filters[i]);
+            }
+            *filter = s;
+        }
+    } else if (text) {
+        *text = copy_string(d->text ? d->text : "");
+    }
+    return 1;
 }
 
 static char *tui_choose(void *window, int kind, const char *title, const char *folder, const char *name,
                         const char *filter, int *cancelled, char *err, size_t err_size) {
-    (void)window; (void)kind; (void)title; (void)folder; (void)name; (void)filter; (void)cancelled;
-    TUI_ERR("the tui backend has no `file_dialogs` group yet");
-    return NULL;
+    if (cancelled) {
+        *cancelled = 0;
+    }
+    TuiNode *root = window;
+    if (!root || !root->shown) {
+        TUI_ERR("that is not an open window");
+        return NULL;
+    }
+    TuiDialog d = { 0 };
+    d.chooser = 1;
+    d.window = root;
+    d.pick = kind;
+    d.title = tui_dup(title && *title ? title : tui_window_title(root));
+    if (folder && *folder) {
+        char *cwd = tui_cwd();
+        d.folder = tui_path_in(cwd, folder);
+        free(cwd);
+        if (!tui_is_dir(d.folder)) {
+            free(d.folder);
+            d.folder = NULL;
+        }
+    }
+    if (!d.folder) {
+        d.folder = tui_cwd();
+    }
+    /* `;;` IS THE FRONT'S JOIN, Qt's own separator */
+    for (const char *p = filter; p && *p; ) {
+        const char *sep = strstr(p, ";;");
+        size_t n = sep ? (size_t)(sep - p) : strlen(p);
+        if (n) {
+            d.filters = realloc(d.filters, sizeof *d.filters * (size_t)(d.nfilters + 1));
+            if (!d.filters) {
+                abort();
+            }
+            d.filters[d.nfilters] = malloc(n + 1);
+            if (!d.filters[d.nfilters]) {
+                abort();
+            }
+            memcpy(d.filters[d.nfilters], p, n);
+            d.filters[d.nfilters++][n] = 0;
+        }
+        p = sep ? sep + 2 : p + n;
+    }
+    tui_chooser_name(&d, name && *name ? name : "");
+    tui_chooser_list(&d);
+    d.focus = name && *name ? 1 : 0;
+    char *out = NULL;
+    if (tui_dialog_run(&d, err, err_size)) {
+        /* THE ANSWER DECIDES, NOT THE NAME FIELD: a cancelled chooser that
+         * still holds a name answers nothing (run_ui_chooser `cancel`) */
+        if (d.done && d.yes && d.chosen) {
+            out = d.chosen;
+            d.chosen = NULL;
+        } else if (cancelled) {
+            *cancelled = 1;
+        }
+    }
+    tui_dialog_free(&d);
+    return out;
 }
 
 static int tui_answer_path(const char *path, char *err, size_t err_size) {
-    (void)path;
-    return TUI_ERR("the tui backend has no `file_dialogs` group yet");
+    TuiDialog *d = tui_dialog_top();
+    if (!d) {
+        return TUI_ERR("no dialog is open");
+    }
+    if (!d->chooser) {
+        return TUI_ERR("the open dialog is a message box, which is answered with true or "
+                       "false rather than with a path");
+    }
+    if (!path || !*path) {
+        return TUI_ERR("ui.answer needs a path, or false to cancel");
+    }
+    /* THE CHOOSER'S OWN RULE, the one a person's Open goes through */
+    char why[512];
+    int took = tui_chooser_take(d, path, why, sizeof why);
+    tui_dirty = 1;
+    if (took < 0) {
+        return TUI_ERR("%s", why);
+    }
+    if (took == 0) {
+        return TUI_ERR("the chooser did not accept `%s`", path);
+    }
+    return 1;
+}
+
+/* ---- a modal window ---------------------------------------------------------------- */
+
+static int tui_node_alive_in(const TuiNode *n, const TuiNode *at) {
+    if (n == at) {
+        return 1;
+    }
+    for (int i = 0; i < at->nkids; i++) {
+        if (tui_node_alive_in(n, at->kids[i])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+static int tui_node_alive(const TuiNode *n) {
+    for (int i = 0; n && i < tui_nroots; i++) {
+        if (tui_roots[i]->shown && tui_node_alive_in(n, tui_roots[i])) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* SHOWN AS A BOX OVER THE WINDOW UNDER IT, and the loop turned until
+ * `ui.accept`, `ui.reject` or a close. The front closes it afterwards, so
+ * its `closed` handler fires once however it ended (run_ui_modal). */
+static int tui_show_modal(void *window, int *accepted, char *err, size_t err_size) {
+    TuiNode *root = window;
+    if (!root || root->kind != 1) {
+        return TUI_ERR("that window was not opened modally");
+    }
+    if (tui_nmodals >= (int)(sizeof tui_modals / sizeof tui_modals[0])) {
+        return TUI_ERR("eight modal windows are open already, one over another");
+    }
+    TuiNode *before = tui_focus;
+    int entered_here = !tui_headless && !tui_entered;
+    if (!tui_enter_screen(err, err_size)) {
+        return 0;
+    }
+    tui_show(root);
+    TuiModal m = { root, 0, 0 };
+    tui_modals[tui_nmodals++] = &m;
+    tui_loop(&m.done, 50);
+    tui_nmodals--;
+    if (accepted) {
+        *accepted = m.accepted;
+    }
+    /* the focus back where it was, when that part is still there */
+    tui_focus = tui_node_alive(before) ? before : NULL;
+    tui_dirty = 1;
+    if (entered_here && !tui_running) {
+        tui_render();
+        tui_leave_screen();
+    }
+    return 1;
+}
+
+static int tui_answer_modal(void *window, int accept, char *err, size_t err_size) {
+    for (int i = tui_nmodals - 1; i >= 0; i--) {
+        if (tui_modals[i]->root == window) {
+            tui_modals[i]->accepted = accept != 0;
+            tui_modals[i]->done = 1;
+            return 1;
+        }
+    }
+    return TUI_ERR("that window was not opened modally");
 }
 
 #include "ui_tui_parts.c"
 
 static const GbUiBackend ui_tui_backend = {
     .name = "tui",
-    /* NO GROUP YET: `file_dialogs` comes with its chooser (increment 5),
-     * `highlighting` with increment 7 (§3.2) */
-    .groups = "",
+    /* `file_dialogs` with its chooser (increment 5); `highlighting` comes
+     * with increment 7 (§3.2) */
+    .groups = "file_dialogs",
     .can_display        = tui_can_display,
     .set_callbacks      = tui_set_callbacks,
     .theme_set          = tui_theme_set,

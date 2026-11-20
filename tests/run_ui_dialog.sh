@@ -50,6 +50,7 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
 source tests/ui_backend.sh
+UI_SUITE_ON_TUI=1   # passes on the terminal backend too (tests/ui_backend.sh)
 ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
@@ -236,6 +237,11 @@ fi
 #             C++ at 0 pump ticks against 3 for a fresh timer during one box.
 #   gBASIC'S  `watcher_drain` returns at once while a watcher body is on the
 #             stack, so the loop polls, finds work and declines to dispatch it.
+#   THE TERMINAL'S  `tui_loop` does not call gBASIC's tick while one is on the
+#             stack, its counterpart of Qt's timer rule (docs/tui_design.md
+#             §3.7). Measured on 2026-11-20 without it: the `modal extent`
+#             tier's SERVER ANSWERED, so for a server block's requests
+#             gBASIC's guard alone does not stall them -- the backend's does.
 #
 # REMOVING EITHER CHANGES NOTHING -- given a timer of its own the pump reached
 # gBASIC's loop 397 times during this dialog and the stall did not move, and
@@ -270,6 +276,60 @@ elif [ "$pump_rc" = "0" ]; then
 else
     pass "with NO handler involved, a dialog raised inside a watcher body stalls every source"
     pass "and the dialog was still open, so that was a stall and not a crash"
+fi
+
+# ---------------------------------------------------------------------- STOP
+# A STOP ENDS THE BOX TOO, as Qt's exit() ends every nested loop: ui.stop()
+# from a timer answers the box false and `main` goes on; a raise in a watcher
+# body ends the program with that raise. The terminal backend's first build
+# kept its box up for ever on the raise (docs/tui_design.md §3.7), so a hang
+# here is the failure, and the bound is what reports it.
+printf 'TIER [C] stop: a stop or a raise while a box is up ends the box\n'
+cat > "$work/stop.bas" <<'BAS'
+window app( title: "Stop" )
+    column
+        text t( label: "x" )
+    end column
+end window
+program main(args)
+    if not ui.can_display() then
+        print "NO DISPLAY"
+        return
+    end if
+    ui.open(app)
+    beat = timer.after(0.2)
+    watch(timer.ticks)
+        while count(timer.ticks) > 0
+            ev = take_first(timer.ticks)
+            if args[0] = "raise" then
+                x = [1][5]
+            else
+                ui.stop()
+            end if
+        end while
+    end watch
+    print "answer " + string(ui.confirm(app, "Sure?"))
+    print "after"
+end program
+BAS
+set +e
+QT_QPA_PLATFORM=offscreen timeout -k 5 30 ./gbasic "$work/stop.bas" stop </dev/null > "$work/stop.out" 2>/dev/null
+stop_rc=$?
+QT_QPA_PLATFORM=offscreen timeout -k 5 30 ./gbasic "$work/stop.bas" raise </dev/null > "$work/raise.out" 2> "$work/raise.err"
+raise_rc=$?
+if grep -q "NO DISPLAY" "$work/stop.out"; then
+    printf '  SKIP (no display -- a stop inside a box was NOT measured)\n'
+else
+    if [ "$stop_rc" = 0 ] && [ "$(tr '\n' '|' < "$work/stop.out")" = "answer false|after|" ]; then
+        pass "ui.stop() inside a box answers it false, and main goes on"
+    else
+        fail "ui.stop() inside a box: exit $stop_rc, $(tr '\n' '|' < "$work/stop.out")"
+    fi
+    if [ "$raise_rc" = 1 ] && grep -q "out of range" "$work/raise.err" && ! grep -q after "$work/raise.out"; then
+        pass "a raise in a watcher body ends the program with that raise, box and all"
+    else
+        fail "a raise while a box is up: exit $raise_rc (124 is a hang), $(head -2 "$work/raise.err" | tr '\n' '|')"
+    fi
 fi
 
 # ------------------------------------------------------------------ VALGRIND

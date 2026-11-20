@@ -14076,3 +14076,20 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Workaround:** `stretch()` and `separator()`. For the ergonomics sweep:
   either accept the bare words (neither needs a name or options), or refuse
   them at their own line, naming `stretch()`.
+
+## 2026-11-20 — CC — while: writing the tui dialogs fixture (tests/ui_tui/dialogs.bas)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** three refusals in one small fixture, each at its own line and each
+  naming the fix, so they cost seconds rather than a bisect:
+  - `function step()` is refused because `step` is reserved (the counted
+    `for`'s `step`). A fixture that walks a list of steps reaches for it
+    first.
+  - `elseif` is refused with "write `else if`, two words".
+  - `mid(s, start)` is refused with "mid expects three or four arguments";
+    the rest of a string is `mid(s, start, len(s) - start)`.
+  The fourth surprise was not gBASIC's: a `form` with no subject, which the
+  2026-11-19 entry's trap list already names.
+- **Workaround:** `next_step`, `else if`, and the three-argument `mid`. For the
+  ergonomics sweep: `mid` with no count (to the end) is the one worth
+  weighing, since Python's slice and VB's `Mid(s, start)` both allow it.

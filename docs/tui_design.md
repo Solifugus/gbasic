@@ -5,8 +5,9 @@
 and so are increment 3, the `tui` backend's layout and first leaves with
 the selection rule, `needs:` and sizes in characters (2026-11-19, §3.5), and
 increment 4, the rows, the furniture and the regions (2026-11-20, §3.6;
-`docs/reference.md`, *The terminal backend*; `tests/run_ui_tui.sh`). The
-Windows console (2) and increments 5 to 7 are not. §8 holds the questions for
+`docs/reference.md`, *The terminal backend*; `tests/run_ui_tui.sh`), and
+increment 5, the dialogs, the file chooser and `open_modal` (2026-11-20,
+§3.7). The Windows console (2) and increments 6 and 7 are not. §8 holds the questions for
 Matthew. **Q1 ruled the same day: our own terminal layer, not
 ncurses** (Matthew: "our own terminal layer sounds fine ... time to leave
 that to the history books"). **Q2 ruled 2026-11-19: §4's selection rule** (Matthew: "The terminal is a
@@ -346,6 +347,84 @@ was run on `tui` with no terminal (`GBASIC_TUI_SCREEN`, which
 - an overlay press one row off, which a live mouse press on a menu entry
   catches.
 
+### 3.7 What increment 5 built, and what it decided
+
+Built 2026-11-20 in `src/modules/ui_tui.c`: `ui.inform`, `ui.confirm`,
+`ui.answer` and `ui.dialog()`; the file chooser (`ui.choose_file`,
+`ui.choose_save`, `ui.choose_folder`), so the backend now declares
+`file_dialogs`; and `ui.open_modal`, `ui.accept` and `ui.reject`. The keys
+are in `docs/reference.md`, *The terminal backend*. Decided in building:
+
+- **A dialog is a box drawn over the window, and a modal window is too.**
+  A modal window is laid out by its content, centred, with its title in the
+  top border. Each root now carries the frame it occupies, so a modal
+  window's menu bar and status bar are drawn inside its box, not across the
+  screen.
+- **One loop, turned again inside** (`tui_loop`), as Qt's `exec()` turns
+  its loop again: `ui.run` turns it until the windows are gone, and a box
+  turns it until it has its answer. gBASIC's sources are served all the
+  while, which is what lets a timer answer a box (`ui.answer`).
+- **The loop does not re-enter gBASIC's tick.** A box raised inside a
+  watcher body turns the loop with that tick still on the stack. The first
+  build ran the tick again there, so the webserver's loop ran inside its own
+  iteration, a path nothing exercises, and run_ui_dialog's `modal extent`
+  tier saw the server answer where Qt's stalls. Qt never re-enters a timer
+  whose slot is running, so a box raised there stalls every source on both
+  backends now, which is `include/ui_backend.h` rule 2.
+- **A stop ends every turning**, the innermost first, as Qt's `exit()`
+  ends each nested loop: `ui.stop()`, or a tick answering 0. Found the hard
+  way: a fixture whose watcher body raised stopped the program, but the box
+  it had put up stayed for ever, because the nested loop ignored the tick's
+  0. A box ended by a stop answers as a cancel.
+- **`open_modal` needs no `windows`.** This note's §3.2 says a modal window
+  is an overlay on the one screen; `docs/ui_design.md` §8 step 5 had counted
+  it as a second window while Qt was the only backend. The front now asks
+  for `windows` only for `ui.open` of a second window, and
+  run_ui_vocabulary's `groups` tier holds the control: `open_modal` over an
+  open window runs with `windows` withheld.
+- **The chooser is our own**, as §3.2 said: the folder, its entries
+  (folders first, `..` at the top, hidden files left out, as Qt's chooser
+  leaves them), a name field, the filter and two buttons. Moving onto an
+  entry puts its name in the field, as Qt's does. A person's Open and
+  `ui.answer(path)` go through one rule (`tui_chooser_take`), so a name the
+  box refuses is the name `ui.answer` refuses, in the same sentence Qt's
+  answers with. In the box it is said shorter, `Not taken: ...`. A save
+  chooser needs the file's folder to exist, and does not ask before
+  replacing a file.
+- **Paths are made absolute by their letters**, `.` and `..` taken out and
+  links not followed, as Qt's `absolutePath()` gives them, so `folder:`
+  reads back as the program wrote it.
+
+**Found in building:** a handler that closed its own window freed the tree
+while the press that fired it still read the part: a use-after-free from
+increment 4, which valgrind found when run_ui_modal's fixture first ran on
+`tui`. `include/ui_backend.h` rule 7 already said a close under a handler
+waits for `retire_drain`, and the terminal's `retire_drain` was empty. It
+holds such a window now, and frees it when no handler is on the stack.
+
+**Measured against the contract.** run_ui_dialog, run_ui_chooser and
+run_ui_modal pass on `tui` with every check Qt is held to, and with the five
+suites increment 4 measured, they now run on it in the gate: a suite that
+passes there says `UI_SUITE_ON_TUI=1` (`tests/ui_backend.sh`). A new
+`[C]` tier in run_ui_dialog, `stop`, holds the stop rule on both backends:
+`ui.stop()` inside a box answers it `false`, and a raise in a watcher body
+ends the program with that raise. Qt already behaved so.
+
+**Perturbed, each red:**
+- No as the default answer made Yes (`dialogs`);
+- hidden files listed (`dialogs`);
+- Escape not rejecting a modal window (`dialogs`, by its bound);
+- the tick re-entered (run_ui_dialog `modal extent`, on `tui`);
+- a stop ignored inside a box (run_ui_dialog `stop`: both cases hang to
+  their bound);
+- a closed window freed under its handler (run_ui_modal `valgrind`, on
+  `tui`);
+- a cancelled chooser answering the name in its field (run_ui_chooser
+  `semantics`, 2 mismatches);
+- `open_modal` needing `windows` again (run_ui_vocabulary's control, and
+  `dialogs`). That control first compared stderr too, and Qt's locale
+  warning made it red unperturbed; it reads the answer alone now.
+
 ### 3.4 The event-loop contract
 
 The seven rules in `docs/ui_design.md` §4, for this backend:
@@ -439,7 +518,13 @@ browser. Two things need settling with the whisker session, before code:
    declares the group.
 
 Each increment is gated; the examples in `examples/ui` that need no group
-should run on `tui` by increment 5.
+should run on `tui` by increment 5. **Measured at increment 5 (2026-11-20):
+not yet, and the target was mis-sequenced.** Of the 14, `customer`,
+`invoice`, `layout`, `orders` and `properties` run in check mode; `editor`,
+`notes`, `theme` and `shell` are refused by name for a group the terminal
+lacks (`highlighting`, `stylesheet`, `icons`), as they should be; and the
+other five (`browser`, `clock`, `dialogs`, `menus`, `tabs`) stop at a
+`memo`, which increment 6 draws. So the target moves to increment 6.
 
 ## 8. Questions for Matthew
 

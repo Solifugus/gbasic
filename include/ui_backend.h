@@ -19,8 +19,14 @@
  *     loop of its own owns one for `run` and calls the same `tick`.
  *  2. TICKS CONTINUE INSIDE A MODAL. A dialog or `open_modal` opened from
  *     `main` keeps gBASIC's sources served (run_ui_modal `extent`, run_net
- *     tier 5). One opened inside a watcher body suspends them, and that half
- *     is gBASIC's `watcher_drain` guard, not the backend's (run_ui_dialog).
+ *     tier 5). One opened inside a watcher body suspends them: gBASIC's
+ *     `watcher_drain` guard holds the watchers, and THE BACKEND DOES NOT CALL
+ *     `tick` WHILE A TICK IS ON THE STACK -- Qt never re-delivers a timer
+ *     whose slot is running, and the terminal's loop guards it. Without the
+ *     second a server block answered during the box (run_ui_dialog `modal
+ *     extent`, measured on the terminal, 2026-11-20). A stop -- `stop`, or
+ *     `tick` answering 0 -- ends every nested loop, the box with it, as a
+ *     cancel (run_ui_dialog `stop`).
  *  3. `can_display` CANNOT CRASH. It is a question, asked before anything is
  *     opened; Qt aborts with no display, so Qt asks in a forked child.
  *  4. CLOSING THE LAST WINDOW ENDS `run` (run_ui_lifecycle `loop`).

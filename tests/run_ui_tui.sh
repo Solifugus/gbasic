@@ -26,6 +26,13 @@
 #                 arrows, a choice's list, menus by F10 and Alt, a submenu, a
 #                 checkable item, a toolbar item, pages by Ctrl+PgDn; and
 #                 the menu bar, toolbar, tab line and status bar drawn.
+#   [T] dialogs   increment 5 by keys: a question (No the default, Left,
+#                 y, Escape), a statement wrapped, the chooser (folders
+#                 first, hidden files and other kinds left out, a folder
+#                 entered, the filter stepped, a name typed, a missing one
+#                 refused in the box, save and folder kinds), a modal window
+#                 as a box over its owner (Enter accepts, Escape rejects);
+#                 the screens held to tests/ui_tui/dialogs.txt.
 #   [T] refusals  a part the increment does not draw names its increment;
 #                 no terminal names itself and GBASIC_TUI_SCREEN; a window
 #                 needing `docking` is refused naming qt; a `needs:` that is
@@ -35,9 +42,12 @@
 #   [T] live      a real pty: the rule picks tui with no display and Qt with
 #                 one; typing, Tab, Space, Enter; ui.stop; Ctrl-Q; the
 #                 terminal restored. Skips without python3.
+#   [T] live_dialogs  a real pty: a question by Enter and by Left, a
+#                 statement by a mouse press on OK, the chooser by arrows
+#                 and by a lone Escape.
 #   [T] needs     a program whose declared windows need `docking`, run where
 #                 only the terminal could draw.
-#   [T] valgrind  the drive fixture.
+#   [T] valgrind  the drive, parts and dialogs fixtures.
 . "$(dirname "$0")/portable.sh"
 set -u
 cd "$(dirname "$0")/.."
@@ -225,6 +235,37 @@ EOF
     fi
 fi
 
+# ------------------------------------------------------------------ DIALOGS
+printf 'TIER [T] dialogs: increment 5 by the keys a person presses, with no terminal\n'
+if ui_tier_tui; then
+    mkdir -p "$work/pick/docs"
+    : >"$work/pick/notes.txt"; : >"$work/pick/c.md"; : >"$work/pick/.hidden"
+    : >"$work/pick/docs/a.txt"; : >"$work/pick/docs/b.md"
+    GBASIC_UI=tui GBASIC_TUI_SCREEN=60x16 GBASIC_TUI_DUMP="$work/dlg.txt" timeout 60 "$GB" --line-buffered \
+        tests/ui_tui/dialogs.bas "$work/pick" </dev/null >"$work/dlg.raw" 2>&1
+    # THE FOLDER LINE is the one place the scratch path is drawn; its
+    # padding follows the path's length, so both go
+    sed -E "s#$work/pick([^ ]*) *#WORK\1 #g" "$work/dlg.raw" >"$work/dlg.got"
+    if cmp -s "$work/dlg.got" tests/ui_tui/dialogs.txt; then
+        pass "a question four ways, a statement wrapped, the chooser five ways and a modal window two: every answer and every screen as tests/ui_tui/dialogs.txt holds them"
+    else
+        fail "dialogs differ from tests/ui_tui/dialogs.txt:"
+        diff tests/ui_tui/dialogs.txt "$work/dlg.got" | head -14 | sed 's/^/       /'
+    fi
+    # AND WHAT A GOLDEN CANNOT ARGUE WITH: the answers themselves
+    for want in "Enter on the default: false" "Left, then Enter: true" "y: true" "Escape: false" \
+                "chosen PICK/docs/a.txt" "chosen by the list PICK/notes.txt" "then Escape: unknown true" \
+                "saved as PICK/out.txt" "folder PICK/docs" "modal, Enter on the default button: true" \
+                "modal, Escape: false"; do
+        grep -qxF "$want" "$work/dlg.raw" || fail "no line \`$want\`"
+    done
+    if ! grep -q '^|.*\.hidden' "$work/dlg.got" && ! grep -A12 'folders first' "$work/dlg.got" | grep -q 'c\.md'; then
+        pass "the hidden file never drawn, and c.md left out by the Text filter"
+    else
+        fail "the chooser drew a hidden file, or c.md under the Text filter"
+    fi
+fi
+
 # ----------------------------------------------------------------- REFUSALS
 printf 'TIER [T] refusals: each by name\n'
 if ui_tier_tui; then
@@ -317,7 +358,10 @@ EOF
 fi
 
 # --------------------------------------------------------------- LIVE, NEEDS
-for t in live live_parts needs; do
+mkdir -p "$work/livepick"
+: >"$work/livepick/a.txt"; : >"$work/livepick/b.txt"
+export TUI_PICK="$work/livepick"
+for t in live live_parts live_dialogs needs; do
     printf 'TIER [T] %s: a real terminal\n' "$t"
     if ! ui_tier_tui; then
         continue
@@ -337,13 +381,14 @@ for t in live live_parts needs; do
 done
 
 # ----------------------------------------------------------------- VALGRIND
-printf 'TIER [T] valgrind: the drive and parts fixtures\n'
+printf 'TIER [T] valgrind: the drive, parts and dialogs fixtures\n'
 if ui_tier_tui; then
     if ! vg_available; then
         printf '  SKIP (no valgrind -- NOT measured)\n'
     elif GBASIC_UI=tui GBASIC_TUI_SCREEN=50x14 vg_run "$GB" tests/ui_tui/drive.bas >/dev/null 2>"$work/vg.log" \
-         && GBASIC_UI=tui GBASIC_TUI_SCREEN=60x16 vg_run "$GB" tests/ui_tui/parts.bas >/dev/null 2>>"$work/vg.log"; then
-        pass "the drive and parts fixtures: no invalid access, no definite leak, no descriptor left"
+         && GBASIC_UI=tui GBASIC_TUI_SCREEN=60x16 vg_run "$GB" tests/ui_tui/parts.bas >/dev/null 2>>"$work/vg.log" \
+         && GBASIC_UI=tui GBASIC_TUI_SCREEN=60x16 GBASIC_TUI_DUMP="$work/vgd.txt" vg_run "$GB" tests/ui_tui/dialogs.bas "$work/pick" </dev/null >/dev/null 2>>"$work/vg.log"; then
+        pass "the drive, parts and dialogs fixtures: no invalid access, no definite leak, no descriptor left"
     else
         fail "valgrind:"
         grep -E "Invalid|definitely|ERROR SUMMARY|Open file" "$work/vg.log" | head -8 | sed 's/^/       /'

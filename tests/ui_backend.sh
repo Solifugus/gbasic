@@ -36,8 +36,16 @@
 # tests/run_ui_tui.sh measures it instead. When it covers the core (§7,
 # increment 5) the default empties, and each suite owes it its [C] tiers;
 # UI_SUITES_SKIP_BACKENDS= runs them on it now, to see how far it is.
+#
+# A SUITE THAT PASSES ON IT SAYS SO, `UI_SUITE_ON_TUI=1` before
+# `ui_each_backend`, and then the gate runs it there too (increment 5: the
+# dialog, chooser and modal suites, and those increment 4 measured passing).
+# The default empties when the editor (increment 6) brings the rest.
 ui_backends() {
     local skip="${UI_SUITES_SKIP_BACKENDS-tui}"
+    if [ -z "${UI_SUITES_SKIP_BACKENDS+set}" ] && [ "${UI_SUITE_ON_TUI:-0}" = 1 ]; then
+        skip=""
+    fi
     ui_backends_built | while read -r be; do
         case " $skip " in
             *" $be "*) ;;

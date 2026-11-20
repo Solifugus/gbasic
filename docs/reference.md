@@ -6433,7 +6433,7 @@ GUI program can run on a headless server.
 
 ### The terminal backend
 
-*After 0.12.0* (`docs/tui_design.md`, increments 3 and 4). The same `window`
+*After 0.12.0* (`docs/tui_design.md`, increments 3 to 5). The same `window`
 declaration drawn in a terminal's cells, over the `term` layer (*Term
 Module*), not ncurses. It is chosen when there is no display and standard
 input and output are a terminal, or by `GBASIC_UI=tui` / `--ui=tui`.
@@ -6456,13 +6456,20 @@ input and output are a terminal, or by `GBASIC_UI=tui` / `--ui=tui`.
   `popup` opens at a point, or under a part with `ui.popup`;
 - forms bound with `to edit` and `to show`, `ui.subject`, and the events
   `pressed`, `changed`, `entered`, `chosen`, `activated`, `context`, `wheel`
-  and `closed`. Every handler connected to an event runs, in order.
+  and `closed`. Every handler connected to an event runs, in order;
+- `ui.inform` and `ui.confirm` as a box over the window (No is the default
+  answer), the file chooser (`ui.choose_file`, `ui.choose_save`,
+  `ui.choose_folder`), and `ui.open_modal`, which draws the window as a box
+  over the one under it, sized by its content. `ui.answer` and `ui.dialog()`
+  work as on Qt, so a timer can answer a box.
 
 **Every other part is refused by name**, naming the increment of
 `docs/tui_design.md` §7 that draws it: "the tui backend does not draw `memo`
 yet (docs/tui_design.md §7, increment 6)". `memo`, `source` and `markdown`
-are increment 6; `ui.open_modal` and the dialogs are 5. **It has none of the
-eight groups yet**: `file_dialogs` comes with its chooser.
+are increment 6. **Of the eight groups it has `file_dialogs`**, with a
+chooser of its own. It lacks `windows`, so a second window cannot be opened
+beside the first, but `ui.open_modal` over a window needs no group: a modal
+window is a dialog, on every backend.
 
 **Keys:**
 - **Tab and Shift+Tab** move between fields, buttons and checks. Disabled
@@ -6498,7 +6505,22 @@ eight groups yet**: `file_dialogs` comes with its chooser.
   focus moving into a scrolled region scrolls it into view, and moving into a
   page of a `tabs` turns to that page.
 - **Ctrl+Q** closes the window, the terminal's close button: the `closed`
-  handler runs, once, and the run ends with the last window.
+  handler runs, once, and the run ends with the last window. On a modal
+  window that is a rejection; **Escape** rejects one too, as it does a
+  dialog on a desktop.
+- **A box** (`inform`, `confirm`) holds every key until answered: Left,
+  Right or Tab move between Yes and No, Enter or Space presses the one lit,
+  `y` and `n` answer at once, and Escape or Ctrl+Q answers No. A press on a
+  button presses it.
+- **The chooser**: Tab moves between the list, the name, the filter (when
+  there are several), Open and Cancel. In the list the arrows, PgUp, PgDn,
+  Home and End move; moving onto an entry puts its name in the name field;
+  Enter opens a folder or takes a file; Backspace goes up a folder; typing
+  goes to the name. Enter in the name takes what is typed (a folder's name
+  goes into it). Left and Right step the filter. Escape cancels, and the
+  chooser answers `unknown`. A name it will not take is said in the box,
+  and `ui.answer` refuses it in the sentence Qt's chooser uses. A press on
+  an entry selects it, a second press opens it, and the wheel scrolls.
 - **The mouse** focuses what it clicks, presses a button or a check, and
   places the caret in a field. A right click fires `context`.
 
@@ -6527,12 +6549,19 @@ proportions. A tree cannot fold its rows yet.
 Tested by `tests/run_ui_tui.sh`:
 - the keys, each held to what it must do, and increment 4's parts by keys
   and presses;
+- the dialogs, the chooser and a modal window by keys, their screens held as
+  text;
 - the layout as text;
 - the refusals;
 - Qt's sizes in characters;
-- a real terminal, with the selection rule, Ctrl-Q and the terminal restored,
-  read back by pyte where it is installed;
+- a real terminal, with the selection rule, Ctrl-Q, the dialogs by keys and
+  a mouse press, and the terminal restored, read back by pyte where it is
+  installed;
 - valgrind.
+
+`tests/run_ui_dialog.sh`, `run_ui_chooser.sh` and `run_ui_modal.sh` hold it to
+the checks Qt is held to, with the suites for trees, alignment, splits,
+furniture and children.
 
 ### Words
 

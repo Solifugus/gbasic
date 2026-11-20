@@ -3573,8 +3573,14 @@ static int qt_open_declared(AstExpr *expr, size_t argc, const char *verb,
     }
     /* WHAT THIS WINDOW NEEDS OF THE BACKEND, refused before anything is
      * constructed: a second window open at once, then any part, option or
-     * event of a group the backend lacks. */
-    if (qt_window_count > 0 && !ui_has("windows")) {
+     * event of a group the backend lacks.
+     *
+     * A MODAL WINDOW IS NOT A SECOND WINDOW: it is a dialog over its owner,
+     * which the terminal draws as a box on the one screen it has
+     * (docs/tui_design.md §3.2), so `open_modal` needs no `windows`. Ruled
+     * so with the terminal backend, 2026-11-20; ui_design.md §8 step 5 had
+     * counted it while Qt was the only backend. */
+    if (!modal && qt_window_count > 0 && !ui_has("windows")) {
         char what[192];
         snprintf(what, sizeof(what), "ui.%s of `%s` while `%s` is open",
                  verb, name ? name : "", qt_windows[0].name);

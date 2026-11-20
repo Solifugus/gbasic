@@ -274,6 +274,16 @@ else
     group_case "a second window open at once needs windows" windows "$ok_parts" '' \
         '    ui.open(w)
     ui.open(v)' 'ui.open of `v` while `w` is open'
+    # ...BUT A MODAL WINDOW OVER IT IS A DIALOG, not a second window: the
+    # terminal, which lacks `windows`, draws it as a box (docs/tui_design.md
+    # §3.2). The control beside the refusal above, answered by a timer.
+    printf 'window w( title: "W" )\n    column\n        text t( label: "w" )\n    end column\nend window\nwindow v( title: "V" )\n    column\n        text t( label: "v" )\n    end column\nend window\nprogram main()\n    ui.open(w)\n    beat = timer.after(0.1)\n    watch(timer.ticks)\n        while count(timer.ticks) > 0\n            ev = take_first(timer.ticks)\n            x = ui.reject(v)\n        end while\n    end watch\n    print "modal " + string(ui.open_modal(v))\nend program\n' > "$work/mo.bas"
+    held=$(GBASIC_UI_WITHHOLD=windows QT_QPA_PLATFORM=offscreen timeout 30 ./gbasic "$work/mo.bas" 2>"$work/mo.err" | tr '\n' '|')
+    if [ "$held" = "modal false|" ]; then
+        pass "CONTROL: open_modal over an open window runs with windows withheld"
+    else
+        fail "open_modal over a window with windows withheld: $held $(grep -v propagateSizeHints "$work/mo.err" | tail -2 | tr '\n' '|')"
+    fi
     # AN ICON THAT IS A FILE is every backend's, so withholding `icons` must
     # not refuse it: the control that the walk asks about names, not icons.
     printf '%s' 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==' \

@@ -480,8 +480,12 @@ migrates the same day):
      backend before whisker exists.
    - **`icons` is decided by whether the icon is a readable file**: a file
      is every backend's, any other text is a name and needs the group.
-   - **`windows` counts every open window**, a modal one included, since a
-     backend without it cannot show two at once either way.
+   - **`windows` counts every open window**, but a modal one does not
+     need it. Until 2026-11-20 a modal window counted too, "since a backend
+     without it cannot show two at once either way"; the terminal backend
+     showed otherwise, drawing a modal window as a box over the one screen
+     (`docs/tui_design.md` §3.7), so only `ui.open` of a second window asks
+     for the group.
    `tests/run_ui_vocabulary.sh` `groups` holds all of it, each refusal
    beside the same program with nothing withheld.
 6. **The suites.** Contract tiers read `GBASIC_UI` and run under every
