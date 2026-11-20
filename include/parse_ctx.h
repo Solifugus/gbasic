@@ -82,6 +82,14 @@ typedef struct {
      *
      * A DEPTH RATHER THAN A FLAG, because a window's items nest. */
     int             window_depth;
+
+    /* A BARE `stretch` OR `separator` IN A WINDOW (DOGFOOD 2026-11-19): read
+     * as the head of a bare container, it was reported lines later at the
+     * wrong word. The grammar cannot take it (one token of lookahead cannot
+     * tell `stretch NEWLINE` from `row NEWLINE ... end row`), so yylex follows
+     * the word with the `(` and `)` it was written without: this counts the
+     * two still to give. */
+    int             synth_parens;
 } gb_parse_ctx;
 
 #endif

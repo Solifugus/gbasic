@@ -1061,6 +1061,45 @@ else
     pass "and nothing non-JSON is on the stream"
 fi
 
+printf 'TIER [N] bare: `stretch` and `separator` without their parentheses\n'
+# DOGFOOD 2026-11-19: a bare `stretch` was read as a bare container's head and
+# reported lines later, at the next `program`, naming the wrong word. The
+# parser now gives the two leaves that take neither a name nor options the
+# `()` they were written without -- in a window only, and only alone on a line.
+# THE ORACLE IS THE WRITTEN-OUT FORM: both declare the same window value.
+cat >"$work/bare.bas" <<'EOF'
+window a( title: "x" )
+    column
+        row
+            button one( label: "1" )
+            stretch
+            button two( label: "2" )
+        end row
+        separator   ' a line across
+    end column
+end window
+window b( title: "x" )
+    column
+        row
+            button one( label: "1" )
+            stretch()
+            button two( label: "2" )
+        end row
+        separator()   ' a line across
+    end column
+end window
+print ui.check(a)
+print string(a.items) = string(b.items)
+stretch = 5
+print stretch
+EOF
+out=$(./gbasic "$work/bare.bas" 2>&1)
+if [ "$out" = $'true\ntrue\n5' ]; then
+    pass "a bare stretch and separator declare the window their written-out forms do; outside a window \`stretch\` is a name"
+else
+    fail "bare stretch: $out"
+fi
+
 printf 'TIER [N] grammar: bison still reports zero conflicts\n'
 # THE STANDING ASSERTION §5.2 PROMISED WOULD ARRIVE WITH THE GRAMMAR. Not
 # decoration: this project rejected `IDENT expression` as a statement form over

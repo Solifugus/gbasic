@@ -6225,7 +6225,8 @@ left to right and a `column` top to bottom, each taking `margin:` and
 and a `form` lays its parts out as labelled rows, which is the whole of what
 `QFormLayout` does.
 
-**A `stretch` is pure space** (written `stretch()`), and it is the reason this vocabulary carries no
+**A `stretch` is pure space** (written `stretch()`, or `stretch` alone on its line, as
+`separator` may be), and it is the reason this vocabulary carries no
 `align:` anywhere: a stretch absorbs whatever room is left over, so to push a
 button to the right you put a stretch to its left. It is not a widget, so it
 takes no name and nothing can be set on it — anything you try to set is

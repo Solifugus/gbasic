@@ -2398,6 +2398,7 @@ int parse_source_reentrant_at(const char *source, const char *path,
      * directions at once, which is the signature of an uninitialised read
      * rather than of inverted logic. */
     ctx.window_depth = 0;
+    ctx.synth_parens = 0;
     ctx.active_lexer = NULL;
     ctx.lexer_error_reported = 0;
     ctx.active_parse_path = path;
@@ -2724,6 +2725,13 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
 }
 
 static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
+    if (ctx->synth_parens > 0) {
+        /* the `(` then the `)` of a bare `stretch`, at the word's end */
+        int which = ctx->synth_parens--;
+        llocp->first_line = llocp->last_line = ctx->la_end_line;
+        llocp->first_column = llocp->last_column = ctx->la_end_column;
+        return which == 2 ? LPAREN : RPAREN;
+    }
     Token token = lexer_next(ctx->active_lexer);
     llocp->first_line = token.line;
     llocp->first_column = token.column;
@@ -2753,6 +2761,19 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     case TOKEN_EOF: return 0;
     case TOKEN_IDENT:
         lvalp->text = copy_text(token.start, token.length);
+        /* a window item that is a bare `stretch` or `separator`, the only
+         * two leaves that take neither a name nor options */
+        if (ctx->window_depth > 0 && ctx->tok_prev_type == TOKEN_NEWLINE &&
+            ((token.length == 7 && strncmp(token.start, "stretch", 7) == 0) ||
+             (token.length == 9 && strncmp(token.start, "separator", 9) == 0))) {
+            const char *after = token.start + token.length;
+            while (*after == ' ' || *after == '\t') {
+                after++;
+            }
+            if (*after == '\n' || *after == '\r' || *after == '\0' || *after == '\'') {
+                ctx->synth_parens = 2;
+            }
+        }
         return IDENT;
     case TOKEN_QUALIFIED_IDENT:
         lvalp->text = copy_text(token.start, token.length);
