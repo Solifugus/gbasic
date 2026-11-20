@@ -2549,6 +2549,12 @@ static const char *word_of(const QObject *o) {
     return "part";
 }
 
+/* "a `button`", "an `item`": the word with its article, for a refusal */
+static QByteArray a_word(const QObject *o) {
+    const char *w = word_of(o);
+    return QByteArray(strchr("aeiou", w[0]) ? "an `" : "a `") + w + "`";
+}
+
 /* SHORTCUTS, ONE OR SEVERAL (asked for by gBASIC Studio). The `shortcut`
  * property holds ONE sequence and refuses a list, measured, while a QAction
  * takes several through setShortcuts -- which is how an editor binds zoom-in
@@ -2574,7 +2580,7 @@ static int set_shortcuts(QObject *o, const QStringList &texts, char *err,
     }
     if (seqs.size() > 1) {
         say(err, err_size,
-            QByteArray("a ") + o->metaObject()->className() +
+            a_word(o) +
                 " takes one shortcut; only a menu or toolbar `item` takes "
                 "several");
         return 0;
@@ -2583,7 +2589,7 @@ static int set_shortcuts(QObject *o, const QStringList &texts, char *err,
                                                       : seqs.first());
     if (!o->setProperty("shortcut", one)) {
         say(err, err_size,
-            QByteArray("a ") + o->metaObject()->className() +
+            a_word(o) +
                 " would not take that shortcut");
         return 0;
     }
@@ -2599,8 +2605,8 @@ static int set_qt_property(QObject *widget, const char *prop, const QVariant &v,
     const QMetaObject *mo = widget->metaObject();
     if (mo->indexOfProperty(prop) < 0) {
         say(err, err_size,
-            QByteArray("a ") + mo->className() + " has no `" + prop +
-                "` property");
+            a_word(widget) + " has no `" + prop +
+                "` option");
         return 0;
     }
     /* THE ONE PROPERTY THAT NEEDS A CONVERSION, done here so the declaration
@@ -2613,7 +2619,7 @@ static int set_qt_property(QObject *widget, const char *prop, const QVariant &v,
         }
         if (!widget->setProperty(prop, QVariant::fromValue(icon))) {
             say(err, err_size,
-                QByteArray("a ") + mo->className() + " would not take an icon");
+                a_word(widget) + " would not take an icon");
             return 0;
         }
         return how;   /* 1, or 2 for "set, but the theme has no such name" */
@@ -2634,7 +2640,7 @@ static int set_qt_property(QObject *widget, const char *prop, const QVariant &v,
     }
     if (!widget->setProperty(prop, v)) {
         say(err, err_size,
-            QByteArray("a ") + mo->className() + " would not take that value for `" +
+            a_word(widget) + " would not take that value for `" +
                 prop + "`");
         return 0;
     }
@@ -2760,7 +2766,7 @@ static QByteArray qt_name_of(const UiName *table, const QObject *o,
 static void say_no_word(char *err, size_t err_size, const QObject *o,
                         const char *word, const char *what) {
     say(err, err_size,
-        QByteArray("a `") + word_of(o) + "` has no `" + word + "`" + what);
+        a_word(o) + " has no `" + word + "`" + what);
 }
 
 /* THE WORDS A QT PROPERTY CANNOT HOLD AS ONE VALUE, as converters: each takes
@@ -2984,7 +2990,7 @@ static int set_word(QObject *o, const char *word, const QVariant &v, char *err,
     int ok = set_qt_property(o, qt.constData(), v, err, err_size);
     if (!ok && err && strstr(err, "would not take")) {
         say(err, err_size,
-            QByteArray("a `") + word_of(o) + "` would not take that value "
+            a_word(o) + " would not take that value "
             "for `" + word + "`");
     }
     return ok;
@@ -3237,8 +3243,9 @@ extern "C" int gb_qt_connect(void *window, const char *target,
         QWidget *ww = qobject_cast<QWidget *>(w);
         if (!ww) {
             say(err, err_size,
-                QByteArray("`") + target + "` is a " +
-                    w->metaObject()->className() + ", which has no wheel");
+                QByteArray("`") + target + "` is " +
+                    a_word(w) +
+                    ", which has no wheel");
             return 0;
         }
         GbQtWheeler *turner = new GbQtWheeler();
@@ -3586,8 +3593,9 @@ extern "C" char *gb_qt_shortcuts(void *window, const char *name, char *err,
         }
     } else {
         say(err, err_size,
-            QByteArray("`") + (name ? name : "") + "` is a " +
-                o->metaObject()->className() + ", which has no shortcut");
+            QByteArray("`") + (name ? name : "") + "` is " +
+                a_word(o) +
+                ", which has no shortcut");
         return nullptr;
     }
     QStringList texts;
@@ -3620,8 +3628,8 @@ extern "C" int gb_qt_key(void *window, const char *name, const char *keys,
     QWidget *w = qobject_cast<QWidget *>(o);
     if (!w) {
         say(err, err_size,
-            QByteArray("`") + (name ? name : "") + "` is a " +
-                o->metaObject()->className() +
+            QByteArray("`") + (name ? name : "") + "` is " +
+                a_word(o) +
                 ", which cannot take a key press -- press the key on a widget "
                 "and its shortcut reaches the item");
         return 0;
@@ -3892,7 +3900,7 @@ extern "C" int gb_qt_get(void *window, const char *name, const char *prop,
     QVariant v = w->property(prop);
     if (!v.isValid()) {
         say(err, err_size,
-            QByteArray("a `") + word_of(w) + "` gave no value for `" + word +
+            a_word(w) + " gave no value for `" + word +
                 "`");
         return 0;
     }
@@ -4155,8 +4163,9 @@ extern "C" int gb_qt_popup(void *window, const char *name, const char *under,
          * a button or a table where a `popup` was meant, and "no such thing"
          * would be false about a name that is right there. */
         say(err, err_size,
-            QByteArray("`") + (name ? name : "") + "` is a `" +
-                word_of(o) + "`, not a popup menu");
+            QByteArray("`") + (name ? name : "") + "` is " +
+                a_word(o) +
+                ", not a popup menu");
         return 0;
     }
     if (menu_visible_entries(m) == 0) {
@@ -4216,8 +4225,9 @@ static int click_aim(void *window, const char *name, int row, QWidget **aimed,
          * rather than silently doing nothing, which is what a cast to
          * QWidget* and a NULL check further down would have produced. */
         say(err, err_size,
-            QByteArray("`") + (name ? name : "") + "` is an `" +
-                word_of(o) + "`, which has nothing to click");
+            QByteArray("`") + (name ? name : "") + "` is " +
+                a_word(o) +
+                ", which has nothing to click");
         return 0;
     }
     QWidget *target = mouse_target(w);
@@ -4488,7 +4498,7 @@ extern "C" int gb_qt_has_icon(void *window, const char *name, int *has,
          * one and "no icon" would read as an answer rather than as a category
          * mistake. */
         say(err, err_size,
-            QByteArray("a ") + o->metaObject()->className() +
+            a_word(o) +
                 " cannot carry an icon");
         return 0;
     }
@@ -4625,8 +4635,8 @@ extern "C" int gb_qt_capture(void *window, const char *name, double scale,
         w = qobject_cast<QWidget *>(o);
         if (!w) {
             say(err, err_size,
-                QByteArray("`") + name + "` is a " +
-                    o->metaObject()->className() +
+                QByteArray("`") + name + "` is " +
+                    a_word(o) +
                     ", which is not drawn on its own; capture the part "
                     "that shows it");
             return 0;
@@ -4759,8 +4769,9 @@ extern "C" int gb_qt_scroll(void *window, const char *name, double notches,
     QWidget *w = qobject_cast<QWidget *>(o);
     if (!w) {
         say(err, err_size,
-            QByteArray("`") + (name ? name : "") + "` is a " +
-                o->metaObject()->className() + ", which has no wheel");
+            QByteArray("`") + (name ? name : "") + "` is " +
+                a_word(o) +
+                ", which has no wheel");
         return 0;
     }
     QWidget *target = mouse_target(w);

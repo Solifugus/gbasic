@@ -101,7 +101,7 @@ program main()
             "ui.set: `Ctlr+S` is not a key Qt recognises (modifiers are Ctrl, Shift, Alt and Meta, written like Ctrl+S)",
             1)
     refused("a button refuses several shortcuts",
-            "ui.set: a QPushButton takes one shortcut; only a menu or toolbar `item` takes several",
+            "ui.set: a `button` takes one shortcut; only a menu or toolbar `item` takes several",
             2)
     refused("a list for any other property is refused",
             "ui.set: `text` takes one value, not a list; only `shortcut` takes several",
@@ -110,14 +110,14 @@ program main()
             "ui.key: `Ctrl+K, Ctrl+C` is a chord of several presses; send each with its own ui.key",
             4)
     refused("a key cannot be pressed on a menu item",
-            "ui.key: `big` is a QAction, which cannot take a key press -- press the key on a widget and its shortcut reaches the item",
+            "ui.key: `big` is an `item`, which cannot take a key press -- press the key on a widget and its shortcut reaches the item",
             5)
     refused("an empty key is refused",
             "ui.key: ui.key needs a key to press", 6)
     refused("a non-text entry in a list is refused",
             "ui.set: a list of values must hold only text", 7)
     refused("a field has no shortcut to read",
-            "ui.shortcuts: `note` is a QLineEdit, which has no shortcut", 8)
+            "ui.shortcuts: `note` is a `field`, which has no shortcut", 8)
 
     ui.close(app)
     print "ok   " + string(g.checks) + " checks, " + string(g.bad) + " mismatches"

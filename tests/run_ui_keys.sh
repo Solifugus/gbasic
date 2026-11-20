@@ -24,9 +24,10 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
 source tests/ui_backend.sh
-# its refusals name Qt's classes (QPushButton, QAction, QLineEdit) where the
-# vocabulary's words belong, and the terminal has no shortcut on a button
-UI_SUITE_OFF_TUI="the refusals name Qt classes (QPushButton, QAction, QLineEdit), and a button takes no shortcut there"
+# the terminal has no shortcut on a button. (Its refusals named Qt's classes,
+# QPushButton, QAction, QLineEdit, until the 2026-11-20 sweep; they say
+# `button`, `item` and `field` now.)
+UI_SUITE_OFF_TUI="a button takes no shortcut there"
 ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null

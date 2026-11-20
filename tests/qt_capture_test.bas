@@ -182,7 +182,7 @@ program main()
     check("an unknown part names the parts there are", refusal(join_path(out, "x.png"), { part: "editor" }),
           "ui.capture: this window has no `editor`; its parts are act_quit, app, book, ed, first, go, heading, note, second")
     check("a menu item is not drawn on its own", refusal(join_path(out, "x.png"), { part: "act_quit" }),
-          "ui.capture: `act_quit` is a QAction, which is not drawn on its own; capture the part that shows it")
+          "ui.capture: `act_quit` is an `item`, which is not drawn on its own; capture the part that shows it")
     check("a part on a tab that is not selected", refusal(join_path(out, "x.png"), { part: "second" }),
           "ui.capture: `second` is not showing (a tab that is not selected, a closed dock or a hidden part), so it has nothing to draw")
     check("a misspelt option is refused by name", refusal(join_path(out, "x.png"), { scal: 2 }),

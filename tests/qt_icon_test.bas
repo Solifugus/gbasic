@@ -120,12 +120,12 @@ program main(args)
     ' as an answer rather than as a category mistake.
     ui.has_icon(app, "words")
     check("a text cannot carry an icon", error.message,
-          "ui.has_icon: a QLabel cannot carry an icon")
+          "ui.has_icon: a `text` cannot carry an icon")
     error.clear()
 
     ui.has_icon(app, "grid")
     check("and nor can a table", error.message,
-          "ui.has_icon: a QTableWidget cannot carry an icon")
+          "ui.has_icon: a `table` cannot carry an icon")
     error.clear()
 
     ui.has_icon(app, "nope")
