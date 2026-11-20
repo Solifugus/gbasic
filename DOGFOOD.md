@@ -122,7 +122,7 @@ One was filed on **2026-10-16** while building `intake` increment 2:
 
 | | what | where |
 |---|---|---|
-| 11 | **No way into a `duration` from a computed number of seconds.** `n seconds` with a variable is a parse error and there is no `{duration}` modifier, though `{date}`, `{datetime}`, `{time}`, `{file}`, `{dir}` and `{USD}` all exist — a hole in the typed-modifier family exactly where a value arrives as a number out of storage. `(1 second) * n` works and nobody would guess it. | 2026-10-16 entry |
+| 11 | ~~**No way into a `duration` from a computed number of seconds.**~~ **FIXED 2026-11-20**: `{duration}` takes a number of whole seconds (as `(1 second) * n` makes it) or a duration's text as gBASIC prints it; held by `examples/duration_modifier_test.bas` in `tests/run_examples.sh`. The rest is the history: `n seconds` with a variable is a parse error and there is no `{duration}` modifier, though `{date}`, `{datetime}`, `{time}`, `{file}`, `{dir}` and `{USD}` all exist — a hole in the typed-modifier family exactly where a value arrives as a number out of storage. `(1 second) * n` works and nobody would guess it. | 2026-10-16 entry |
 
 Two more are decisions rather than work: the **absence-coercion warning** is
 measured and deliberately unshipped pending a ruling, and **`{trimmed,upper}=`**

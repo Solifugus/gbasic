@@ -3014,6 +3014,84 @@ static double datetime_to_epoch(DateTime dt, int *ok) {
     return (double)zone_timegm(dt);
 }
 
+/* A duration's text as gBASIC prints it, which is its literal syntax (shared by
+ * G-SQL's CAST to DURATION and `{duration}`): an integer
+ * then a unit, repeated, each unit once (docs/gsql_duration_design.md §5). Each
+ * number lands in its OWN field, so '24 hours' is 24 hours rather than 1 day and
+ * the printed form reads back as the very fields it was printed from. 1 when it
+ * reads; otherwise 0, with `why` saying what did not. */
+static int duration_text_read(const char *t, Duration *d, char *why, size_t cap) {
+    static const char *const units[] = { "year", "month", "week", "day", "hour", "minute", "second" };
+    int *fields[] = { &d->years, &d->months, &d->weeks, &d->days, &d->hours, &d->minutes, &d->seconds };
+    int seen[7] = { 0 };
+    memset(d, 0, sizeof *d);
+    const char *p = t;
+    int parts = 0;
+    for (;;) {
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        if (!*p) {
+            break;
+        }
+        const char *num = p;
+        if (*p == '-' || *p == '+') {
+            p++;
+        }
+        if (!isdigit((unsigned char)*p)) {
+            snprintf(why, cap, "expected a whole number at '%.40s'", num);
+            return 0;
+        }
+        long long n = 0;
+        while (isdigit((unsigned char)*p)) {
+            n = n * 10 + (*p++ - '0');
+            if (n > INT32_MAX) {
+                snprintf(why, cap, "a part is past the largest amount a duration field holds");
+                return 0;
+            }
+        }
+        if (*p == '.' || *p == ',') {
+            snprintf(why, cap, "a part is not a whole number, and each part of a duration is");
+            return 0;
+        }
+        if (*num == '-') {
+            n = -n;
+        }
+        while (*p == ' ' || *p == '\t') {
+            p++;
+        }
+        const char *word = p;
+        while (isalpha((unsigned char)*p)) {
+            p++;
+        }
+        size_t wl = (size_t)(p - word);
+        int u = -1;
+        for (int k = 0; k < 7; k++) {
+            size_t ul = strlen(units[k]);
+            if ((wl == ul || (wl == ul + 1 && word[ul] == 's')) && strncmp(word, units[k], ul) == 0) {
+                u = k;
+            }
+        }
+        if (u < 0) {
+            snprintf(why, cap, "'%.*s' is not a unit (year, month, week, day, hour, minute, second)",
+                     (int)(wl ? wl : 1), wl ? word : p);
+            return 0;
+        }
+        if (seen[u]) {
+            snprintf(why, cap, "%ss are given twice", units[u]);
+            return 0;
+        }
+        seen[u] = 1;
+        *fields[u] = (int)n;
+        parts++;
+    }
+    if (!parts) {
+        snprintf(why, cap, "the text is empty (no duration is '0 seconds')");
+        return 0;
+    }
+    return 1;
+}
+
 static Value value_duration(Duration duration) {
     Value value = {0};
     value.kind = VALUE_DURATION;
@@ -45980,6 +46058,47 @@ static Value apply_one_assignment_modifier(AstModifierUse modifier, Value value,
         parsed.time_only = 1;
         value_free(value);
         return value_datetime(parsed);
+    }
+    /* `{duration}`: the typed family's missing way IN (DOGFOOD 2026-10-16,
+     * live-list row 11). A number is that many seconds, made as
+     * `(1 second) * n` makes it, and must be whole, as a duration's seconds
+     * are; text is a duration as gBASIC prints it ("2 hours 30 minutes"),
+     * read field for field. `dur.total_seconds` was already the way out. */
+    if (!modifier.library && strcmp(modifier.name, "duration") == 0) {
+        if (value.kind == VALUE_DURATION) {
+            return value;
+        }
+        if (value.kind == VALUE_NUMBER) {
+            double n = value.as.num.value;
+            value_free(value);
+            if (!isfinite(n) || fabs(n - llround(n)) > 1e-9 * fmax(1.0, fabs(n)) || fabs(n) > 9.2e18) {
+                char m[200];
+                snprintf(m, sizeof m, "`{duration}` from a number takes whole seconds, and this is %.10g; "
+                         "round it first, such as {duration}round(n)", n);
+                runtime_error_raise(m, 1003, "duration");
+                return value_null();
+            }
+            return value_duration(duration_from_totals(0, llround(n)));
+        }
+        if (value.kind == VALUE_STRING) {
+            Duration d;
+            char why[160];
+            if (!duration_text_read(value.as.string, &d, why, sizeof why)) {
+                char m[320];
+                snprintf(m, sizeof m, "`{duration}` could not read '%.60s': %s", value.as.string, why);
+                value_free(value);
+                runtime_error_raise(m, 1003, "duration");
+                return value_null();
+            }
+            value_free(value);
+            return value_duration(d);
+        }
+        char m[200];
+        snprintf(m, sizeof m, "`{duration}` takes a number of seconds or a duration's text, and this is %s",
+                 builtin_type_name(value));
+        value_free(value);
+        runtime_error_raise(m, 1003, "duration");
+        return value_null();
     }
     if (!modifier.library && strcmp(modifier.name, "time") == 0 && value.kind == VALUE_DATETIME) {
         return datetime_convert_value("time", value);

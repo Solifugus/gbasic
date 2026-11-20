@@ -1,0 +1,17 @@
+180 days
+true
+true
+1 minute 30 seconds
+-1 minute -30 seconds
+0 seconds
+2 hours 30 minutes
+9000
+24 hours
+1 month 3 days
+true
+45 minutes
+2.5: `{duration}` from a number takes whole seconds, and this is 2.5; round it first, such as {duration}round(n)
+2 parsecs: `{duration}` could not read '2 parsecs': 'parsecs' is not a unit (year, month, week, day, hour, minute, second)
+1.5 hours: `{duration}` could not read '1.5 hours': a part is not a whole number, and each part of a duration is
+true: `{duration}` takes a number of seconds or a duration's text, and this is boolean
+3 seconds

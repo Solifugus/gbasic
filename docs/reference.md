@@ -7930,6 +7930,13 @@ C/JavaScript convention, Sunday=1 is Excel's; gBASIC follows ISO.
 `dur.total_seconds` returns the whole duration in seconds — raising if the
 duration carries months or years, which have no fixed length.
 
+**`{duration}` is the way back in** (*after 0.12.0*): `d {duration}= n` (or
+`{duration}n`) is `n` seconds, made as `(1 second) * n` makes it, so a
+retention stored as a number comes back as `180 days`; `n` must be whole, as
+a duration's seconds are. Text is read as gBASIC prints a duration, field for
+field (`{duration}"2 hours 30 minutes"`, and `"24 hours"` stays 24 hours), so
+`{duration}string(d) = d`. A duration is itself; anything else is refused.
+
 **Datetime arithmetic follows the accountant's rule.** `d + duration` applies
 years and months first, **clamps the day** into the resulting month, then adds
 the exact parts as elapsed time:

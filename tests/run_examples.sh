@@ -123,6 +123,7 @@ examples=(
     mod_concat_merge_test.bas
     duration_test.gb
     duration_sign_scale_test.bas
+    duration_modifier_test.bas
     now_test.bas
     file_test.gb
     file_management_test.gb

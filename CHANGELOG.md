@@ -16,6 +16,23 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **The DOGFOOD sweep (2026-11-20)**, each from an entry in DOGFOOD.md:
+  - **`{duration}`**: a duration from a number of whole seconds or from its
+    text (`{duration}"2 hours 30 minutes"`), the typed modifiers' missing
+    way in.
+  - **Messages that name the fix**: `c ? a : b` (gBASIC has no conditional
+    expression), `exit for` (write `break`), a built-in called bare
+    (`sleep 0.1`), a VB trailing `_`, `pg.connect`'s `dbname` (write
+    `database`), "library not loaded" (write `load pg`), a library's `load`
+    outside its block (named at its line, not blamed on the other file), and
+    a caught error nobody checked (now says it was caught). The money advice
+    for `$` named a refused spelling and names `p {USD}= 19.99` now.
+  - **A bare `stretch` or `separator`** in a window is accepted.
+  - **Qt's refusals name the part's word** (`button`, `item`), never its Qt
+    class.
+  - **A printed G-SQL path** says what it walks and that it has not run.
+  - **The editor example's Dark item** uses the theme record, so it works
+    on the terminal.
 - **Braces on plain data**: G-SQL's `{ fields }` on gBASIC's own records
   and arrays (Matthew's ask, for one spelling across both). `r{ a, b }` is a
   record of those fields; `rows{ item, amount }` a record per row;
