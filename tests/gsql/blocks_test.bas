@@ -244,7 +244,7 @@ end function
 ' --- the declarations are values, and declaring connects nothing ------------
 check("a database block is a connection", type(shop), "gsql_connection")
 check("an sql block is a statement", type(cheap), "gsql_statement")
-check("an sql block renders as its kind", string(cheap), "<gsql_statement>")
+check("an sql block renders as its kind and name", string(cheap), "<gsql statement cheap>")
 check("an sql block is itself", cheap = cheap, true)
 check("two sql blocks differ", cheap = everything, false)
 check("declaring a database creates no file", exists({file}"shop.gsql"), false)

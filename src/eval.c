@@ -3953,6 +3953,7 @@ static Value gsql_path_step(Value base, const AstExpr *expr, int keep);
 static int gsql_is_path(const Value *v);
 static int gsql_path_assign_stmt(AstStmt *stmt);
 static Value gsql_path_project(Value base, AstExpr *expr, int keep);
+static void gsql_statement_describe(const Value *v, char *buf, size_t size);
 #endif
 
 /* --- PLAT-HTTP: handle registry and release ------------------------------
@@ -16111,8 +16112,16 @@ static Value builtin_string_value(Value value) {
         value_free(value);
         return value_string("<gsql_connection>");
     case VALUE_GSQL_STATEMENT:
+    {
+        /* a path says what it walks and that it has not run, which
+         * `<gsql_statement>` did not (DOGFOOD sweep 2026-11-20) */
+        char described[512] = "<gsql_statement>";
+#if GBASIC_GSQL
+        gsql_statement_describe(&value, described, sizeof described);
+#endif
         value_free(value);
-        return value_string("<gsql_statement>");
+        return value_string(described);
+    }
     case VALUE_CSV_SOURCE:
         value_free(value);
         return value_string("<csv_source>");

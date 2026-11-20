@@ -145,6 +145,10 @@ check("a result before the insert", rome.count(), 2)
 shop.exec("insert into customer values (5, 'Ed', 'ed@x', 'Rome', false, 0, 0)")
 check("the same result after it, read again", rome.count(), 3)
 check("a result goes on being a path", rome[.active = false].query().id, [1, 5])
+' printed, a result says what it walks and that it has not run (the
+' 2026-11-20 sweep: it printed `<gsql_statement>`)
+check("a result printed says it is an unrun path", string(rome),
+      "<gsql path customer, not run yet: for each, .query() or count runs it, .sql() shows its SQL>")
 t = shop.customer
 check("t[3] is customer 3, not the table's fourth row", (t[3]).name, "Cy")
 check("count of a stored table path", t.count(), 5)

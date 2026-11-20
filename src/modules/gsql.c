@@ -3212,6 +3212,27 @@ static Value gsql_eval_space(AstExpr *expr) {
  * one that is now many (STALE), and the keys are fetched again. So keys held
  * here that have gone stale cost a round trip, never a wrong answer (§8.2). */
 
+/* what `print` shows for a statement: a path, the tables it walks and that
+ * nothing has run yet; a block, its name */
+static void gsql_statement_describe(const Value *v, char *buf, size_t size) {
+    const GsqlStatementValue *st = v->as.gsql_statement;
+    if (!st->is_path) {
+        snprintf(buf, size, "<gsql statement %s>", st->name ? st->name : "");
+        return;
+    }
+    char walk[300] = "";
+    size_t o = 0;
+    const ArrayStorage *levels = st->path_levels.kind == VALUE_ARRAY ? st->path_levels.as.array.store : NULL;
+    for (size_t i = 0; levels && i < levels->count; i++) {
+        const RecordField *t = record_find_const(&levels->items[i], "table");
+        if (t && t->value->kind == VALUE_STRING && o < sizeof walk) {
+            o += (size_t)snprintf(walk + o, sizeof walk - o, "%s%s", i ? "." : "", t->value->as.string);
+        }
+    }
+    snprintf(buf, size, "<gsql path %s, not run yet: for each, .query() or count runs it, .sql() shows its SQL>",
+             walk[0] ? walk : (st->path_table ? st->path_table : ""));
+}
+
 static Value path_level(const char *table) {
     Value lv = value_record(NULL, 0);
     record_set(&lv, "table", value_string(table));
