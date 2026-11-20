@@ -1,1 +1,1 @@
-runtime error at tests/negative_pg_connect_field.bas:2:1: unknown pg.connect config field: hostname
+runtime error at tests/negative_pg_connect_field.bas:2:1: unknown pg.connect config field: hostname -- the fields are host, port, database, user, password, sslmode, connect_timeout and application_name

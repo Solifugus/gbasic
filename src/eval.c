@@ -28535,11 +28535,22 @@ static Value pg_eval_connect(AstExpr *expr) {
     for (size_t i = 0; i < count; i++) {
         RecordField *field = &config.as.record.fields[i];
         if (!pg_config_field_allowed(field->name)) {
-            char message[256];
-            snprintf(message,
-                     sizeof(message),
-                     "unknown pg.connect config field: %s",
-                     field->name);
+            /* libpq's own word, which every psql user types, and a near miss
+             * (DOGFOOD 2026-11-19): the field set is small enough to list */
+            static const char *const fields[] = { "host", "port", "database", "user", "password", "sslmode",
+                                                  "connect_timeout", "application_name", NULL };
+            const char *near = strcmp(field->name, "dbname") == 0 ? "database"
+                               : gb_nearest_word(field->name, fields);
+            char message[400];
+            if (near) {
+                snprintf(message, sizeof(message),
+                         "unknown pg.connect config field: %s -- write `%s`%s", field->name, near,
+                         strcmp(field->name, "dbname") == 0 ? ", gBASIC's word for libpq's dbname" : "");
+            } else {
+                snprintf(message, sizeof(message),
+                         "unknown pg.connect config field: %s -- the fields are host, port, database, user, "
+                         "password, sslmode, connect_timeout and application_name", field->name);
+            }
             pg_raise_message(message);
             break;
         }
@@ -35112,7 +35123,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
         if (strcmp(expr->as.call.library, "webserver") == 0) {
             if (!webserver_library_loaded) {
-                runtime_error_raise("library not loaded: webserver",
+                runtime_error_raise("library not loaded: webserver (write `load webserver` first)",
                                     4001,
                                     "webserver");
                 return value_null();
@@ -35122,7 +35133,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
         if (strcmp(expr->as.call.library, "smtp") == 0) {
             if (!smtp_library_loaded) {
-                runtime_error_raise("library not loaded: smtp",
+                runtime_error_raise("library not loaded: smtp (write `load smtp` first)",
                                     SMTP_ERROR_CODE,
                                     "smtp");
                 return value_null();
@@ -35139,7 +35150,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
         if (strcmp(expr->as.call.library, "ldap") == 0) {
             if (!ldap_library_loaded) {
-                runtime_error_raise("library not loaded: ldap",
+                runtime_error_raise("library not loaded: ldap (write `load ldap` first)",
                                     LDAP_ERROR_CODE,
                                     "ldap");
                 return value_null();
@@ -35181,7 +35192,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
         if (strcmp(expr->as.call.library, "http") == 0) {
             if (!http_library_loaded) {
-                runtime_error_raise("library not loaded: http", 3002, "http");
+                runtime_error_raise("library not loaded: http (write `load http` first)", 3002, "http");
                 return value_null();
             }
 #if HAVE_LIBCURL
@@ -35195,7 +35206,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
         if (strcmp(expr->as.call.library, "webclient") == 0) {
             if (!webclient_library_loaded) {
-                runtime_error_raise("library not loaded: webclient",
+                runtime_error_raise("library not loaded: webclient (write `load webclient` first)",
                                     3001,
                                     "webclient");
                 return value_null();
@@ -35212,7 +35223,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
         if (strcmp(expr->as.call.library, "pg") == 0) {
             if (!pg_library_loaded) {
-                runtime_error_raise("library not loaded: pg", 2001, "postgres");
+                runtime_error_raise("library not loaded: pg (write `load pg` first)", 2001, "postgres");
                 return value_null();
             }
 #if HAVE_LIBPQ
@@ -35239,7 +35250,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
         if (strcmp(expr->as.call.library, "xml") == 0) {
             if (!xml_library_loaded) {
-                runtime_error_raise("library not loaded: xml", 5001, "xml");
+                runtime_error_raise("library not loaded: xml (write `load xml` first)", 5001, "xml");
                 return value_null();
             }
 #if HAVE_LIBXML2
@@ -35254,7 +35265,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
         if (strcmp(expr->as.call.library, "gsql") == 0) {
             if (!gsql_library_loaded) {
-                runtime_error_raise("library not loaded: gsql", GSQL_ERROR_CODE, "gsql");
+                runtime_error_raise("library not loaded: gsql (write `load gsql` first)", GSQL_ERROR_CODE, "gsql");
                 return value_null();
             }
 #if GBASIC_GSQL
@@ -35269,7 +35280,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
         if (strcmp(expr->as.call.library, "sqlite") == 0) {
             if (!sqlite_library_loaded) {
-                runtime_error_raise("library not loaded: sqlite", 2002, "sqlite");
+                runtime_error_raise("library not loaded: sqlite (write `load sqlite` first)", 2002, "sqlite");
                 return value_null();
             }
 #if HAVE_SQLITE3
@@ -35284,7 +35295,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
         if (strcmp(expr->as.call.library, "odbc") == 0) {
             if (!odbc_library_loaded) {
-                runtime_error_raise("library not loaded: odbc", 2003, "odbc");
+                runtime_error_raise("library not loaded: odbc (write `load odbc` first)", 2003, "odbc");
                 return value_null();
             }
 #if HAVE_ODBC

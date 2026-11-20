@@ -1,1 +1,1 @@
-runtime error at tests/negative_odbc_not_loaded.bas:1:1: library not loaded: odbc
+runtime error at tests/negative_odbc_not_loaded.bas:1:1: library not loaded: odbc (write `load odbc` first)

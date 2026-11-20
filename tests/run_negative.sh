@@ -122,6 +122,7 @@ cases=(
     negative_pg_not_loaded
     negative_pg_connect_type
     negative_pg_connect_field
+    negative_pg_connect_dbname
     negative_pg_close_arity
     negative_pg_close_type
     negative_pg_query_arity
