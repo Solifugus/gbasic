@@ -4494,6 +4494,108 @@ a quiet WebSocket is ordinary; a program that wants liveness pings. In a worker
 pool a WebSocket belongs to the worker that accepted it. Extensions
 (`permessage-deflate`) are not offered.
 
+## Term Module
+
+The terminal as a screen of cells, with keys and the mouse (*after 0.12.0*,
+`docs/tui_design.md` §2). It is the layer a `tui` backend for `window`
+declarations will stand on, and it is usable alone: a full-screen program
+over SSH, a dashboard in a terminal, a game. It needs `load term`, because it binds the global `term` and `term` is an
+ordinary variable name, but nothing from the build. It is our own layer, not ncurses: it writes xterm's escape
+sequences, which every terminal in use speaks (§2.1). This is POSIX only for
+now. On Windows, `term.can()` answers `false` and `term.open` refuses, saying
+so; the console is the next increment.
+
+```basic
+load term
+
+term.open()
+term.put(1, 1, "Press a key; q quits", { bold: true })
+term.show()
+going = true
+while going
+    e = term.wait()
+    if e.kind = "key" then
+        term.fill(1, 3, 40, 1)
+        term.put(1, 3, "you pressed " + e.key, { fg: "cyan" })
+        term.show()
+        going = e.key != "q"
+    end if
+end while
+term.close()
+```
+
+**One terminal, so no handle.** A process has one terminal, so the verbs
+belong to the module.
+
+| verb | what it does |
+|---|---|
+| `term.can()` | `true` when it is open, or when standard input and output are a terminal and `TERM` names one that can position the cursor (not empty, not `dumb`). **Answers rather than raising** |
+| `term.open([{ mouse }])` | enters raw mode and the alternate screen; with `mouse: true`, also mouse reporting and bracketed paste. Refused, naming why, without a terminal, when already open, or while `stdin.lines` is watched (both read standard input) |
+| `term.close()` | leaves raw mode and the alternate screen, restoring the terminal as it was. Does nothing when not open |
+| `term.is_open()` | whether it is open |
+| `term.size()` | `{ columns, rows }`, the terminal's size now |
+| `term.colors()` | colours the terminal shows: 16, 256 or 16777216, read from `COLORTERM` (`truecolor`) and then `TERM` (`...-256color`) |
+| `term.put(column, row, text [, style])` | writes text into the screen buffer from that cell (1-based), clipped at the edges, and answers the column after it. Refused, naming the byte, for a control character or invalid UTF-8, which a terminal would act on rather than show |
+| `term.fill(column, row, width, height [, style])` | fills a rectangle with spaces in a style |
+| `term.clear([style])` | the whole buffer, blank |
+| `term.cursor(column, row)` / `term.cursor()` | shows the cursor at a cell after the next `show`, or hides it (the default) |
+| `term.show()` | draws what changed since the last show, and nothing else, so an unchanged screen costs nothing and an SSH link sees only the changed cells |
+| `term.width(text)` | the cells text takes: a CJK character or an emoji is 2, a combining mark 0 |
+| `term.wait([limit])` | the next event, or `unknown` when the limit passes first (a duration or seconds) |
+
+**A style** is a record of any of these fields:
+
+- `fg` and `bg`: `"default"`, one of the sixteen names (`black`, `red`,
+  `green`, `yellow`, `blue`, `magenta`, `cyan`, `white`, `gray`, and
+  `bright_` before any of the first eight but black), or `"#rrggbb"`;
+- `bold`, `dim`, `italic`, `underline` and `reverse`, each `true` or `false`.
+
+A colour is drawn in 24 bits, or as the nearest of 256 or 16, as the terminal
+allows.
+
+**Events** are records. `term.wait` answers one. **Waited or watched, never
+both**: `watch(term.events)` delivers each one on the event loop, as
+`watch(stdin.lines)` delivers lines, beside servers, timers and actors, and
+`term.wait` is refused while it is watched.
+
+| `kind` | fields |
+|---|---|
+| `key` | `key`: a name (`enter`, `tab`, `backspace`, `escape`, `space`, `up`, `down`, `left`, `right`, `home`, `end`, `page_up`, `page_down`, `insert`, `delete`, `f1`-`f12`), or the character typed (`"a"`, `"É"`, `"中"`); `text`: what the key types, empty for a key that types nothing; `ctrl`, `alt` and `shift` |
+| `mouse` | `action` (`press`, `release`, `move`, `wheel`), `button` (1-3; 4 and 5 for the wheel up and down; 0 for a move with nothing held), `column`, `row`, and the modifiers. Only with `mouse: true` |
+| `paste` | `text`: everything pasted, as one event, whatever it holds. Only with `mouse: true` |
+| `resize` | `columns`, `rows`. The buffer keeps what fits and the next `show` redraws it all |
+
+A terminal does not report Shift with a letter, so `"A"` arrives as the key
+`"A"`, with `shift` false. Ctrl and a letter is that letter with `ctrl`. Some
+combinations reach no program at all: Ctrl-I is Tab, Ctrl-M is Enter and
+Ctrl-H is Backspace. A lone Escape is told apart from the start of a sequence
+by waiting 30 ms for the rest.
+
+**Leaving.** The terminal is restored at `term.close()`, at the program's end,
+on an uncaught error, and on SIGINT, SIGTERM, SIGHUP and SIGQUIT, each of
+which then ends the program as it would have. Ctrl-C still interrupts. Ctrl-Z
+suspends with the shell's settings back, and the screen returns, redrawn, on
+`fg`. **A program killed by SIGKILL cannot restore anything: type `reset`.**
+
+While the screen is up, what is written to standard error (a warning, an
+uncaught error's message, `print to error`) is held and shown after the screen
+closes, where it can be read. That holds only when standard error is the
+terminal; redirected to a file, it goes there as usual. `print` writes onto the
+screen, so use `term.put` while it is open.
+
+**Widths** come from a table generated from the Unicode Character Database
+16.0.0 (`tools/make_term_widths.py`). Terminals disagree with it, and with each
+other, in places: an emoji made from a one-cell character by U+FE0F, some
+ambiguous-width characters (drawn as one cell here, as terminals draw them
+outside CJK locales), and characters newer than 16.0.
+
+Tested by `tests/run_term.sh`, through a real pseudo-terminal. The tests cover:
+
+- keys, the mouse, paste and resizing;
+- every way of leaving, each held to the pty's settings before and after;
+- what is drawn, read back by an independent emulator;
+- an unchanged screen drawing nothing.
+
 ## Standard input in the event loop: `watch(stdin.lines)`
 
 `input()` blocks, so a program that reads its standard input that way serves
@@ -4522,7 +4624,9 @@ delivered, `stdin.closed` becomes `true`, one more delivery says so, and
 standard input leaves the loop, so a program with nothing else to wait for
 ends. Under `ui.run()` the window keeps working while a line is awaited.
 **Do not mix it with `input()`**: this reads the descriptor directly, so lines
-`input()` has already buffered are never seen here.
+`input()` has already buffered are never seen here. While `term.open` holds
+the terminal its keys come from the same descriptor, so lines are not read
+until `term.close()`, and `term.open` refuses while `stdin.lines` is watched.
 
 Tested by `tests/run_stdin_lines.sh` (lines of every kind, a slow writer whose
 lines must each come back before the next is written, and a window under

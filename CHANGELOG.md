@@ -16,6 +16,23 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **`term`: the terminal as a screen of cells** (`load term`; docs/reference.md,
+  *Term Module*). Full-screen programs in a terminal, over SSH too, on our own
+  layer rather than ncurses:
+  - keys, the mouse, paste and resize as events, waited (`term.wait`) or
+    watched (`watch(term.events)`);
+  - a screen buffer whose `term.show` draws only what changed;
+  - colour degraded to what the terminal has;
+  - Unicode 16 widths for CJK and emoji.
+
+  The terminal is restored on every ending: close, the end, an uncaught error,
+  SIGINT, SIGTERM, SIGHUP and Ctrl-Z. Standard error written while the screen
+  is up is shown after it closes. This is POSIX only; on Windows `term.can()`
+  answers false. It is increment 1 of `docs/tui_design.md`, the layer the
+  `tui` backend will stand on. `tests/run_term.sh`.
+- **G-SQL over PostgreSQL's wire protocol: a design note** from captured
+  client traffic (`docs/gsql_pgwire_design.md`, `research/pgwire/`). Nothing
+  built.
 - **`load` of a module that needs none says so.** `load xlsx` (or `money`,
   `ui`, `csv`, `zip`, ...) used to say "library not found: xlsx", which read as
   "this build has no xlsx". It now says "xlsx needs no `load`: it is part of

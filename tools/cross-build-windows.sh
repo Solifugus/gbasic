@@ -114,7 +114,12 @@ scrub() {
 trap 'scrub; rm -rf "$shim" "$log"' EXIT
 echo "== cross-compiling for Windows with $($CC_WIN -dumpversion) =="
 scrub
-make -k CC="$CC_WIN" PLATFORM_OBJ=src/platform_win32.o \
+# TERM_OBJS empty, as the Makefile makes it on Windows: src/term.c is termios,
+# and the Windows console is its own increment (docs/tui_design.md §7), so a
+# Windows build leaves it out and the `term` module answers that it cannot.
+# CFLAGS given here replaces the Makefile's, so GBASIC_TERM is unset, which
+# is 0: the module's Windows stub is what gets compiled.
+make -k CC="$CC_WIN" PLATFORM_OBJ=src/platform_win32.o TERM_OBJS= \
      CFLAGS="-std=c11 -Wall -Iinclude -I$shim -g -D_WIN32_WINNT=0x0601" \
      LIBPQ_AVAILABLE=0 ODBC_AVAILABLE=0 \
      LDAP_AVAILABLE=0 LIBCURL_AVAILABLE=0 LIBXCRYPT_AVAILABLE=0 LIBXML2_AVAILABLE=0 \

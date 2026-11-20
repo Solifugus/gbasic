@@ -70,6 +70,7 @@ After a raise, a program reads `error` (truthy), `error.message`, `error.line`,
 | 2002 | SQLite module error | `sqlite` |
 | 2003 | ODBC module error | `odbc` |
 | 5001 | XML module not loaded / XML error | `xml` |
+| 5301 | `term` module error: no terminal (`term.open` names why), not open, a control character in `term.put`, a bad style | `term` |
 | 6001 | GObject-Introspection (`gi`) error | `gi` |
 
 Because `1003` covers most runtime errors, **branch on `error.source`, not

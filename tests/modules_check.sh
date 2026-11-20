@@ -45,6 +45,15 @@ if e and contains(e.message, "not available in this build") then
 else
     print "built"
 end if' ;;
+        term) body='load term
+on error goto next
+term.open()
+e = error
+if e and contains(e.message, "not available in this build") then
+    print "left out"
+else
+    print "built"
+end if' ;;
         ui) body='if is_unknown(ui.backend()) then
     print "left out"
 else

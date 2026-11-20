@@ -14047,3 +14047,17 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
     "unknown pg.connect config field: dbname". gBASIC's word is `database`;
     the refusal could name it, as the ui vocabulary's near-miss hints do.
 - **Workaround:** `load pg`, and `database:`. For the ergonomics sweep.
+
+## 2026-11-19 — CC — while: writing the term suite's refusal fixture
+- **Type:** diagnostic-gap
+- **Severity:** low
+- **What:** under `on error goto next`, reading `error.message` does not
+  acknowledge the error; only `if error then` does. So
+  `term.open()` / `print error.message` prints the message AND then re-raises
+  it at the frame's end (rule 2), exiting 1. The re-raised line is the original
+  runtime error, word for word, so it reads as though `goto next` did not
+  catch at all. The reference states rule 2, but the re-raise never says
+  "this error was caught and not checked: test it with `if error then`".
+- **Workaround:** `if error then ... end if` around the read. For the
+  ergonomics sweep: either count a read of `error` as acknowledging it, or
+  word the re-raise as the unchecked catch it is.

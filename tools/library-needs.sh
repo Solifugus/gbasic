@@ -128,6 +128,7 @@ awk '
       else if (dep == "webserver") c = ""     # always built; no dependency
       else if (dep == "gsql")      c = ""     # built on every POSIX build; nothing to install
       else if (dep == "net")       c = ""     # core sockets; nothing to install
+      else if (dep == "term")      c = ""     # termios on every POSIX build; nothing to install
 
       if (c != "") {
           if (index(" " caps[lib] " ", " " c " ") == 0) caps[lib] = caps[lib] " " c

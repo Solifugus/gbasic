@@ -1161,6 +1161,8 @@ static int inbox_events_watched(void);
 static void inbox_bind_global(void);
 static int inbox_loop_active(void);
 static int inbox_loop_service(void);
+static int term_library_loaded = 0;
+static void term_bind_events_global(void);
 static int net_library_loaded = 0;
 static void net_bind_events_global(void);
 static int net_loop_active(void);
@@ -9751,7 +9753,7 @@ static size_t library_name_count = 0;
 static int library_is_native_qualifier(const char *name) {
     static const char *native[] = {
         "csv", "gsql", "http", "ldap", "money", "net", "odbc", "pg", "process",
-        "reflect", "smtp", "sqlite", "this", "timer", "ui",
+        "reflect", "smtp", "sqlite", "term", "this", "timer", "ui",
         "webclient", "webserver", "xlsx", "xml", "zip", NULL
     };
     for (size_t i = 0; native[i]; i++) {
@@ -9817,6 +9819,9 @@ static const GbCapability gb_capability_table[] = {
     { "reflect",   "" },
     { "smtp",      "net" },
     { "sqlite",    "db fs:write" },
+    /* takes over the terminal's screen and reads its keys: what `display`
+       means for a window */
+    { "term",      "display" },
     { "this",      "" },
     { "timer",     "" },
     { "ui",        "display" },
@@ -9892,6 +9897,7 @@ void gb_print_capabilities(FILE *out) {
 void gb_print_modules(FILE *out) {
     static const struct { const char *name; int built; const char *needs; } rows[] = {
         { "gsql",          GBASIC_GSQL,                 "a POSIX system" },
+        { "term",          GBASIC_TERM,                 "a POSIX system (the Windows console is not yet built)" },
         { "sqlite",        HAVE_SQLITE3,                "SQLite 3" },
         { "pg",            HAVE_LIBPQ,                  "libpq" },
         { "odbc",          HAVE_ODBC,                   "unixODBC" },
@@ -9946,7 +9952,7 @@ int eval_is_native_module(const char *name) {
 int eval_module_needs_load(const char *name) {
     static const char *loadable[] = {
         "gsql", "http", "ldap", "net", "odbc", "pg", "smtp", "sqlite",
-        "webclient", "webserver", "xml", NULL
+        "term", "webclient", "webserver", "xml", NULL
     };
     if (!name) {
         return 0;
@@ -10208,6 +10214,15 @@ static void library_import(const char *name, const char *path, const char *alias
                             2003,
                             "odbc");
 #endif
+        return;
+    }
+
+    if (!path && strcmp(name, "term") == 0) {
+        /* Core on POSIX: termios needs no library. Binds the global `term`
+         * holding `events`, as `load net` binds `net`; only on load, since
+         * `term` is an ordinary variable name (a loan's term). */
+        term_library_loaded = 1;
+        term_bind_events_global();
         return;
     }
 
@@ -21633,8 +21648,13 @@ static void stdin_bind_global(void) {
     global_env.count++;
 }
 
+/* src/modules/term.c: while the terminal is open it reads descriptor 0 as
+ * keys, so lines are not read from it meanwhile (term.open refuses while
+ * stdin.lines is watched; a watch begun after waits for term.close). */
+static int term_holds_stdin(void);
+
 static int stdin_loop_active(void) {
-    return !stdin_source_eof && stdin_events_watched();
+    return !stdin_source_eof && stdin_events_watched() && !term_holds_stdin();
 }
 
 /* Append one line to `stdin.lines` and deliver it. 0 when a watcher raised. */
@@ -21717,6 +21737,8 @@ static int stdin_loop_service(void) {
     }
     return 1;
 }
+
+#include "modules/term.c"
 
 /* --- the clock in the event loop ------------------------------------------
  *
@@ -22179,7 +22201,7 @@ static int aux_loop_sources_active(void) {
         return 0;
     }
     return http_loop_active() || inbox_loop_active() || timer_loop_active() || net_loop_active() ||
-           stdin_loop_active();
+           stdin_loop_active() || term_loop_active();
 }
 static int webserver_term_installed = 0;
 
@@ -23998,8 +24020,11 @@ static int webserver_loop_iterate(int *idle) {
     int net_wants_loop = aux_ok && net_loop_active();
     /* Standard input's lines (§0.38 D3): descriptor 0, while it is open. */
     int stdin_wants_loop = aux_ok && stdin_loop_active();
+    /* The terminal's keys (docs/tui_design.md §2.3): descriptor 0 too, while
+     * it is open and term.events is watched. */
+    int term_wants_loop = aux_ok && term_loop_active();
     if (descriptor_count == 0 && !http_wants_loop && !inbox_wants_loop &&
-        !timer_wants_loop && !net_wants_loop && !stdin_wants_loop) {
+        !timer_wants_loop && !net_wants_loop && !stdin_wants_loop && !term_wants_loop) {
         *idle = 1;
         return 0;
     }
@@ -24053,12 +24078,21 @@ static int webserver_loop_iterate(int *idle) {
         pollfds[stdin_slot].events = POLLIN;
         polled++;
     }
+    size_t term_slot = polled;
+    if (term_wants_loop) {
+        pollfds[term_slot].fd = 0;
+        pollfds[term_slot].events = POLLIN;
+        polled++;
+    }
     long tick_ms = http_wants_loop ? http_poll_timeout_ms(50) : 50;
     if (timer_wants_loop) {
         tick_ms = timer_poll_timeout_ms(tick_ms);
     }
     if (net_wants_loop) {
         tick_ms = net_poll_timeout_ms(tick_ms);
+    }
+    if (term_wants_loop) {
+        tick_ms = term_poll_timeout_ms(tick_ms);
     }
     /* A frame already read off the wire will not wake the poll. */
     int inbox_pending = inbox_wants_loop && mailbox_pending(&root_mailbox);
@@ -24093,6 +24127,14 @@ static int webserver_loop_iterate(int *idle) {
             free(net_who);
             return 1;
         }
+    }
+    /* Serviced whether or not the poll said so: a resize arrives as a signal
+     * and an ESC is given up on by the clock, neither as a readable byte. */
+    if (term_wants_loop &&
+        !term_loop_service(ready > 0 && (pollfds[term_slot].revents & (POLLIN | POLLHUP | POLLERR)))) {
+        free(pollfds);
+        free(net_who);
+        return 1;
     }
     /* Serviced unconditionally rather than on a revents bit: a timer has no
      * descriptor, so what says it is due is the clock and not the poll. */
@@ -35173,6 +35215,10 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
         if (strcmp(expr->as.call.library, "csv") == 0) {
             return csv_eval_call(expr);
+        }
+
+        if (strcmp(expr->as.call.library, "term") == 0) {
+            return term_eval_call(expr);
         }
 
         if (strcmp(expr->as.call.library, "zip") == 0) {
