@@ -163,6 +163,12 @@ lacks 'another error on a print line is not called a function' $'x = 1\nprint x 
 want 'control: sleep(...) still runs' $'sleep(0.01)\nprint "slept"' 'slept'
 want 'control: a builtin name assigned is a variable' $'max = 3\nprint max' '3'
 want 'control: exit(code) is still the call' $'print "before"\nexit(0)' 'before'
+# VB's trailing `_` (DOGFOOD 2026-10-15, live-list row 7): named at the line it
+# broke, in brackets and out; `_` and `my_` stay names
+want 'a trailing _ in brackets' $'a = [ "x", _\n  "y" ]' 'a `_` ending the line before is VB'"'"'s line continuation'
+want 'a trailing _ outside them' $'x = 1 + _\n2' 'put the expression in parentheses'
+want 'control: _ is a name' $'_ = 5\nprint _' '5'
+lacks 'control: a name ending in _ is not a continuation' $'my_ = 3\nprint x y' 'continuation'
 
 echo "--- TIER 2: the five type sigils ---"
 for pair in 'a$ = "x":$' 'a% = 5:%' 'a! = 5:!' 'a# = 5:#' 'a& = 5:&'; do

@@ -7302,6 +7302,22 @@ static const char *syntax_error_basic_word(gb_parse_ctx *ctx) {
     while (p > base && p[-1] != '\n') {
         p--;
     }
+    /* VB'S AND QBASIC'S LINE CONTINUATION (DOGFOOD 2026-10-15): a `_` alone at
+       the end of the line before, which bison reported as the next line's
+       first token being unexpected. `_` is a legal name and `my_` an ordinary
+       one, so only a `_` standing alone counts. */
+    if (p > base) {
+        const char *q = p - 1;          /* the line feed */
+        while (q > base && (q[-1] == ' ' || q[-1] == '\t' || q[-1] == '\r')) {
+            q--;
+        }
+        if (q > base && q[-1] == '_' &&
+            (q - 1 == base || !(isalnum((unsigned char)q[-2]) || q[-2] == '_'))) {
+            return "a `_` ending the line before is VB's line continuation, which gBASIC does not have: inside "
+                   "( [ { a line continues by itself, so delete the `_`; outside them, put the expression in "
+                   "parentheses";
+        }
+    }
     while (*p == ' ' || *p == '\t') {
         p++;
     }

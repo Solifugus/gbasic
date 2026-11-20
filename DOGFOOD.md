@@ -103,7 +103,7 @@ A second was filed the same day while writing the `stem` fixture:
 
 | | what | where |
 |---|---|---|
-| 7 | **A VB/QBasic trailing-underscore continuation is diagnosed by naming the next line's token.** `a = [ "x", _` / `"y" ]` reports *unexpected STRING*, which is about the one token that is not the problem; neither message mentions `_`, and inside brackets the remedy is to delete it because the newline already continues. Needs its controls measured, since `_` is a legal identifier. | 2026-10-15 entry |
+| 7 | ~~**A VB/QBasic trailing-underscore continuation is diagnosed by naming the next line's token.**~~ **FIXED 2026-11-20**: a parse error on the line after a `_` standing alone at a line's end now says it is VB's continuation and what to do in brackets and out; `_` and `my_` stay names. Held by `tests/run_qbasic_diagnostics.sh` (tier 1d). The rest is the history: `a = [ "x", _` / `"y" ]` reports *unexpected STRING*, which is about the one token that is not the problem; neither message mentions `_`, and inside brackets the remedy is to delete it because the newline already continues. Needs its controls measured, since `_` is a legal identifier. | 2026-10-15 entry |
 
 A third was filed the same day while settling §7's partial-upload question:
 
