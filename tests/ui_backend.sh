@@ -29,23 +29,17 @@
 # backend is refused with ends "it has: a, b" (run_ui_vocabulary `seam` pins
 # it). A build with none says so differently and lists nothing.
 #
-# A BACKEND STILL BEING BUILT IS LEFT OUT of every suite's passes, named in
-# UI_SUITES_SKIP_BACKENDS (default `tui`): increment 3 of docs/tui_design.md
-# draws the layout and the first leaves, and every [C] tier using a table, a
-# menu or a dialog would fail on it for a reason this harness already knows.
-# tests/run_ui_tui.sh measures it instead. When it covers the core (§7,
-# increment 5) the default empties, and each suite owes it its [C] tiers;
-# UI_SUITES_SKIP_BACKENDS= runs them on it now, to see how far it is.
+# EVERY BUILT BACKEND HAS EVERY SUITE'S PASS, the terminal's included since
+# increment 6 of docs/tui_design.md (2026-11-20): it covers the core, so each
+# suite owes it its [C] tiers. UI_SUITES_SKIP_BACKENDS="a b" leaves backends
+# out of a run by hand.
 #
-# A SUITE THAT PASSES ON IT SAYS SO, `UI_SUITE_ON_TUI=1` before
-# `ui_each_backend`, and then the gate runs it there too (increment 5: the
-# dialog, chooser and modal suites, and those increment 4 measured passing).
-# The default empties when the editor (increment 6) brings the rest.
+# A SUITE THAT CANNOT YET PASS ON THE TERMINAL SAYS WHY, as
+# `UI_SUITE_OFF_TUI="<reason>"` before `ui_each_backend`, and the pass is a
+# SKIP printing that reason, never silence -- so the exceptions are a list
+# anyone can grep for, and a new suite runs there unless it says otherwise.
 ui_backends() {
-    local skip="${UI_SUITES_SKIP_BACKENDS-tui}"
-    if [ -z "${UI_SUITES_SKIP_BACKENDS+set}" ] && [ "${UI_SUITE_ON_TUI:-0}" = 1 ]; then
-        skip=""
-    fi
+    local skip="${UI_SUITES_SKIP_BACKENDS-}"
     ui_backends_built | while read -r be; do
         case " $skip " in
             *" $be "*) ;;
@@ -88,6 +82,10 @@ ui_each_backend() {
     fi
     for be in $list; do
         printf '== backend %s\n' "$be"
+        if [ "$be" = tui ] && [ -n "${UI_SUITE_OFF_TUI:-}" ]; then
+            printf '  SKIP (not on the terminal yet: %s -- NOT measured)\n' "$UI_SUITE_OFF_TUI"
+            continue
+        fi
         # the terminal backend draws with no terminal at this size, as Qt
         # draws offscreen: a suite's tiers run headless
         if [ "$be" = tui ]; then

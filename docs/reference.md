@@ -6433,7 +6433,7 @@ GUI program can run on a headless server.
 
 ### The terminal backend
 
-*After 0.12.0* (`docs/tui_design.md`, increments 3 to 5). The same `window`
+*After 0.12.0* (`docs/tui_design.md`, increments 3 to 6). The same `window`
 declaration drawn in a terminal's cells, over the `term` layer (*Term
 Module*), not ncurses. It is chosen when there is no display and standard
 input and output are a terminal, or by `GBASIC_UI=tui` / `--ui=tui`.
@@ -6461,12 +6461,27 @@ input and output are a terminal, or by `GBASIC_UI=tui` / `--ui=tui`.
   answer), the file chooser (`ui.choose_file`, `ui.choose_save`,
   `ui.choose_folder`), and `ui.open_modal`, which draws the window as a box
   over the one under it, sized by its content. `ui.answer` and `ui.dialog()`
-  work as on Qt, so a timer can answer a box.
+  work as on Qt, so a timer can answer a box;
+- `memo` and `source`, a multi-line editor in a frame. A `memo` wraps at the
+  last space that fits and its tab is 8 cells; a `source` does not wrap
+  (the view follows the caret sideways), its tab is 4, and with
+  `line_numbers:` and `marks:` it has a margin. A mark shows as one glyph per
+  line, the most urgent first: ● a breakpoint, `E` an error, `W` a warning,
+  `i` a note, § a section. `whitespace: true` shows a space as ·, a tab as →
+  and a line's end as ¶. Every editor verb works as on Qt and refuses in
+  Qt's sentences: `ui.caret`, `ui.caret_to`, `ui.select_text`,
+  `ui.selection`, `ui.replace_text` (one undo step), `ui.highlight_text`
+  (marked text is underlined, or drawn on the theme's `hi`), `ui.highlights`,
+  `ui.mark`, `ui.marks`, `ui.gutter`, `ui.gutter_press` and
+  `ui.gutter_click`. `ui.scrolled` counts lines, as Qt's does for an editor;
+- `ui.copy` and `ui.clipboard`: the clipboard is the program's own, because a
+  terminal will not say what its clipboard holds. A copy is also sent to the
+  terminal (OSC 52), so a person can paste it elsewhere where the terminal
+  allows it.
 
-**Every other part is refused by name**, naming the increment of
-`docs/tui_design.md` §7 that draws it: "the tui backend does not draw `memo`
-yet (docs/tui_design.md §7, increment 6)". `memo`, `source` and `markdown`
-are increment 6. **Of the eight groups it has `file_dialogs`**, with a
+**A part in no increment is refused by name.** `markdown` needs the
+`notebook` group, and a `source` with `language:` or `theme:` needs
+`highlighting`, which is increment 7. **Of the eight groups it has `file_dialogs`**, with a
 chooser of its own. It lacks `windows`, so a second window cannot be opened
 beside the first, but `ui.open_modal` over a window needs no group: a modal
 window is a dialog, on every backend.
@@ -6485,6 +6500,24 @@ window is a dialog, on every backend.
   - Ctrl+U clears the field;
   - `max_length` stops typing at that many characters;
   - a paste arrives without its line breaks.
+- **In a `memo` or a `source`:**
+  - Enter starts a new line and Tab types a tab, as on Qt, so **Shift+Tab**
+    and **Ctrl+Tab** are how the focus leaves it (a read-only one lets Tab
+    and Enter go to the window);
+  - the arrows move the caret, Up and Down keeping the column they started
+    from; Home and End go to the start and end of the row shown, Ctrl+Home
+    and Ctrl+End to the start and end of the text, PgUp and PgDn a page;
+    Ctrl+Left and Ctrl+Right move by words, and Ctrl+Up and Ctrl+Down scroll
+    a row without moving the caret;
+  - Shift with any of those selects, and Ctrl+A selects everything;
+  - Backspace and Delete remove the selection or a character (with Ctrl, a
+    word), and typing replaces the selection;
+  - Ctrl+Z undoes and Ctrl+Y (or Ctrl+Shift+Z) redoes. Typing joins the
+    step before it, as Qt's does; anything else is a step of its own;
+  - a paste keeps its line breaks and is one undo step;
+  - a press places the caret, Shift and a press extends the selection, and a
+    drag selects. A press in the margin fires `gutter`. The wheel scrolls
+    three lines a notch.
 - **A table or a tree** with the focus: Up, Down, PgUp, PgDn, Home and End
   move the selection (`chosen` fires when it changes), and Enter or Space
   fires `activated`. A press on a row selects it and fires `activated`, and
@@ -6522,7 +6555,7 @@ window is a dialog, on every backend.
   and `ui.answer` refuses it in the sentence Qt's chooser uses. A press on
   an entry selects it, a second press opens it, and the wheel scrolls.
 - **The mouse** focuses what it clicks, presses a button or a check, and
-  places the caret in a field. A right click fires `context`.
+  places the caret in a field or an editor. A right click fires `context`.
 
 **When `ui.run` returns, the ordinary screen comes back**, so what a program
 prints next can be read. The windows stay open and readable (`ui.read`,
@@ -6551,13 +6584,19 @@ Tested by `tests/run_ui_tui.sh`:
   and presses;
 - the dialogs, the chooser and a modal window by keys, their screens held as
   text;
+- a memo and a source by keys and by the editor verbs, their screens held as
+  text, and their refusals held to Qt's sentences;
 - the layout as text;
 - the refusals;
 - Qt's sizes in characters;
 - a real terminal, with the selection rule, Ctrl-Q, the dialogs by keys and
-  a mouse press, and the terminal restored, read back by pyte where it is
-  installed;
+  a mouse press, a memo typed, pasted, pressed and dragged, and the terminal
+  restored, read back by pyte where it is installed;
 - valgrind.
+
+**Every GUI suite runs on it too** (`tests/ui_backend.sh`), each owing it its
+`[C]` tiers, except one that names why it cannot yet
+(`UI_SUITE_OFF_TUI`): run_ui_keys, whose refusals name Qt's classes.
 
 `tests/run_ui_dialog.sh`, `run_ui_chooser.sh` and `run_ui_modal.sh` hold it to
 the checks Qt is held to, with the suites for trees, alignment, splits,

@@ -55,13 +55,16 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
 source tests/ui_backend.sh
-UI_SUITE_ON_TUI=1   # passes on the terminal backend too (tests/ui_backend.sh)
 ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
 
 work="$(mktemp -d)"
-trap 'rm -rf "$work"; pkill -KILL -f qt_modal_extent_fixture 2>/dev/null || true; pkill -KILL -f "gbasic tests/qt_modal_test.bas" 2>/dev/null || true' EXIT
+# THIS RUN'S MARK: an argument the fixture ignores, so a sweep by name finds
+# this run's interpreters and never another suite's -- run_ui_reentry runs
+# the same fixture, and the gate runs the two side by side
+mine="modal-suite-$$"
+trap 'rm -rf "$work"; pkill -KILL -f qt_modal_extent_fixture 2>/dev/null || true; pkill -KILL -f "qt_modal_test.bas $mine" 2>/dev/null || true' EXIT
 status=0
 pass() { printf '  ok   %s\n' "$1"; }
 fail() { printf '  FAIL %s\n' "$1"; status=1; }
@@ -106,7 +109,7 @@ fi
 printf 'TIER [C] semantics: four endings, the handler between them, and PARITY\n'
 set +e
 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic \
-    --line-buffered tests/qt_modal_test.bas > "$work/sem.out" 2> "$work/sem.err"
+    --line-buffered tests/qt_modal_test.bas "$mine" > "$work/sem.out" 2> "$work/sem.err"
 rc=$?
 if grep -q "SKIP no display" "$work/sem.out"; then
     printf '  SKIP (no display -- a modal window was NOT exercised)\n'
@@ -370,7 +373,7 @@ else
     # against a deadline, the way the extent tier above waits.
     set +e
     QT_ENABLE_REGEXP_JIT=0 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib \
-        vg_run_access_only ./gbasic tests/qt_modal_test.bas \
+        vg_run_access_only ./gbasic tests/qt_modal_test.bas "$mine" \
         >/dev/null 2>"$work/vg.err" &
     vg_pid=$!
     vg_killed=0
@@ -399,7 +402,7 @@ else
                 kill -9 "$vg_kid" 2>/dev/null
             done
             kill -9 "$vg_pid" 2>/dev/null
-            pkill -KILL -f "gbasic tests/qt_modal_test.bas" 2>/dev/null
+            pkill -KILL -f "qt_modal_test.bas $mine" 2>/dev/null
             vg_killed=1
             break
         fi
@@ -425,8 +428,8 @@ else
     # nothing this interpreter starts outlives it, and here it was the SUITE
     # breaking that promise about the interpreter -- which
     # run_process_lifetime.sh structurally cannot see.
-    if pgrep -f "gbasic tests/qt_modal_test.bas" >/dev/null 2>&1; then
-        pkill -KILL -f "gbasic tests/qt_modal_test.bas" 2>/dev/null
+    if pgrep -f "qt_modal_test.bas $mine" >/dev/null 2>&1; then
+        pkill -KILL -f "qt_modal_test.bas $mine" 2>/dev/null
         fail "the valgrind tier left a gbasic process behind (killed now, but the bound leaks children)"
     else
         pass "and nothing was left running afterwards"

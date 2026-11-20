@@ -164,8 +164,12 @@ fi
 # kept honest: if an ordinary program ever nests deeper than a handful, the cap
 # wants re-measuring rather than the check loosening -- which is the lesson
 # run_rules.sh's own bound records ("re-measure, do not just move the bound").
-printf 'TIER [C] depth: an ordinary window nests only a step or two\n'
-if ! build_has qt; then
+# QT'S OWN: GB_QT_DEPTH_TRACE is a trace in qt_backend.cpp, so this measures
+# Qt's handler depth and nothing else (the terminal's depth is its own)
+printf 'TIER [Q] depth: an ordinary window nests only a step or two\n'
+if ! ui_tier_qt; then
+    :
+elif ! build_has qt; then
     printf '  SKIP (no Qt in this build)\n'
 else
     worst=0

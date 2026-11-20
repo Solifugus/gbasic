@@ -14093,3 +14093,18 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Workaround:** `next_step`, `else if`, and the three-argument `mid`. For the
   ergonomics sweep: `mid` with no count (to the end) is the one worth
   weighing, since Python's slice and VB's `Mid(s, start)` both allow it.
+
+## 2026-11-20 — CC — while: writing the tui editor fixture (tests/ui_tui/editor.bas)
+- **Type:** diagnostic-gap
+- **Severity:** low
+- **What:** I wrote `cond ? a : b` twice from habit (C, JavaScript, Python's
+  `a if c else b` is the same reach). gBASIC has no conditional expression,
+  and the refusal is the lexer's bare "unexpected token" at the `?`, which
+  names neither the absence nor the fix. Measured with
+  `y = x > 0 ? "a" : "b"`: `lexer error at t.bas:2:11: unexpected token`.
+  The second surprise was a good one: a helper I named `keys` shadows the
+  builtin, and note 2102 said so at its declaration, before anything went
+  wrong.
+- **Workaround:** an `if` block assigning the variable. For the ergonomics
+  sweep: name the gap at the `?` ("gBASIC has no `? :`; write an `if` block"),
+  or weigh a conditional expression; START-HERE/UNLEARN say nothing about it.

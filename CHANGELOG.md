@@ -16,6 +16,24 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **`memo` and `source` in the terminal** (`docs/tui_design.md` increment
+  6): a multi-line editor in a frame. A `memo` wraps at words; a `source`
+  does not, and carries line numbers and marks in its margin. Every editor
+  verb works as on Qt and refuses in Qt's sentences (`ui.caret`,
+  `ui.select_text`, `ui.replace_text` as one undo step, `ui.highlight_text`,
+  `ui.mark`, `ui.gutter_press` and the rest). Enter, Tab, the arrows with
+  Shift, Ctrl+Z and Ctrl+Y, a bracketed paste and the mouse (press, Shift and
+  press, drag) edit as a person expects; Shift+Tab or Ctrl+Tab leaves.
+  - `ui.copy` and `ui.clipboard` work in the terminal: the clipboard is the
+    program's own, and a copy is also sent to the terminal (OSC 52).
+  - `colors` reads the colours a part is drawn in, in the terminal too.
+  - **In the terminal, a program's text into a field (`ui.write`, `ui.set`,
+    a form filling it) fires `changed`**, and so does a program's change
+    to a check, as Qt's do; an unset `max_length` reads 32767, as Qt's.
+  - **Every GUI suite now runs on the terminal backend as well as Qt**, except
+    run_ui_keys, which names why (`UI_SUITE_OFF_TUI`). 10 of the 14
+    `examples/ui` programs run there; the other 4 are refused by name for a
+    group the terminal lacks.
 - **Dialogs, the file chooser and modal windows in the terminal**
   (`docs/tui_design.md` increment 5). `ui.inform`, `ui.confirm`,
   `ui.answer` and `ui.dialog()` draw and answer a box over the window; the

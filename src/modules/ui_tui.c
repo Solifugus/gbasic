@@ -92,6 +92,8 @@ struct TuiNode {
     int grid_row, grid_col, across, down;
     char toolbar_shows[8];
     char emphasis[10];
+    /* a `memo` or a `source`: its editor (increment 6) */
+    struct TuiEdit *ed;
 };
 
 /* ---- increment 4 (src/modules/ui_tui_parts.c, included at the end) ------------ */
@@ -124,6 +126,26 @@ static int tuip_click_row(TuiNode *n, int row, int right, char *err, size_t err_
 static void tuip_item_press(TuiNode *item);
 static int tuip_is_grid(const TuiNode *n);
 
+/* ---- increment 6 (src/modules/ui_tui_editor.c, included at the end) ------------ */
+
+static int tuie_is(const TuiNode *n);
+static void tuie_free(TuiNode *n);
+static void tuie_set_text(TuiNode *n, const char *text);
+static void tuie_paste(TuiNode *n, const char *data, size_t len);
+static int tuie_drag_to(const TermEvent *ev);
+static int tuie_invoke(TuiNode *n, const char *method);
+static TuiNode *tuie_drag;
+static void tuie_part(TuiNode *p, const char *word, TuiNode *n);
+static void tuie_measure(TuiNode *n, int *w, int *h);
+static void tuie_draw(TuiNode *n);
+static int tuie_key(TuiNode *n, const TermEvent *ev);
+static int tuie_mouse(TuiNode *n, const TermEvent *ev);
+static void tuie_scroll_rows(TuiNode *n, int rows);
+static int tuie_set_text_prop(TuiNode *n, const char *prop, const char *value);
+static int tuie_set_bool(TuiNode *n, const char *prop, int value);
+static int tuie_set_number(TuiNode *n, const char *prop, double value);
+static int tuie_get(TuiNode *n, const char *prop, char *kind, double *num, char **text);
+
 static GbUiInvokeFn tui_g_invoke = NULL;
 static GbUiTickFn tui_g_tick = NULL;
 static GbUiClosedFn tui_g_closed = NULL;
@@ -150,7 +172,6 @@ static uint32_t tui_bg = TERM_DEFAULT, tui_fg = TERM_DEFAULT, tui_base = TERM_DE
                 tui_line = TERM_DEFAULT, tui_sel = TERM_DEFAULT, tui_on_sel = TERM_DEFAULT;
 
 static const char *const tui_later[][2] = {
-    { "memo", "6" }, { "source", "6" }, { "markdown", "6" },
     { NULL, NULL }
 };
 
@@ -253,6 +274,7 @@ static void tui_node_free(TuiNode *n) {
     if (tui_focus && tui_within(tui_focus, n)) {
         tui_focus = NULL;
     }
+    tuie_free(n);
     free(n->kids);
     free(n->name); free(n->label); free(n->text); free(n->hint); free(n->tip); free(n->title);
     free(n->on_pressed); free(n->on_changed); free(n->on_entered); free(n->on_context);
@@ -485,11 +507,17 @@ static void tui_clamp(const TuiNode *n, int *w, int *h) {
     if (n->max_h && *h > n->max_h) *h = n->max_h;
 }
 
+/* what a form captions in its column: a field, and a memo or a source,
+ * whose label is the row's caption in a form as on Qt */
+static int tui_form_captioned(const TuiNode *k) {
+    return tui_is(k, "field") || tui_is(k, "memo") || tui_is(k, "source");
+}
+
 static int tui_form_label_width(const TuiNode *n) {
     int lw = 0;
     for (int i = 0; i < n->nkids; i++) {
         TuiNode *k = n->kids[i];
-        if (k->visible && k->label && tui_is(k, "field")) {
+        if (k->visible && k->label && tui_form_captioned(k)) {
             int c = tui_text_cells(k->label) + 1;
             if (c > lw) {
                 lw = c;
@@ -597,6 +625,10 @@ static long tui_weight(const TuiNode *k, int along_row, int any_grow) {
      * and areas expand */
     if (!along_row && (tui_is(k, "table") || tui_is(k, "tree") || tui_is(k, "tabs") ||
                        tui_is(k, "split") || tui_is(k, "scroll"))) {
+        return 1;
+    }
+    /* a text editor takes room both ways, as Qt's QPlainTextEdit does */
+    if (tuie_is(k) && (!along_row || !any_grow)) {
         return 1;
     }
     if (along_row && !any_grow && tui_is(k, "field")) {
@@ -982,7 +1014,7 @@ static void tui_draw(TuiNode *n) {
     } else if (tui_is(n, "form")) {
         for (int i = 0; i < n->nkids; i++) {
             TuiNode *k = n->kids[i];
-            if (k->visible && k->label && tui_is(k, "field")) {
+            if (k->visible && k->label && tui_form_captioned(k)) {
                 tui_put_clipped(n->x + tui_margin(n), k->y, tui_form_label_width(n), k->label,
                                 tui_style(tui_fg, tui_bg, k->enabled ? 0 : TERM_DIM));
             }
@@ -1459,6 +1491,10 @@ static int tui_key_event(const TermEvent *ev) {
  * holds one line). */
 static void tui_paste(const TermEvent *ev) {
     TuiNode *f = tui_focus;
+    if (!tui_dialog_open() && tuie_is(f) && tui_top() && tui_within(f, tui_top())) {
+        tuie_paste(f, ev->data, ev->data_len);
+        return;
+    }
     if (!tui_dialog_open() && (!f || !tui_is(f, "field") || f->read_only || !f->enabled)) {
         return;
     }
@@ -1509,6 +1545,12 @@ static void tui_mouse_event(const TermEvent *ev) {
     }
     if (tuip_window_mouse(top, ev)) {
         return;
+    }
+    if (tuie_drag_to(ev)) {
+        return;
+    }
+    if (strcmp(ev->action, "release") == 0) {
+        tuie_drag = NULL;
     }
     TuiNode *h = tui_hit(top, ev->column - 1, ev->row - 1);
     if (h && tuip_mouse(h, ev)) {
@@ -1737,7 +1779,7 @@ static void *tui_part(void *parent, const char *word, const char *name, const ch
     TuiNode *p = parent;
     if (!(strcmp(word, "field") == 0 || strcmp(word, "button") == 0 || strcmp(word, "check") == 0 ||
           strcmp(word, "text") == 0 || strcmp(word, "stretch") == 0 || strcmp(word, "separator") == 0 ||
-          strcmp(word, "choice") == 0)) {
+          strcmp(word, "choice") == 0 || strcmp(word, "memo") == 0 || strcmp(word, "source") == 0)) {
         tui_not_yet(word, err, err_size);
         return NULL;
     }
@@ -1780,10 +1822,14 @@ static int tui_set_text(void *widget, const char *prop, const char *value, char 
         return own;
     }
     if (strcmp(prop, "text") == 0 && !tui_is(n, "window") && !tui_box(n)) {
+        int differs = strcmp(n->text ? n->text : "", value) != 0;
         tui_set(&n->text, value);
         if (tui_is(n, "field")) {
             n->caret = strlen(value);
             n->scroll = 0;
+            if (differs) {
+                tui_field_changed(n);   /* as Qt's textChanged, for a program's text too */
+            }
         }
         return 1;
     }
@@ -1855,7 +1901,14 @@ static int tui_set_bool(void *widget, const char *prop, int value, char *err, si
     if (strcmp(prop, "visible") == 0) { n->visible = value; return 1; }
     if (strcmp(prop, "enabled") == 0) { n->enabled = value; return 1; }
     if (strcmp(prop, "bold") == 0) { n->bold = value; return 1; }
-    if (strcmp(prop, "checked") == 0 && tui_is(n, "check")) { n->checked = value; return 1; }
+    if (strcmp(prop, "checked") == 0 && tui_is(n, "check")) {
+        int differs = !n->checked != !value;
+        n->checked = value != 0;
+        if (differs) {
+            tui_field_changed(n);   /* as Qt's toggled, for a program's change too */
+        }
+        return 1;
+    }
     if (strcmp(prop, "secret") == 0 && tui_is(n, "field")) { n->secret = value; return 1; }
     if (strcmp(prop, "read_only") == 0 && tui_is(n, "field")) { n->read_only = value; return 1; }
     if (strcmp(prop, "default") == 0 && tui_is(n, "button")) { n->is_default = value; return 1; }
@@ -1970,7 +2023,11 @@ static int tui_write(void *window, const char *name, const char *text, char *err
     }
     tui_dirty = 1;
     if (tui_is(n, "check")) {
+        int was = n->checked;
         n->checked = strcmp(text, "true") == 0 || strcmp(text, "1") == 0;
+        if (was != n->checked) {
+            tui_field_changed(n);
+        }
         return 1;
     }
     if (tui_is(n, "choice")) {
@@ -1979,10 +2036,18 @@ static int tui_write(void *window, const char *name, const char *text, char *err
     if (tui_box(n) || tuip_is_grid(n)) {
         return tui_say_no(n, "text", err, err_size);
     }
+    if (tuie_is(n)) {
+        tuie_set_text(n, text);
+        return 1;
+    }
+    int differs = strcmp(n->text ? n->text : "", text) != 0;
     tui_set(&n->text, text);
     if (tui_is(n, "field")) {
         n->caret = strlen(text);
         n->scroll = 0;
+        if (differs) {
+            tui_field_changed(n);   /* as Qt's textChanged, for a program's text too */
+        }
     }
     return 1;
 }
@@ -2011,6 +2076,30 @@ static int tui_get(void *window, const char *name, const char *prop, char *kind,
     if (strcmp(prop, "bold") == 0) TUI_B(n->bold);
     if (strcmp(prop, "focused") == 0) TUI_B(tui_focus == n);
     if (strcmp(prop, "font_size") == 0) TUI_N(n->font_size);
+    /* every character in a terminal is one width, or two */
+    if (strcmp(prop, "fixed_width") == 0) TUI_B(1);
+    /* WHAT THE PART IS DRAWN IN, in the theme record's names, as Qt's
+     * `name=#rrggbb;...`: the colours put in the screen's cells, before the
+     * redraw degrades them to the terminal's depth. A colour left as the
+     * terminal's own is not known here, so it is left out rather than
+     * guessed. */
+    if (strcmp(prop, "colors") == 0) {
+        const struct { const char *name; uint32_t c; } cs[] = {
+            { "bg", tui_bg }, { "base", tui_base }, { "ctl", tui_ctl }, { "fg", tui_fg },
+            { "faint", tui_faint }, { "line", tui_line }, { "sel", tui_sel }, { "on_sel", tui_on_sel } };
+        char buf[256];
+        size_t o = 0;
+        buf[0] = 0;
+        for (size_t i = 0; i < sizeof cs / sizeof cs[0]; i++) {
+            if (cs[i].c != TERM_DEFAULT) {
+                o += (size_t)snprintf(buf + o, sizeof buf - o, "%s%s=#%06x", o ? ";" : "", cs[i].name,
+                                      (unsigned)(cs[i].c & 0xFFFFFFu));
+            }
+        }
+        *kind = 'c';
+        *text = copy_string(buf);
+        return 1;
+    }
     if (strcmp(prop, "tip") == 0) TUI_T(n->tip);
     if (strcmp(prop, "emphasis") == 0) TUI_T(n->emphasis[0] ? n->emphasis : "none");
     /* a column is divided by a line running across, a row by one running down */
@@ -2046,7 +2135,8 @@ static int tui_get(void *window, const char *name, const char *prop, char *kind,
         if (strcmp(prop, "hint") == 0) TUI_T(n->hint);
         if (strcmp(prop, "secret") == 0) TUI_B(n->secret);
         if (strcmp(prop, "read_only") == 0) TUI_B(n->read_only);
-        if (strcmp(prop, "max_length") == 0) TUI_N(n->max_length);
+        /* unset reads as Qt's QLineEdit default, which is no limit in practice */
+        if (strcmp(prop, "max_length") == 0) TUI_N(n->max_length > 0 ? n->max_length : 32767);
         if (strcmp(prop, "shown_text") == 0) {
             char *s = tui_field_shown(n);
             *kind = 't';
@@ -2066,7 +2156,7 @@ static int tui_set_display_only(void *window, const char *name, int on, char *er
         return 0;
     }
     n->display_only = on;
-    if (tui_is(n, "field")) {
+    if (tui_is(n, "field") || tuie_is(n)) {
         n->read_only = on;
     } else if (tui_is(n, "check") || tui_is(n, "choice")) {
         n->enabled = !on;
@@ -2172,8 +2262,11 @@ static int tui_invoke(void *window, const char *target, const char *method, char
     if (strcmp(method, "raise") == 0) {
         return 1;
     }
-    if (strcmp(method, "select_all") == 0 || strcmp(method, "undo") == 0 || strcmp(method, "redo") == 0) {
-        return tui_not_yet(method, err, err_size);
+    if (tuie_is(n)) {
+        int own = tuie_invoke(n, method);
+        if (own != -1) {
+            return own;
+        }
     }
     return TUI_ERR("a `%s` has no `%s` to invoke", w, method);
 }
@@ -2399,7 +2492,7 @@ static char *tui_theme_names(void) {
 
 static int tui_theme_plain(void *window, const char *name, const char *theme, char *err, size_t err_size) {
     (void)window; (void)name; (void)theme;
-    return tui_not_yet("source", err, err_size);
+    return TUI_ERR("the tui backend has no `highlighting` group, which is where a theme's colours come from");
 }
 
 /* ---- the children of a box (ui.refresh, ui.children) ---------------------------- */
@@ -2488,14 +2581,80 @@ static char *tui_child_name(void *container, int index) {
 
 #define TUI_REFUSE(what) tui_not_yet(what, err, err_size)
 
-static int tui_copy(const char *text, long len, char *err, size_t err_size) {
-    (void)text; (void)len;
-    return TUI_REFUSE("copy");
+/* THE CLIPBOARD IS THE PROGRAM'S OWN, and the terminal is told too: a
+ * terminal is not asked what its clipboard holds (OSC 52's read is off in
+ * most, and answers through the input stream when it is on), so `ui.clipboard`
+ * answers what this program last copied -- unknown before any copy, "" after
+ * copying "", NUL carried, as on Qt. A copy is also sent as OSC 52 when the
+ * screen is a terminal, so a person can paste it elsewhere where the
+ * terminal allows that. */
+static char *tui_clip = NULL;
+static long tui_clip_len = -1;
+
+static void tui_osc52(const char *text, long len) {
+    static const char b64[] = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    size_t cap = (size_t)(len + 2) / 3 * 4 + 16;
+    char *out = malloc(cap);
+    if (!out) {
+        abort();
+    }
+    size_t o = 0;
+    memcpy(out, "\x1b]52;c;", 7);
+    o = 7;
+    const unsigned char *u = (const unsigned char *)text;
+    for (long i = 0; i < len; i += 3) {
+        unsigned v = (unsigned)u[i] << 16 | (i + 1 < len ? (unsigned)u[i + 1] << 8 : 0) | (i + 2 < len ? u[i + 2] : 0);
+        out[o++] = b64[v >> 18 & 63];
+        out[o++] = b64[v >> 12 & 63];
+        out[o++] = i + 1 < len ? b64[v >> 6 & 63] : '=';
+        out[o++] = i + 2 < len ? b64[v & 63] : '=';
+    }
+    out[o++] = '\x07';
+    term_write(out, o);
+    free(out);
 }
 
+static int tui_copy(const char *text, long len, char *err, size_t err_size) {
+    if (!tui_begin(err, err_size)) {
+        return 0;
+    }
+    char *copy = malloc((size_t)len + 1);
+    if (!copy) {
+        abort();
+    }
+    memcpy(copy, text ? text : "", (size_t)len);
+    copy[len] = 0;
+    free(tui_clip);
+    tui_clip = copy;
+    tui_clip_len = len;
+    if (tui_entered) {
+        tui_osc52(tui_clip, tui_clip_len);
+    }
+    return 1;
+}
+
+/* 1 with text (malloc'd), 0 nothing copied yet, -1 refused */
 static int tui_clipboard(char **text, long *len, char *err, size_t err_size) {
-    (void)text; (void)len;
-    return TUI_REFUSE("clipboard");
+    if (!tui_begin(err, err_size)) {
+        return -1;
+    }
+    if (tui_clip_len < 0) {
+        return 0;
+    }
+    char *copy = malloc((size_t)tui_clip_len + 1);
+    if (!copy) {
+        abort();
+    }
+    memcpy(copy, tui_clip, (size_t)tui_clip_len + 1);
+    if (text) {
+        *text = copy;
+    } else {
+        free(copy);
+    }
+    if (len) {
+        *len = tui_clip_len;
+    }
+    return 1;
 }
 
 static int tui_has_icon(void *window, const char *name, int *has, char *err, size_t err_size) {
@@ -2589,104 +2748,6 @@ static char *tui_layout_save(void *window, char *err, size_t err_size) {
 static int tui_layout_restore(void *window, const char *text, char *err, size_t err_size) {
     (void)window; (void)text;
     return TUI_ERR("the tui backend has no `docking` group");
-}
-
-static int tui_caret(void *window, const char *name, int *line, int *column, int *selecting, char *err,
-                     size_t err_size) {
-    (void)window; (void)name; (void)line; (void)column; (void)selecting;
-    return TUI_REFUSE("memo");
-}
-
-static int tui_caret_to(void *window, const char *name, int line, int column, char *err, size_t err_size) {
-    (void)window; (void)name; (void)line; (void)column;
-    return TUI_REFUSE("memo");
-}
-
-static int tui_select_text(void *window, const char *name, int line, int column, int line2, int column2,
-                           char *err, size_t err_size) {
-    (void)window; (void)name; (void)line; (void)column; (void)line2; (void)column2;
-    return TUI_REFUSE("memo");
-}
-
-static int tui_selection(void *window, const char *name, int *span, char **text, char *err, size_t err_size) {
-    (void)window; (void)name; (void)span; (void)text;
-    TUI_REFUSE("memo");
-    return -1;
-}
-
-static int tui_replace_text(void *window, const char *name, const int *spans, const char *const *texts,
-                            size_t n, char *err, size_t err_size) {
-    (void)window; (void)name; (void)spans; (void)texts; (void)n;
-    return TUI_REFUSE("memo");
-}
-
-static int tui_highlight_text(void *window, const char *name, const int *spans, size_t n, char *err,
-                              size_t err_size) {
-    (void)window; (void)name; (void)spans; (void)n;
-    return TUI_REFUSE("memo");
-}
-
-static int tui_highlights(void *window, const char *name, int **spans, size_t *n, char *err,
-                          size_t err_size) {
-    (void)window; (void)name; (void)spans; (void)n;
-    return TUI_REFUSE("memo");
-}
-
-static int tui_gutter_enable(void *window, const char *name, int numbers, int marks, char *err,
-                             size_t err_size) {
-    (void)window; (void)name; (void)numbers; (void)marks;
-    return TUI_REFUSE("source");
-}
-
-static int tui_gutter_info(void *window, const char *name, int *numbers, int *marks, int *width, char *err,
-                           size_t err_size) {
-    (void)window; (void)name; (void)numbers; (void)marks; (void)width;
-    return TUI_REFUSE("source");
-}
-
-static int tui_mark_kind(const char *category) {
-    static const char *const kinds[] = { "section", "break", "error", "warning", "note", NULL };
-    for (int i = 0; kinds[i]; i++) {
-        if (strcmp(kinds[i], category) == 0) {
-            return i;
-        }
-    }
-    return -1;
-}
-
-static const char *tui_mark_name(int kind) {
-    static const char *const kinds[] = { "section", "break", "error", "warning", "note" };
-    return kind >= 0 && kind < 5 ? kinds[kind] : NULL;
-}
-
-static int tui_mark_count(void) {
-    return 5;
-}
-
-static int tui_mark_set(void *window, const char *name, int kind, const int *lines, int count, char *err,
-                        size_t err_size) {
-    (void)window; (void)name; (void)kind; (void)lines; (void)count;
-    return TUI_REFUSE("source");
-}
-
-static int tui_mark_get(void *window, const char *name, int kind, int *out, int max, char *err,
-                        size_t err_size) {
-    (void)window; (void)name; (void)kind; (void)out; (void)max;
-    return TUI_REFUSE("source");
-}
-
-static int tui_gutter_press(void *window, const char *name, int line, char *err, size_t err_size) {
-    (void)window; (void)name; (void)line;
-    return TUI_REFUSE("source");
-}
-
-static int tui_gutter_click(int *line) {
-    (void)line;
-    return 0;
-}
-
-static void tui_gutter_painted(int *lines, int *marks, int *first) {
-    *lines = *marks = *first = 0;
 }
 
 static char *tui_highlight_language(void *window, const char *name) {
@@ -3912,6 +3973,8 @@ static int tui_answer_modal(void *window, int accept, char *err, size_t err_size
     return TUI_ERR("that window was not opened modally");
 }
 
+/* the editor first: the parts' hooks reach into its record */
+#include "ui_tui_editor.c"
 #include "ui_tui_parts.c"
 
 static const GbUiBackend ui_tui_backend = {

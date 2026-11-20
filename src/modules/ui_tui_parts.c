@@ -587,6 +587,10 @@ static void tuip_grid_widths(TuiNode *t, char **shown, long first, int nshown, i
 }
 
 static int tuip_measure(TuiNode *n, int *w, int *h) {
+    if (tuie_is(n)) {
+        tuie_measure(n, w, h);
+        return 1;
+    }
     if (tuip_is_grid(n)) {
         *w = 0;
         for (int c = 0; c < n->ncols; c++) {
@@ -900,6 +904,10 @@ static void tuip_draw_grid(TuiNode *t) {
 }
 
 static int tuip_draw(TuiNode *n) {
+    if (tuie_is(n)) {
+        tuie_draw(n);
+        return 1;
+    }
     if (tuip_is_grid(n)) {
         tuip_draw_grid(n);
         return 1;
@@ -1038,10 +1046,13 @@ static void tuip_reveal(TuiNode *n) {
 /* ---- keys and the mouse on these parts ---------------------------------------------- */
 
 static int tuip_focusable(const TuiNode *n) {
-    return tuip_is_grid(n) || tui_is(n, "choice") || (tui_is(n, "tabs") && n->nkids > 0);
+    return tuie_is(n) || tuip_is_grid(n) || tui_is(n, "choice") || (tui_is(n, "tabs") && n->nkids > 0);
 }
 
 static int tuip_key(TuiNode *f, const TermEvent *ev) {
+    if (tuie_is(f)) {
+        return tuie_key(f, ev);
+    }
     const char *k = ev->key;
     if (tuip_is_grid(f)) {
         long rows = tuip_rows(f);
@@ -1101,7 +1112,7 @@ static int tuip_key(TuiNode *f, const TermEvent *ev) {
 
 static TuiNode *tuip_scrollable(TuiNode *n) {
     for (; n; n = n->parent) {
-        if (tui_is(n, "scroll") || tuip_is_grid(n)) {
+        if (tui_is(n, "scroll") || tuip_is_grid(n) || tuie_is(n)) {
             return n;
         }
     }
@@ -1134,6 +1145,8 @@ static int tuip_wheel_at(TuiNode *n, double notches, int mods) {
         if (s && tui_is(s, "scroll")) {
             s->offset -= rows;
             if (s->offset < 0) s->offset = 0;
+        } else if (s && tuie_is(s)) {
+            tuie_scroll_rows(s, rows);
         } else if (s) {
             s->top -= rows;
             if (s->top < 0) s->top = 0;
@@ -1148,6 +1161,9 @@ static int tuip_mouse(TuiNode *hit, const TermEvent *ev) {
         tuip_wheel_at(hit, ev->button == 4 ? 1 : -1, (ev->mods & TERM_MOD_CTRL ? GB_UI_MOD_CTRL : 0) |
                                                       (ev->mods & TERM_MOD_SHIFT ? GB_UI_MOD_SHIFT : 0) |
                                                       (ev->mods & TERM_MOD_ALT ? GB_UI_MOD_ALT : 0));
+        return 1;
+    }
+    if (tuie_is(hit) && tuie_mouse(hit, ev)) {
         return 1;
     }
     if (strcmp(ev->action, "press") != 0) {
@@ -1279,6 +1295,16 @@ static void tuip_place_in_grid(TuiNode *row, TuiNode *n) {
 
 /* the leaves this file adds: `choice`, and a status bar's `text`/`stretch` */
 static int tuip_part(TuiNode *p, const char *word, TuiNode *n, char *err, size_t err_size) {
+    if (strcmp(word, "memo") == 0 || strcmp(word, "source") == 0) {
+        if (tui_is(p, "status")) {
+            return TUI_ERR("a status bar holds `text` and `stretch`, and `%s` is neither", word);
+        }
+        tuie_part(p, word, n);
+        if (tui_is(p, "row") && p->parent && tui_is(p->parent, "cells")) {
+            tuip_place_in_grid(p, n);
+        }
+        return 1;
+    }
     if (tui_is(p, "status") && strcmp(word, "text") != 0 && strcmp(word, "stretch") != 0) {
         return TUI_ERR("a status bar holds `text` and `stretch`, and `%s` is neither", word);
     }
@@ -1890,6 +1916,10 @@ static int tui_scrolled(void *window, const char *name, double *at, char *err, s
         *at = n->top * 16;
         return 2;
     }
+    if (tuie_is(n)) {
+        *at = n->ed->top;   /* an editor's scrollbar counts lines, on Qt too */
+        return 2;
+    }
     return 1;
 }
 
@@ -1906,6 +1936,12 @@ static int tui_scroll_to(void *window, const char *name, double at, char *err, s
     }
     if (tuip_is_grid(n)) {
         n->top = (int)(at / 16);
+        tui_dirty = 1;
+        tui_render();
+        return 1;
+    }
+    if (tuie_is(n)) {
+        n->ed->top = at > 0 ? (int)at : 0;
         tui_dirty = 1;
         tui_render();
         return 1;
@@ -1985,6 +2021,12 @@ static int tui_cell_of(void *window, const char *name, int *row, int *col, int *
 /* Each answers -1 when the part or word is not this file's, so the core's
  * own answer stands. */
 static int tuip_set_text(TuiNode *n, const char *prop, const char *value, char *err, size_t err_size) {
+    if (tuie_is(n)) {
+        int own = tuie_set_text_prop(n, prop, value);
+        if (own != -1) {
+            return own;
+        }
+    }
     if (tui_is(n, "item") && strcmp(prop, "text") == 0) {
         tui_set(&n->text, value);
         return 1;
@@ -2027,8 +2069,15 @@ static int tuip_set_text(TuiNode *n, const char *prop, const char *value, char *
 }
 
 static int tuip_set_bool(TuiNode *n, const char *prop, int value, char *err, size_t err_size) {
-    (void)err;
-    (void)err_size;
+    if (tuie_is(n)) {
+        int own = tuie_set_bool(n, prop, value);
+        if (own != -1) {
+            return own;
+        }
+    } else if (strcmp(prop, "whitespace") == 0) {
+        return TUI_ERR("`whitespace` is a setting of a `source` or a `memo`, and `%s` is neither",
+                       n->name ? n->name : n->word);
+    }
     int *slot = NULL;
     if (tuip_is_grid(n)) {
         if (strcmp(prop, "headings") == 0) slot = &n->headings;
@@ -2052,6 +2101,12 @@ static int tuip_set_bool(TuiNode *n, const char *prop, int value, char *err, siz
 }
 
 static int tuip_set_number(TuiNode *n, const char *prop, double value, char *err, size_t err_size) {
+    if (tuie_is(n)) {
+        int own = tuie_set_number(n, prop, value);
+        if (own != -1) {
+            return own;
+        }
+    }
     if (tuip_is_grid(n) && n->is_tree && strcmp(prop, "indent") == 0) {
         n->indent = tui_cells_across(value);
         if (n->indent < 1) n->indent = 1;
@@ -2088,6 +2143,9 @@ static int tuip_set_number(TuiNode *n, const char *prop, double value, char *err
 }
 
 static int tuip_get(TuiNode *n, const char *prop, char *kind, double *num, char **text) {
+    if (tuie_is(n) && tuie_get(n, prop, kind, num, text)) {
+        return 1;
+    }
 #define TUIP_B(v) do { *kind = 'b'; *num = (v); return 1; } while (0)
 #define TUIP_N(v) do { *kind = 'n'; *num = (v); return 1; } while (0)
 #define TUIP_T(v) do { *kind = 't'; *text = copy_string((v) ? (v) : ""); return 1; } while (0)
@@ -2143,6 +2201,8 @@ static int tuip_get(TuiNode *n, const char *prop, char *kind, double *num, char 
 }
 
 static char **tuip_event_slot(TuiNode *n, const char *signal) {
+    if (strcmp(signal, "changed") == 0 && tuie_is(n)) return &n->on_changed;
+    if (strcmp(signal, "gutter") == 0 && tuie_is(n) && n->ed->source) return &n->ed->on_gutter;
     if (strcmp(signal, "chosen") == 0 && tuip_is_grid(n)) return &n->on_chosen;
     if (strcmp(signal, "activated") == 0 && (tuip_is_grid(n) || tui_is(n, "choice"))) return &n->on_activated;
     if (strcmp(signal, "changed") == 0 && (tui_is(n, "choice") || tui_is(n, "tabs") || tui_is(n, "item"))) return &n->on_changed;

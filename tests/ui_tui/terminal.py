@@ -132,6 +132,29 @@ def tier_live_dialogs(gbasic, fixtures):
     r.close()
 
 
+def tier_live_editor(gbasic, fixtures):
+    r = Run(gbasic, [os.path.join(fixtures, "live_editor.bas")], cols=40, rows=12, env=NO_DISPLAY)
+    check(r.wait_err("backend tui", 10), "increment 6 live: the terminal was chosen")
+    r.pump(0.5)
+    # the memo has the focus: its frame's top is row 2, its text starts at
+    # row 3, column 2 (1-based)
+    r.send(b"ab\rcd", 0.3)                         # typed, Enter a new line
+    r.send(b"\x1b[200~xy\nz\x1b[201~", 0.3)      # a bracketed paste
+    r.send(b"\x1b[<0;3;3M\x1b[<0;3;3m", 0.2)      # a press between a and b
+    r.send(b"Q", 0.2)
+    # a press at the start of line 2, dragged two cells right: "cd"
+    r.send(b"\x1b[<0;2;4M\x1b[<32;4;4M\x1b[<0;4;4m", 0.2)
+    r.send(b"\x7f", 0.2)                            # Backspace takes the selection
+    r.send(b"\x1b[Z", 0.2)                          # Shift+Tab leaves the memo, round to Done
+    r.send(b"\r", 0.3)
+    check(r.wait_err("text aQb|xy|z caret 2:1", 5),
+          "typed, pasted with its line break, pressed into, dragged across and cut: %r" % r.err())
+    st = r.finish(10)
+    check(st is not None and os.WIFEXITED(st) and os.WEXITSTATUS(st) == 0, "increment 6 live: exit 0")
+    check(settings_equal(r.settings(), fresh_settings()), "increment 6 live: the pty's settings after equal a fresh pty's")
+    r.close()
+
+
 def tier_needs(gbasic, fixtures):
     prog = os.path.join(fixtures, "needs.bas")
     r = Run(gbasic, [prog], cols=40, rows=12, env=NO_DISPLAY)
@@ -144,6 +167,7 @@ def tier_needs(gbasic, fixtures):
 def main():
     tier, gbasic, fixtures = sys.argv[1], sys.argv[2], sys.argv[3]
     {"live": tier_live, "live_parts": tier_live_parts, "live_dialogs": tier_live_dialogs,
+     "live_editor": tier_live_editor,
      "needs": tier_needs}[tier](gbasic, fixtures)
     return 1 if drive.failures else 0
 

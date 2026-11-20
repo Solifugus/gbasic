@@ -7,7 +7,9 @@ the selection rule, `needs:` and sizes in characters (2026-11-19, §3.5), and
 increment 4, the rows, the furniture and the regions (2026-11-20, §3.6;
 `docs/reference.md`, *The terminal backend*; `tests/run_ui_tui.sh`), and
 increment 5, the dialogs, the file chooser and `open_modal` (2026-11-20,
-§3.7). The Windows console (2) and increments 6 and 7 are not. §8 holds the questions for
+§3.7), and increment 6, `memo` and `source` (2026-11-20, §3.8), after which
+every GUI suite runs on this backend too. The Windows console (2) and
+increment 7 are not. §8 holds the questions for
 Matthew. **Q1 ruled the same day: our own terminal layer, not
 ncurses** (Matthew: "our own terminal layer sounds fine ... time to leave
 that to the history books"). **Q2 ruled 2026-11-19: §4's selection rule** (Matthew: "The terminal is a
@@ -233,8 +235,11 @@ on the TUI.
 - **The theme record** (`bg`, `base`, `ctl`, `hi`, `fg`, `faint`, `line`,
   `sel`, `on_sel`) maps onto cell colours directly. It degrades with the
   colour depth (§2.2). Its icon-file fields draw nothing.
-- **`colors`** reads back the colours actually drawn, after degrading, so a
-  program can see what the user sees.
+- **`colors`** reads back the colours a part is drawn in, as Qt's reads its
+  palette. Measured in building (§3.8), it reads the colours put in the
+  screen's cells, before the redraw degrades them to the terminal's depth,
+  and a colour left as the terminal's own is not in the answer, since this
+  side cannot know it.
 
 ### 3.5 What increment 3 built, and what it decided
 
@@ -264,7 +269,8 @@ increment that draws it. Decisions made in building:
   `GBASIC_TUI_DUMP=PATH`, this backend's `offscreen`.
 - **Left out of the other GUI suites' passes** (`tests/ui_backend.sh`,
   `UI_SUITES_SKIP_BACKENDS`) until it covers the core, since each `[C]` tier
-  using a table or a dialog would fail for a reason already known.
+  using a table or a dialog would fail for a reason already known. (Since
+  increment 6 it is in them all, §3.8.)
   `tests/run_ui_tui.sh` measures it, with a fourth tier class, `[T]`, for this
   backend's own tiers.
 - **The automatic choice reads `needs:` from every declared window**, noted
@@ -405,7 +411,8 @@ holds such a window now, and frees it when no handler is on the stack.
 **Measured against the contract.** run_ui_dialog, run_ui_chooser and
 run_ui_modal pass on `tui` with every check Qt is held to, and with the five
 suites increment 4 measured, they now run on it in the gate: a suite that
-passes there says `UI_SUITE_ON_TUI=1` (`tests/ui_backend.sh`). A new
+passes there says `UI_SUITE_ON_TUI=1` (`tests/ui_backend.sh`; replaced by
+the opt-out in §3.8). A new
 `[C]` tier in run_ui_dialog, `stop`, holds the stop rule on both backends:
 `ui.stop()` inside a box answers it `false`, and a raise in a watcher body
 ends the program with that raise. Qt already behaved so.
@@ -424,6 +431,121 @@ ends the program with that raise. Qt already behaved so.
 - `open_modal` needing `windows` again (run_ui_vocabulary's control, and
   `dialogs`). That control first compared stderr too, and Qt's locale
   warning made it red unperturbed; it reads the answer alone now.
+
+### 3.8 What increment 6 built, and what it found
+
+Built 2026-11-20 in `src/modules/ui_tui_editor.c`: `memo` and `source`, with
+every editor verb (`ui.caret`, `ui.caret_to`, `ui.select_text`,
+`ui.selection`, `ui.replace_text`, `ui.highlight_text`, `ui.highlights`) and
+a `source`'s margin (`line_numbers:`, `marks:`, `ui.mark`, `ui.marks`,
+`ui.gutter`, `ui.gutter_press`, `ui.gutter_click`). Also built, because the
+suites needed them once they could run here: `ui.copy` and `ui.clipboard`,
+and `colors`. The keys are in `docs/reference.md`, *The terminal backend*.
+Decided in building:
+
+- **One editor, two setups**, as Qt's two are one QPlainTextEdit: a `memo`
+  wraps after the last space that fits and its tab is 8 cells; a `source`
+  does not wrap, the view following the caret sideways, and its tab is 4.
+- **An editor has a frame**, since an empty text box in a terminal is
+  otherwise blank cells. The frame is bold while the editor has the focus,
+  and its right side carries a thumb showing how far down the view is.
+- **The text is the node's text**, a line feed between lines, so
+  `ui.read`, `ui.write` and a form's binding reach it as they reach a
+  field's. Every position goes through one resolver with Qt's rules and
+  sentences: 1-based lines and codepoint columns, a line past the end
+  refused with the real length, a column past its line clamped.
+- **Tab is the editor's**, as on Qt; Shift+Tab and Ctrl+Tab leave. A
+  read-only editor lets Tab and Enter go to the window.
+- **Undo keeps whole texts**, at most 400 steps. Typing joins the step
+  before it; a move, a delete, a paste or anything a program does starts a
+  new one. `ui.write` clears the history, as Qt's `setPlainText` does, and
+  `ui.replace_text` is one step however many edits it carries.
+- **A marked range moves with its text** when an edit comes before it, as a
+  QTextCursor does. Marks in the margin do not: they are what the program
+  set, unfiltered, as on Qt.
+- **The label is Qt's rule**: in a form it is the row's caption; anywhere
+  else it is the first text.
+- **A mark is one glyph a line**, the most urgent: ● a breakpoint, `E` an
+  error, `W` a warning, `i` a note, § a section.
+- **`ui.scrolled` counts lines for an editor**, because Qt's does: a
+  QPlainTextEdit's scrollbar counts lines, not pixels. Measured by
+  run_ui_wheel and cookbook recipe 19, which agree with Qt only that way.
+- **The clipboard is the program's own.** A terminal will not say what its
+  clipboard holds, so `ui.clipboard` answers what this program last copied:
+  `unknown` before any copy, `""` after copying `""`, NULs carried. A copy is
+  also sent to the terminal as OSC 52, for the terminals that pass it on.
+- **`colors` reads the colours given to the screen's cells**, before the
+  redraw degrades them. A colour left as the terminal's own is not in the
+  answer, since it is not known here. §3.3 said "after degrading", which
+  nothing here can read; corrected there.
+
+**Found in building:**
+- **A program's text into a field fired no `changed`**, where Qt's
+  `textChanged` fires for `ui.write`, `ui.set` and a form filling the field,
+  as well as for typing. Cookbook recipe 06 found it on `tui`: its Save item
+  stayed disabled after the program wrote a title. A check written by the
+  program now fires `changed` too, as Qt's `toggled` does. The drive
+  fixture's expected lines gained `name changed to [Bo]`, the form filling
+  its field at open, which Qt prints too (measured).
+- **An unset `max_length` read 0**, where Qt's QLineEdit reads 32767. It
+  reads 32767 now (cookbook recipe 01).
+- **run_ui_reentry's `depth` tier was Qt's own**, a trace in
+  `qt_backend.cpp`, but classed `[C]`; on `tui` it measured nothing and
+  failed saying so. It is `[Q]` now.
+- **run_ui_modal killed processes by name**: any interpreter running
+  `tests/qt_modal_test.bas`, which run_ui_reentry's depth tier also runs.
+  With the two side by side, as the gate may run them, one could kill or
+  count the other's. Seen once, in a run of every GUI suite four at a time:
+  the modal suite's terminal pass reported "the valgrind tier left a gbasic
+  process behind". Its runs now carry a mark of their own (`modal-suite-$$`),
+  and its sweeps match only that. Separately, one run of the modal suite
+  failed in its terminal pass with output I did not keep; twelve runs
+  since have passed. Not explained.
+- **Three cookbook recipes print facts about their backend**: a terminal's
+  `font_size` reads 0 until a program sets one (its font is the user's); an
+  odd number of cells cannot be split evenly; a viewport asks for the cells
+  it shows, and a terminal's shows fewer. Each holds the terminal's lines in
+  `<recipe>.tui.out` beside the `.out` the page quotes
+  (`tests/cookbook_harness.sh`).
+- **run_ui_keys stays off the terminal**, saying why: its refusals name
+  Qt's classes (`QPushButton`, `QAction`, `QLineEdit`) where the
+  vocabulary's words belong, and a `button` takes no shortcut here yet. The
+  class names are a leak in Qt's own sentences, for the ergonomics sweep.
+
+**Measured against the contract.**
+- **Every GUI suite runs on this backend now.** `tests/ui_backend.sh` runs
+  each on every built backend by default. A suite that cannot yet pass here
+  names why in `UI_SUITE_OFF_TUI`, and its pass prints that reason as a
+  SKIP. 28 of the 29 run here and pass; run_ui_keys is the one off.
+- **The examples target is met.** Of the 14 in `examples/ui`, 10 run in check
+  mode. `editor` (`highlighting`), `notes` and `theme` (`stylesheet`) and
+  `shell` (`icons`) are refused by name for a group the terminal lacks.
+
+**Not done here:** no copy, cut or paste keys inside an editor (a
+terminal's own paste arrives as a bracketed paste and is taken), no find
+box of its own (the verbs are there for a program's), wrapping only at
+spaces, and no colours for code, which is increment 7.
+
+**Perturbed, each red:**
+- wrapping cut inside a word (`editor`: the golden, the hand-worked Up, the
+  wrap check);
+- typing never joining a step (`editor`: one Ctrl+Z took back one letter);
+- `ui.replace_text` a step per edit (`editor`: one Ctrl+Z undid one of two);
+- a marked range left where it was through an edit above it (`editor`);
+- Tab not taken by the editor (`editor`);
+- an editor never freed (run_ui_tui `valgrind`, a definite leak);
+- a program's text into a field firing no `changed` (cookbook recipe 06, on
+  `tui`);
+- an editor's scroll answered in sixteenths, as a table's is (run_ui_wheel,
+  on `tui`: 640 for 40);
+- an empty clipboard answering `""` (run_ui_clipboard, on `tui`).
+
+**Three went GREEN first**, and each is now a check: Up and Down keeping no
+column (the fixture never crossed a shorter line; it now goes Up onto line
+8 and back to column 50), a margin line off screen pressed anyway (nothing
+pressed one; the refusals fixture now does, and Qt refuses it in the same
+sentence), and a memo's label taken as a caption outside a form (nothing
+read it back; the refusals fixture now reads `notes`). Each is red now.
 
 ### 3.4 The event-loop contract
 
@@ -525,6 +647,8 @@ not yet, and the target was mis-sequenced.** Of the 14, `customer`,
 lacks (`highlighting`, `stylesheet`, `icons`), as they should be; and the
 other five (`browser`, `clock`, `dialogs`, `menus`, `tabs`) stop at a
 `memo`, which increment 6 draws. So the target moves to increment 6.
+**Measured at increment 6 (2026-11-20): met.** Ten of the 14 run in check
+mode; the same four are refused by name for their groups (§3.8).
 
 ## 8. Questions for Matthew
 

@@ -116,6 +116,13 @@ extract_block() {
 for r in $recipes; do
     bas="$DIR/$r.bas"
     out="$DIR/$r.out"
+    # A RECIPE WHOSE OUTPUT IS A FACT ABOUT ITS BACKEND (a viewport's cell
+    # count, a size in cells) holds that backend's lines in <recipe>.<be>.out
+    # beside the one the page quotes; GBASIC_UI names the pass's backend.
+    page_out="$out"
+    if [ -n "${GBASIC_UI:-}" ] && [ -f "$DIR/$r.$GBASIC_UI.out" ]; then
+        out="$DIR/$r.$GBASIC_UI.out"
+    fi
 
     if declare -F cookbook_recipe_skip >/dev/null 2>&1 && cookbook_recipe_skip "$r"; then
         skip=$((skip + 1))
@@ -188,9 +195,9 @@ for r in $recipes; do
     extract_block "<!--OUT:$r-->" > "$blk"
     if [ ! -s "$blk" ]; then
         note_fail "$DOC (no output block for $r)"
-    elif ! diff -u "$out" "$blk" >/dev/null 2>&1; then
-        note_fail "$DOC output block for $r differs from $out -- run $SYNC"
-        diff -u "$out" "$blk" | head -15
+    elif ! diff -u "$page_out" "$blk" >/dev/null 2>&1; then
+        note_fail "$DOC output block for $r differs from $page_out -- run $SYNC"
+        diff -u "$page_out" "$blk" | head -15
     else
         printf 'PASS out  %s\n' "$r"
         pass=$((pass + 1))

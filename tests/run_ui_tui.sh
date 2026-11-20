@@ -33,7 +33,15 @@
 #                 refused in the box, save and folder kinds), a modal window
 #                 as a box over its owner (Enter accepts, Escape rejects);
 #                 the screens held to tests/ui_tui/dialogs.txt.
-#   [T] refusals  a part the increment does not draw names its increment;
+#   [T] editor    increment 6 by keys: a memo wrapping at words, Enter, Up
+#                 and Down keeping a column, Shift selecting, Backspace,
+#                 undo by steps and redo, Tab typed and Ctrl+Tab leaving; a
+#                 source numbered and unwrapped, scrolled to its caret,
+#                 marked, white space shown, a margin press, select_text,
+#                 replace_text undone in one step, a marked range moving
+#                 with its text, read_only; held to tests/ui_tui/editor.txt.
+#                 Then the editor's refusals, Qt's sentences word for word.
+#   [T] refusals  a `source` needing `highlighting` is refused by group;
 #                 no terminal names itself and GBASIC_TUI_SCREEN; a window
 #                 needing `docking` is refused naming qt; a `needs:` that is
 #                 no group; warning 2124 for an icon with no label.
@@ -45,9 +53,12 @@
 #   [T] live_dialogs  a real pty: a question by Enter and by Left, a
 #                 statement by a mouse press on OK, the chooser by arrows
 #                 and by a lone Escape.
+#   [T] live_editor  a real pty: a memo typed into, a bracketed paste with
+#                 its line break, a mouse press placing the caret, a drag
+#                 selecting, Backspace taking it, Shift+Tab leaving.
 #   [T] needs     a program whose declared windows need `docking`, run where
 #                 only the terminal could draw.
-#   [T] valgrind  the drive, parts and dialogs fixtures.
+#   [T] valgrind  the drive, parts, dialogs and editor fixtures.
 . "$(dirname "$0")/portable.sh"
 set -u
 cd "$(dirname "$0")/.."
@@ -94,6 +105,7 @@ printf 'TIER [T] drive: the keys a person presses, with no terminal\n'
 if ui_tier_tui; then
     cat >"$work/drive.want" <<'EOF'
 tui
+name changed to [Bo]
 focus name
 name changed to [BoA]
 name changed to [BA]
@@ -136,7 +148,7 @@ open after close: false
 EOF
     GBASIC_UI=tui GBASIC_TUI_SCREEN=50x14 "$GB" tests/ui_tui/drive.bas >"$work/drive.got" 2>"$work/drive.err"
     if cmp -s "$work/drive.got" "$work/drive.want" && [ ! -s "$work/drive.err" ]; then
-        pass "41 lines, each what the keys must have done (the form's 'Bo', Left then Backspace, max_length 8, bullets, Tab skipping the disabled check, Enter on a check pressing OK)"
+        pass "42 lines, each what the keys must have done (the form's 'Bo' firing changed as on Qt, Left then Backspace, max_length 8, bullets, Tab skipping the disabled check, Enter on a check pressing OK)"
     else
         fail "drive differs from what the keys must do:"
         diff "$work/drive.want" "$work/drive.got" | head -12 | sed 's/^/       /'
@@ -266,22 +278,77 @@ if ui_tier_tui; then
     fi
 fi
 
+# ------------------------------------------------------------------- EDITOR
+printf 'TIER [T] editor: increment 6, a memo and a source by the keys a person presses\n'
+if ui_tier_tui; then
+    GBASIC_UI=tui GBASIC_TUI_SCREEN=40x20 GBASIC_TUI_DUMP="$work/ed.dump" "$GB" tests/ui_tui/editor.bas \
+        </dev/null >"$work/ed.got" 2>&1
+    if cmp -s "$work/ed.got" tests/ui_tui/editor.txt; then
+        pass "every answer and every screen as tests/ui_tui/editor.txt holds them"
+    else
+        fail "the editor differs from tests/ui_tui/editor.txt:"
+        diff tests/ui_tui/editor.txt "$work/ed.got" | head -14 | sed 's/^/       /'
+    fi
+    # AND WHAT A GOLDEN CANNOT ARGUE WITH, each worked by hand: 64 letters
+    # typed, one change each; Up from column 7 of line 2 onto the wrapped
+    # row that starts at column 36 (36 + 6 = 42); the selected line; the
+    # margin press; the marked range a line lower after Enter above it
+    for want in "caret 1:65, changed 64 times" \
+                "Up from 2:7 lands on the wrapped row's column 7: caret 1:42" \
+                "Home, Shift+End selects [second] 2:1-2:7" \
+                "Ctrl+Z again takes the typing as one step: [The quick brown fox jumps over the lazy dog and keeps on running|]" \
+                "Ctrl+Tab moves on to code" "gutter pressed at line 9" \
+                "Up onto the short line 8: 8:7" "Down keeps the column it came from: 9:50" \
+                "select_text 2:1-3:5 holds [line 2|line], caret 3:5 selecting" \
+                "a marked range moves with its text, a line down: 5:1-5:5" \
+                "read_only takes no typing: true" "ok pressed"; do
+        grep -qxF "$want" "$work/ed.got" || fail "no line \`$want\`"
+    done
+    # the memo wraps at a word: no row ends inside one
+    if grep -qF '|│The quick brown fox jumps over the    │' "$work/ed.got" &&
+       grep -qF '|│lazy dog and keeps on running         │' "$work/ed.got"; then
+        pass "a memo wraps after the last space that fits, not inside a word"
+    else
+        fail "the memo did not wrap at the word"
+    fi
+    cat >"$work/ref.want" <<'EOF'
+notes
+ui.mark: only a `source` has a margin, and `m` is not one
+ui.mark: `source s` does not carry marks; declare it `source s( marks: true )` so the margin reserves its space before the window is shown
+ui.caret_to: that line is past the end -- this editor holds 1
+ui.select_text: a range ends before it starts -- give the earlier position first
+ui.replace_text: `m` is read-only, so its text cannot be replaced as an edit
+ui.replace_text: edits 1 and 2 overlap, so the result would depend on their order -- nothing was changed
+ab
+ui.caret: there is nothing called `notthere` in this window
+{"line":1,"column":1,"selecting":false}
+ui.gutter_press: `source s` has no such line on screen
+EOF
+    GBASIC_UI=tui GBASIC_TUI_SCREEN=40x20 "$GB" tests/ui_tui/editor_refusals.bas </dev/null >"$work/ref.got" 2>&1
+    if cmp -s "$work/ref.got" "$work/ref.want"; then
+        pass "a memo's label as its text outside a form, and the editor's refusals, each Qt's sentence"
+    else
+        fail "the editor's refusals differ:"
+        diff "$work/ref.want" "$work/ref.got" | head -10 | sed 's/^/       /'
+    fi
+fi
+
 # ----------------------------------------------------------------- REFUSALS
 printf 'TIER [T] refusals: each by name\n'
 if ui_tier_tui; then
     cat >"$work/later.bas" <<'EOF'
 window w( title: "x" )
     column
-        memo c( label: "notes" )
+        source c( language: "gbasic" )
     end column
 end window
 ui.open(w)
 EOF
     got=$(GBASIC_UI=tui GBASIC_TUI_SCREEN=50x12 "$GB" "$work/later.bas" 2>&1)
     case "$got" in
-        *"the tui backend does not draw \`memo\` yet (docs/tui_design.md §7, increment 6)"*)
-            pass "a memo names the increment that draws it" ;;
-        *) fail "memo: $got" ;;
+        *"\`highlighting\`"*)
+            pass "a source with a language needs \`highlighting\`, refused by its group" ;;
+        *) fail "highlighting: $got" ;;
     esac
     printf 'print ui.backend()\n' >"$work/be.bas"
     if [ "$("$GB" --ui=tui "$work/be.bas" 2>&1)" = tui ] && [ "$(GBASIC_UI=tui "$GB" "$work/be.bas" 2>&1)" = tui ]; then
@@ -361,7 +428,7 @@ fi
 mkdir -p "$work/livepick"
 : >"$work/livepick/a.txt"; : >"$work/livepick/b.txt"
 export TUI_PICK="$work/livepick"
-for t in live live_parts live_dialogs needs; do
+for t in live live_parts live_dialogs live_editor needs; do
     printf 'TIER [T] %s: a real terminal\n' "$t"
     if ! ui_tier_tui; then
         continue
@@ -381,14 +448,16 @@ for t in live live_parts live_dialogs needs; do
 done
 
 # ----------------------------------------------------------------- VALGRIND
-printf 'TIER [T] valgrind: the drive, parts and dialogs fixtures\n'
+printf 'TIER [T] valgrind: the drive, parts, dialogs and editor fixtures\n'
 if ui_tier_tui; then
     if ! vg_available; then
         printf '  SKIP (no valgrind -- NOT measured)\n'
     elif GBASIC_UI=tui GBASIC_TUI_SCREEN=50x14 vg_run "$GB" tests/ui_tui/drive.bas >/dev/null 2>"$work/vg.log" \
          && GBASIC_UI=tui GBASIC_TUI_SCREEN=60x16 vg_run "$GB" tests/ui_tui/parts.bas >/dev/null 2>>"$work/vg.log" \
-         && GBASIC_UI=tui GBASIC_TUI_SCREEN=60x16 GBASIC_TUI_DUMP="$work/vgd.txt" vg_run "$GB" tests/ui_tui/dialogs.bas "$work/pick" </dev/null >/dev/null 2>>"$work/vg.log"; then
-        pass "the drive, parts and dialogs fixtures: no invalid access, no definite leak, no descriptor left"
+         && GBASIC_UI=tui GBASIC_TUI_SCREEN=60x16 GBASIC_TUI_DUMP="$work/vgd.txt" vg_run "$GB" tests/ui_tui/dialogs.bas "$work/pick" </dev/null >/dev/null 2>>"$work/vg.log" \
+         && GBASIC_UI=tui GBASIC_TUI_SCREEN=40x20 GBASIC_TUI_DUMP="$work/vge.txt" vg_run "$GB" tests/ui_tui/editor.bas </dev/null >/dev/null 2>>"$work/vg.log" \
+         && GBASIC_UI=tui GBASIC_TUI_SCREEN=40x20 vg_run "$GB" tests/ui_tui/editor_refusals.bas </dev/null >/dev/null 2>>"$work/vg.log"; then
+        pass "the drive, parts, dialogs and editor fixtures: no invalid access, no definite leak, no descriptor left"
     else
         fail "valgrind:"
         grep -E "Invalid|definitely|ERROR SUMMARY|Open file" "$work/vg.log" | head -8 | sed 's/^/       /'

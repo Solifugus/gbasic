@@ -49,7 +49,6 @@ set -uo pipefail
 cd "$(dirname "$0")/.."
 source tests/build_has.sh
 source tests/ui_backend.sh
-UI_SUITE_ON_TUI=1   # passes on the terminal backend too (tests/ui_backend.sh)
 ui_each_backend "$0" "$@"
 source tests/valgrind_tier.sh
 make >/dev/null
