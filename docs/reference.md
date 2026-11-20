@@ -9151,6 +9151,9 @@ print rows[count(.lines[.qty > 4]) > 0].item   ' ["hammer","nails"]
 - **A row is kept when every condition is true**, as SQL's `WHERE` keeps it,
   so a condition that is `unknown` drops the row: the nails above have no
   `paid`, so neither `.paid` nor `not .paid` keeps them. Commas are `and`.
+  **This is not what a hand-written `if` does**: `if r.paid then` raises on
+  an `unknown`, where the bracket drops the row in silence, so converting
+  such a loop changes a failure into an absence.
 - **Any gBASIC expression may be a condition**, unlike a path's, which must
   become SQL. Brackets inside one filter that row's own array.
 - **In a brace chain a filter is a step**: `rows{ item }.lines[.qty > 3]{ sku }`.

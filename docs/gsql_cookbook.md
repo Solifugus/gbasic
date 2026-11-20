@@ -1614,6 +1614,8 @@ Grand total            3875.50  (6 sales)
 
 **A path names rows the way a program thinks of them**: `shop.customer[3]` is a customer, `shop.customer[3].invoice` that customer's invoices, `shop.invoice[10].customer` an invoice's customer. Dots name tables, a bracket holds a key or filters whose columns are dotted, and braces choose columns, joining when they come before a step. A path is one SQL statement, run by the same rules as a block's; `.sql()` shows it, nothing run.
 
+**The same spelling works on the rows once they are in memory**: `rows{ name, city }` and `rows[.city = "Rome"]` on an ordinary array of records answer what a path's braces and brackets would, so a program keeps shaping what it read without changing notation (`docs/reference.md`, *Braces* and *Brackets*).
+
 <!--CODE:19_paths_reading-->
 
 ```basic

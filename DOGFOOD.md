@@ -109,13 +109,13 @@ A third was filed the same day while settling §7's partial-upload question:
 
 | | what | where |
 |---|---|---|
-| 8 | **`lock(f)` has no non-blocking form**, so a program cannot ask *"is another process writing this?"* without committing to wait — measured, a reader blocked **2.91 s** against a holder that held for three. That is the only sound readiness check for a file still arriving (a stability window is a race, measured losing three times in one 2.8 s upload), and as a probe it is unusable: a scan of a thousand dropped files stalls on the first one. The reference also did not say `lock` waits at all, which made a hang the undocumented outcome; that sentence is added. | 2026-10-15 entry |
+| 8 | ~~**`lock(f)` has no non-blocking form**~~ **FIXED by 0.11.0, struck 2026-11-20**: `lock(f, { wait: false })` answers `false` at once when another process holds it (`docs/reference.md`, measured 2026-11-20; held by `tests/run_book_gaps.sh`, a try-lock against a second process). The rest of this row is the history: a program cannot ask *"is another process writing this?"* without committing to wait — measured, a reader blocked **2.91 s** against a holder that held for three. That is the only sound readiness check for a file still arriving (a stability window is a race, measured losing three times in one 2.8 s upload), and as a probe it is unusable: a scan of a thousand dropped files stalls on the first one. The reference also did not say `lock` waits at all, which made a hang the undocumented outcome; that sentence is added. | 2026-10-15 entry |
 
 Two were filed on **2026-10-15** while building `intake` and are live:
 
 | | what | where |
 |---|---|---|
-| 9 | **`lock(f)` has no non-blocking form** — see item 8; `intake` is one run at a time because of it, and a queue of workers over one ledger is not expressible. | 2026-10-15 entry |
+| 9 | ~~**`lock(f)` has no non-blocking form**~~ **FIXED, struck 2026-11-20**, as item 8; `intake` is one run at a time because of it, and a queue of workers over one ledger is not expressible. | 2026-10-15 entry |
 | 10 | **A qualified call into a library that is not in scope says the library "does not define" the function.** It does; it is not visible from there. The message sends the reader to the innocent file, and the shape that produces it — a library whose own `load` sits at the top level instead of inside its block — WORKS for any caller that happens to load the same dependency. | 2026-10-15 entry |
 
 One was filed on **2026-10-16** while building `intake` increment 2:
@@ -13013,6 +13013,8 @@ release script is the one place to change, and it wants watching.
   above: `qt.run()` must be called from the top level of the `program` block,
   which is where Studio already calls GTK's equivalent.
 
+- **Status 2026-11-20: RESOLVED** by §0.27, dynamic children (`ui.refresh` on containers, `ui.children`, `ui.tabs`), held by `tests/run_ui_children.sh`. Marked in the 2026-11-20 sweep; the entry had not been.
+
 ## 2026-10-19 — CC — while: wiring gBASIC Studio's Qt entry point onto `qt.refresh`
 - **Type:** bug
 - **Severity:** medium
@@ -13103,6 +13105,8 @@ release script is the one place to change, and it wants watching.
   still there for anyone whose shell redraws more bluntly, which is the obvious
   thing to write.
 
+- **Status 2026-11-20: RESOLVED** by the re-entry work (deferred deletion and the handler-depth cap), held under valgrind by `tests/run_ui_reentry.sh`. Marked in the 2026-11-20 sweep.
+
 ## 2026-10-22 — CC — while: designing G-SQL's order-preserving key encoding
 - **Type:** bug
 - **Severity:** medium
@@ -13169,6 +13173,8 @@ release script is the one place to change, and it wants watching.
   Once a year for one hour, silent, and an hour is a plausible wrong answer.
 - **Workaround:** none. Whether a datetime should carry its offset (or its DST
   flag) is a docs/datetime_design.md decision, left for Matthew.
+
+- **Status 2026-11-20: RESOLVED** by Matthew's ruling that every instant is UTC (2026-11-10): `now()` answers UTC, which has no repeated hour, and local time is read only by the zone helpers. Held by `tests/run_utc_clock.sh`, the same program under five TZ settings.
 
 ## 2026-11-01 — CC — while: Matthew's first hand-written G-SQL block program
 
@@ -13341,6 +13347,8 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   waits. The full request, with the shapes that would fit, is in
   transward/docs/gbasic-requests-for-revision.md §7 (7.1–7.5 blocking, 7.6–7.8
   needed). Ledger rows left to the gBASIC session to add.
+
+- **Status 2026-11-20: RESOLVED**: resources, prompts, a per-request principal, Streamable HTTP and a client with headers all shipped for Transward (`tests/run_mcp.sh`). Marked in the 2026-11-20 sweep.
 
 ## 2026-11-06 — CC — while: Transward M22, an SSH transport as a record with methods (reported by the Transward session, added by the gBASIC session)
 - **Type:** language-surprise
@@ -13920,6 +13928,8 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Status:** open; a note when a library function shadows a builtin that the
   same library also calls would have named it.
 
+- **Status 2026-11-20: RESOLVED**: note 2102 now names a library function that shadows a built-in at its declaration, saying unqualified calls inside the library use it (measured 2026-11-20 with a library declaring `write`).
+
 ## 2026-11-10 — CC — while: Studio §0.38, a test helper clearing errors
 
 - **Type:** language-surprise
@@ -13946,6 +13956,8 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   `load` and which refuse one.
 - **Workaround:** dropped the line. A fix would make `load xlsx` either accepted
   as a no-op or refused saying xlsx is built in and needs no `load`.
+
+- **Status 2026-11-20: RESOLVED** 2026-11-18 (the ledger's struck row): `load xlsx` says xlsx needs no `load`.
 
 ## 2026-11-16 — CC — while: G-SQL paths increment 1, the fixture's refusal helper
 - **Type:** language-surprise

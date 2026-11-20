@@ -95,6 +95,22 @@ for error handling, `ERRORS.md`.
   length as the array. A projection is a **value, not a place**: `append(rows.a,
   x)` is refused by name — change the array itself, or assign the projection to
   a name first. → `tests/projection/projection_test.bas`
+- **Several fields of every row** — `rows{ item, amount }`, not a loop building
+  records: braces choose fields, as a G-SQL path's do, giving one record per row
+  (`r{ a, b }` on one record). A step goes on: `rows{ item }.customer{ name }` is
+  one FLAT record per row, `{item, name}`, and a step into an array field gives a
+  row per element. A missing field is `unknown` in a row of many (row kept) and
+  raises for one record; a name two levels both give is refused. No renaming and
+  no computed fields: build those in a loop. A dot straight after the braces is a
+  step, so read one field as `(r{ item }).item`.
+  → `tests/projection/braces_test.bas`
+- **The rows a condition holds for** — `rows[.paid, .amount > 20]`, not a loop
+  with an `if`: `.field` is the row's field and the rest is your program's own
+  (`rows[.amount > limit]`); commas are `and`. A row is kept only when every
+  condition is TRUE, so `unknown` drops it where a hand-written `if` would
+  raise. Chains with braces and projection: `rows[.paid]{ item, amount }`,
+  `rows[.amount > 10].item`. Brackets with no `.field` are an index as before.
+  → `tests/projection/brackets_test.bas`
 - **Display any value** — `print v` and `string(v)` use one renderer and always
   agree, so a record shows its fields (`{"a":1}`), an array its elements
   (`["a","b"]`) and a duration its units (`2 days 3 hours`). Display is total —
