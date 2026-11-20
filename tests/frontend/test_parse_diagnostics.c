@@ -37,7 +37,9 @@ int main(void) {
           "syntax error, unexpected RPAREN, expecting end of file" },
         { "\"abc", GB_SEVERITY_ERROR, GB_DIAG_LEX_DETAIL, 1, 1, 1, 5,
           "unterminated string" },
-        { "?",    GB_SEVERITY_ERROR, GB_DIAG_LEX_ERROR, 1, 1, 1, 2,
+        /* `@`, not `?`: since 2026-11-20 `?` has its own sentence (no
+         * conditional expression), so it is a LEX_DETAIL now */
+        { "@",    GB_SEVERITY_ERROR, GB_DIAG_LEX_ERROR, 1, 1, 1, 2,
           "unexpected token" },
     };
 

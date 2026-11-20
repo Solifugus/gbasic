@@ -1773,6 +1773,7 @@ void ast_free_window_item_list(AstWindowItemList list) {
             free(item->fn_stmt->as.function.name);
             free(item->fn_stmt->as.function.source_path);
             free(item->fn_stmt->as.function.library);
+            free(item->fn_stmt->as.function.param_dead);
             free(item->fn_stmt);
         }
         ast_free_record_field_list(item->options);
@@ -1799,6 +1800,7 @@ void ast_free_server_item_list(AstServerItemList list) {
             free(item->fn_stmt->as.function.name);
             free(item->fn_stmt->as.function.source_path);
             free(item->fn_stmt->as.function.library);
+            free(item->fn_stmt->as.function.param_dead);
             free(item->fn_stmt);
         }
         ast_free_name_list(item->strings);
