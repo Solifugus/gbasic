@@ -262,6 +262,32 @@ else
     fail "stdlib libraries refused:$bad"
 fi
 
+printf 'TIER a library'"'"'s own load outside its block is named\n'
+# DOGFOOD 2026-10-15 (live-list row 10). A `load dep` at the top of a library's
+# FILE, above its `library` block, loads nothing for the library; the call then
+# said "'dep' does not define 'answer'", which sent the reader to dep.bas, the
+# innocent file. It now names the line in the calling library's file.
+mkdir -p "$scratch/own"
+printf 'library dep\n    function answer()\n        return 42\n    end function\nend library\n' >"$scratch/own/dep.bas"
+printf 'load dep\nlibrary outer\n    function ask()\n        return dep.answer()\n    end function\nend library\n' >"$scratch/own/outer.bas"
+printf 'load outer\nprint outer.ask()\n' >"$scratch/own/m.bas"
+out=$( (cd "$scratch/own" && "$OLDPWD/gbasic" m.bas 2>&1) )
+if printf '%s' "$out" | grep -qF 'library `outer` cannot see `dep`: its `load dep` (./outer.bas:1) is outside the `library` block' &&
+   ! printf '%s' "$out" | grep -q "does not define"; then
+    pass "the outside load is named at outer.bas:1, not blamed on dep.bas"
+else
+    fail "the outside load"; printf '%s\n' "$out" | head -3
+fi
+# the neighbour: the same load inside the block answers 42
+printf 'library outer\n    load dep\n    function ask()\n        return dep.answer()\n    end function\nend library\n' >"$scratch/own/outer.bas"
+out=$( (cd "$scratch/own" && "$OLDPWD/gbasic" m.bas 2>&1) )
+[ "$out" = "42" ] && pass "the same load inside the block answers 42" || { fail "the load inside the block"; printf '%s\n' "$out" | head -3; }
+# and a function that is truly missing keeps the plain sentence
+printf 'library outer\n    load dep\n    function ask()\n        return dep.nothere()\n    end function\nend library\n' >"$scratch/own/outer.bas"
+out=$( (cd "$scratch/own" && "$OLDPWD/gbasic" m.bas 2>&1) )
+printf '%s' "$out" | grep -qF "'dep' does not define 'nothere'" && pass "a function dep truly lacks is still 'does not define'" \
+    || { fail "a missing function"; printf '%s\n' "$out" | head -3; }
+
 printf 'TIER valgrind\n'
 if vg_available; then
     if ( cd tests && GBASIC_PATH=. vg_run ../gbasic library_scope_test.bas ) \

@@ -35339,6 +35339,44 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
                 runtime_error_raise(message, 1003, "invalid function call");
                 return value_null();
             }
+            /* A LIBRARY CALLING A LIBRARY IT DID NOT LOAD INSIDE ITS BLOCK
+             * (DOGFOOD 2026-10-15): `dep` was loaded somewhere -- by the
+             * program, or at the top of the calling library's file -- and it
+             * DOES define the function; the calling library cannot see it.
+             * "dep does not define answer" sent the reader to the innocent
+             * file. */
+            if (current_function_library && current_function_library[0]) {
+                /* the calling library's own file: a `load` of this name at
+                 * its top level, outside the `library` block, loads nothing
+                 * for the library (found when it was a real reader's
+                 * mistake, and the message blamed the innocent file) */
+                const char *caller_path = NULL;
+                for (size_t i = 0; i < library_name_count && !caller_path; i++) {
+                    if (strcmp(library_names[i].identity, current_function_library) == 0) {
+                        caller_path = library_names[i].path;
+                    }
+                }
+                LoadedFile *lf = caller_path ? loaded_file_get_opt(caller_path, 1) : NULL;
+                for (size_t i = 0; lf && i < lf->program.count; i++) {
+                    AstStmt *top = lf->program.items[i];
+                    const char *loaded = top->kind == AST_STMT_USE
+                                             ? (top->as.use_stmt.alias ? top->as.use_stmt.alias
+                                                                       : top->as.use_stmt.name)
+                                             : NULL;
+                    if (loaded && strcmp(loaded, expr->as.call.library) == 0) {
+                        char shown[160];
+                        const char *caller = library_shown(current_function_library, shown, sizeof shown);
+                        snprintf(message, sizeof(message),
+                                 "undefined function: %s -- library `%s` cannot see `%s`: its `load %s` (%s:%d) "
+                                 "is outside the `library` block, where it loads nothing for the library; move it "
+                                 "inside the block",
+                                 label, caller ? caller : current_function_library, expr->as.call.library,
+                                 top->as.use_stmt.name, caller_path, top->line);
+                        runtime_error_raise(message, 1003, "invalid function call");
+                        return value_null();
+                    }
+                }
+            }
             /* The qualified half of the same change: with no alias hint to
              * offer, this is simply a name the named library or module does
              * not define. */

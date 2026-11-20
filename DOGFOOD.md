@@ -116,7 +116,7 @@ Two were filed on **2026-10-15** while building `intake` and are live:
 | | what | where |
 |---|---|---|
 | 9 | ~~**`lock(f)` has no non-blocking form**~~ **FIXED, struck 2026-11-20**, as item 8; `intake` is one run at a time because of it, and a queue of workers over one ledger is not expressible. | 2026-10-15 entry |
-| 10 | **A qualified call into a library that is not in scope says the library "does not define" the function.** It does; it is not visible from there. The message sends the reader to the innocent file, and the shape that produces it — a library whose own `load` sits at the top level instead of inside its block — WORKS for any caller that happens to load the same dependency. | 2026-10-15 entry |
+| 10 | ~~**A qualified call into a library that is not in scope says the library "does not define" the function.**~~ **FIXED 2026-11-20**: when the calling library's own file loads that name above its `library` block, the call names that line ("library `outer` cannot see `dep`: its `load dep` (./outer.bas:1) is outside the `library` block ... move it inside the block"); a function the library truly lacks keeps "does not define". Held by `tests/run_library_scope.sh` (tier "a library's own load outside its block is named"). The rest is the history: It does; it is not visible from there. The message sends the reader to the innocent file, and the shape that produces it — a library whose own `load` sits at the top level instead of inside its block — WORKS for any caller that happens to load the same dependency. | 2026-10-15 entry |
 
 One was filed on **2026-10-16** while building `intake` increment 2:
 
