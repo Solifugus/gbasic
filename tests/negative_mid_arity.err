@@ -1,1 +1,1 @@
-runtime error at tests/negative_mid_arity.bas:1:1: mid expects three or four arguments
+runtime error at tests/negative_mid_arity.bas:1:1: mid expects two, three or four arguments: mid(s, start), mid(s, start, count), or mid(s, start, count, replacement)

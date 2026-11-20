@@ -1,1 +1,1 @@
-print(mid("abc", 1))
+print(mid("abc"))

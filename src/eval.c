@@ -40305,13 +40305,18 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     }
 
     if (strcmp(expr->as.call.name, "mid") == 0) {
-        if (expr->as.call.args.count != 3 && expr->as.call.args.count != 4) {
-            runtime_error_raise("mid expects three or four arguments", 1003, "invalid function call");
+        /* TWO ARGUMENTS RUN TO THE END (DOGFOOD 2026-11-04 and 2026-11-20), as
+         * VB's Mid(s, start) and a slice do: it was refused, and the rest of a
+         * string was mid(s, start, len(s) - start) */
+        if (expr->as.call.args.count < 2 || expr->as.call.args.count > 4) {
+            runtime_error_raise("mid expects two, three or four arguments: mid(s, start), mid(s, start, count), "
+                                "or mid(s, start, count, replacement)", 1003, "invalid function call");
             return value_null();
         }
         Value text = eval_expr(expr->as.call.args.items[0]);
         Value start_value = eval_expr(expr->as.call.args.items[1]);
-        Value count_value = eval_expr(expr->as.call.args.items[2]);
+        Value count_value = expr->as.call.args.count == 2 ? value_number(2147483647.0)
+                                                         : eval_expr(expr->as.call.args.items[2]);
         if (text.kind != VALUE_STRING ||
             start_value.kind != VALUE_NUMBER ||
             count_value.kind != VALUE_NUMBER) {
@@ -40338,7 +40343,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         size_t byte_start = string_cp_offset(text.as.string, start);
         size_t byte_end = string_cp_offset(text.as.string, start + count);
 
-        if (expr->as.call.args.count == 3) {
+        if (expr->as.call.args.count <= 3) {
             size_t slice = byte_end - byte_start;
             char *result_text = malloc(slice + 1);
             if (!result_text) {

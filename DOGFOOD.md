@@ -13251,6 +13251,8 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   read directly in the handler. Not an open item: each is documented
   behaviour, so there is no ledger row to probe.
 
+- **Status 2026-11-20 (the sweep):** the second habit is gone, `mid(s, at)` runs to the end. The other two stay documented behaviour.
+
 ## 2026-11-05 — CC — while: writing the tests for book gaps G21 and G23 (consolidate, dbframe)
 - **Type:** language-surprise
 - **Severity:** low
@@ -14105,6 +14107,8 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Workaround:** `next_step`, `else if`, and the three-argument `mid`. For the
   ergonomics sweep: `mid` with no count (to the end) is the one worth
   weighing, since Python's slice and VB's `Mid(s, start)` both allow it.
+
+- **Status 2026-11-20 (the sweep): `mid(s, start)` now runs to the end**, as VB's `Mid` and a slice do; `step` stays reserved (the counted `for`'s). Held by `examples/unicode_chars_test.bas`; `negative_mid_arity` refuses one argument now.
 
 ## 2026-11-20 — CC — while: writing the tui editor fixture (tests/ui_tui/editor.bas)
 - **Type:** diagnostic-gap

@@ -8769,6 +8769,8 @@ message transport is built on.
 - `lower(text)` / `upper(text)` — ASCII case folding (see the string type for the Unicode caveat).
 - `left(value, count)` / `right(value, count)` — leading / trailing characters.
 - `mid(value, start, count)` — a substring; `start` is **0-based**.
+- `mid(value, start)` — the rest of the string from `start` (*after 0.12.0*;
+  it was refused, and the rest was `mid(s, start, len(s) - start)`).
 - `mid(value, start, count, replacement)` — substring replacement.
 - `reverse(text)` — reverse a string.
 - `trim(text)` — strip surrounding whitespace.
