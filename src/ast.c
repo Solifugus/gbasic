@@ -12,6 +12,16 @@ static void *xmalloc(size_t size) {
     return ptr;
 }
 
+/* A statement node starts zeroed, so a field added later (the profiler's
+ * counts) needs no line in each of the constructors below. */
+static AstStmt *stmt_alloc(void) {
+    AstStmt *stmt = calloc(1, sizeof(*stmt));
+    if (!stmt) {
+        abort();
+    }
+    return stmt;
+}
+
 static void *xrealloc(void *ptr, size_t size) {
     void *next = realloc(ptr, size);
     if (!next) {
@@ -320,7 +330,7 @@ AstExpr *ast_expr_position(AstExpr *expr, int line, int column) {
 }
 
 AstStmt *ast_assign(AstExpr *target, AstModifierUse modifier, AstExpr *value) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_ASSIGN;
     stmt->as.assign.target = target;
     stmt->as.assign.modifier = modifier;
@@ -358,7 +368,7 @@ AstStmt *ast_assign_op(AstExpr *target, AstModifierUse modifier, AstExpr *value,
 }
 
 AstStmt *ast_print(AstExpr *expr) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_PRINT;
     stmt->as.print.expr = expr;
     stmt->as.print.to_stderr = 0;
@@ -374,14 +384,14 @@ AstStmt *ast_print_error(AstExpr *expr) {
 }
 
 AstStmt *ast_expr_stmt(AstExpr *expr) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_EXPR;
     stmt->as.expr_stmt = expr;
     return stmt;
 }
 
 AstStmt *ast_with_lock(AstExpr *file, AstStmtList body) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_WITH_LOCK;
     stmt->as.with_lock.file = file;
     stmt->as.with_lock.body = body;
@@ -389,7 +399,7 @@ AstStmt *ast_with_lock(AstExpr *file, AstStmtList body) {
 }
 
 AstStmt *ast_with_principal(AstExpr *value, AstStmtList body) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_WITH_PRINCIPAL;
     stmt->as.with_principal.value = value;
     stmt->as.with_principal.body = body;
@@ -398,7 +408,7 @@ AstStmt *ast_with_principal(AstExpr *value, AstStmtList body) {
 
 AstStmt *ast_for_each(char *name, char *index_name, AstExpr *iterable,
                       AstStmtList body) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_FOR_EACH;
     stmt->as.for_each.name = name;
     stmt->as.for_each.index_name = index_name;
@@ -411,7 +421,7 @@ AstStmt *ast_for_each(char *name, char *index_name, AstExpr *iterable,
 }
 
 AstStmt *ast_do_loop(AstStmtList body, AstExpr *condition) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_DO_LOOP;
     stmt->as.do_loop.body = body;
     stmt->as.do_loop.condition = condition;
@@ -420,7 +430,7 @@ AstStmt *ast_do_loop(AstStmtList body, AstExpr *condition) {
 
 AstStmt *ast_for_range(char *name, AstExpr *start, AstExpr *limit,
                        AstExpr *step, AstStmtList body) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_FOR_RANGE;
     stmt->as.for_range.name = name;
     stmt->as.for_range.start = start;
@@ -431,7 +441,7 @@ AstStmt *ast_for_range(char *name, AstExpr *start, AstExpr *limit,
 }
 
 AstStmt *ast_function(char *name, AstNameList params, AstStmtList body) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_FUNCTION;
     stmt->as.function.params = params;
     stmt->as.function.body = body;
@@ -472,35 +482,35 @@ AstStmt *ast_function_returning(char *name, AstNameList params, AstTypeLock retu
 }
 
 AstStmt *ast_return(AstExpr *expr) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_RETURN;
     stmt->as.return_expr = expr;
     return stmt;
 }
 
 AstStmt *ast_label(char *name) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_LABEL;
     stmt->as.label = name;
     return stmt;
 }
 
 AstStmt *ast_goto(char *name) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_GOTO;
     stmt->as.goto_label = name;
     return stmt;
 }
 
 AstStmt *ast_gosub(char *name) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_GOSUB;
     stmt->as.gosub_label = name;
     return stmt;
 }
 
 AstStmt *ast_watch(char *name, AstNameList names, AstStmtList body) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_WATCH;
     stmt->as.watch.name = name;          /* NULL for the anonymous form */
     stmt->as.watch.names = names;
@@ -628,7 +638,7 @@ AstWindowItem *ast_window_handler(char *target, char *signal, AstStmtList body,
 AstStmt *ast_window(char *name, AstRecordFieldList options, AstWindowItemList items,
                     char *close_word, char *verb, char *direction, char *subject,
                     int line, int column) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     memset(stmt, 0, sizeof(*stmt));
     stmt->kind = AST_STMT_WINDOW;
     stmt->as.window.name = name;
@@ -644,7 +654,7 @@ AstStmt *ast_window(char *name, AstRecordFieldList options, AstWindowItemList it
 }
 
 AstStmt *ast_database(char *name, AstRecordFieldList options, int line, int column) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     memset(stmt, 0, sizeof(*stmt));
     stmt->kind = AST_STMT_DATABASE;
     stmt->as.database.name = name;
@@ -656,7 +666,7 @@ AstStmt *ast_database(char *name, AstRecordFieldList options, int line, int colu
 
 AstStmt *ast_sql(char *name, char *database, char *text, int text_line, int text_column,
                  int line, int column) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     memset(stmt, 0, sizeof(*stmt));
     stmt->kind = AST_STMT_SQL;
     stmt->as.sql.name = name;
@@ -732,7 +742,7 @@ AstServerItem *ast_server_hook(char *word, AstStmtList body, int line, int colum
 
 AstStmt *ast_server(char *word, char *name, AstRecordFieldList options,
                     AstServerItemList items, char *close_word) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_SERVER;
     stmt->as.server.word = word;
     stmt->as.server.name = name;
@@ -743,14 +753,14 @@ AstStmt *ast_server(char *word, char *name, AstRecordFieldList options,
 }
 
 AstStmt *ast_unwatch(AstExpr *expr) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_UNWATCH;
     stmt->as.unwatch_expr = expr;
     return stmt;
 }
 
 AstStmt *ast_wait(AstExpr *condition, AstExpr *limit) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_WAIT;
     stmt->as.wait.condition = condition;
     stmt->as.wait.limit = limit;
@@ -758,54 +768,54 @@ AstStmt *ast_wait(AstExpr *condition, AstExpr *limit) {
 }
 
 AstStmt *ast_without_watchers(AstStmtList body) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_WITHOUT_WATCHERS;
     stmt->as.without_watchers = body;
     return stmt;
 }
 
 AstStmt *ast_on_error_goto(char *label) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_ON_ERROR_GOTO;
     stmt->as.on_error_label = label;
     return stmt;
 }
 
 AstStmt *ast_on_error_goto_next(void) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_ON_ERROR_GOTO_NEXT;
     return stmt;
 }
 
 AstStmt *ast_on_error_stop(void) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_ON_ERROR_STOP;
     return stmt;
 }
 
 AstStmt *ast_on_warning(int mode) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_ON_WARNING;
     stmt->as.warn_mode = mode;
     return stmt;
 }
 
 AstStmt *ast_warning(AstExpr *message) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_WARNING;
     stmt->as.error_message = message;
     return stmt;
 }
 
 AstStmt *ast_error(AstExpr *message) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_ERROR;
     stmt->as.error_message = message;
     return stmt;
 }
 
 AstStmt *ast_modifier(char *name, AstNameList params, char *context, int exported, AstStmtList body) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_MODIFIER;
     stmt->as.modifier.name = name;
     stmt->as.modifier.params = params;
@@ -816,7 +826,7 @@ AstStmt *ast_modifier(char *name, AstNameList params, char *context, int exporte
 }
 
 AstStmt *ast_program(char *name, AstNameList args, AstStmtList body) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_PROGRAM;
     stmt->as.program.name = name;
     stmt->as.program.args = args;
@@ -825,7 +835,7 @@ AstStmt *ast_program(char *name, AstNameList args, AstStmtList body) {
 }
 
 AstStmt *ast_library(char *name, AstStmtList body) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_LIBRARY;
     stmt->as.library.name = name;
     stmt->as.library.body = body;
@@ -833,7 +843,7 @@ AstStmt *ast_library(char *name, AstStmtList body) {
 }
 
 AstStmt *ast_use(char *name, char *path, char *alias) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_USE;
     stmt->as.use_stmt.name = name;
     stmt->as.use_stmt.path = path;
@@ -842,7 +852,7 @@ AstStmt *ast_use(char *name, char *path, char *alias) {
 }
 
 AstStmt *ast_if(AstExpr *condition, AstStmtList body) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_IF;
     stmt->as.if_stmt.condition = condition;
     stmt->as.if_stmt.body = body;
@@ -851,7 +861,7 @@ AstStmt *ast_if(AstExpr *condition, AstStmtList body) {
 }
 
 AstStmt *ast_while(AstExpr *condition, AstStmtList body) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_WHILE;
     stmt->as.while_stmt.condition = condition;
     stmt->as.while_stmt.body = body;
@@ -859,7 +869,7 @@ AstStmt *ast_while(AstExpr *condition, AstStmtList body) {
 }
 
 AstStmt *ast_consider(AstExpr *subject, AstConsiderBranchList branches, AstStmtList else_body) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_CONSIDER;
     stmt->as.consider.subject = subject;
     stmt->as.consider.branches = branches;
@@ -868,14 +878,14 @@ AstStmt *ast_consider(AstExpr *subject, AstConsiderBranchList branches, AstStmtL
 }
 
 AstStmt *ast_break(char *target) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_BREAK;
     stmt->as.loop_target = target;
     return stmt;
 }
 
 AstStmt *ast_continue(char *target) {
-    AstStmt *stmt = xmalloc(sizeof(*stmt));
+    AstStmt *stmt = stmt_alloc();
     stmt->kind = AST_STMT_CONTINUE;
     stmt->as.loop_target = target;
     return stmt;

@@ -498,6 +498,15 @@ libgbasic.a: $(LIB_OBJS)
 gbasic: src/main.o src/repl.o src/lineedit.o libgbasic.a $(WIN_RES)
 	$(CC) $(CFLAGS) -o $@ src/main.o src/repl.o src/lineedit.o $(WIN_RES) libgbasic.a $(LDLIBS)
 
+# The same binary with every `--profile` hook compiled out (GB_NO_PROFILER),
+# written to NOPROF_DIR: tests/run_profile.sh holds the hooks' cost when
+# profiling is off against it (docs/profiler_design.md §4). Never ./gbasic.
+NOPROF_DIR ?= .
+.PHONY: gbasic-noprof
+gbasic-noprof: src/main.o src/repl.o src/lineedit.o libgbasic.a $(WIN_RES)
+	$(CC) $(CFLAGS) -DGB_NO_PROFILER -c src/eval.c -o $(NOPROF_DIR)/eval-noprof.o
+	$(CC) $(CFLAGS) -o $(NOPROF_DIR)/gbasic-noprof src/main.o src/repl.o src/lineedit.o $(WIN_RES) $(NOPROF_DIR)/eval-noprof.o libgbasic.a $(LDLIBS)
+
 src/gbasic_win32.res.o: src/gbasic_win32.rc src/gbasic.manifest
 	windres -i src/gbasic_win32.rc -o $@
 

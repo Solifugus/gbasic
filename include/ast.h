@@ -379,6 +379,11 @@ struct AstStmt {
     int column;       /* 1-based BYTE start column */
     int end_line;     /* 1-based BYTE end line     (exclusive end; 0 if unset)     */
     int end_column;   /* 1-based BYTE end column   (exclusive: one past last byte) */
+    /* `--profile`'s exact counts (docs/profiler_design.md §3): how many times
+     * this statement ran, and for a function how many times it was called.
+     * Zero and untouched unless the run is profiled. */
+    unsigned long prof_runs;
+    unsigned long prof_calls;
     union {
         struct {
             AstExpr *target;

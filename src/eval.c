@@ -1314,6 +1314,261 @@ static char *copy_string(const char *text) {
     return copy;
 }
 
+/* --- `--profile`, increment 1: exact counts (docs/profiler_design.md) -------
+ *
+ * Each statement node counts its runs and each function its calls, in fields
+ * on the AST (ast.h), so the hot path is one test and an increment. The first
+ * time a node counts, it is noted here with the file it ran from -- the
+ * function's stamped path, or the root program -- because the node does not
+ * carry one. At the end of the run, before teardown frees a library's tree,
+ * the counts are copied out; main prints them after the error line, if any.
+ *
+ * GB_NO_PROFILER compiles every hook away. tests/run_profile.sh builds that
+ * copy to hold the cost of the hooks when profiling is off (§4). */
+typedef struct {
+    AstStmt *stmt;           /* until the snapshot; NULL after */
+    char *path;              /* the file it ran from */
+    char *name;              /* a function's name as a caller writes it */
+    int line;
+    unsigned long count;     /* filled by the snapshot */
+} ProfileSeen;
+
+typedef struct {
+    ProfileSeen *items;
+    size_t count;
+    size_t capacity;
+} ProfileList;
+
+static ProfileList profile_lines;
+static ProfileList profile_funcs;
+static char *profile_out_path;    /* NULL: standard error */
+static pid_t profile_pid;
+static int profile_snapshot_taken;
+
+#ifdef GB_NO_PROFILER
+#define gb_profiling 0
+#define PROFILE_STMT(s) ((void)0)
+#define PROFILE_CALL(s) ((void)0)
+#else
+static int gb_profiling;
+#define PROFILE_STMT(s) do { if (gb_profiling && (s)->prof_runs++ == 0) { profile_note(&profile_lines, (s), NULL); } } while (0)
+#define PROFILE_CALL(s) do { if (gb_profiling && (s)->prof_calls++ == 0) { profile_note_function(s); } } while (0)
+#endif
+
+#ifndef GB_NO_PROFILER
+static void profile_note(ProfileList *list, AstStmt *stmt, const char *name) {
+    if (list->count == list->capacity) {
+        size_t grown = list->capacity ? list->capacity * 2 : 256;
+        ProfileSeen *items = realloc(list->items, sizeof(ProfileSeen) * grown);
+        if (!items) {
+            abort();
+        }
+        list->items = items;
+        list->capacity = grown;
+    }
+    const char *path = current_import_path ? current_import_path : root_source_path;
+    ProfileSeen *seen = &list->items[list->count++];
+    seen->stmt = stmt;
+    seen->path = copy_string(path ? path : "(program)");
+    seen->name = name ? copy_string(name) : NULL;
+    seen->line = stmt->line;
+    seen->count = 0;
+}
+
+static void profile_note_function(AstStmt *stmt) {
+    const char *name = stmt->kind == AST_STMT_PROGRAM ? stmt->as.program.name
+                                                      : stmt->as.function.name;
+    const char *library = stmt->kind == AST_STMT_PROGRAM ? NULL : stmt->as.function.library;
+    char shown[256];
+    snprintf(shown, sizeof(shown), "%s%s%s", library ? library : "", library ? "." : "",
+             name ? name : "(unnamed)");
+    profile_note(&profile_funcs, stmt, shown);
+}
+#endif
+
+void eval_set_profile(const char *out_path) {
+#ifdef GB_NO_PROFILER
+    (void)out_path;
+#else
+    gb_profiling = 1;
+    profile_pid = getpid();
+    free(profile_out_path);
+    profile_out_path = out_path ? copy_string(out_path) : NULL;
+#endif
+}
+
+/* Copy the counts out of the tree, which runtime_teardown and main free. */
+static void profile_snapshot(void) {
+    if (!gb_profiling || profile_snapshot_taken) {
+        return;
+    }
+    for (size_t i = 0; i < profile_lines.count; i++) {
+        profile_lines.items[i].count = profile_lines.items[i].stmt->prof_runs;
+        profile_lines.items[i].stmt = NULL;
+    }
+    for (size_t i = 0; i < profile_funcs.count; i++) {
+        profile_funcs.items[i].count = profile_funcs.items[i].stmt->prof_calls;
+        profile_funcs.items[i].stmt = NULL;
+    }
+    profile_snapshot_taken = 1;
+}
+
+static int profile_by_place(const void *a, const void *b) {
+    const ProfileSeen *x = a, *y = b;
+    int c = strcmp(x->path, y->path);
+    return c ? c : (x->line > y->line) - (x->line < y->line);
+}
+
+/* Most first; ties by file and line (or by name), so the report is stable. */
+static int profile_by_count(const void *a, const void *b) {
+    const ProfileSeen *x = a, *y = b;
+    if (x->count != y->count) {
+        return x->count < y->count ? 1 : -1;
+    }
+    if (x->name && y->name) {
+        int c = strcmp(x->name, y->name);
+        if (c) {
+            return c;
+        }
+    }
+    return profile_by_place(a, b);
+}
+
+/* A path under the working directory is shown relative to it, and a
+ * library found beside the program without its `./`. */
+static const char *profile_shown_path(const char *path, const char *cwd) {
+    size_t n = cwd ? strlen(cwd) : 0;
+    if (n && strncmp(path, cwd, n) == 0 && path[n] == '/') {
+        return path + n + 1;
+    }
+    while (path[0] == '.' && path[1] == '/') {
+        path += 2;
+    }
+    return path;
+}
+
+/* The line's source, trimmed, for the report; empty if the file cannot be read
+ * now. One file is held at a time: the lines arrive sorted by count, not file,
+ * but a report shows a few dozen. */
+static void profile_source_line(const char *path, int line, char *out, size_t size) {
+    out[0] = '\0';
+    FILE *f = fopen(path, "r");
+    if (!f) {
+        return;
+    }
+    char buf[4096];
+    int at = 1;
+    while (fgets(buf, sizeof(buf), f)) {
+        size_t len = strlen(buf);
+        int whole = len > 0 && buf[len - 1] == '\n';
+        if (at == line) {
+            while (len > 0 && (buf[len - 1] == '\n' || buf[len - 1] == '\r')) {
+                buf[--len] = '\0';
+            }
+            const char *s = buf;
+            while (*s == ' ' || *s == '\t') {
+                s++;
+            }
+            if (strlen(s) > 60) {
+                snprintf(out, size, "%.57s...", s);
+            } else {
+                snprintf(out, size, "%s", s);
+            }
+            break;
+        }
+        if (whole) {
+            at++;
+        }
+    }
+    fclose(f);
+}
+
+#define PROFILE_ROWS_SHOWN 20
+
+/* Print the report: to the --profile=FILE, every row; to standard error, the
+ * first PROFILE_ROWS_SHOWN of each table. Only in the process that was asked to
+ * profile -- a forked worker returning through main says nothing. */
+void eval_profile_report(void) {
+    if (!gb_profiling || getpid() != profile_pid) {
+        return;
+    }
+    profile_snapshot();
+    /* The program's own output first: a piped standard output is still in
+     * its buffer here, and the report would land above it. */
+    fflush(stdout);
+    FILE *out = stderr;
+    if (profile_out_path) {
+        out = fopen(profile_out_path, "w");
+        if (!out) {
+            fprintf(stderr, "profile: cannot write %s: %s\n", profile_out_path, strerror(errno));
+            return;
+        }
+    }
+    size_t limit = profile_out_path ? (size_t)-1 : PROFILE_ROWS_SHOWN;
+    char cwd_buf[4096];
+    const char *cwd = getcwd(cwd_buf, sizeof(cwd_buf));
+
+    /* Lines: statements on one line are one row, counted as the MOST any of
+     * them ran. `if n < 2 then return n` is entered as often as its `if`
+     * runs; summing would count the line again each time it returns. */
+    ProfileSeen *rows = profile_lines.count ? malloc(sizeof(ProfileSeen) * profile_lines.count) : NULL;
+    size_t row_count = 0;
+    if (profile_lines.count) {
+        if (!rows) {
+            abort();
+        }
+        memcpy(rows, profile_lines.items, sizeof(ProfileSeen) * profile_lines.count);
+        qsort(rows, profile_lines.count, sizeof(ProfileSeen), profile_by_place);
+        for (size_t i = 0; i < profile_lines.count; i++) {
+            if (row_count && profile_by_place(&rows[row_count - 1], &rows[i]) == 0) {
+                if (rows[i].count > rows[row_count - 1].count) {
+                    rows[row_count - 1].count = rows[i].count;
+                }
+            } else {
+                rows[row_count++] = rows[i];
+            }
+        }
+        qsort(rows, row_count, sizeof(ProfileSeen), profile_by_count);
+    }
+    qsort(profile_funcs.items, profile_funcs.count, sizeof(ProfileSeen), profile_by_count);
+
+    int width = 20;
+    for (size_t i = 0; i < profile_funcs.count && i < limit; i++) {
+        int n = (int)strlen(profile_funcs.items[i].name);
+        width = n > width ? n : width;
+    }
+    char place[600];
+    for (size_t i = 0; i < row_count && i < limit; i++) {
+        snprintf(place, sizeof(place), "%s:%d", profile_shown_path(rows[i].path, cwd), rows[i].line);
+        int n = (int)strlen(place);
+        width = n > width ? n : width;
+    }
+    width = width > 60 ? 60 : width;
+
+    fprintf(out, "profile: exact counts (times are not measured yet)\n");
+    fprintf(out, "functions%*s\n", width + 2 - 9 + 12, "calls");
+    for (size_t i = 0; i < profile_funcs.count && i < limit; i++) {
+        fprintf(out, "  %-*s %11lu\n", width, profile_funcs.items[i].name, profile_funcs.items[i].count);
+    }
+    if (profile_funcs.count > limit) {
+        fprintf(out, "  ... and %zu more (--profile=FILE lists every one)\n", profile_funcs.count - limit);
+    }
+    fprintf(out, "lines%*s\n", width + 2 - 5 + 12, "runs");
+    char text[128];
+    for (size_t i = 0; i < row_count && i < limit; i++) {
+        snprintf(place, sizeof(place), "%s:%d", profile_shown_path(rows[i].path, cwd), rows[i].line);
+        profile_source_line(rows[i].path, rows[i].line, text, sizeof(text));
+        fprintf(out, "  %-*s %11lu   %s\n", width, place, rows[i].count, text);
+    }
+    if (row_count > limit) {
+        fprintf(out, "  ... and %zu more (--profile=FILE lists every one)\n", row_count - limit);
+    }
+    free(rows);
+    if (out != stderr) {
+        fclose(out);
+    }
+}
+
 /* --- Runtime string buffers (Unicode design §3, docs/unicode_design.md) -----
  *
  * A runtime string VALUE (VALUE_STRING -> as.string) carries an explicit byte
@@ -14156,6 +14411,7 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
                   gb_stack_limit_kb());
         return value_null();
     }
+    PROFILE_CALL(stmt);
     Env local_env = {0};
     Env *library_frame = library_frame_find(stmt->as.function.library);
     local_env.parent = library_frame ? library_frame : &global_env;
@@ -49556,6 +49812,7 @@ static EvalResult eval_stmt(AstStmt *stmt) {
     int previous_column = current_column;
     current_line = stmt->line;
     current_column = stmt->column;
+    PROFILE_STMT(stmt);
 
     switch (stmt->kind) {
     case AST_STMT_ASSIGN:
@@ -49892,6 +50149,9 @@ static void gsql_blocks_unused(AstStmtList program) {
 int eval_program(AstStmtList program) {
     active_root = program;
     AstStmt *program_block = program_block_prepare(program);
+    if (program_block) {
+        PROFILE_CALL(program_block);
+    }
     if (!raise_in_flight) {
         gsql_blocks_need_load(program);
     }
@@ -49981,6 +50241,7 @@ int eval_program(AstStmtList program) {
             raise_report_fatal();
         }
     }
+    profile_snapshot();
     runtime_teardown();
     /* An explicit `exit(n)` wins over everything above, including the
      * webserver loop's status: the program said what it meant. */

@@ -11,6 +11,12 @@ void eval_set_source_path(const char *path);
  * run to one line. Presentation only; `error.trace` carries every frame
  * regardless. */
 void eval_set_full_trace(int on);
+/* `--profile` (docs/profiler_design.md): count every statement's runs and every
+ * function's calls. NULL reports to standard error, the first rows of each
+ * table; a path receives every row. eval_profile_report prints it, after the
+ * run's diagnostics, and only in the process that asked. */
+void eval_set_profile(const char *out_path);
+void eval_profile_report(void);
 /* Frames are omitted from the diagnostic message in JSON mode, so an editor's
  * `message` field keeps meaning one sentence. */
 void eval_set_json_diagnostics(int on);

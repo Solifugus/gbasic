@@ -100,7 +100,9 @@ run gives 20,000 samples, and a share's error is well under a percent.
   function on the stack gets `total`. Counting each function once per sample
   keeps recursion from adding up past 100%.
 - **Lines are keyed by file and line.** A one-line `if c then x = 1` is two
-  statements on one line, so they are summed. A function's file is the one it
+  statements on one line. The line counts the most either ran, which is the
+  times the line was reached: summing would count it again for each `then`
+  taken (measured on `fib`, where it gave 2960 runs for 1973 calls). A function's file is the one it
   was parsed from, already stamped for error positions.
 
 ## 4. When it is off
@@ -116,10 +118,15 @@ restores the published statement. The interpreter has no `longjmp`, so every
 exit passes back through the wrapper.
 
 **This is measured, not claimed:** the suite builds a second copy with the
-hooks compiled out (`-DGB_NO_PROFILER`). It holds the loop above, the fastest
-min-of-7 of each, to a ratio of at most 1.03. If it misses, the hooks move to
-a separately compiled copy of the dispatcher, which is the known fallback and
-is larger.
+hooks compiled out (`make gbasic-noprof`, `-DGB_NO_PROFILER`) and counts both
+in **instructions** with callgrind, held to at most 1.01. Wall time was tried
+first and could not hold a 3% bound: on a loaded machine this binary timed
+against its own copy ranged from 0.81 to 1.01 (2026-11-21), while an
+instruction count repeats exactly. Increment 1 measured 0.9994 off. Counting
+measured 1.003 to 1.047, by where the program's file sits: the note copies its
+path, and a path of another length leaves malloc's free lists in another state
+(`_int_malloc` 24.4 against 39.8 million instructions, the same program). Off,
+the hooks allocate nothing, so that bound is exact.
 
 **When on, the overhead is printed**, measured as wall time spent on the
 counters and stores, and is expected to be about 5%.
@@ -172,8 +179,8 @@ A `SIGKILL` writes nothing, and the documentation will say so.
   - the exit code unchanged, including after a raise.
 - **signal:** a profiled server sent SIGTERM writes its report and still dies
   by SIGTERM (python3 reads the status, as `run_lock_signal.sh` does).
-- **off:** the 1.03 ratio of §4. It builds into a temporary copy of the tree,
-  never `./gbasic`.
+- **off:** the instruction ratio of §4. The second copy is built into a
+  temporary directory, never over `./gbasic`.
 - **valgrind** and **helgrind.** Every published value is atomic, so helgrind
   stays clean.
 - **perturbations**, each of which must turn the suite red:

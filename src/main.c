@@ -1091,12 +1091,42 @@ int main(int argc, char **argv) {
         eval_set_full_trace(1);
     }
 
+    /* `--profile` and `--profile=FILE` (docs/profiler_design.md): count where
+     * the program spends its statements. Before FILE only, as the flags
+     * beside it; a program's own `--profile` argument stays its own. */
+    int profile_on = extract_flag(&argc, argv, "--profile");
+    const char *profile_path = NULL;
+    for (int i = 1; i < argc && argv[i][0] == '-'; i++) {
+        if (strncmp(argv[i], "--profile=", 10) == 0) {
+            profile_path = argv[i] + 10;
+            size_t n = strlen(profile_path);
+            if (!n) {
+                fprintf(stderr, "--profile= needs a file to write, as --profile=run.txt\n");
+                return 2;
+            }
+            if (n >= 5 && strcmp(profile_path + n - 5, ".json") == 0) {
+                fprintf(stderr, "--profile=%s: a JSON report is not built yet "
+                                "(it is increment 3 of docs/profiler_design.md); "
+                                "name a text file\n", profile_path);
+                return 2;
+            }
+            profile_on = 1;
+            memmove(argv + i, argv + i + 1, sizeof(char *) * (size_t)(argc - i));
+            argc--;
+            break;
+        }
+    }
+
     /* The prompt, which is also what `gbasic` with no arguments does: a
      * language whose bare name prints a usage message has nothing to try. It is
      * dispatched here, above the mode table, because a prompt takes no FILE and
      * every shape below is built around having one. */
     int repl_mode = extract_flag(&argc, argv, "--repl");
     if (repl_mode || argc == 1) {
+        if (profile_on) {
+            fprintf(stderr, "--profile runs a program file, not the prompt: gbasic --profile FILE\n");
+            return 2;
+        }
         if (argc >= 2 && strcmp(argv[1], "--json-diagnostics") == 0) {
             json_diagnostics = 1;
         } else if (argc > 1) {
@@ -1206,9 +1236,13 @@ int main(int argc, char **argv) {
          * error is terminal, so it stays the last line on stderr. */
         eval_set_json_diagnostics(json_diagnostics);
         gb_set_active_sink(&diags);
+        if (profile_on) {
+            eval_set_profile(profile_path);
+        }
         exit_status = eval_program(program);
         gb_set_active_sink(NULL);
         drain_diagnostics(&diags, json_diagnostics);
+        eval_profile_report();
     }
 
     gb_diagnostics_free(&diags);

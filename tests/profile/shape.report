@@ -1,0 +1,10 @@
+profile: exact counts (times are not measured yet)
+functions                          calls
+  twice                                3
+  main                                 1
+lines                               runs
+  tests/profile/shape.bas:3            3   return x * 2
+  tests/profile/shape.bas:9            3   s = s + twice(i)
+  tests/profile/shape.bas:7            1   s = 0
+  tests/profile/shape.bas:8            1   for i = 1 to 3
+  tests/profile/shape.bas:11           1   print s
