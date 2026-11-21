@@ -13108,38 +13108,57 @@ as JSON on stderr (the model the language server consumes); normal program
 output on stdout is unchanged. A separate `gbasic-lsp` binary (built by
 `make dev`) serves the same diagnostics over LSP on document sync.
 
-Count where a program runs:
+Find where a program spends its time:
 
 ```sh
 gbasic --profile FILE            # the report on stderr, after the run
 gbasic --profile=run.txt FILE    # every row, written to run.txt instead
 ```
 
-`--profile` runs the program unchanged and then reports how many times each
-function was called and each line ran, in the program and in every library
-it loads. Counts are exact: a loop of 1000 shows 1000. The report follows
-the program's own output and any error line, and the exit status is the
+`--profile` runs the program unchanged and then reports, for each function
+and each line in the program and every library it loads, how many times it
+ran and what share of the run's time it took. The report follows the
+program's own output and any error line, and the exit status is the
 program's. On stderr each table shows its 20 largest rows and says how many
 more there are; `--profile=FILE` writes them all.
 
 ```text
-profile: exact counts (times are not measured yet)
-functions                          calls
-  twice                                3
-  main                                 1
-lines                               runs
-  tests/profile/shape.bas:3            3   return x * 2
-  tests/profile/shape.bas:9            3   s = s + twice(i)
+profile: 0.19 s, 1890 samples, 0.0% of them waiting
+functions                           calls     total      self
+  hot                                  30     75.8%     75.8%
+  cold                                 10     24.2%     24.2%
+  main                                  1    100.0%      0.1%
+lines                                runs      self
+  tests/profile/shares.bas:6      1200000     54.6%   s = s + i
+  tests/profile/shares.bas:5           30     21.2%   for i = 1 to n
+  tests/profile/shares.bas:14      400000     17.7%   s = s + i
 ```
 
-- A line holding more than one statement, such as `if n < 2 then return n`,
-  counts the times the line was reached, not the statements on it.
-- A loop's own line counts once each time the loop is entered; its body
-  counts every pass.
+- **Counts are exact:** a loop of 1000 shows 1000. A line holding more than
+  one statement, such as `if n < 2 then return n`, counts the times the line
+  was reached. A loop's own line counts once each time the loop is entered,
+  and its body every pass.
+- **Times are shares of samples**, taken 10,000 times a second by a thread
+  beside the program. A function's `total` includes everything it called;
+  its `self` is its own lines, including the builtins they call (a
+  `pg.query` is its line's time). A loop's own line holds the time spent
+  stepping it. Recursion counts once: a function's total is never over 100%.
+- **Waiting is its own row**, `(waiting)`: time in `sleep`, an actor's
+  `receive`, or the event loop with nothing to do (`ui.run()`, a server
+  between requests, `wait until`). A program that waits 99% of the time does
+  not make its `ui.run()` line look slow.
+- **`GBASIC_PROFILE_HZ`** sets the samples a second (1 to 100000);
+  `GBASIC_PROFILE_HZ=0` gives counts only, with no thread.
+- **Stopped by Ctrl-C, SIGTERM or SIGHUP**, a profiled program writes its
+  report (`profile: stopped by SIGTERM after ...`) and then dies by that
+  signal. A program blocked inside one call (a read of the terminal) is
+  reported after 200 ms. A second signal ends it at once, with no report. A
+  signal the program was started ignoring stays ignored, and a server's
+  SIGTERM still drains it, with the report after. `SIGKILL` writes nothing.
 - Only the process started with `--profile` reports. An actor, a
   `process.start` child or a web pool worker is not counted.
-- Time shares, a waiting row and a JSON report (`--profile=FILE.json`, refused
-  until then) are the next increments of `docs/profiler_design.md`.
+- A JSON report (`--profile=FILE.json`, refused until then) and builtins as
+  rows of their own are increment 3 of `docs/profiler_design.md`.
 
 Flush stdout at every completed line:
 

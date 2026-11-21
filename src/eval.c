@@ -1935,7 +1935,7 @@ void eval_profile_report(void) {
             }
             profile_share(share, sizeof(share), profile_waiting_samples);
             fprintf(out, "%.2f s, %lu samples, %s of them waiting", profile_seconds, profile_samples, share);
-            if (profile_outside_samples) {
+            if (profile_outside_samples * 1000 >= profile_samples) {   /* 0.1% and up */
                 profile_share(share, sizeof(share), profile_outside_samples);
                 fprintf(out, ", %s outside any line", share);
             }

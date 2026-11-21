@@ -551,7 +551,7 @@ guide, and it opens with the hazard worth knowing before you start: a bare
 ./gbasic --json-diagnostics prog.bas # diagnostics as JSON on stderr
 ./gbasic --line-buffered program.bas # flush stdout per completed line
 ./gbasic --full-trace program.bas    # list every frame inside a library
-./gbasic --profile program.bas       # count each function's calls and line's runs
+./gbasic --profile program.bas       # each function's and line's runs and share of the time
 ./gbasic --version
 ```
 

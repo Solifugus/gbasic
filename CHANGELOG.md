@@ -16,12 +16,20 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **`gbasic --profile`: where the time goes** (2026-11-21), increment 2 of
+  `docs/profiler_design.md`. Each function's `total` and `self` and each
+  line's `self`, as shares of samples a thread takes 10,000 times a second
+  (`GBASIC_PROFILE_HZ`; `0` for counts only), and waiting (`sleep`,
+  `receive`, an idle event loop) as a row of its own. Ctrl-C, SIGTERM and
+  SIGHUP write the report and then end the program by the same signal; an
+  ignored signal or a server's drain is left as it was. Off, the hooks cost
+  1.0044 of a build without them, in instructions. `tests/run_profile.sh`.
 - **`gbasic --profile`: exact counts** (2026-11-21), increment 1 of
   `docs/profiler_design.md`. After the run, standard error gets each
   function's calls and each line's runs, in the program and its libraries;
   `--profile=FILE` writes every row. The program's output and exit status are
   unchanged. Off, the hooks cost no measurable instructions (0.9994 of a build
-  without them, by callgrind). Time shares come next. `tests/run_profile.sh`.
+  without them, by callgrind). `tests/run_profile.sh`.
 - **`gbasic --help`** no longer splits `--line-buffered`'s description around
   `--full-trace`.
 - **`a if c else b`, the conditional expression** (2026-11-20), Python's

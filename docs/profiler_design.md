@@ -1,7 +1,9 @@
 # The profiler: a design note
 
-**Status:** Increment 1 (exact counts) **shipped** 2026-11-21:
-`gbasic --profile`, `tests/run_profile.sh`. Increments 2 and 3 are design.
+**Status:** Increments 1 (exact counts) and 2 (sampled time, waiting, the
+signal paths) **shipped** 2026-11-21: `gbasic --profile`,
+`tests/run_profile.sh`. Increment 3 is design. Where the build differs from
+what this note first said, the note now says what was built (§3-§7).
 Matthew, 2026-11-20: "A gbasic profiler is a good thing. We should do that
 one." The six questions in §9 were ruled 2026-11-21: "agreed on all six", each
 as recommended.
@@ -14,7 +16,7 @@ line of source, in the program and in every library it loads.
 ```
 $ gbasic --profile orders.bas
 ...the program's own output, unchanged...
-profile: 2.41 s, 24100 samples (0.30 s of it waiting)
+profile: 2.41 s, 24100 samples, 12.4% of them waiting
 functions               calls     total     self
   parse_row             40000     61.2%    48.0%
   post_invoice            812     30.5%     4.1%
@@ -89,18 +91,38 @@ run gives 20,000 samples, and a share's error is well under a percent.
 - **The function stack.** A fixed array of function pointers and a depth,
   pushed and popped in `invoke_function`. Watch bodies, window handlers and
   server handlers all arrive through it.
-- **The waiting flag.** It is set around the event loop's `poll`
-  (`src/eval.c:24241`), `sleep`, and `wait until`. It is not set for a
-  blocking read in a module such as `sqlite.query`, which is time the program
-  asked for. Whether a database's time should count as waiting is §9 Q3.
+- **The waiting flag.** It is set around the event loop's `poll` (which is
+  also how `wait until` and `ui.run()` wait), `sleep`, and an actor's
+  `receive`. It is not set for a blocking read in a module such as
+  `sqlite.query`, which is time the program asked for (§9 Q3, ruled: the
+  program's).
+
+**How the hooks cost nothing when off.** `eval_stmt` and `invoke_function`
+each begin with one test of `gb_profiling`. When it is set, the first pass
+goes round a wrapper (`eval_stmt_profiled`, `invoke_function_profiled`) that
+counts, publishes, and calls back in; the second pass carries on. So the
+unprofiled path has no extra call and no extra frame.
+
+**The sampler allocates nothing and takes no lock.** A web pool worker or an
+actor is a fork without exec, and a fork copies only the forking thread: a
+lock held by another thread at that moment would stay held in the child
+forever. The sampler blocks every signal, so a process-directed signal still
+interrupts the main thread's `poll`, as the webserver's drain needs.
 
 **Attribution:**
-- **A sample goes to the innermost statement.** Time inside a builtin such as
+- **A sample goes to the innermost statement.** A loop's own line keeps the
+  samples taken between its body's statements (stepping and testing the
+  counter), because the wrapper puts the caller's statement back on return. Time inside a builtin such as
   `sort` or `pg.query` goes to the line that called it, because that is the
   line the author can change.
 - **For functions,** the top of the stack gets `self` and every distinct
   function on the stack gets `total`. Counting each function once per sample
-  keeps recursion from adding up past 100%.
+  keeps recursion from adding up past 100% (a stamp on the function: the last
+  sample that counted it).
+- **A sample while waiting** goes to the waiting row and to every function's
+  total, and to no line and no self. A sample with no statement published
+  (before the first statement, between `main` and the event loop) is counted
+  as "outside any line", and the header says so from 0.1%.
 - **Lines are keyed by file and line.** A one-line `if c then x = 1` is two
   statements on one line. The line counts the most either ran, which is the
   times the line was reached: summing would count it again for each `then`
@@ -124,14 +146,22 @@ hooks compiled out (`make gbasic-noprof`, `-DGB_NO_PROFILER`) and counts both
 in **instructions** with callgrind, held to at most 1.01. Wall time was tried
 first and could not hold a 3% bound: on a loaded machine this binary timed
 against its own copy ranged from 0.81 to 1.01 (2026-11-21), while an
-instruction count repeats exactly. Increment 1 measured 0.9994 off. Counting
-measured 1.003 to 1.047, by where the program's file sits: the note copies its
-path, and a path of another length leaves malloc's free lists in another state
-(`_int_malloc` 24.4 against 39.8 million instructions, the same program). Off,
-the hooks allocate nothing, so that bound is exact.
+instruction count repeats exactly. Increment 1 measured 0.9994 off.
+Increment 2 measures **1.0044**: of its 5.0 million extra instructions over
+200,000 passes, 1.8 million are `eval_stmt`'s test (2 a statement) and 0.4
+million `invoke_function`'s, and 2.8 million are `eval_user_function_bound`,
+which holds no hook and compiled differently (its stack frame grew 64 bytes:
+GCC's inlining in a 50,000-line file moved). Marking the wrappers cold and
+never inlined changed nothing, so they are not marked.
 
-**When on, the overhead is printed**, measured as wall time spent on the
-counters and stores, and is expected to be about 5%.
+Profiling on measured 1.003 to 1.047 in increment 1, and 0.98 in increment 2,
+by where the program's file sits: the note copies its path, and a path of
+another length leaves malloc's free lists in another state (`_int_malloc` 24.4
+against 39.8 million instructions, the same program). Off, the hooks allocate
+nothing, so that bound is exact.
+
+**The overhead when on is not printed.** Measuring it would need the clock
+reads §2 rules out. The suite holds it in instructions instead.
 
 ## 5. Where the report goes
 
@@ -143,24 +173,50 @@ It is written on:
 - the normal end;
 - an uncaught raise, after the error line;
 - `end`;
-- Ctrl-C, SIGTERM and SIGHUP. A server profiled until it is stopped is the
-  common case, so the death-by-signal path already in place
-  (`run_lock_signal.sh`) writes the report first.
+- Ctrl-C, SIGTERM and SIGHUP, and the process then dies by the same signal.
 
-A `SIGKILL` writes nothing, and the documentation will say so.
+**The signal path had to be built.** This note first said a death-by-signal
+path was already in place; there was none. The default action simply killed
+the process. Increment 2 installs a handler for each of the three signals,
+only where the default would have killed: an ignored signal (`nohup`) or one
+a server owns for its drain stays as it was, and a server's drain ends
+normally and writes the report then.
+
+- **The handler only records the signal.** Writing a report is not safe from a
+  handler (it allocates, sorts, and writes through stdio).
+- **The report is written by whichever thread claims it first:**
+  - the main thread, at its next statement, call or end of a wait;
+  - the sampler, at once while the main thread waits, or after **200 ms**
+    while the main thread is inside one C call (a read of a terminal or a
+    pipe, a long `sort`) and so meets no statement. Inside a C call it is not
+    touching the profile's lists, which only statements change.
+- **The loser parks** and the winner kills the process by the signal.
+- **A second signal kills at once**, as the default would, with no report.
+- **Counts only (`GBASIC_PROFILE_HZ=0`) installs no handler.** With no sampler,
+  a main thread blocked in a read with `SA_RESTART` would never come back to
+  act on the signal.
+
+Known limits: a report written while the main thread is blocked writing to a
+full pipe would wait on that pipe's lock, and a second signal is then the way
+out. Windows has no signal path. A `SIGKILL` writes nothing.
 
 ## 6. What it does not do
 
 - **Other processes.** An actor or a `process.start` child is its own
   process, and a web pool's worker or a G-SQL reader is a fork that has no
-  sampler thread. Each could write its own report (§9 Q4). Increment 1
-  profiles the process it was started in, and says so in the report's first
-  line when children ran.
+  sampler thread. Each could write its own report (§9 Q4). Increments 1 and 2
+  profile the process they were started in. A forked child inherits the
+  counters and writes nothing; the report does not say children ran.
 - **Memory.** Time only. Allocation profiling is another tool.
 - **A flame graph.** The stacks sampled are enough to write one (§9 Q2), and
   the counts alone are not.
 
 ## 7. The suite: `tests/run_profile.sh`
+
+This section is the plan as written. What was built is in the suite's header,
+and differs where measuring showed the plan could not hold: the signal tier
+covers seven cases rather than one, the helgrind tier needed fair scheduling
+(below), and two of the perturbations needed checks added first.
 
 - **counts** (exact):
   - a loop of 1000 shows its body line at 1000;
@@ -183,21 +239,33 @@ A `SIGKILL` writes nothing, and the documentation will say so.
   by SIGTERM (python3 reads the status, as `run_lock_signal.sh` does).
 - **off:** the instruction ratio of §4. The second copy is built into a
   temporary directory, never over `./gbasic`.
-- **valgrind** and **helgrind.** Every published value is atomic, so helgrind
-  stays clean.
-- **perturbations**, each of which must turn the suite red:
-  - a sample given to the caller's line instead of the innermost one;
-  - a count incremented twice on a loop's first pass;
-  - the waiting flag left unset in `sleep`;
-  - recursion counted per frame.
+- **valgrind** and **helgrind.** Every published value is atomic. Helgrind
+  does not model C11 atomics, so `tests/profile_helgrind.supp` names the
+  functions making those accesses, by first frame only. **And the sampler must
+  run:** under valgrind's default scheduler it took 3 samples in 11.78 s
+  beside a computing interpreter, and a plain read planted in it went
+  unseen. With `--fair-sched=yes` it takes about 6000, the planted race is
+  reported, and the tier refuses a run of fewer than 1000.
+- **perturbations**, each of which turned the suite red (2026-11-21):
+  - a sample given to the outermost line instead of the innermost one (after
+    the innermost-line check was added; before it, nothing held lines);
+  - a count incremented twice on a statement's first run (every count one
+    over);
+  - the waiting flag left unset in `sleep` (waiting, the sleep line, signal);
+  - recursion counted per frame (fib's total 1422.6%, after a recursion
+    fixture was added; the shares fixture does not recurse);
+  - the sampler never claiming while the main thread is inside a C call
+    (signal);
+  - no signal handlers (signal);
+  - a plain, non-atomic read in the sampler (helgrind, after fair scheduling).
 
 ## 8. Increments
 
-1. **Counts.** `--profile` with exact calls and runs, no thread. This alone
+1. **Counts** (shipped). `--profile` with exact calls and runs, no thread. This alone
    finds a hot loop by counts. It includes the off ratio, the
    standard-output tier and valgrind.
-2. **Time.** The sampler thread, shares, waiting, the signal paths and
-   helgrind.
+2. **Time** (shipped). The sampler thread, shares, waiting, the signal paths
+   and helgrind.
 3. **What Matthew rules in §9:** JSON, builtins as their own rows,
    flame-graph stacks, children.
 
