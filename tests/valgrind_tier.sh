@@ -69,3 +69,8 @@ vg_count_instructions() {
     valgrind --tool=callgrind --callgrind-out-file=/dev/null "$@" 2>&1 >/dev/null </dev/null |
         awk '/Collected :/ { print $4 }'
 }
+
+# THREADS, NOT MEMORY: helgrind's race detector, for a suite whose program runs
+# a thread of its own (tests/run_profile.sh: the sampler). Suppressions are the
+# caller's, named in its arguments.
+vg_run_helgrind() { valgrind --tool=helgrind --error-exitcode=0 ${VG_EXTRA:-} "$@"; }

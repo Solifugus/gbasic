@@ -1,0 +1,42 @@
+# Helgrind does not model C11 atomics, so it reports the profiler's PUBLISHED
+# words (src/eval.c, `--profile`: profile_now, profile_stack, profile_depth,
+# profile_waiting, the sampler's stop flag) as races, though every access to
+# them is an __atomic load or store. Each entry names the one function making
+# the access as the FIRST frame, so a plain race anywhere else -- including
+# one these functions reach by calling something -- is still reported.
+# Used only by tests/run_profile.sh's helgrind tier.
+{
+   profile-published-eval_stmt_profiled
+   Helgrind:Race
+   fun:eval_stmt_profiled
+}
+{
+   profile-published-profile_push
+   Helgrind:Race
+   fun:profile_push
+}
+{
+   profile-published-profile_pop
+   Helgrind:Race
+   fun:profile_pop
+}
+{
+   profile-published-profile_wait
+   Helgrind:Race
+   fun:profile_wait
+}
+{
+   profile-published-profile_take_sample
+   Helgrind:Race
+   fun:profile_take_sample
+}
+{
+   profile-published-profile_sample_loop
+   Helgrind:Race
+   fun:profile_sample_loop
+}
+{
+   profile-published-profile_stop_sampler
+   Helgrind:Race
+   fun:profile_stop_sampler
+}

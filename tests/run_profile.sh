@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# `gbasic --profile` (docs/profiler_design.md), increment 1: exact counts.
+# `gbasic --profile` (docs/profiler_design.md): exact counts (increment 1) and
+# sampled time (increment 2).
 #
 # TIERS
 #   counts     tests/profile/counts.bas keeps its OWN counter beside every place
@@ -7,7 +8,23 @@
 #              function, a recursive one, a library's (under the name a caller
 #              writes, its line under its own file), a loop body, a watch body,
 #              and a one-line `if` counted as the times the line was reached.
-#   shape      the whole report for tests/profile/shape.bas, byte for byte.
+#   shape      the whole report for tests/profile/shape.bas, byte for byte,
+#              counts only (GBASIC_PROFILE_HZ=0: sampled shares would move the
+#              rows); and a sampled report's headings.
+#   shares     tests/profile/shares.bas: two functions with one body, called
+#              30 and 10 times, take self time in a ratio of 2.5 to 3.5; every
+#              function's total is at least its self; main's total is at least
+#              97%; and the lines, waiting and outside rows sum to 100%. Ratios
+#              of one run, so the machine's speed cancels.
+#   waiting    tests/profile/waits.bas sleeps a second after a moment's work:
+#              the waiting row holds at least 85% and the `sleep` line at most
+#              2%.
+#   signal     tests/profile/signals.py (python3 reads the wait status): SIGTERM
+#              asleep and SIGINT computing each write the report and die by
+#              their signal; a read blocked in C is reported after the 200 ms
+#              grace; a second signal kills at once with no report; an ignored
+#              SIGTERM stays ignored; counts only leaves signals alone; a
+#              server's SIGTERM still drains, and the report follows.
 #   unchanged  standard output and the exit status are the same with and
 #              without --profile; standard error is the same, then the report.
 #              Includes an uncaught raise (report after the error line) and
@@ -15,17 +32,23 @@
 #   file       --profile=FILE writes every row and standard error gets none;
 #              standard error alone shows 20 rows and says how many more.
 #   refusals   --profile=x.json (increment 3), --profile= with no file, the
-#              prompt, and a --profile after the file being the program's.
+#              prompt, a GBASIC_PROFILE_HZ that is not a rate, and a --profile
+#              after the file being the program's.
 #   off        the same binary with every hook compiled out (make
 #              gbasic-noprof) against this one with profiling off, counted in
-#              INSTRUCTIONS by callgrind: at most 1.01, and counting on at most
-#              1.10. Not wall time: this binary timed against its own copy
+#              INSTRUCTIONS by callgrind: at most 1.01, and profiling on at
+#              most 1.10. Not wall time: this binary timed against its own copy
 #              ranged 0.81 to 1.01 on a loaded machine (2026-11-21), while an
 #              instruction count repeats exactly. The hooks' cost IS
 #              instructions, a load and a branch each.
-#              Counting on varies 1.003-1.047 with the program's PATH (malloc's
-#              state after copying it), hence the looser bound there.
+#              Profiling on varies with the program's PATH (malloc's state
+#              after copying it: 1.003-1.047 measured), hence the looser bound.
 #   valgrind   the counts fixture, profiled.
+#   helgrind   the shares fixture, profiled: no race between the sampler and
+#              the interpreter. tests/profile_helgrind.supp names the functions
+#              whose __atomic accesses helgrind cannot model, by first frame
+#              only; an unprofiled run's own errors (libp11-kit at exit) are
+#              the allowance.
 . "$(dirname "$0")/portable.sh"
 . "$(dirname "$0")/premise.sh"   # premise_time_claims
 set -euo pipefail
@@ -41,8 +64,13 @@ fail() { printf 'FAIL %s\n' "$1"; status=1; }
 # A row of the report: the count beside a function's name, or beside the line
 # whose source text is given.
 calls_of() { awk -v n="$2" '/^functions/ { f = 1; next } /^lines/ { f = 0 } f && $1 == n { print $2 }' "$1"; }
-runs_of()  { awk -v t="$2" '/^lines/ { f = 1; next } f { line = $0; sub(/^ +[^ ]+ +[0-9]+   /, "", line); if (line == t) print $2 }' "$1"; }
-place_of() { awk -v t="$2" '/^lines/ { f = 1; next } f { line = $0; sub(/^ +[^ ]+ +[0-9]+   /, "", line); if (line == t) print $1 }' "$1"; }
+# A line's share column is there when the run was sampled.
+runs_of()  { awk -v t="$2" '/^lines/ { f = 1; next } f { line = $0; sub(/^ +[^ ]+ +[0-9]+( +[0-9.]+%)?   /, "", line); if (line == t) print $2 }' "$1"; }
+place_of() { awk -v t="$2" '/^lines/ { f = 1; next } f { line = $0; sub(/^ +[^ ]+ +[0-9]+( +[0-9.]+%)?   /, "", line); if (line == t) print $1 }' "$1"; }
+self_of()  { awk -v n="$2" '/^functions/ { f = 1; next } /^lines/ { f = 0 } f && $1 == n { sub(/%/, "", $4); print $4 }' "$1"; }
+total_of() { awk -v n="$2" '/^functions/ { f = 1; next } /^lines/ { f = 0 } f && $1 == n { sub(/%/, "", $3); print $3 }' "$1"; }
+header_re='^profile: [0-9]+\.[0-9]{2} s, [0-9]+ samples, [0-9]+\.[0-9]% of them waiting'
+in_range() { awk -v x="$1" -v lo="$2" -v hi="$3" 'BEGIN { exit !(x != "" && x + 0 >= lo && x + 0 <= hi) }'; }
 oracle()   { awk -v n="$2" '$1 == "oracle" && $2 == n { print $3 }' "$1"; }
 
 echo "--- TIER counts ---"
@@ -64,11 +92,56 @@ same "the program block, once"          "$(calls_of "$tmp/counts.txt" main)"    
 same "the library's line, in its file"  "$(place_of "$tmp/counts.txt" 'return x * 3')"  tests/profile/countlib.bas:5
 
 echo "--- TIER shape ---"
-./gbasic --profile tests/profile/shape.bas 2>"$tmp/shape.err" >/dev/null </dev/null || true
+GBASIC_PROFILE_HZ=0 ./gbasic --profile tests/profile/shape.bas 2>"$tmp/shape.err" >/dev/null </dev/null || true
 if cmp -s "$tmp/shape.err" tests/profile/shape.report; then
-    pass "the report, byte for byte"
+    pass "the report, byte for byte (counts only)"
 else
     diff tests/profile/shape.report "$tmp/shape.err" | sed 's/^/  /'; fail "shape"
+fi
+./gbasic --profile tests/profile/shape.bas 2>"$tmp/sampled.err" >/dev/null </dev/null || true
+if head -1 "$tmp/sampled.err" | grep -Eq "$header_re" &&
+   [ "$(sed -n 2p "$tmp/sampled.err")" = "functions                          calls     total      self" ] &&
+   [ "$(sed -n 5p "$tmp/sampled.err")" = "lines                               runs      self" ]; then
+    pass "sampled: the header and the headings"
+else
+    sed 's/^/  /' "$tmp/sampled.err"; fail "sampled: the header or the headings"
+fi
+
+echo "--- TIER shares ---"
+./gbasic --profile="$tmp/shares.txt" tests/profile/shares.bas >/dev/null 2>"$tmp/shares.err" </dev/null || true
+hot="$(self_of "$tmp/shares.txt" hot)"; cold="$(self_of "$tmp/shares.txt" cold)"
+same "hot's calls" "$(calls_of "$tmp/shares.txt" hot)" 30
+same "cold's calls" "$(calls_of "$tmp/shares.txt" cold)" 10
+ratio="$(awk -v a="$hot" -v b="$cold" 'BEGIN { if (b > 0) printf "%.2f", a / b }')"
+if in_range "$ratio" 2.5 3.5; then
+    pass "self time follows the work: hot/cold = $ratio (2.5-3.5; $hot% and $cold%)"
+else
+    sed 's/^/  /' "$tmp/shares.txt"; fail "self time: hot/cold = '$ratio' ($hot% and $cold%), not 2.5-3.5"
+fi
+bad="$(awk '/^functions/ { f = 1; next } /^lines/ { f = 0 } f { t = $3; s = $4; sub(/%/, "", t); sub(/%/, "", s); if (t + 0 < s + 0) print $1 }' "$tmp/shares.txt")"
+if [ -z "$bad" ]; then pass "every function's total is at least its self"; else fail "total under self: $bad"; fi
+main_total="$(total_of "$tmp/shares.txt" main)"
+if in_range "$main_total" 97 100; then pass "main's total: $main_total%"; else fail "main's total: '$main_total'%"; fi
+# Every sample is one line's, the waiting row's or outside any line's.
+sum="$(awk '/^lines/ { f = 1; next } f { for (i = 2; i <= NF; i++) if ($i ~ /%$/) { v = $i; sub(/%/, "", v); s += v; break } }
+            /^profile:/ { if (match($0, /, [0-9.]+% outside/)) { v = substr($0, RSTART + 2, RLENGTH - 10); s += v } }
+            END { printf "%.1f", s }' "$tmp/shares.txt")"
+if in_range "$sum" 98.5 101.5; then pass "the rows account for every sample ($sum%)"; else sed 's/^/  /' "$tmp/shares.txt"; fail "the rows sum to $sum%"; fi
+
+echo "--- TIER waiting ---"
+./gbasic --profile="$tmp/waits.txt" tests/profile/waits.bas >/dev/null 2>&1 </dev/null || true
+waiting="$(awk '$1 == "(waiting)" { sub(/%/, "", $2); print $2 }' "$tmp/waits.txt")"
+sleeping="$(awk '/^lines/ { f = 1; next } f && /sleep\(1\)$/ { sub(/%/, "", $3); print $3 }' "$tmp/waits.txt")"
+if in_range "$waiting" 85 100; then pass "a second asleep is the waiting row's: $waiting%"; else sed 's/^/  /' "$tmp/waits.txt"; fail "waiting: '$waiting'%"; fi
+if in_range "$sleeping" 0 2; then pass "and not the sleep line's: $sleeping%"; else fail "the sleep line: '$sleeping'%"; fi
+
+echo "--- TIER signal ---"
+if ! command -v python3 >/dev/null 2>&1; then
+    printf 'SKIP signal (needs python3 to read the wait status; NOT measured)\n'
+elif python3 tests/profile/signals.py ./gbasic >"$tmp/signals.txt" 2>&1; then
+    sed 's/^/  /' "$tmp/signals.txt"; pass "signal ($(grep -c '^ok' "$tmp/signals.txt") checks)"
+else
+    sed 's/^/  /' "$tmp/signals.txt"; fail "signal"
 fi
 
 echo "--- TIER unchanged ---"
@@ -84,7 +157,7 @@ unchanged() {   # label, then the program and its arguments
         fail "$label: exit status $rc0 became $rc1"
     elif ! cmp -s "$tmp/u0.err" <(head -c "$n" "$tmp/u1.err"); then
         fail "$label: standard error does not begin with the unprofiled run's"
-    elif [ "$(tail -c +"$((n + 1))" "$tmp/u1.err" | head -1)" != "profile: exact counts (times are not measured yet)" ]; then
+    elif ! tail -c +"$((n + 1))" "$tmp/u1.err" | head -1 | grep -Eq "$header_re"; then
         fail "$label: the report does not follow it"
     else
         pass "$label (exit $rc0)"
@@ -100,7 +173,7 @@ done
 # One stream, piped: the program's output is still in its buffer when the run
 # ends, and the report must come after it, not above it.
 both="$(./gbasic --profile tests/profile/shape.bas 2>&1 </dev/null | cat)"
-if [ "$(printf '%s\n' "$both" | head -1)" = "12" ] && [ "$(printf '%s\n' "$both" | sed -n 2p)" = "profile: exact counts (times are not measured yet)" ]; then
+if [ "$(printf '%s\n' "$both" | head -1)" = "12" ] && printf '%s\n' "$both" | sed -n 2p | grep -Eq "$header_re"; then
     pass "one piped stream: the program's output, then the report"
 else
     printf '%s\n' "$both" | head -3 | sed 's/^/  /'; fail "one piped stream: the report is not after the program's output"
@@ -131,6 +204,14 @@ refused "a JSON report is not built yet" \
     --profile=x.json tests/profile/shape.bas
 refused "--profile= names no file" '--profile= needs a file to write, as --profile=run.txt' --profile= tests/profile/shape.bas
 refused "the prompt" '--profile runs a program file, not the prompt: gbasic --profile FILE' --profile --repl
+for hz in fast -1 100001 12x; do
+    got="$(GBASIC_PROFILE_HZ="$hz" ./gbasic --profile tests/profile/shape.bas 2>&1 </dev/null)" && rc=0 || rc=$?
+    if [ "$rc" = 2 ] && [ "$got" = "--profile: GBASIC_PROFILE_HZ must be a whole number of samples a second, 0 (counts only) to 100000; the default is 10000" ]; then
+        pass "GBASIC_PROFILE_HZ=$hz refused, nothing run"
+    else
+        fail "GBASIC_PROFILE_HZ=$hz: exit $rc, '$got'"
+    fi
+done
 got="$(./gbasic tests/profile/args.bas --profile 2>&1 </dev/null)"
 if [ "$got" = '["--profile"]' ]; then pass "after the file, --profile is the program's"; else fail "after the file: '$got'"; fi
 
@@ -169,9 +250,9 @@ BAS
                 fail "off: ${ratio}x the instructions of the hooks compiled out, over 1.01 ($with against $without)"
             fi
             if awk -v r="$on" 'BEGIN { exit !(r <= 1.10) }'; then
-                pass "counting on: ${on}x (at most 1.10; $profiled against $without instructions)"
+                pass "profiling on: ${on}x (at most 1.10; $profiled against $without instructions)"
             else
-                fail "counting on: ${on}x the instructions, over 1.10"
+                fail "profiling on: ${on}x the instructions, over 1.10"
             fi
         fi
     fi
@@ -190,6 +271,25 @@ if vg_available; then
     fi
 else
     printf 'SKIP valgrind (unavailable)\n'
+fi
+
+echo "--- TIER helgrind ---"
+if vg_available; then
+    races() { grep -cE 'Possible data race|lock order' "$1" || true; }
+    errors() { awk '/ERROR SUMMARY:/ { print $4 }' "$1"; }
+    timeout -k 5 600 bash -c '. tests/valgrind_tier.sh; vg_run_helgrind ./gbasic tests/profile/shares.bas' \
+        >/dev/null 2>"$tmp/hg0.err" </dev/null || true
+    timeout -k 5 600 bash -c '. tests/valgrind_tier.sh; vg_run_helgrind --suppressions=tests/profile_helgrind.supp ./gbasic --profile tests/profile/shares.bas' \
+        >/dev/null 2>"$tmp/hg1.err" </dev/null || true
+    if [ -z "$(errors "$tmp/hg1.err")" ]; then
+        tail -20 "$tmp/hg1.err"; fail "helgrind gave no summary"
+    elif [ "$(races "$tmp/hg1.err")" -eq 0 ] && [ "$(errors "$tmp/hg1.err")" -le "$(errors "$tmp/hg0.err")" ]; then
+        pass "helgrind: no race ($(errors "$tmp/hg1.err") errors, as unprofiled: $(errors "$tmp/hg0.err"))"
+    else
+        grep -A12 -E 'Possible data race|lock order' "$tmp/hg1.err" | head -60; fail "helgrind"
+    fi
+else
+    printf 'SKIP helgrind (unavailable)\n'
 fi
 
 exit $status

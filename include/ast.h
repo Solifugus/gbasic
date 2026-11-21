@@ -384,6 +384,14 @@ struct AstStmt {
      * Zero and untouched unless the run is profiled. */
     unsigned long prof_runs;
     unsigned long prof_calls;
+    /* Its sampled time (§3), written only by the sampler thread and read
+     * after it is joined: samples while this statement ran, and for a
+     * function the samples it was on top of the stack (self) or anywhere on
+     * it (total, once per sample: prof_stamp is the last sample counted). */
+    unsigned long prof_samples;
+    unsigned long prof_self;
+    unsigned long prof_total;
+    unsigned long prof_stamp;
     union {
         struct {
             AstExpr *target;

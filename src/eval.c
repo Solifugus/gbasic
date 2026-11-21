@@ -1314,23 +1314,39 @@ static char *copy_string(const char *text) {
     return copy;
 }
 
-/* --- `--profile`, increment 1: exact counts (docs/profiler_design.md) -------
+/* --- `--profile` (docs/profiler_design.md) -----------------------------------
  *
- * Each statement node counts its runs and each function its calls, in fields
- * on the AST (ast.h), so the hot path is one test and an increment. The first
- * time a node counts, it is noted here with the file it ran from -- the
- * function's stamped path, or the root program -- because the node does not
- * carry one. At the end of the run, before teardown frees a library's tree,
- * the counts are copied out; main prints them after the error line, if any.
+ * COUNTS (increment 1). Each statement node counts its runs and each function
+ * its calls, in fields on the AST (ast.h). The first time a node counts, it is
+ * noted here with the file it ran from -- the function's stamped path, or the
+ * root program -- because the node does not carry one. At the end of the run,
+ * before teardown frees a library's tree, the counts are copied out; main
+ * prints them after the error line, if any.
  *
- * GB_NO_PROFILER compiles every hook away. tests/run_profile.sh builds that
- * copy to hold the cost of the hooks when profiling is off (§4). */
+ * TIME (increment 2), sampled by a THREAD, not a signal (§3): SIGPROF would
+ * interrupt system calls inside libraries that are not ours. While profiling,
+ * the main thread publishes the statement running, the stack of functions
+ * active and whether it is waiting, and the sampler adds one sample to each
+ * every interval. The sampler allocates nothing and takes no lock while it
+ * samples, so a process forked without exec (a pool worker, an actor) cannot
+ * inherit a lock it held. It blocks every signal, so a signal still interrupts
+ * the main thread's poll exactly as before (the webserver's drain needs that).
+ *
+ * The off path is one test of gb_profiling per statement and per call: the
+ * first pass through eval_stmt or invoke_function goes round the _profiled
+ * wrapper, which publishes and comes back in. GB_NO_PROFILER compiles every
+ * hook away; tests/run_profile.sh builds that copy to hold the cost of the
+ * hooks when profiling is off (§4). */
+#include <pthread.h>
+
 typedef struct {
     AstStmt *stmt;           /* until the snapshot; NULL after */
     char *path;              /* the file it ran from */
     char *name;              /* a function's name as a caller writes it */
     int line;
     unsigned long count;     /* filled by the snapshot */
+    unsigned long samples;   /* a line's samples, a function's self */
+    unsigned long total;     /* a function's samples anywhere on the stack */
 } ProfileSeen;
 
 typedef struct {
@@ -1345,18 +1361,74 @@ static char *profile_out_path;    /* NULL: standard error */
 static pid_t profile_pid;
 static int profile_snapshot_taken;
 
+/* The sampler's counts, read only after it is stopped, and the run's seconds. */
+static long profile_interval_ns = 100000;   /* GBASIC_PROFILE_HZ; 0: no sampler */
+static unsigned long profile_samples;
+static unsigned long profile_waiting_samples;
+static unsigned long profile_outside_samples;
+static double profile_seconds;
+/* A signal that would end the run (§5): the handler only records it. The
+ * report is written by whichever thread first claims it -- the main thread
+ * at a statement or after a wait, or the sampler while the main thread waits
+ * or has been inside one C call for PROFILE_SIGNAL_GRACE_NS -- and the
+ * process then dies by that signal. */
+static volatile sig_atomic_t profile_signal;
+
+#ifndef GB_NO_PROFILER
+#define PROFILE_STACK_MAX 4096
+/* PUBLISHED: written by the main thread, read by the sampler, every access
+ * atomic. The depth may pass the stack's size; past it a frame is not kept,
+ * and a sample there gives no function its self. */
+static AstStmt *profile_now;
+static AstStmt *profile_stack[PROFILE_STACK_MAX];
+static int profile_depth;
+static int profile_waiting;
+/* The main thread's own: the statement or function whose wrapper is coming
+ * back in, so the second pass carries on rather than wrapping again. */
+static AstStmt *profile_entering;
+static AstStmt *profile_calling;
+static int profile_sampler_live;
+static int profile_sampler_stop;
+static pthread_t profile_sampler;
+static struct timespec profile_started;
+static int profile_claimed;
+static int profile_signals_installed;
+#define PROFILE_SIGNAL_GRACE_NS 200000000L
+#endif
+
+#define PROF_LOAD(x) __atomic_load_n(&(x), __ATOMIC_RELAXED)
+#define PROF_STORE(x, v) __atomic_store_n(&(x), (v), __ATOMIC_RELAXED)
+
 #ifdef GB_NO_PROFILER
 #define gb_profiling 0
 #define PROFILE_STMT(s) ((void)0)
+#define PROFILE_ENTER_CALL(s, a, n, r) ((void)0)
 #define PROFILE_CALL(s) ((void)0)
+#define PROFILE_PUSH(s) 0
+#define PROFILE_POP(depth) ((void)(depth))
+#define PROFILE_WAIT(on) ((void)0)
 #else
 static int gb_profiling;
-#define PROFILE_STMT(s) do { if (gb_profiling && (s)->prof_runs++ == 0) { profile_note(&profile_lines, (s), NULL); } } while (0)
+static EvalResult eval_stmt_profiled(AstStmt *stmt);
+static Value invoke_function_profiled(AstStmt *stmt, Value *args, size_t argc, Value *receiver);
+static int profile_push(AstStmt *function);
+static void profile_pop(int depth);
+static void profile_wait(int on);
+#define PROFILE_STMT(s) do { if (gb_profiling) { if ((s) != profile_entering) { return eval_stmt_profiled(s); } profile_entering = NULL; } } while (0)
+#define PROFILE_ENTER_CALL(s, a, n, r) do { if (gb_profiling) { if ((s) != profile_calling) { return invoke_function_profiled((s), (a), (n), (r)); } profile_calling = NULL; } } while (0)
 #define PROFILE_CALL(s) do { if (gb_profiling && (s)->prof_calls++ == 0) { profile_note_function(s); } } while (0)
+#define PROFILE_PUSH(s) (gb_profiling ? profile_push(s) : 0)
+#define PROFILE_POP(depth) do { if (gb_profiling) { profile_pop(depth); } } while (0)
+#define PROFILE_WAIT(on) do { if (gb_profiling) { profile_wait(on); } } while (0)
 #endif
 
 #ifndef GB_NO_PROFILER
+static void profile_signalled(void);
+
 static void profile_note(ProfileList *list, AstStmt *stmt, const char *name) {
+    if (profile_signal) {
+        profile_signalled();
+    }
     if (list->count == list->capacity) {
         size_t grown = list->capacity ? list->capacity * 2 : 256;
         ProfileSeen *items = realloc(list->items, sizeof(ProfileSeen) * grown);
@@ -1373,6 +1445,8 @@ static void profile_note(ProfileList *list, AstStmt *stmt, const char *name) {
     seen->name = name ? copy_string(name) : NULL;
     seen->line = stmt->line;
     seen->count = 0;
+    seen->samples = 0;
+    seen->total = 0;
 }
 
 static void profile_note_function(AstStmt *stmt) {
@@ -1384,16 +1458,280 @@ static void profile_note_function(AstStmt *stmt) {
              name ? name : "(unnamed)");
     profile_note(&profile_funcs, stmt, shown);
 }
+
+/* The depth before the push, which the pop restores. The frame is stored
+ * before the depth that exposes it, with release, so the sampler never reads
+ * a slot above the depth it loaded. */
+static int profile_push(AstStmt *function) {
+    int depth = profile_depth;
+    if (depth < PROFILE_STACK_MAX) {
+        PROF_STORE(profile_stack[depth], function);
+    }
+    __atomic_store_n(&profile_depth, depth + 1, __ATOMIC_RELEASE);
+    return depth;
+}
+
+static void profile_pop(int depth) {
+    __atomic_store_n(&profile_depth, depth, __ATOMIC_RELEASE);
+}
+
+/* Around the event loop's poll, `sleep` and an actor's receive. Leaving a
+ * wait is where a signal that arrived during it is acted on. */
+static void profile_wait(int on) {
+    __atomic_store_n(&profile_waiting, on, __ATOMIC_SEQ_CST);
+    if (!on && profile_signal) {
+        profile_signalled();
+    }
+}
+
+static long long profile_ns(const struct timespec *t) {
+    return (long long)t->tv_sec * 1000000000LL + t->tv_nsec;
+}
+
+/* One sample: the waiting row or the statement running, and every distinct
+ * function on the stack its total (once each, so recursion stays within
+ * 100%), the top its self unless waiting. Sampler thread only. */
+static void profile_take_sample(void) {
+    unsigned long n = ++profile_samples;
+    int waiting = __atomic_load_n(&profile_waiting, __ATOMIC_SEQ_CST);
+    if (waiting) {
+        profile_waiting_samples++;
+    } else {
+        AstStmt *now = PROF_LOAD(profile_now);
+        if (now) {
+            now->prof_samples++;
+        } else {
+            profile_outside_samples++;
+        }
+    }
+    int depth = __atomic_load_n(&profile_depth, __ATOMIC_ACQUIRE);
+    int kept = depth < PROFILE_STACK_MAX ? depth : PROFILE_STACK_MAX;
+    for (int i = 0; i < kept; i++) {
+        AstStmt *f = PROF_LOAD(profile_stack[i]);
+        if (f && f->prof_stamp != n) {
+            f->prof_stamp = n;
+            f->prof_total++;
+        }
+    }
+    if (!waiting && depth > 0 && depth <= PROFILE_STACK_MAX) {
+        AstStmt *top = PROF_LOAD(profile_stack[depth - 1]);
+        if (top) {
+            top->prof_self++;
+        }
+    }
+}
+
+static int profile_claim(void) {
+    int expected = 0;
+    return __atomic_compare_exchange_n(&profile_claimed, &expected, 1, 0,
+                                       __ATOMIC_SEQ_CST, __ATOMIC_SEQ_CST);
+}
+
+static void profile_die(void);
+
+static void *profile_sample_loop(void *unused) {
+    (void)unused;
+    struct timespec next;
+    clock_gettime(CLOCK_MONOTONIC, &next);
+    long long signalled_at = 0;
+    while (!__atomic_load_n(&profile_sampler_stop, __ATOMIC_ACQUIRE)) {
+        long long due = profile_ns(&next) + profile_interval_ns;
+        struct timespec now;
+        clock_gettime(CLOCK_MONOTONIC, &now);
+        long long wait = due - profile_ns(&now);
+        if (wait > 0) {
+            struct timespec d = { (time_t)(wait / 1000000000LL), (long)(wait % 1000000000LL) };
+            nanosleep(&d, NULL);
+            next.tv_sec = (time_t)(due / 1000000000LL);
+            next.tv_nsec = (long)(due % 1000000000LL);
+        } else {
+            next = now;   /* behind: sample now, and skip what was missed */
+        }
+        if (__atomic_load_n(&profile_sampler_stop, __ATOMIC_ACQUIRE)) {
+            break;
+        }
+        profile_take_sample();
+        if (profile_signal) {
+            clock_gettime(CLOCK_MONOTONIC, &now);
+            if (!signalled_at) {
+                signalled_at = profile_ns(&now);
+            }
+            int waiting = __atomic_load_n(&profile_waiting, __ATOMIC_SEQ_CST);
+            if ((waiting || profile_ns(&now) - signalled_at >= PROFILE_SIGNAL_GRACE_NS) &&
+                profile_claim()) {
+                eval_profile_report();
+                profile_die();
+            }
+        }
+    }
+    return NULL;
+}
+
+/* Stop sampling and fix the run's seconds. From the sampler itself (the
+ * signal path) it only marks the stop; from the main thread it joins. A
+ * process forked without exec has no sampler and does nothing here. */
+static void profile_stop_sampler(void) {
+    if (!profile_sampler_live || getpid() != profile_pid) {
+        return;
+    }
+    profile_sampler_live = 0;
+    __atomic_store_n(&profile_sampler_stop, 1, __ATOMIC_RELEASE);
+    if (!pthread_equal(pthread_self(), profile_sampler)) {
+        pthread_join(profile_sampler, NULL);
+    }
+    struct timespec now;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    profile_seconds = (double)(profile_ns(&now) - profile_ns(&profile_started)) / 1e9;
+}
+
+#ifndef _WIN32
+static void profile_on_signal(int sig) {
+    /* A second signal, or one reaching a forked child: what the default
+     * would have done. */
+    if (profile_signal || getpid() != profile_pid) {
+        signal(sig, SIG_DFL);
+        raise(sig);
+        return;
+    }
+    profile_signal = sig;
+}
+
+static const int profile_signals[] = { SIGINT, SIGTERM, SIGHUP };
+
+/* Only where the signal would have killed the program: one ignored (nohup)
+ * or already handled stays as it was. */
+static void profile_install_signals(void) {
+    for (size_t i = 0; i < sizeof(profile_signals) / sizeof(profile_signals[0]); i++) {
+        struct sigaction old;
+        if (sigaction(profile_signals[i], NULL, &old) != 0 || old.sa_handler != SIG_DFL ||
+            (old.sa_flags & SA_SIGINFO)) {
+            continue;
+        }
+        struct sigaction sa;
+        memset(&sa, 0, sizeof(sa));
+        sa.sa_handler = profile_on_signal;
+        sa.sa_flags = SA_RESTART;
+        sigemptyset(&sa.sa_mask);
+        if (sigaction(profile_signals[i], &sa, NULL) == 0) {
+            profile_signals_installed |= 1 << i;
+        }
+    }
+}
+
+static void profile_restore_signals(void) {
+    for (size_t i = 0; i < sizeof(profile_signals) / sizeof(profile_signals[0]); i++) {
+        struct sigaction now;
+        if ((profile_signals_installed & (1 << i)) &&
+            sigaction(profile_signals[i], NULL, &now) == 0 && now.sa_handler == profile_on_signal) {
+            signal(profile_signals[i], SIG_DFL);
+        }
+    }
+    profile_signals_installed = 0;
+}
+
+/* End by the signal that was recorded, as the default would have, after the
+ * report. From either thread: kill() is directed at the process, and the
+ * sampler blocks every signal, so the main thread takes it. */
+static void profile_die(void) {
+    int sig = profile_signal;
+    signal(sig, SIG_DFL);
+    sigset_t only;
+    sigemptyset(&only);
+    sigaddset(&only, sig);
+    pthread_sigmask(SIG_UNBLOCK, &only, NULL);
+    kill(getpid(), sig);
+    for (;;) {
+        pause();
+    }
+}
+#else
+static void profile_install_signals(void) {}
+static void profile_restore_signals(void) {}
+static void profile_die(void) { _exit(1); }
 #endif
 
-void eval_set_profile(const char *out_path) {
+/* The main thread met a recorded signal: write the report and die by it, or,
+ * if the sampler claimed it first, wait for the sampler to end the process. */
+static void profile_signalled(void) {
+    if (!profile_claim()) {
+        for (;;) {
+            pause();
+        }
+    }
+    eval_profile_report();
+    profile_die();
+}
+
+/* At the start of the run: the sampler, and with it the signal handlers --
+ * without a sampler a signal is left to do what it did, since a main thread
+ * blocked in a read with SA_RESTART would never come back to act on it. */
+static void profile_start(void) {
+    if (!gb_profiling || profile_sampler_live || profile_interval_ns <= 0 ||
+        getpid() != profile_pid) {
+        return;
+    }
+    clock_gettime(CLOCK_MONOTONIC, &profile_started);
+#ifndef _WIN32
+    sigset_t all, old;
+    sigfillset(&all);
+    pthread_sigmask(SIG_BLOCK, &all, &old);
+#endif
+    int rc = pthread_create(&profile_sampler, NULL, profile_sample_loop, NULL);
+#ifndef _WIN32
+    pthread_sigmask(SIG_SETMASK, &old, NULL);
+#endif
+    if (rc != 0) {
+        fprintf(stderr, "profile: cannot start the sampler (%s); counting only\n", strerror(rc));
+        profile_interval_ns = 0;
+        return;
+    }
+    profile_sampler_live = 1;
+    profile_install_signals();
+}
+
+static EvalResult eval_stmt(AstStmt *stmt);
+
+/* The statement published while it runs, and its caller's put back after:
+ * every exit returns through here, since nothing longjmps. A signal is acted
+ * on before anything is counted. */
+static EvalResult eval_stmt_profiled(AstStmt *stmt) {
+    if (profile_signal) {
+        profile_signalled();
+    }
+    if (stmt->prof_runs++ == 0) {
+        profile_note(&profile_lines, stmt, NULL);
+    }
+    AstStmt *outer = profile_now;
+    PROF_STORE(profile_now, stmt);
+    profile_entering = stmt;
+    EvalResult result = eval_stmt(stmt);
+    PROF_STORE(profile_now, outer);
+    return result;
+}
+#endif
+
+/* NULL, or why GBASIC_PROFILE_HZ cannot be used. */
+const char *eval_set_profile(const char *out_path) {
 #ifdef GB_NO_PROFILER
     (void)out_path;
+    return NULL;
 #else
+    const char *hz = getenv("GBASIC_PROFILE_HZ");
+    if (hz && *hz) {
+        char *end = NULL;
+        errno = 0;
+        long n = strtol(hz, &end, 10);
+        if (errno || *end || n < 0 || n > 100000) {
+            return "GBASIC_PROFILE_HZ must be a whole number of samples a second, "
+                   "0 (counts only) to 100000; the default is 10000";
+        }
+        profile_interval_ns = n ? 1000000000L / n : 0;
+    }
     gb_profiling = 1;
     profile_pid = getpid();
     free(profile_out_path);
     profile_out_path = out_path ? copy_string(out_path) : NULL;
+    return NULL;
 #endif
 }
 
@@ -1402,12 +1740,18 @@ static void profile_snapshot(void) {
     if (!gb_profiling || profile_snapshot_taken) {
         return;
     }
+#ifndef GB_NO_PROFILER
+    profile_stop_sampler();
+#endif
     for (size_t i = 0; i < profile_lines.count; i++) {
         profile_lines.items[i].count = profile_lines.items[i].stmt->prof_runs;
+        profile_lines.items[i].samples = profile_lines.items[i].stmt->prof_samples;
         profile_lines.items[i].stmt = NULL;
     }
     for (size_t i = 0; i < profile_funcs.count; i++) {
         profile_funcs.items[i].count = profile_funcs.items[i].stmt->prof_calls;
+        profile_funcs.items[i].samples = profile_funcs.items[i].stmt->prof_self;
+        profile_funcs.items[i].total = profile_funcs.items[i].stmt->prof_total;
         profile_funcs.items[i].stmt = NULL;
     }
     profile_snapshot_taken = 1;
@@ -1419,9 +1763,13 @@ static int profile_by_place(const void *a, const void *b) {
     return c ? c : (x->line > y->line) - (x->line < y->line);
 }
 
-/* Most first; ties by file and line (or by name), so the report is stable. */
+/* Most time first, then most runs; ties by name, then file and line, so the
+ * report is stable. Unsampled, every time is zero and it is order by count. */
 static int profile_by_count(const void *a, const void *b) {
     const ProfileSeen *x = a, *y = b;
+    if (x->samples != y->samples) {
+        return x->samples < y->samples ? 1 : -1;
+    }
     if (x->count != y->count) {
         return x->count < y->count ? 1 : -1;
     }
@@ -1483,6 +1831,24 @@ static void profile_source_line(const char *path, int line, char *out, size_t si
     fclose(f);
 }
 
+static const char *profile_signal_name(int sig) {
+#ifndef _WIN32
+    switch (sig) {
+    case SIGINT: return "SIGINT";
+    case SIGTERM: return "SIGTERM";
+    case SIGHUP: return "SIGHUP";
+    default: break;
+    }
+#endif
+    (void)sig;
+    return "a signal";
+}
+
+/* A share of every sample, as the report prints it. */
+static void profile_share(char *out, size_t size, unsigned long part) {
+    snprintf(out, size, "%.1f%%", profile_samples ? 100.0 * (double)part / (double)profile_samples : 0.0);
+}
+
 #define PROFILE_ROWS_SHOWN 20
 
 /* Print the report: to the --profile=FILE, every row; to standard error, the
@@ -1501,22 +1867,25 @@ void eval_profile_report(void) {
         out = fopen(profile_out_path, "w");
         if (!out) {
             fprintf(stderr, "profile: cannot write %s: %s\n", profile_out_path, strerror(errno));
-            return;
+            out = NULL;
         }
     }
+    int sampled = profile_interval_ns > 0;
     size_t limit = profile_out_path ? (size_t)-1 : PROFILE_ROWS_SHOWN;
     char cwd_buf[4096];
     const char *cwd = getcwd(cwd_buf, sizeof(cwd_buf));
 
     /* Lines: statements on one line are one row, counted as the MOST any of
      * them ran. `if n < 2 then return n` is entered as often as its `if`
-     * runs; summing would count the line again each time it returns. */
-    ProfileSeen *rows = profile_lines.count ? malloc(sizeof(ProfileSeen) * profile_lines.count) : NULL;
+     * runs; summing would count the line again each time it returns. Its
+     * samples are summed: each was taken in one of them. Waiting is a row of
+     * its own, ranked among the lines. */
+    ProfileSeen *rows = malloc(sizeof(ProfileSeen) * (profile_lines.count + 1));
+    if (!rows) {
+        abort();
+    }
     size_t row_count = 0;
     if (profile_lines.count) {
-        if (!rows) {
-            abort();
-        }
         memcpy(rows, profile_lines.items, sizeof(ProfileSeen) * profile_lines.count);
         qsort(rows, profile_lines.count, sizeof(ProfileSeen), profile_by_place);
         for (size_t i = 0; i < profile_lines.count; i++) {
@@ -1524,12 +1893,17 @@ void eval_profile_report(void) {
                 if (rows[i].count > rows[row_count - 1].count) {
                     rows[row_count - 1].count = rows[i].count;
                 }
+                rows[row_count - 1].samples += rows[i].samples;
             } else {
                 rows[row_count++] = rows[i];
             }
         }
-        qsort(rows, row_count, sizeof(ProfileSeen), profile_by_count);
     }
+    if (sampled && profile_waiting_samples) {
+        ProfileSeen waiting = { NULL, (char *)"", (char *)"(waiting)", 0, 0, profile_waiting_samples, 0 };
+        rows[row_count++] = waiting;
+    }
+    qsort(rows, row_count, sizeof(ProfileSeen), profile_by_count);
     qsort(profile_funcs.items, profile_funcs.count, sizeof(ProfileSeen), profile_by_count);
 
     int width = 20;
@@ -1539,34 +1913,92 @@ void eval_profile_report(void) {
     }
     char place[600];
     for (size_t i = 0; i < row_count && i < limit; i++) {
-        snprintf(place, sizeof(place), "%s:%d", profile_shown_path(rows[i].path, cwd), rows[i].line);
+        if (rows[i].name) {
+            snprintf(place, sizeof(place), "%s", rows[i].name);
+        } else {
+            snprintf(place, sizeof(place), "%s:%d", profile_shown_path(rows[i].path, cwd), rows[i].line);
+        }
         int n = (int)strlen(place);
         width = n > width ? n : width;
     }
     width = width > 60 ? 60 : width;
 
-    fprintf(out, "profile: exact counts (times are not measured yet)\n");
-    fprintf(out, "functions%*s\n", width + 2 - 9 + 12, "calls");
-    for (size_t i = 0; i < profile_funcs.count && i < limit; i++) {
-        fprintf(out, "  %-*s %11lu\n", width, profile_funcs.items[i].name, profile_funcs.items[i].count);
-    }
-    if (profile_funcs.count > limit) {
-        fprintf(out, "  ... and %zu more (--profile=FILE lists every one)\n", profile_funcs.count - limit);
-    }
-    fprintf(out, "lines%*s\n", width + 2 - 5 + 12, "runs");
-    char text[128];
-    for (size_t i = 0; i < row_count && i < limit; i++) {
-        snprintf(place, sizeof(place), "%s:%d", profile_shown_path(rows[i].path, cwd), rows[i].line);
-        profile_source_line(rows[i].path, rows[i].line, text, sizeof(text));
-        fprintf(out, "  %-*s %11lu   %s\n", width, place, rows[i].count, text);
-    }
-    if (row_count > limit) {
-        fprintf(out, "  ... and %zu more (--profile=FILE lists every one)\n", row_count - limit);
+    if (out) {
+        char share[32], self[32];
+        if (!sampled) {
+            fprintf(out, "profile: exact counts (GBASIC_PROFILE_HZ=0: times not sampled)\n");
+        } else {
+            if (profile_signal) {
+                fprintf(out, "profile: stopped by %s after ", profile_signal_name(profile_signal));
+            } else {
+                fprintf(out, "profile: ");
+            }
+            profile_share(share, sizeof(share), profile_waiting_samples);
+            fprintf(out, "%.2f s, %lu samples, %s of them waiting", profile_seconds, profile_samples, share);
+            if (profile_outside_samples) {
+                profile_share(share, sizeof(share), profile_outside_samples);
+                fprintf(out, ", %s outside any line", share);
+            }
+            fprintf(out, "\n");
+        }
+        if (sampled) {
+            fprintf(out, "functions%*s%10s%10s\n", width + 2 - 9 + 12, "calls", "total", "self");
+        } else {
+            fprintf(out, "functions%*s\n", width + 2 - 9 + 12, "calls");
+        }
+        for (size_t i = 0; i < profile_funcs.count && i < limit; i++) {
+            ProfileSeen *f = &profile_funcs.items[i];
+            fprintf(out, "  %-*s %11lu", width, f->name, f->count);
+            if (sampled) {
+                profile_share(share, sizeof(share), f->total);
+                profile_share(self, sizeof(self), f->samples);
+                fprintf(out, "%10s%10s", share, self);
+            }
+            fprintf(out, "\n");
+        }
+        if (profile_funcs.count > limit) {
+            fprintf(out, "  ... and %zu more (--profile=FILE lists every one)\n", profile_funcs.count - limit);
+        }
+        if (sampled) {
+            fprintf(out, "lines%*s%10s\n", width + 2 - 5 + 12, "runs", "self");
+        } else {
+            fprintf(out, "lines%*s\n", width + 2 - 5 + 12, "runs");
+        }
+        char text[128];
+        for (size_t i = 0; i < row_count && i < limit; i++) {
+            if (rows[i].name) {
+                profile_share(self, sizeof(self), rows[i].samples);
+                fprintf(out, "  %-*s %11s%10s   %s\n", width, rows[i].name, "", self,
+                        "sleep, receive, or the event loop with nothing to do");
+                continue;
+            }
+            snprintf(place, sizeof(place), "%s:%d", profile_shown_path(rows[i].path, cwd), rows[i].line);
+            profile_source_line(rows[i].path, rows[i].line, text, sizeof(text));
+            fprintf(out, "  %-*s %11lu", width, place, rows[i].count);
+            if (sampled) {
+                profile_share(self, sizeof(self), rows[i].samples);
+                fprintf(out, "%10s", self);
+            }
+            fprintf(out, "   %s\n", text);
+        }
+        if (row_count > limit) {
+            fprintf(out, "  ... and %zu more (--profile=FILE lists every one)\n", row_count - limit);
+        }
+        if (out != stderr) {
+            fclose(out);
+        } else {
+            fflush(stderr);
+        }
     }
     free(rows);
-    if (out != stderr) {
-        fclose(out);
+#ifndef GB_NO_PROFILER
+    /* From here a signal does what it always did; one that arrived during
+     * the report ends the run now, by itself. */
+    profile_restore_signals();
+    if (profile_signal && profile_claim()) {
+        profile_die();
     }
+#endif
 }
 
 /* --- Runtime string buffers (Unicode design §3, docs/unicode_design.md) -----
@@ -14398,7 +14830,25 @@ static Value eval_dir_call(AstExpr *expr) {
  * Refusing within this reserve leaves room to raise, report and unwind. */
 #define CALL_STACK_RESERVE (256 * 1024)
 
+static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *receiver);
+
+#ifndef GB_NO_PROFILER
+/* The function on the profile's stack while it runs (§3), popped on every
+ * exit; a signal is acted on before the call is counted. */
+static Value invoke_function_profiled(AstStmt *stmt, Value *args, size_t argc, Value *receiver) {
+    if (profile_signal) {
+        profile_signalled();
+    }
+    int depth = profile_push(stmt);
+    profile_calling = stmt;
+    Value result = invoke_function(stmt, args, argc, receiver);
+    profile_pop(depth);
+    return result;
+}
+#endif
+
 static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *receiver) {
+    PROFILE_ENTER_CALL(stmt, args, argc, receiver);
     if (gb_stack_exhausted(CALL_STACK_RESERVE)) {
         for (size_t i = 0; i < argc; i++) {
             value_free(args[i]);
@@ -18455,7 +18905,9 @@ static int actor_wait(int timeout_ms) {
             p[i].revents = 0;
             i++;
         }
+        PROFILE_WAIT(1);
         int r = poll(p, n, timeout_ms);
+        PROFILE_WAIT(0);
         if (r < 0) {
             int eintr = (errno == EINTR);
             free(p);
@@ -24494,7 +24946,9 @@ static int webserver_loop_iterate(int *idle) {
     if (inbox_pending) {
         tick_ms = 0;
     }
+    PROFILE_WAIT(1);
     int ready = poll(pollfds, polled, (int)tick_ms);
+    PROFILE_WAIT(0);
     if (ready < 0 && errno != EINTR) {
         free(pollfds);
         free(net_who);
@@ -36054,9 +36508,11 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         }
 
         struct timespec rem;
+        PROFILE_WAIT(1);
         while (nanosleep(&req, &rem) == -1 && errno == EINTR) {
             req = rem;
         }
+        PROFILE_WAIT(0);
         /* NOTHING, NOT THE ARGUMENT BACK. `sleep` used to answer `seconds`,
          * which is not an answer -- the caller already has it -- and it cost
          * two things. At a prompt it printed a number nobody asked for, and
@@ -49808,11 +50264,11 @@ static GB_NOINLINE EvalResult eval_stmt_rest(AstStmt *stmt, int previous_line, i
 }
 
 static EvalResult eval_stmt(AstStmt *stmt) {
+    PROFILE_STMT(stmt);
     int previous_line = current_line;
     int previous_column = current_column;
     current_line = stmt->line;
     current_column = stmt->column;
-    PROFILE_STMT(stmt);
 
     switch (stmt->kind) {
     case AST_STMT_ASSIGN:
@@ -50149,8 +50605,13 @@ static void gsql_blocks_unused(AstStmtList program) {
 int eval_program(AstStmtList program) {
     active_root = program;
     AstStmt *program_block = program_block_prepare(program);
+#ifndef GB_NO_PROFILER
+    profile_start();
+#endif
+    int main_depth = 0;
     if (program_block) {
         PROFILE_CALL(program_block);
+        main_depth = PROFILE_PUSH(program_block);
     }
     if (!raise_in_flight) {
         gsql_blocks_need_load(program);
@@ -50168,6 +50629,9 @@ int eval_program(AstStmtList program) {
     EvalResult result = (runtime_stopped || raise_in_flight)
         ? eval_stop()
         : eval_stmt_list(program_block ? program_block->as.program.body : program);
+    if (program_block) {
+        PROFILE_POP(main_depth);
+    }
 
     /* PLAT-ERR: the outermost frame declined -- report it, in the same single
      * line the old STOP mode wrote. Also rule 2 at the top: a program that

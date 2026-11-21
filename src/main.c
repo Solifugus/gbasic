@@ -1239,7 +1239,15 @@ int main(int argc, char **argv) {
         eval_set_json_diagnostics(json_diagnostics);
         gb_set_active_sink(&diags);
         if (profile_on) {
-            eval_set_profile(profile_path);
+            const char *refused = eval_set_profile(profile_path);
+            if (refused) {
+                fprintf(stderr, "--profile: %s\n", refused);
+                gb_set_active_sink(NULL);
+                gb_diagnostics_free(&diags);
+                ast_free_program(program);
+                free(source);
+                return 2;
+            }
         }
         exit_status = eval_program(program);
         gb_set_active_sink(NULL);

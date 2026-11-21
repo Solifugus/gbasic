@@ -1,4 +1,4 @@
-profile: exact counts (times are not measured yet)
+profile: exact counts (GBASIC_PROFILE_HZ=0: times not sampled)
 functions                          calls
   twice                                3
   main                                 1
