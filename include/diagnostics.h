@@ -23,23 +23,23 @@ typedef enum {
  * only, never renumber or reuse (an embedder may switch on them). The mnemonic
  * string is gb_diag_code_str().
  *
- * The human "kind" word the CLI prints ("lexer error" / "parse error" /
- * "runtime error") is deliberately NOT stored here — it is a presentation
- * mapping owned by the consumer. Note one preserved legacy quirk: a
- * message-bearing lexer error currently prints as "runtime error", not "lexer
- * error" (verified against the current binary). GB_DIAG_LEX_DETAIL exists so the
- * CLI can reproduce that exactly; a future cleanup could re-map it without
- * changing this code's identity. */
+ * The human "kind" word the CLI prints ("syntax error" / "runtime error") is
+ * deliberately NOT stored here — it is a presentation mapping owned by the
+ * consumer. Every code below 3000 prints "syntax error" (Matthew's ruling,
+ * 2026-11-20): the file is written wrong and nothing ran, whichever stage
+ * noticed. Until then they printed "lexer error", "parse error" or, for a
+ * lexer error with a message, "runtime error" — three words for one thing,
+ * two of them a compiler's jargon and the third false. */
 typedef enum {
     GB_DIAG_NONE           = 0,
-    GB_DIAG_LEX_ERROR      = 1000,  /* message-less lexer error; CLI kind "lexer error"   */
+    GB_DIAG_LEX_ERROR      = 1000,  /* message-less lexer error                          */
     GB_DIAG_LEX_DETAIL     = 1001,  /* message-bearing lexer error (unterminated string,
-                                       bad escape); CLI kind "runtime error" (legacy quirk) */
-    GB_DIAG_PARSE_ERROR    = 2000,  /* grammar/yyerror; CLI kind "parse error"            */
-    GB_DIAG_STRING_LITERAL = 2001,  /* parser string-literal / \u{} decode; CLI "runtime error" */
-    GB_DIAG_SERVER_BLOCK   = 2002,  /* PLAT-WEB-5 load-time server-block check; CLI "parse error" */
-    GB_DIAG_WINDOW_BLOCK   = 2003,  /* load-time `window`-block check; CLI "parse error"  */
-    GB_DIAG_GSQL_BLOCK     = 2004,  /* load-time `database`/`sql` check; CLI "parse error" */
+                                       bad escape)                                       */
+    GB_DIAG_PARSE_ERROR    = 2000,  /* grammar/yyerror                                    */
+    GB_DIAG_STRING_LITERAL = 2001,  /* parser string-literal / \u{} decode */
+    GB_DIAG_SERVER_BLOCK   = 2002,  /* PLAT-WEB-5 load-time server-block check */
+    GB_DIAG_WINDOW_BLOCK   = 2003,  /* load-time `window`-block check */
+    GB_DIAG_GSQL_BLOCK     = 2004,  /* load-time `database`/`sql` check */
     GB_DIAG_RUNTIME_ERROR  = 3000   /* evaluator; CLI kind "runtime error"                */
 } gb_diag_code;
 
@@ -117,7 +117,7 @@ const char    *gb_severity_str(gb_severity severity);
  * Phase 2/3 move it into per-parse / per-interpreter context. Both the deferred
  * drain and the immediate fallback go through gb_diag_format, so their bytes are
  * identical. gb_diag_kind_str maps a machine code to the human "kind" word the
- * CLI prints ("lexer error" / "parse error" / "runtime error"). */
+ * CLI prints ("syntax error" / "runtime error"). */
 
 void            gb_set_active_sink(gb_diagnostics *sink);
 gb_diagnostics *gb_get_active_sink(void);

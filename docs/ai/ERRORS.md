@@ -21,11 +21,18 @@ Emitted as the `"code"` string by `--json-diagnostics` and the LSP
 
 | Numeric | Mnemonic | CLI "kind" printed |
 |---|---|---|
-| 1000 | `GB_DIAG_LEX_ERROR` | `lexer error` (message-less) |
-| 1001 | `GB_DIAG_LEX_DETAIL` | `runtime error` (message-bearing lexer error — legacy quirk, see diagnostics.h) |
-| 2000 | `GB_DIAG_PARSE_ERROR` | `parse error` |
-| 2001 | `GB_DIAG_STRING_LITERAL` | `runtime error` (parser string-literal / `\u{}` decode) |
+| 1000 | `GB_DIAG_LEX_ERROR` | `syntax error` (a character that starts nothing, message-less) |
+| 1001 | `GB_DIAG_LEX_DETAIL` | `syntax error` (unterminated string, `?`, `$19.99`, …) |
+| 2000 | `GB_DIAG_PARSE_ERROR` | `syntax error` |
+| 2001 | `GB_DIAG_STRING_LITERAL` | `syntax error` (string-literal / `\u{}` decode) |
+| 2002-2004 | `GB_DIAG_SERVER_BLOCK`, `_WINDOW_BLOCK`, `_GSQL_BLOCK` | `syntax error` (a block's load-time check) |
 | 3000 | `GB_DIAG_RUNTIME_ERROR` | `runtime error` (evaluator) |
+
+Every code below 3000 prints `syntax error`: the file is written wrong and
+nothing ran. Until 2026-11-20 they printed `lexer error`, `parse error`, or
+(for a lexer error with a message) `runtime error`. The printed line drops the
+parser's own leading `syntax error, ` from the message; the JSON `message`
+keeps it.
 
 ### JSON / LSP diagnostic shape
 

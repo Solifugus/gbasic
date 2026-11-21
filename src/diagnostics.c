@@ -111,20 +111,22 @@ gb_diagnostics *gb_get_active_sink(void) {
 }
 
 /* Human "kind" word the CLI prints. Kept here (not baked into the code enum) so
- * the machine code stays stable while presentation can evolve. Preserves the
- * legacy quirk that a message-bearing lexer error prints as "runtime error". */
+ * the machine code stays stable while presentation can evolve.
+ *
+ * ONE WORD FOR A FILE WRITTEN WRONG (Matthew, 2026-11-20): a stray character,
+ * a grammar error and a misspelled `window` option are the same thing to the
+ * person who wrote them -- nothing ran, and the position says where. They were
+ * "lexer error", "parse error" and, for a lexer error carrying a message,
+ * "runtime error", which was false: the program had not started. */
 const char *gb_diag_kind_str(gb_diag_code code) {
     switch (code) {
-    case GB_DIAG_LEX_ERROR:      return "lexer error";
-    case GB_DIAG_PARSE_ERROR:
-    case GB_DIAG_SERVER_BLOCK:   return "parse error";
-    /* A load-time refusal is reported where a parse error is, because to an
-     * author it is the same thing: the file did not load and the position says
-     * why. The server block set that precedent. */
-    case GB_DIAG_WINDOW_BLOCK:   return "parse error";
-    case GB_DIAG_GSQL_BLOCK:     return "parse error";
+    case GB_DIAG_LEX_ERROR:
     case GB_DIAG_LEX_DETAIL:
+    case GB_DIAG_PARSE_ERROR:
     case GB_DIAG_STRING_LITERAL:
+    case GB_DIAG_SERVER_BLOCK:
+    case GB_DIAG_WINDOW_BLOCK:
+    case GB_DIAG_GSQL_BLOCK:     return "syntax error";
     case GB_DIAG_RUNTIME_ERROR:  return "runtime error";
     case GB_DIAG_NONE:           break;
     }
@@ -145,12 +147,21 @@ void gb_diag_format(FILE *out, const gb_diag *diag) {
     const char *kind = diag->severity == GB_SEVERITY_ERROR
         ? gb_diag_kind_str(diag->code)
         : gb_severity_str(diag->severity);
+    /* Bison opens its messages "syntax error, unexpected ...", which the kind
+     * word now says: printed once, not twice. Only here -- the message itself
+     * keeps it, since --json-diagnostics and the LSP show it with no kind. */
+    const char *message = diag->message ? diag->message : "";
+    static const char bison[] = "syntax error, ";
+    if (diag->severity == GB_SEVERITY_ERROR && strcmp(kind, "syntax error") == 0 &&
+        strncmp(message, bison, sizeof bison - 1) == 0) {
+        message += sizeof bison - 1;
+    }
     if (diag->path && diag->path[0]) {
         fprintf(out, "%s at %s:%d:%d: %s\n", kind, diag->path,
-                diag->span.start_line, diag->span.start_column, diag->message);
+                diag->span.start_line, diag->span.start_column, message);
     } else {
         fprintf(out, "%s at %d:%d: %s\n", kind,
-                diag->span.start_line, diag->span.start_column, diag->message);
+                diag->span.start_line, diag->span.start_column, message);
     }
 }
 

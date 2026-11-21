@@ -1,1 +1,1 @@
-parse error at tests/negative_print_to_unknown_stream.bas:1:10: syntax error, unexpected IDENT, expecting ERROR_VALUE
+syntax error at tests/negative_print_to_unknown_stream.bas:1:10: unexpected IDENT, expecting ERROR_VALUE

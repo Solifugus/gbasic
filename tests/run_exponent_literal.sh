@@ -95,7 +95,7 @@ printf 'print 1 fortnight\nprint "ran anyway"\n' > "$work/bad.bas"
 if ./gbasic "$work/bad.bas" >"$work/bad.out" 2>"$work/bad.err"; then
     fail "an unknown duration unit exited 0 -- the silent trap is back"
 else
-    if grep -qE "^parse error at .*:1:9: " "$work/bad.err"; then
+    if grep -qE "^syntax error at .*:1:9: " "$work/bad.err"; then
         pass "LOCATED: reported at the unit, as a parse error"
     else
         cat "$work/bad.err"; fail "the report is not located at the unit"

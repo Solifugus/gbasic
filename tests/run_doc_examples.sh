@@ -151,7 +151,7 @@ while IFS=$'\t' read -r idx line marker; do
     # --- PARSE: --ast reaches the parser and stops, so it separates a parse
     # failure from a runtime one without executing anything.
     if ! "$root/gbasic" --ast "$src" >/dev/null 2>"$work/err"; then
-        if command grep -qE "parse error|lexer error" "$work/err"; then
+        if command grep -qE "^syntax error at" "$work/err"; then
             parse_bad+=("$DOC:$line  $(sed 's/^[a-z ]*error at [^ ]*: //' "$work/err" | head -1)")
             continue
         fi

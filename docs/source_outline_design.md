@@ -115,7 +115,7 @@ Probes (`--ast`), confirming behavior:
 | empty file | `Program` (empty), exit 0 |
 | `x = 1` | full AST, exit 0 |
 | valid `program`/`if`/`for each`/`function` (nested) | full nested AST, exit 0 |
-| `function add(a,b)` then `return a +` (incomplete) | `parse error … 2:13`, **no AST**, exit 1 |
+| `function add(a,b)` then `return a +` (incomplete) | `syntax error … 2:13`, **no AST**, exit 1 |
 | `if x > 0 then …` with no `end if` | parse error, **no AST**, exit 1 |
 
 So a structural facility built on the current parser is **all-or-nothing per

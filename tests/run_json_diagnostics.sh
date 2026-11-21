@@ -33,7 +33,7 @@ fi
 
 # Default path stays legacy (byte-exact), NOT JSON.
 default="$(./gbasic "$BAS" 2>&1 >/dev/null)"
-legacy="parse error at $BAS:1:5: syntax error, unexpected RPAREN"
+legacy="syntax error at $BAS:1:5: unexpected RPAREN"
 if [ "$default" = "$legacy" ]; then
     echo "PASS json-diagnostics default-unchanged"
 else

@@ -76,7 +76,7 @@ printf 'x = true\nprint(- not x)\n' >"$work/m.bas"
 if ./gbasic "$work/m.bas" >/dev/null 2>"$work/err"; then
     printf 'FAIL `-not x` should be a parse error now\n'; status=1
 else
-    grep -q 'parse error' "$work/err" \
+    grep -q 'syntax error' "$work/err" \
         && printf 'PASS `-not x` is a parse error (documented consequence)\n' \
         || { printf 'FAIL `-not x` failed for the wrong reason: %s\n' "$(cat "$work/err")"; status=1; }
 fi

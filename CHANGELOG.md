@@ -16,6 +16,16 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **One word for a file written wrong: `syntax error`** (2026-11-20). A stray
+  character, a grammar error, an unterminated string and a misspelled
+  `window`/`server`/`sql` option all print `syntax error at FILE:LINE:COL:`.
+  They printed `lexer error`, `parse error`, or — for a lexer refusal with a
+  message, such as `unterminated string` or `'$' is not a money literal` —
+  `runtime error`, though nothing had run. The parser's own `syntax error, `
+  is no longer printed twice: `syntax error at f.bas:1:1: unexpected RPAREN`.
+  `--json-diagnostics` is unchanged (its codes and messages stay). Anything
+  matching the old words on stderr must match `syntax error`; the VS Code
+  problem matcher takes both.
 - **The DOGFOOD sweep (2026-11-20)**, each from an entry in DOGFOOD.md:
   - **`{duration}`**: a duration from a number of whole seconds or from its
     text (`{duration}"2 hours 30 minutes"`), the typed modifiers' missing

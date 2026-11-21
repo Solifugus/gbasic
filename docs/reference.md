@@ -93,7 +93,7 @@ A bracket inside a string or a comment is text, not depth. If a bracket is
 still open at end of file the error names which one and the line it opened on:
 
 ```
-runtime error at report.bas:41:1: unclosed '[' opened on line 12 --
+syntax error at report.bas:41:1: unclosed '[' opened on line 12 --
 a line break inside brackets continues the statement
 ```
 

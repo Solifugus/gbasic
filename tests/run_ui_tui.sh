@@ -110,7 +110,7 @@ for bad in "x = 2 columns 3 rows" "x = 1 hour 2 columns" "x = 1.5 columns" "x = 
     printf '%s\n' "$bad" >"$work/bad.bas"
     got=$("$GB" "$work/bad.bas" 2>&1)
     case "$got" in
-        "parse error at "*":1:5: a size in columns or rows is "*) pass "refused at its position: $bad" ;;
+        "syntax error at "*":1:5: a size in columns or rows is "*) pass "refused at its position: $bad" ;;
         *) fail "$bad: $got" ;;
     esac
 done

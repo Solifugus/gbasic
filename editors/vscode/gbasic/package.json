@@ -77,7 +77,7 @@
         ],
         "severity": "error",
         "pattern": {
-          "regexp": "^(lexer error|parse error|runtime error) at (.+):(\\d+):(\\d+): (.+)$",
+          "regexp": "^(syntax error|lexer error|parse error|runtime error) at (.+):(\\d+):(\\d+): (.+)$",
           "file": 2,
           "line": 3,
           "column": 4,

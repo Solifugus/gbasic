@@ -34,7 +34,7 @@ if printf '%s' "$out" | grep -q '^mismatches: 0$'; then
     [ "${n:-0}" -ge 20 ] || { printf '  FAIL too few checks ran (%s)\n' "$n"; status=1; }
 else
     printf '  FAIL rates_test\n'
-    printf '%s\n' "$out" | grep -E '^MISMATCH|^runtime error|^parse error' | head -6
+    printf '%s\n' "$out" | grep -E '^MISMATCH|^runtime error|^syntax error' | head -6
     status=1
 fi
 
@@ -49,7 +49,7 @@ if printf '%s' "$out" | grep -q '^mismatches: 0$'; then
     [ "${n:-0}" -ge 38 ] || { printf '  FAIL too few checks ran (%s)\n' "$n"; status=1; }
 else
     printf '  FAIL fx_test\n'
-    printf '%s\n' "$out" | grep -E '^MISMATCH|^runtime error|^parse error' | head -6
+    printf '%s\n' "$out" | grep -E '^MISMATCH|^runtime error|^syntax error' | head -6
     status=1
 fi
 

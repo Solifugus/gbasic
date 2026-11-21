@@ -50,7 +50,7 @@ status bar → **gBASIC**, or *Change Language Mode* (Ctrl+K M).
 ## Running & clickable errors
 
 The extension contributes a `$gbasic` **problem matcher** that parses gBASIC's
-diagnostics (`parse error at FILE:LINE:COL: …` / `runtime error at FILE:LINE:COL:
+diagnostics (`syntax error at FILE:LINE:COL: …` / `runtime error at FILE:LINE:COL:
 …`) into clickable in-editor squiggles. To run the open file with
 **Ctrl+Shift+B**, add a `.vscode/tasks.json` like this to your project:
 

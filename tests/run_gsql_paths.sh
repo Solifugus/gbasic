@@ -83,7 +83,7 @@ verdict() {
     if [ "$rc" = 124 ] || [ "$rc" = 137 ]; then
         fail "$name: did not finish -- a hang, reported as one"
     elif [ "$rc" != 0 ]; then
-        grep -m3 'runtime error\|parse error' "$file"
+        grep -m3 'runtime error\|syntax error' "$file"
         fail "$name: the fixture exited $rc (${last:-no verdict})"
     elif [ -z "$n" ]; then
         fail "$name: ${last:-no verdict}"

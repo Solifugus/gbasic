@@ -237,7 +237,7 @@ set -e
 # THE WORDING IS THE ASSERTION: the NAME is wrong, so the sentence says so and
 # offers the word, rather than "would not take that value" (the value was
 # fine), which is the reports-the-wrong-cause class this tier was made for.
-if [ "$bp_rc" -ne 0 ] && grep -q 'parse error at .*`texx` is not a property ui knows -- did you mean `text`?' "$work/bp.out" \
+if [ "$bp_rc" -ne 0 ] && grep -q 'syntax error at .*`texx` is not a property ui knows -- did you mean `text`?' "$work/bp.out" \
    && ! grep -q MISMATCH "$work/bp.out"; then
     pass "an option that is not a word is refused at load time, named, with the word to write"
 else

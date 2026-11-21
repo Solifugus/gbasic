@@ -47,7 +47,7 @@ if printf '%s' "$out" | grep -q '^mismatches: 0$'; then
     [ "${n:-0}" -ge 15 ] || { printf '  FAIL too few checks ran (%s)\n' "$n"; status=1; }
 else
     printf '  FAIL ocr_test\n'
-    printf '%s\n' "$out" | grep -E '^MISMATCH|^runtime error|^parse error' | head -6
+    printf '%s\n' "$out" | grep -E '^MISMATCH|^runtime error|^syntax error' | head -6
     status=1
 fi
 

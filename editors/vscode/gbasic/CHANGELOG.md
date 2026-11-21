@@ -2,6 +2,14 @@
 
 All notable changes to the gBASIC VS Code extension are documented here.
 
+## [Unreleased]
+
+### Changed
+- The problem matcher catches `syntax error at FILE:LINE:COL`, the one word
+  gBASIC prints since 2026-11-20 for a file written wrong (it was `lexer
+  error`, `parse error` or `runtime error`). The old words are still matched,
+  for an older gBASIC.
+
 ## [0.2.0] - 2026-10-12
 
 ### Added

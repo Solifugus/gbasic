@@ -258,7 +258,7 @@ probe_spawn_bare_name() {
     # error and still decides.
     . tests/build_has.sh
     if ! build_has actors; then
-        if printf '%s' "$qualified_out" | grep -q 'parse error'; then
+        if printf '%s' "$qualified_out" | grep -q 'syntax error'; then
             skipped "spawn's function-value half (spawn is refused on this platform); the qualified half still holds"
         else
             fixed "spawn now accepts a qualified name"
@@ -271,7 +271,7 @@ probe_spawn_bare_name() {
     printf 'library lib1\nfunction worker(back)\n  send(back, 1)\n  return nothing\nend function\nfunction start()\n  return spawn worker(self())\nend function\nend library\n' > "$WORK/sl/lib1.bas"
     printf 'load lib1\nprogram main()\n  h = lib1.start()\n  print receive()\nend program\n' > "$WORK/sl/main.bas"
     own_out=$( (cd "$WORK/sl" && timeout 20 "$OLDPWD/gbasic" main.bas 2>&1) )
-    if printf '%s' "$qualified_out" | grep -q 'parse error' &&
+    if printf '%s' "$qualified_out" | grep -q 'syntax error' &&
        printf '%s' "$value_out" | grep -q 'spawn: no function named' &&
        printf '%s' "$own_out" | grep -q 'spawn: no function named worker'; then
         ok "spawn still takes a bare function name (not a qualified one, not a value, not a library's own)"
@@ -353,7 +353,7 @@ probe_atomic_replace_inode() {
 
 probe_callresult_method_stmt() {
     printf 'function f()\n  return [1,2]\nend function\nf().count\n' > "$WORK/p.bas"
-    if run "$WORK/p.bas" | grep -q 'parse error'; then
+    if run "$WORK/p.bas" | grep -q 'syntax error'; then
         ok "a method call on a call-result receiver is still not a statement"
     else
         fixed "a method call on a call-result receiver now parses as a statement"
@@ -512,7 +512,7 @@ control_exponent_literal() {
     b=$(run "$WORK/c.bas")
 
     if [ "$a" = "$(printf '1e+20\n0.0015\n20000000000')" ] \
-       && printf '%s' "$b" | grep -q "parse error" \
+       && printf '%s' "$b" | grep -q "syntax error" \
        && printf '%s' "$b" | grep -q "unknown duration unit 'fortnight'" \
        && ! printf '%s' "$b" | grep -q "ran anyway"; then
         ok "CONTROL: scientific notation is a literal, and an unknown unit is a located parse error"
