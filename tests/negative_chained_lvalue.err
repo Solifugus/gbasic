@@ -1,1 +1,1 @@
-syntax error at tests/negative_chained_lvalue.bas:2:6: unexpected DOT, expecting NEWLINE
+syntax error at tests/negative_chained_lvalue.bas:2:6: unexpected `.`, expecting end of line

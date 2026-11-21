@@ -1,1 +1,1 @@
-syntax error at tests/negative_clause_stmt_start.bas:11:3: unexpected LPAREN
+syntax error at tests/negative_clause_stmt_start.bas:11:3: unexpected `(`

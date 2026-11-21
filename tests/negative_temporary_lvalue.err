@@ -1,1 +1,1 @@
-syntax error at tests/negative_temporary_lvalue.bas:1:1: unexpected LBRACKET, expecting end of file
+syntax error at tests/negative_temporary_lvalue.bas:1:1: unexpected `[`, expecting end of file

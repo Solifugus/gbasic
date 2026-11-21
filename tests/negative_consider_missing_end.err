@@ -1,1 +1,1 @@
-syntax error at tests/negative_consider_missing_end.bas:5:1: unexpected end of file, expecting END_CONSIDER
+syntax error at tests/negative_consider_missing_end.bas:5:1: unexpected end of file, expecting `end consider`

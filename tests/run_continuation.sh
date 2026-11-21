@@ -119,7 +119,7 @@ refused() { # label fixture expect-fragment
 refused "refusal: unclosed at end of file names the opener" \
         unclosed_eof "unclosed '[' opened on line 3"
 refused "refusal: unclosed running into a statement is reported there" \
-        unclosed_midfile "unexpected PRINT, expecting RPAREN"
+        unclosed_midfile 'unexpected `print`, expecting `)`'
 
 # ----------------------------------------------------------------- depth
 # 200 openers, each on its own line, past the 64-entry opener stack. The stack

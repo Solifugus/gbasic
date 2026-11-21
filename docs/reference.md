@@ -64,7 +64,7 @@ end function
 ```
 
 **A trailing operator does not continue a line.** Only an open bracket does, so
-this is a parse error reported as `unexpected NEWLINE`:
+this is a syntax error reported as `unexpected end of line`:
 
 <!--fragment: deliberately does not parse -- it is the mistake being described-->
 ```basic

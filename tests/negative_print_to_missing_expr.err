@@ -1,1 +1,1 @@
-syntax error at tests/negative_print_to_missing_expr.bas:1:15: unexpected NEWLINE
+syntax error at tests/negative_print_to_missing_expr.bas:1:15: unexpected end of line

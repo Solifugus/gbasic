@@ -26,6 +26,11 @@ reader sees.
   `--json-diagnostics` is unchanged (its codes and messages stay). Anything
   matching the old words on stderr must match `syntax error`; the VS Code
   problem matcher takes both.
+- **A syntax error names what you typed**, not the parser's name for it:
+  `unexpected `)`, expecting end of line` where it said `unexpected RPAREN,
+  expecting NEWLINE`; a keyword is its own word (`` `until` ``), a name is
+  `name`. In `--json-diagnostics` and the LSP too, since the message itself
+  changed.
 - **The DOGFOOD sweep (2026-11-20)**, each from an entry in DOGFOOD.md:
   - **`{duration}`**: a duration from a number of whole seconds or from its
     text (`{duration}"2 hours 30 minutes"`), the typed modifiers' missing

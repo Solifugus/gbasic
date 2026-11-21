@@ -34,7 +34,7 @@ int main(void) {
     /* buffer, severity, code, start(l,c), end(l,c), message */
     static const Expected expect[3] = {
         { ")",    GB_SEVERITY_ERROR, GB_DIAG_PARSE_ERROR, 1, 1, 1, 2,
-          "syntax error, unexpected RPAREN, expecting end of file" },
+          "syntax error, unexpected `)`, expecting end of file" },
         { "\"abc", GB_SEVERITY_ERROR, GB_DIAG_LEX_DETAIL, 1, 1, 1, 5,
           "unterminated string" },
         /* `@`, not `?`: since 2026-11-20 `?` has its own sentence (no

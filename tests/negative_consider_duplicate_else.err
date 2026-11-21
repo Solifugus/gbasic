@@ -1,1 +1,1 @@
-syntax error at tests/negative_consider_duplicate_else.bas:7:1: unexpected CONSIDER_ELSE, expecting END_CONSIDER
+syntax error at tests/negative_consider_duplicate_else.bas:7:1: unexpected `else`, expecting `end consider`

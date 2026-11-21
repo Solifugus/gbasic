@@ -623,7 +623,7 @@ check "and it agrees with the same expression in a file" \
 # wrapper's synthetic `print` is located at its own expression. That is a
 # deliberate difference, not agreement, and the coarser file behaviour is
 # pre-existing and untouched here.
-lacks "nor as a malformed print" "expecting RPAREN" "$err"
+lacks "nor as a malformed print" 'expecting `)`' "$err"
 
 echo
 echo "== SAVE / LOAD =="

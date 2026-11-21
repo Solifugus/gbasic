@@ -1,1 +1,1 @@
-syntax error at tests/negative_getname_assignment.bas:5:11: unexpected OP_EQ, expecting NEWLINE
+syntax error at tests/negative_getname_assignment.bas:5:11: unexpected `=`, expecting end of line

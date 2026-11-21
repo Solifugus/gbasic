@@ -1,1 +1,1 @@
-syntax error at tests/negative_function_assignment.bas:1:22: unexpected OP_EQ, expecting NEWLINE
+syntax error at tests/negative_function_assignment.bas:1:22: unexpected `=`, expecting end of line

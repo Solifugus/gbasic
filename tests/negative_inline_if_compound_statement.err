@@ -1,1 +1,1 @@
-syntax error at tests/negative_inline_if_compound_statement.bas:1:14: unexpected WHILE
+syntax error at tests/negative_inline_if_compound_statement.bas:1:14: unexpected `while`

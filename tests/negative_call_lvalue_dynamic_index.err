@@ -1,1 +1,1 @@
-syntax error at tests/negative_call_lvalue_dynamic_index.bas:6:11: unexpected LBRACKET, expecting NEWLINE
+syntax error at tests/negative_call_lvalue_dynamic_index.bas:6:11: unexpected `[`, expecting end of line

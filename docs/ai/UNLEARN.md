@@ -403,11 +403,11 @@ day — so assume you will hit them too.
   first.
 
 - **`spawn` needs the call form, even with no arguments of your own.**
-  `spawn worker` is a *parse* error (`expecting LPAREN`), not a runtime one.
+  `spawn worker` is a *syntax* error (``expecting `(` ``), not a runtime one.
 
   ```basic
   w = spawn worker(self())   ' right
-  w = spawn worker           ' syntax error, unexpected NEWLINE, expecting LPAREN
+  w = spawn worker           ' syntax error: unexpected end of line, expecting `(`
   ```
 
 - **`watch(...)` requires its variables to already exist**, and getting this

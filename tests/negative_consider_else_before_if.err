@@ -1,1 +1,1 @@
-syntax error at tests/negative_consider_else_before_if.bas:3:1: unexpected CONSIDER_ELSE, expecting CONSIDER_IF
+syntax error at tests/negative_consider_else_before_if.bas:3:1: unexpected `else`, expecting `if`

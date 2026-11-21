@@ -1,1 +1,1 @@
-syntax error at tests/negative_call_lvalue_field.bas:7:13: unexpected DOT, expecting NEWLINE
+syntax error at tests/negative_call_lvalue_field.bas:7:13: unexpected `.`, expecting end of line

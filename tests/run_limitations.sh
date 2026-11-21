@@ -435,9 +435,9 @@ EOF
 
     if printf '%s' "$out" | grep -q 'fallback' \
        && printf '%s' "$out" | grep -q 'caller continued' \
-       && printf '%s' "$old_spelling" | grep -q 'expecting GOTO or STOP'; then
+       && printf '%s' "$old_spelling" | grep -q 'expecting `goto` or `stop`'; then
         ok "CONTROL: a raise is catchable, a fallback returnable, and 'resume next' is gone (PLAT-ERR)"
-    elif ! printf '%s' "$old_spelling" | grep -q 'expecting GOTO or STOP'; then
+    elif ! printf '%s' "$old_spelling" | grep -q 'expecting `goto` or `stop`'; then
         regressed "CONTROL: 'on error resume next' parses again"
     else
         regressed "CONTROL: a raise is no longer catchable"

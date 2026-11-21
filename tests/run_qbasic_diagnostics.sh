@@ -371,6 +371,42 @@ for src in 'print 7 mod 3' 'print 7 \ 2' 'print 2 ^ 3' 'a$ = "x"' 'a% = 5' 'prin
     fi
 done
 
+echo "--- TIER 7: spelled -- no bison token name reaches a reader (2026-11-20) ---"
+# Every %token in src/parser.y is a keyword (the lexer's own list) or has a
+# spelling in parser.y's bison_spelled table. A token with neither would print
+# as `unexpected FOO_BAR`, which is the grammar's vocabulary, not the reader's.
+keywords="$(sed -n 's/.*keyword_equals(start, length, "\([a-z_]*\)").*/\1/p' src/lexer.c | sort -u)"
+table="$(sed -n '/bison_spelled\[\] = {/,/^};/p' src/parser.y | grep -o '{ "[A-Z_]*"' | tr -d '{" ')"
+unspelled=""
+for t in $(sed -n 's/^%token\( <[a-z]*>\)\? //p' src/parser.y); do
+    lower="$(printf '%s' "$t" | tr 'A-Z' 'a-z')"
+    if printf '%s\n' "$table" | grep -qx "$t"; then continue; fi
+    if printf '%s\n' "$keywords" | grep -qx "$lower"; then continue; fi
+    unspelled="$unspelled $t"
+done
+checks=$((checks + 1))
+if [ -n "$unspelled" ]; then
+    printf 'MISMATCH tokens with no spelling:%s\n' "$unspelled"; status=1
+else
+    printf 'ok   every token is a keyword or spelled in bison_spelled\n'
+fi
+# and as printed: the classic shapes, each held to what the author typed
+spelled() {
+    checks=$((checks + 1))
+    printf '%s\n' "$2" >"$tmp/s.bas"
+    # MEANT to fail: under pipefail the failure would end the suite here
+    out="$({ ./gbasic "$tmp/s.bas" 2>&1 || true; } | head -1 | sed 's/^[^:]*:[0-9]*:[0-9]*: //')"
+    if [ "$out" = "$3" ]; then
+        printf 'ok   spelled: %s\n' "$1"
+    else
+        printf 'MISMATCH spelled %s: got [%s], want [%s]\n' "$1" "$out" "$3"; status=1
+    fi
+}
+spelled 'a stray )'         ')'                        'unexpected `)`, expecting end of file'
+spelled 'a keyword'         'do'$'\n''loop until x'    'unexpected `until`'
+spelled 'an assignment to a call' 'len(s) = 3'         'unexpected `=`, expecting end of line'
+spelled 'a name where error goes' 'print to stdout, 1' 'unexpected name, expecting `error`'
+
 printf '\nchecks: %d\n' "$checks"
 if [ "$status" = 0 ]; then printf 'mismatches: 0\n'; else printf 'FAILED\n'; fi
 exit "$status"

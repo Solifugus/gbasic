@@ -2687,6 +2687,99 @@ static const char *syntax_error_basic_word(gb_parse_ctx *ctx) {
     return NULL;
 }
 
+/* BISON NAMES ITS TOKENS, AND A READER KNOWS THEM BY WHAT THEY WROTE
+ * (Matthew, 2026-11-20, beside `syntax error` for "lexer error"):
+ * `unexpected RPAREN, expecting IDENT` is the grammar's vocabulary, so each
+ * name is spelled as it is typed -- `unexpected `)`, expecting name`. A
+ * keyword is its own word, asked of the lexer's classifier so the list lives
+ * in one place; the rest are this table. A token missing from both prints
+ * its bison name, and run_qbasic_diagnostics' `spelled` tier fails on one.
+ *
+ * ONLY BISON'S OWN SENTENCE: a message that starts "syntax error, ", and only
+ * up to the first ` -- `, past which is advice written in words already.
+ * Runs AFTER the reserved-word note, which asks the bison text for "IDENT". */
+static const struct { const char *name; const char *shown; } bison_spelled[] = {
+    { "IDENT", "name" }, { "QUALIFIED_IDENT", "library name (`lib.name`)" },
+    { "STRING", "string" }, { "NUMBER", "number" },
+    { "NEWLINE", "end of line" }, { "SQL_TEXT", "SQL" },
+    { "LENS_CONTENT", "lens" }, { "MODIFIER_PREFIX", "modifier (`{...}`)" },
+    { "MODIFIER_VALUE", "modifier (`{...}`)" },
+    { "WINDOW_OPEN", "`window`" }, { "DATABASE_OPEN", "`database`" },
+    { "SQL_OPEN", "`sql`" }, { "CONSIDER_IF", "`if`" },
+    { "CONSIDER_ELSE", "`else`" }, { "END_CONSIDER", "`end consider`" },
+    { "ERROR_VALUE", "`error`" }, { "UNKNOWN_VALUE", "`unknown`" },
+    { "WAIT", "`wait`" },   /* a keyword only before `until`, so the lexer's list lacks it */
+    { "PLUS_EQ", "`+=`" }, { "MINUS_EQ", "`-=`" }, { "STAR_EQ", "`*=`" },
+    { "SLASH_EQ", "`/=`" },
+    { "OP_EQ", "`=`" }, { "OP_NE", "`!=`" }, { "OP_GT", "`>`" }, { "OP_LT", "`<`" },
+    { "OP_GE", "`>=`" }, { "OP_LE", "`<=`" }, { "OP_NGT", "`!>`" },
+    { "OP_NLT", "`!<`" }, { "OP_NGE", "`!>=`" }, { "OP_NLE", "`!<=`" },
+    { "PLUS", "`+`" }, { "MINUS", "`-`" }, { "STAR", "`*`" }, { "SLASH", "`/`" },
+    { "LPAREN", "`(`" }, { "RPAREN", "`)`" }, { "LBRACKET", "`[`" },
+    { "RBRACKET", "`]`" }, { "LBRACE", "`{`" }, { "RBRACE", "`}`" },
+    { "PATH_LBRACE", "`{`" }, { "COMMA", "`,`" }, { "COLON", "`:`" },
+    { "DOT", "`.`" },
+};
+
+static int spell_bison_tokens(const char *message, char *out, size_t size) {
+    static const char lead[] = "syntax error, ";
+    if (!message || strncmp(message, lead, sizeof lead - 1) != 0) {
+        return 0;
+    }
+    const char *advice = strstr(message, " -- ");
+    size_t used = 0;
+    const char *p = message;
+    while (*p && used + 1 < size) {
+        if ((advice && p >= advice) || !isupper((unsigned char)*p) ||
+            (p > message && (isalnum((unsigned char)p[-1]) || p[-1] == '_'))) {
+            out[used++] = *p++;
+            continue;
+        }
+        const char *e = p;
+        while (isupper((unsigned char)*e) || *e == '_' || isdigit((unsigned char)*e)) {
+            e++;
+        }
+        int len = (int)(e - p);
+        const char *shown = NULL;
+        char word[64];
+        for (size_t i = 0; i < sizeof bison_spelled / sizeof bison_spelled[0]; i++) {
+            if ((int)strlen(bison_spelled[i].name) == len &&
+                strncmp(bison_spelled[i].name, p, len) == 0) {
+                shown = bison_spelled[i].shown;
+                break;
+            }
+        }
+        if (!shown && len > 1 && len < (int)sizeof(word) - 2) {
+            char lower[48];
+            for (int i = 0; i < len; i++) {
+                lower[i] = (char)tolower((unsigned char)p[i]);
+            }
+            lower[len] = '\0';
+            if (lexer_identifier_type(lower, len) != TOKEN_IDENT) {
+                snprintf(word, sizeof word, "`%s`", lower);
+                shown = word;
+            }
+        }
+        if (shown) {
+            int n = snprintf(out + used, size - used, "%s", shown);
+            if (n < 0 || (size_t)n >= size - used) {
+                return 0;
+            }
+            used += (size_t)n;
+        } else {
+            size_t n = (size_t)len < size - used - 1 ? (size_t)len : size - used - 1;
+            memcpy(out + used, p, n);
+            used += n;
+        }
+        p = e;
+    }
+    if (*p) {
+        return 0;
+    }
+    out[used] = '\0';
+    return 1;
+}
+
 static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
                                 int end_line, int end_column, const char *message) {
     if (ctx->lexer_error_reported) {
@@ -2720,6 +2813,10 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
                  "%s -- '%s' is a reserved word and cannot be used as a name",
                  message, reserved);
         message = reworded;
+    }
+    char spelled[640];
+    if (spell_bison_tokens(message, spelled, sizeof(spelled))) {
+        message = spelled;
     }
     if (line <= 0 && ctx->active_lexer) {
         line = ctx->active_lexer->line;
