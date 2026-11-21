@@ -97,6 +97,14 @@ unchanged "the conditional's checks"       tests/conditional/conditional_test.ba
 for ex in examples/money_cookbook/*.bas; do
     unchanged "$ex" "$ex"
 done
+# One stream, piped: the program's output is still in its buffer when the run
+# ends, and the report must come after it, not above it.
+both="$(./gbasic --profile tests/profile/shape.bas 2>&1 </dev/null | cat)"
+if [ "$(printf '%s\n' "$both" | head -1)" = "6" ] && [ "$(printf '%s\n' "$both" | sed -n 2p)" = "profile: exact counts (times are not measured yet)" ]; then
+    pass "one piped stream: the program's output, then the report"
+else
+    printf '%s\n' "$both" | head -3 | sed 's/^/  /'; fail "one piped stream: the report is not after the program's output"
+fi
 
 echo "--- TIER file ---"
 ./gbasic --profile tests/profile/counts.bas >/dev/null 2>"$tmp/stderr.txt" </dev/null || true
