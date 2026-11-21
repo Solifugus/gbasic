@@ -863,7 +863,7 @@ static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
 %type <server_item> server_item
 %type <server_item_list> server_item_list
 %type <name_list> server_string_list
-%type <expr> expression or_expression and_expression comparison_expression
+%type <expr> expression conditional_expression or_expression and_expression comparison_expression
 %type <expr> additive_expression multiplicative_expression unary_expression postfix_expression primary lvalue record_literal set_expression
 %type <expr_list> argument_list argument_list_opt array_argument_list
 %type <text> field_name dot_field_name
@@ -1849,8 +1849,15 @@ inline_statement
  * by the next `if error then` and never raised again at the return
  * (docs/error_model_design.md, Matthew 2026-11-07, Transward §8.2). */
 expression
-    : or_expression { $$ = $1; }
+    : conditional_expression { $$ = $1; }
     | TRY expression { $$ = expr_at(ast_unary(copy_const("try"), $2), @1.first_line, @1.first_column); }
+    ;
+
+conditional_expression
+    : or_expression { $$ = $1; }
+    | or_expression IF or_expression ELSE conditional_expression {
+        $$ = expr_at(ast_conditional($3, $1, $5), @2.first_line, @2.first_column);
+      }
     ;
 
 or_expression

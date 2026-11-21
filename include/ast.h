@@ -84,7 +84,10 @@ typedef enum {
     AST_EXPR_COLUMN,
     /* `path{ name, email }`: the columns a G-SQL path reads of the table
      * before the braces (docs/gsql_paths_design.md §3.5). */
-    AST_EXPR_PROJECT
+    AST_EXPR_PROJECT,
+    /* `a if c else b` (Matthew, 2026-11-20, Python's spelling): only the
+     * chosen value is evaluated, and the condition is held to `if`'s rule. */
+    AST_EXPR_CONDITIONAL
 } AstExprKind;
 
 typedef struct AstExpr AstExpr;
@@ -351,6 +354,11 @@ struct AstExpr {
             char *op;
             AstExpr *expr;
         } unary;
+        struct {
+            AstExpr *condition;
+            AstExpr *then_value;   /* the value before `if` */
+            AstExpr *else_value;
+        } conditional;
         struct {
             AstExpr *proto;   /* prototype to derive from */
             AstExpr *with;    /* optional override record literal, or NULL */
@@ -647,6 +655,7 @@ AstModifierSignature ast_modifier_signature(char *name, AstNameList params);
 AstExpr *ast_binary(char *op, AstModifierUse modifier, AstExpr *left, AstExpr *right);
 AstExpr *ast_modifier_apply(AstModifierUse modifier, AstExpr *value);
 AstExpr *ast_unary(char *op, AstExpr *expr);
+AstExpr *ast_conditional(AstExpr *condition, AstExpr *then_value, AstExpr *else_value);
 AstExpr *ast_new(AstExpr *proto, AstExpr *with);
 AstExpr *ast_spawn(char *name, AstExprList args);
 AstExpr *ast_expr_position(AstExpr *expr, int line, int column);

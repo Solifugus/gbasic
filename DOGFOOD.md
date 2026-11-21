@@ -14128,3 +14128,5 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Workaround:** an `if` block assigning the variable. For the ergonomics
   sweep: name the gap at the `?` ("gBASIC has no `? :`; write an `if` block"),
   or weigh a conditional expression; START-HERE/UNLEARN say nothing about it.
+
+- **Status 2026-11-20: RESOLVED.** `a if c else b` exists (Matthew chose Python's spelling); `?` is refused with ``gBASIC has no `c ? a : b`; write `a if c else b` ``; UNLEARN says so. Held by `tests/run_conditional.sh`.

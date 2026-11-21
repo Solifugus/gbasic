@@ -16,6 +16,13 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **`a if c else b`, the conditional expression** (2026-11-20), Python's
+  spelling: `label = "one" if n = 1 else "many"`. Only the chosen value is
+  evaluated; the condition follows `if` (`unknown` raises, error 1003); a
+  chain groups to the right; it binds looser than `or` and tighter than `try`.
+  Zero grammar conflicts. `c ? a : b` is refused naming this form. In a G-SQL
+  path's brackets it may choose a value but not test a column (refused with
+  the filter's sentence). `tests/run_conditional.sh`.
 - **One word for a file written wrong: `syntax error`** (2026-11-20). A stray
   character, a grammar error, an unterminated string and a misspelled
   `window`/`server`/`sql` option all print `syntax error at FILE:LINE:COL:`.

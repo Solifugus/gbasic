@@ -1038,7 +1038,7 @@ static Token lexer_scan(Lexer *lexer) {
        `?` is used nowhere else in gBASIC, so the sentence cannot misfire. */
     case '?':
         return error_token_message(lexer, start, line, column,
-                                   "gBASIC has no `c ? a : b`; set the variable in an if block");
+                                   "gBASIC has no `c ? a : b`; write `a if c else b`");
     case '%':
         if (follows_identifier(lexer, start)) {
             return sigil_error(lexer, start, line, column, '%');

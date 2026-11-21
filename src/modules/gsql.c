@@ -3278,6 +3278,10 @@ static int path_has_column(const AstExpr *e) {
         return path_has_column(e->as.binary.left) || path_has_column(e->as.binary.right);
     case AST_EXPR_UNARY:
         return path_has_column(e->as.unary.expr);
+    case AST_EXPR_CONDITIONAL:
+        return path_has_column(e->as.conditional.condition) ||
+               path_has_column(e->as.conditional.then_value) ||
+               path_has_column(e->as.conditional.else_value);
     case AST_EXPR_MODIFIER_APPLY:
         return path_has_column(e->as.modifier_apply.value);
     case AST_EXPR_NEW:

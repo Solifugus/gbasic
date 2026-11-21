@@ -1046,6 +1046,26 @@ Precedence, high to low:
 5. `not`
 6. `and`
 7. `or`
+8. `a if c else b`
+
+**`a if c else b` chooses a value**: `a` when `c` is true, otherwise `b`,
+as in Python. Only the chosen value is evaluated, so the other may be one that
+would raise. The condition is held to `if`'s own rule, so `unknown` is refused
+(error 1003) rather than read as false, and nothing is assigned. A chain
+groups to the right, and the condition and each value are whole expressions
+of the levels above, `or` included:
+
+```basic
+qty = 3
+label = "none" if qty = 0 else "one" if qty = 1 else "many"
+print label                                ' many
+customer = {}
+print customer.name if customer else "nobody"   ' customer.name is never read
+print (2 if qty > 1 else 1) * 10           ' 20: parentheses make it a term
+```
+
+There is no `c ? a : b`; it is refused with this form named. `try` binds
+looser still, so `try f(x) if ok else g(x)` covers the whole choice.
 
 `not` binds **looser than a comparison**, so `not a = b` means `not (a = b)` —
 the same as in every other BASIC, and in Python, SQL and Pascal. It binds

@@ -105,6 +105,10 @@ the standing ones.
   lexed as `<` then `>` and reported `unexpected OP_GT`, naming the second half
   of the operator and never mentioning `!=`. The family `!>`, `!<`, `!>=`,
   `!<=` also exists.
+- **The conditional is `a if c else b`, Python's form** (2026-11-20). There is
+  no `c ? a : b` (refused, naming this form) and no `IIf(c, a, b)`. Only the
+  chosen value is evaluated, and the condition follows `if`'s rule: `unknown`
+  raises instead of choosing `b`.
 - **`let` and `rem` are not statements**, and both are refused by name since
   0.5.1 — they used to parse as the start of a CALL, so the error said
   `expecting LPAREN` and told you to add a parenthesis, which cannot help.

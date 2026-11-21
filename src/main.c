@@ -649,6 +649,11 @@ static void analyze_expr(AddUsesContext *ctx, AstExpr *expr) {
     case AST_EXPR_UNARY:
         analyze_expr(ctx, expr->as.unary.expr);
         break;
+    case AST_EXPR_CONDITIONAL:
+        analyze_expr(ctx, expr->as.conditional.condition);
+        analyze_expr(ctx, expr->as.conditional.then_value);
+        analyze_expr(ctx, expr->as.conditional.else_value);
+        break;
     case AST_EXPR_HELD:
     case AST_EXPR_COLUMN:
         break;

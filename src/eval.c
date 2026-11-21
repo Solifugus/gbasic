@@ -44080,6 +44080,10 @@ static int expr_has_column(const AstExpr *e) {
         return expr_has_column(e->as.binary.left) || expr_has_column(e->as.binary.right);
     case AST_EXPR_UNARY:
         return expr_has_column(e->as.unary.expr);
+    case AST_EXPR_CONDITIONAL:
+        return expr_has_column(e->as.conditional.condition) ||
+               expr_has_column(e->as.conditional.then_value) ||
+               expr_has_column(e->as.conditional.else_value);
     case AST_EXPR_MODIFIER_APPLY:
         return expr_has_column(e->as.modifier_apply.value);
     case AST_EXPR_NEW:
@@ -44871,6 +44875,26 @@ static GB_NOINLINE Value eval_expr_case_apply(AstExpr *expr, int path_keep) {
     return value_null();
 }
 
+/* `a if c else b`: the condition by `if`'s own rule (value_truthy, so an
+ * unknown or a handle is refused, never read as false), then ONLY the chosen
+ * value -- `x.name if x else "none"` must not touch `x.name` when x is empty. */
+static GB_NOINLINE Value eval_expr_case_conditional(AstExpr *expr) {
+    int before_error = error_generation;
+    Value condition = eval_expr(expr->as.conditional.condition);
+    if (error_generation != before_error) {
+        value_free(condition);
+        return value_null();
+    }
+    int refused = 0;
+    int truth = value_truthy(condition, &refused);
+    value_free(condition);
+    if (refused) {
+        return value_null();
+    }
+    return eval_expr(truth ? expr->as.conditional.then_value
+                           : expr->as.conditional.else_value);
+}
+
 static GB_NOINLINE Value eval_expr_case_unary(AstExpr *expr, int path_keep) {
 
         if (strcmp(expr->as.unary.op, "try") == 0) {
@@ -45027,6 +45051,8 @@ static Value eval_expr(AstExpr *expr) {
         return eval_expr_case_apply(expr, path_keep);
     case AST_EXPR_UNARY:
         return eval_expr_case_unary(expr, path_keep);
+    case AST_EXPR_CONDITIONAL:
+        return eval_expr_case_conditional(expr);
     }
 
     return value_null();
@@ -47638,6 +47664,11 @@ static void dead_scan_expr(const AstExpr *e, DeadScan *s) {
         dead_scan_expr(e->as.binary.right, s);
         break;
     case AST_EXPR_UNARY:   dead_scan_expr(e->as.unary.expr, s); break;
+    case AST_EXPR_CONDITIONAL:
+        dead_scan_expr(e->as.conditional.condition, s);
+        dead_scan_expr(e->as.conditional.then_value, s);
+        dead_scan_expr(e->as.conditional.else_value, s);
+        break;
     case AST_EXPR_MODIFIER_APPLY: dead_scan_expr(e->as.modifier_apply.value, s); break;
     case AST_EXPR_HELD: break;
     case AST_EXPR_NEW:

@@ -279,6 +279,14 @@ AstExpr *ast_unary(char *op, AstExpr *child) {
     return expr;
 }
 
+AstExpr *ast_conditional(AstExpr *condition, AstExpr *then_value, AstExpr *else_value) {
+    AstExpr *expr = ast_expr_new(AST_EXPR_CONDITIONAL);
+    expr->as.conditional.condition = condition;
+    expr->as.conditional.then_value = then_value;
+    expr->as.conditional.else_value = else_value;
+    return expr;
+}
+
 AstExpr *ast_modifier_apply(AstModifierUse modifier, AstExpr *value) {
     AstExpr *expr = ast_expr_new(AST_EXPR_MODIFIER_APPLY);
     expr->as.modifier_apply.modifier = modifier;
@@ -1019,6 +1027,12 @@ static void dump_expr(AstExpr *expr, int indent) {
         printf("Unary %s\n", expr->as.unary.op);
         dump_expr(expr->as.unary.expr, indent + 1);
         break;
+    case AST_EXPR_CONDITIONAL:
+        printf("Conditional\n");
+        dump_expr(expr->as.conditional.condition, indent + 1);
+        dump_expr(expr->as.conditional.then_value, indent + 1);
+        dump_expr(expr->as.conditional.else_value, indent + 1);
+        break;
     case AST_EXPR_HELD:
         printf("Held\n");
         break;
@@ -1542,6 +1556,11 @@ static void free_expr(AstExpr *expr) {
     case AST_EXPR_UNARY:
         free(expr->as.unary.op);
         free_expr(expr->as.unary.expr);
+        break;
+    case AST_EXPR_CONDITIONAL:
+        free_expr(expr->as.conditional.condition);
+        free_expr(expr->as.conditional.then_value);
+        free_expr(expr->as.conditional.else_value);
         break;
     case AST_EXPR_HELD:
         break;
