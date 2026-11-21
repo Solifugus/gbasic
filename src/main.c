@@ -46,8 +46,10 @@ static void print_help(const char *argv0) {
     printf("                   arguments; the inspect-only modes above do not.\n");
     printf("  --ui=NAME        draw windows with this ui backend (qt, tui), as GBASIC_UI does\n");
     printf("  --line-buffered  flush stdout at every completed line instead of at buffer\n");
-    printf("  --full-trace     list every frame inside a library in a traceback\n");
     printf("                   capacity; combines with any of the above\n");
+    printf("  --full-trace     list every frame inside a library in a traceback\n");
+    printf("  --profile        after the run, count each function's calls and each line's\n");
+    printf("                   runs on stderr; --profile=FILE writes every row to FILE\n");
 }
 
 static void print_tokens(const char *source) {

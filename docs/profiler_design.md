@@ -1,8 +1,10 @@
 # The profiler: a design note
 
-**Status:** Design, 2026-11-21. Nothing is built. Matthew, 2026-11-20: "A
-gbasic profiler is a good thing. We should do that one." The questions in §9
-are his to rule on before increment 1.
+**Status:** Increment 1 (exact counts) **shipped** 2026-11-21:
+`gbasic --profile`, `tests/run_profile.sh`. Increments 2 and 3 are design.
+Matthew, 2026-11-20: "A gbasic profiler is a good thing. We should do that
+one." The six questions in §9 were ruled 2026-11-21: "agreed on all six", each
+as recommended.
 
 ## 1. What it answers
 
@@ -203,7 +205,7 @@ The hooks sit at the boundaries a compiled backend has too: statement entry,
 function entry and exit, and the waiting sites. The LLVM backend can emit the
 same calls, and the report would read the same.
 
-## 9. Questions for Matthew
+## 9. Questions for Matthew (ruled 2026-11-21: all six as recommended)
 
 1. **The flag's name and the report's destination.** `--profile` to standard
    error, plus `--profile=path` for a file? I recommend both.

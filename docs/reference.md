@@ -13108,6 +13108,39 @@ as JSON on stderr (the model the language server consumes); normal program
 output on stdout is unchanged. A separate `gbasic-lsp` binary (built by
 `make dev`) serves the same diagnostics over LSP on document sync.
 
+Count where a program runs:
+
+```sh
+gbasic --profile FILE            # the report on stderr, after the run
+gbasic --profile=run.txt FILE    # every row, written to run.txt instead
+```
+
+`--profile` runs the program unchanged and then reports how many times each
+function was called and each line ran, in the program and in every library
+it loads. Counts are exact: a loop of 1000 shows 1000. The report follows
+the program's own output and any error line, and the exit status is the
+program's. On stderr each table shows its 20 largest rows and says how many
+more there are; `--profile=FILE` writes them all.
+
+```text
+profile: exact counts (times are not measured yet)
+functions                          calls
+  twice                                3
+  main                                 1
+lines                               runs
+  tests/profile/shape.bas:3            3   return x * 2
+  tests/profile/shape.bas:9            3   s = s + twice(i)
+```
+
+- A line holding more than one statement, such as `if n < 2 then return n`,
+  counts the times the line was reached, not the statements on it.
+- A loop's own line counts once each time the loop is entered; its body
+  counts every pass.
+- Only the process started with `--profile` reports. An actor, a
+  `process.start` child or a web pool worker is not counted.
+- Time shares, a waiting row and a JSON report (`--profile=FILE.json`, refused
+  until then) are the next increments of `docs/profiler_design.md`.
+
 Flush stdout at every completed line:
 
 ```sh

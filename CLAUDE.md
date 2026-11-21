@@ -22,6 +22,7 @@ make OPT=-O0               # unoptimised, for a debugger that follows every line
 ./gbasic --add-loads program.bas # print source with suggested `load` lines
 ./gbasic --json-diagnostics program.bas # emit parse/runtime diagnostics as JSON on stderr
 ./gbasic --line-buffered program.bas # flush stdout per completed line (pipes block-buffer by default)
+./gbasic --profile program.bas  # after the run, each function's calls and each line's runs on stderr (--profile=FILE: every row)
 ./gbasic --version
 ./gbasic --modules          # which optional modules THIS build has (built / left out, and what each needs)
 sudo make install          # install to /usr/local (binary + stdlib); PREFIX overridable
@@ -172,6 +173,7 @@ and how its tiers were proven, is in `docs/test_suite_history.md`.
 ./tests/run_rules.sh         # Checks stdlib/rules.bas, typed business rules as data: evaluating a stack of rules against a condensed compiled form, absence (unknown) handling, validation, and depth caps. Self-checking, headless, no network; includes a valgrind tier. Adding hand-rolled set-union loops can trip the run_absence.sh census.
 ./tests/run_datetime_convert.sh # Checks that {date}, {time} and {datetime} accept a datetime value and convert it, refusing values that lack what the target kind needs and leaving the text forms unchanged. Headless, never skips apart from valgrind.
 ./tests/run_conditional.sh   # `a if c else b`: only the chosen value evaluated (the other would raise), right-grouping chains, looser than `or` and tighter than `try`, `if`'s truth with unknown refused (1003, nothing assigned), every expression position, plain-data brackets, the `?` refusal naming it, zero grammar conflicts, --ast, valgrind. Headless, never skips (bar bison and valgrind).
+./tests/run_profile.sh       # `--profile`, increment 1 (docs/profiler_design.md): exact counts of calls and lines, each held to a counter the fixture keeps itself (recursion, a library's line under its file, a watch body, a one-line `if` as reached); the report byte for byte; output and exit status unchanged, the report after them in one stream; refusals; and the hooks' cost when off counted in INSTRUCTIONS by callgrind against a copy built without them (`make gbasic-noprof`), at most 1.01 -- wall time could not hold the bound (this binary against its own copy ranged 0.81-1.01 under load). Valgrind.
 ./tests/run_set_ops.sh       # Checks the infix word operators `excluding` and `intersecting`: membership semantics, preserved duplicates, and the documented product-of-lengths cost. Headless; includes a valgrind tier.
 ./tests/run_notation.sh      # Checks stdlib/notation.bas, a readable text format that keeps every gBASIC type (dates, money, durations, files), including round trips, hand-edit tolerance and refusals. Headless, no network; includes a valgrind tier.
 ./tests/run_persist.sh       # Checks stdlib/persist.bas: crash-safe atomic versioned writes and a read that reports missing, corrupt or loaded as a value, plus round trips and a large-index timing bound.
