@@ -25,11 +25,21 @@ def check(cond, label, detail=""):
         print("FAIL " + label + (": " + detail if detail else ""))
 
 
+def default_signals():
+    """Each child starts with the three signals at their defaults. The gate runs
+    suites as background jobs, and bash starts those with SIGINT IGNORED,
+    which a child inherits -- and the profiler rightly leaves an ignored
+    signal alone, so a Ctrl-C case would never end (found by the gate)."""
+    for sig in (signal.SIGINT, signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, signal.SIG_DFL)
+
+
 def start(prog, env_extra=None, ignore=None, stdin=subprocess.DEVNULL):
     env = dict(os.environ)
     env.update(env_extra or {})
 
     def pre():
+        default_signals()
         if ignore:
             signal.signal(ignore, signal.SIG_IGN)
 
@@ -125,7 +135,8 @@ check(rc == -signal.SIGTERM and "profile:" not in err, "counts only: SIGTERM kil
 # A server owns SIGTERM (it drains): that stays the server's, and the report
 # follows the drain's normal end.
 p = subprocess.Popen([GBASIC, "--line-buffered", "--profile", "tests/web_server_block/block_drain.bas"],
-                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+                     stdin=subprocess.DEVNULL, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                     preexec_fn=default_signals)
 port = p.stdout.readline().decode()
 p.send_signal(signal.SIGTERM)
 rc, out, err = finish(p)
