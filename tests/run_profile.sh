@@ -106,6 +106,7 @@ same "the library's line"               "$(runs_of "$tmp/counts.txt" 'return x *
 same "a loop body"                      "$(runs_of "$tmp/counts.txt" 'tally.body += 1')" "$(oracle "$tmp/counts.out" body)"
 same "a watch body"                     "$(runs_of "$tmp/counts.txt" 'tally.watched += 1')" "$(oracle "$tmp/counts.out" watched)"
 same "a one-line if, as reached"        "$(runs_of "$tmp/counts.txt" 'if i > 5 then tally.oneline += 1')" "$(oracle "$tmp/counts.out" oneline_reached)"
+same "a function called back from a library" "$(calls_of "$tmp/counts.txt" called_back)" "$(oracle "$tmp/counts.out" called_back)"
 same "the program block, once"          "$(calls_of "$tmp/counts.txt" main)"            1
 same "the library's line, in its file"  "$(place_of "$tmp/counts.txt" 'return x * 3')"  tests/profile/countlib.bas:5
 

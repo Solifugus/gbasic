@@ -50,7 +50,8 @@ static void print_help(const char *argv0) {
     printf("  --full-trace     list every frame inside a library in a traceback\n");
     printf("  --profile        after the run, each function's calls and each line's runs,\n");
     printf("                   with the share of time in each, on stderr; --profile=FILE\n");
-    printf("                   writes every row to FILE (GBASIC_PROFILE_HZ=0: counts only)\n");
+    printf("                   writes every row to FILE, as JSON if it ends .json\n");
+    printf("                   (GBASIC_PROFILE_HZ=0: counts only)\n");
 }
 
 static void print_tokens(const char *source) {

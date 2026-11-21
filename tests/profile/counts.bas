@@ -17,8 +17,15 @@ function seven()
     return 7
 end function
 
+' Called only from countlib: its first call is made while the library's file
+' is the one running, and the report must still put it in this file.
+function called_back()
+    tally.back += 1
+    return 1
+end function
+
 program main(args)
-    tally = { fib: 0, seven: 0, triple: 0, body: 0, watched: 0, oneline: 0 }
+    tally = { fib: 0, seven: 0, triple: 0, body: 0, watched: 0, oneline: 0, back: 0 }
     for i = 1 to 1000
         tally.body += 1
     next
@@ -29,6 +36,9 @@ program main(args)
     for i = 1 to 11
         x = countlib.triple(i)
         tally.triple += 1
+    next
+    for i = 1 to 4
+        x = countlib.call_back(called_back)
     next
     w = 0
     watch(w)
@@ -43,6 +53,7 @@ program main(args)
     print "oracle fib " + string(tally.fib)
     print "oracle seven " + string(tally.seven)
     print "oracle countlib.triple " + string(tally.triple)
+    print "oracle called_back " + string(tally.back)
     print "oracle body " + string(tally.body)
     print "oracle watched " + string(tally.watched)
     print "oracle oneline_reached 20"

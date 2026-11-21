@@ -80,6 +80,9 @@ elif mode == "counts":
     lib = [f for f in functions if f["name"] == "countlib.triple"]
     check(lib and lib[0]["kind"] == "function" and lib[0]["path"].endswith("/tests/profile/countlib.bas"),
           "a library's function is a function, defined in its own file", repr(lib))
+    back = [f for f in functions if f["name"] == "called_back"]
+    check(back and back[0]["path"].endswith("/tests/profile/counts.bas"),
+          "the program's function, first called from a library, is in the program's file", repr(back))
 elif mode == "names":
     # A name that is not UTF-8 is written with each byte past ASCII as U+FFFD,
     # the whole name, so the file still parses.

@@ -1,8 +1,9 @@
 # The profiler: a design note
 
-**Status:** Increments 1 (exact counts) and 2 (sampled time, waiting, the
-signal paths) **shipped** 2026-11-21: `gbasic --profile`,
-`tests/run_profile.sh`. Increment 3 is design. Where the build differs from
+**Status:** **Shipped** 2026-11-21, all three increments: exact counts,
+sampled time with waiting and the signal paths, and builtins as rows with a
+JSON report. `gbasic --profile`, `tests/run_profile.sh`. Children and
+flame-graph stacks are not built (§6). Where the build differs from
 what this note first said, the note now says what was built (§3-§7).
 Matthew, 2026-11-20: "A gbasic profiler is a good thing. We should do that
 one." The six questions in §9 were ruled 2026-11-21: "agreed on all six", each
@@ -32,7 +33,9 @@ lines                    runs      self
 - **Times are shares**, and the seconds they are shares of. The report shows
   where to look, and a share is what stays the same when the machine changes.
 - **`total`** includes everything the function called. **`self`** is the
-  time spent on its own lines, including the builtins those lines call.
+  time spent on its own lines. Since increment 3 a builtin has its own row,
+  so a function's self no longer includes the builtins its lines call; the
+  LINE still does, since that is the line the author can change.
 - **Waiting is its own row.** That covers a program blocked in `ui.run()`,
   `sleep`, `wait until` or a network read. A GUI program that waits 99% of the
   time must not report that its `ui.run()` line is "slow".
@@ -266,8 +269,32 @@ covers seven cases rather than one, the helgrind tier needed fair scheduling
    standard-output tier and valgrind.
 2. **Time** (shipped). The sampler thread, shares, waiting, the signal paths
    and helgrind.
-3. **What Matthew rules in §9:** JSON, builtins as their own rows,
-   flame-graph stacks, children.
+3. **Builtins and JSON** (shipped), as §9 Q2 and Q5 were ruled. Flame-graph
+   stacks and children (Q4) are not built.
+
+### Increment 3, as built
+
+- **Builtins as rows.** A call site is classified the first time it runs and
+  the answer kept on its node: a registered builtin name, or a native
+  module's verb (`pg.query`; a handle's method `db.query()` reaches the
+  dispatcher as `gsql.query`, and keeps a class of its own, apart from the
+  site's). A user library's function or a record's method is not a builtin.
+  One row a builtin, marked `[builtin]` in the text report.
+- **A builtin evaluates its own arguments**, inside its frame:
+  `append(xs, mod(i, 7))` shows `mod` within `append`'s total, and the
+  arithmetic in `append`'s self. A user function's arguments are evaluated
+  before its frame. Separating them would need a hook in every builtin's
+  argument handling.
+- **JSON** by the extension (`--profile=run.json`). Samples are integers, not
+  shares, so they add up exactly: the lines, `waiting_samples` and
+  `outside_samples` sum to `samples`. Each file appears as the text report
+  shows it and as an absolute path, for an editor's gutter. A function is at
+  the file and line of its definition (its stamped source path; the text
+  report never showed it, and the note had recorded the CALLER's file). A
+  file name that is not UTF-8 is written with each byte past ASCII as U+FFFD,
+  so the report always parses.
+- **Measured:** off 1.0042 in instructions (one more test, per builtin call);
+  on 1.0547 for the bench.
 
 The hooks sit at the boundaries a compiled backend has too: statement entry,
 function entry and exit, and the waiting sites. The LLVM backend can emit the

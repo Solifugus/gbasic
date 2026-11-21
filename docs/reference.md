@@ -13140,9 +13140,13 @@ lines                                runs      self
   and its body every pass.
 - **Times are shares of samples**, taken 10,000 times a second by a thread
   beside the program. A function's `total` includes everything it called;
-  its `self` is its own lines, including the builtins they call (a
-  `pg.query` is its line's time). A loop's own line holds the time spent
+  its `self` is its own lines. A loop's own line holds the time spent
   stepping it. Recursion counts once: a function's total is never over 100%.
+- **Builtins are rows of their own**, marked `[builtin]`: `sort`, `pg.query`,
+  and a handle's method under its module's name (`db.query()` is
+  `gsql.query`), with their calls and time. A builtin's time is also its
+  line's. A builtin evaluates its own arguments, so `append(xs, mod(i, 7))`
+  shows `mod` inside `append`'s total.
 - **Waiting is its own row**, `(waiting)`: time in `sleep`, an actor's
   `receive`, or the event loop with nothing to do (`ui.run()`, a server
   between requests, `wait until`). A program that waits 99% of the time does
@@ -13157,8 +13161,13 @@ lines                                runs      self
   SIGTERM still drains it, with the report after. `SIGKILL` writes nothing.
 - Only the process started with `--profile` reports. An actor, a
   `process.start` child or a web pool worker is not counted.
-- A JSON report (`--profile=FILE.json`, refused until then) and builtins as
-  rows of their own are increment 3 of `docs/profiler_design.md`.
+- **`--profile=FILE.json`** writes the same report as JSON for a tool:
+  `samples`, `waiting_samples` and `outside_samples`, `stopped_by`, and every
+  function and line with its `file` (as shown), `path` (absolute), `line`,
+  `calls` or `runs`, and `self_samples` (functions also `total_samples` and
+  `kind`: `function`, `program` or `builtin`). Samples are integers, so the
+  lines, waiting and outside add up to `samples` exactly. With
+  `GBASIC_PROFILE_HZ=0`, `sampled` is false and `seconds` null.
 
 Flush stdout at every completed line:
 

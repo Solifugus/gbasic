@@ -1471,8 +1471,12 @@ static void profile_note_function(AstStmt *stmt) {
     snprintf(shown, sizeof(shown), "%s%s%s", library ? library : "", library ? "." : "",
              name ? name : "(unnamed)");
     /* Its definition's file, stamped at registration: the call is noted
-     * before the callee's file is the one running. */
+     * before the callee's file is the one running, so the file running is
+     * the CALLER's. A program's own function has no stamp: the root file. */
     const char *path = stmt->kind == AST_STMT_PROGRAM ? NULL : stmt->as.function.source_path;
+    if (!path) {
+        path = root_source_path;
+    }
     profile_note_at(&profile_funcs, stmt, shown, path);
     ProfileSeen *seen = &profile_funcs.items[profile_funcs.count - 1];
     seen->counts = &stmt->prof_fn;

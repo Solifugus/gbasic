@@ -16,6 +16,12 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **`gbasic --profile`: builtins as rows, and JSON** (2026-11-21), increment
+  3 of `docs/profiler_design.md`. `sort`, `pg.query` and a handle's methods
+  (`db.query()` as `gsql.query`) get rows of their own, marked `[builtin]`,
+  with exact calls and their time; a function's `self` no longer includes
+  them, and their line still does. `--profile=FILE.json` writes every row
+  for a tool, as samples that add up exactly, each file absolute.
 - **`gbasic --profile`: where the time goes** (2026-11-21), increment 2 of
   `docs/profiler_design.md`. Each function's `total` and `self` and each
   line's `self`, as shares of samples a thread takes 10,000 times a second
