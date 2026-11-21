@@ -1347,6 +1347,8 @@ typedef struct {
     unsigned long count;     /* filled by the snapshot */
     unsigned long samples;   /* a line's samples, a function's self */
     unsigned long total;     /* a function's samples anywhere on the stack */
+    AstProfCounts *counts;   /* a function's or builtin's, until the snapshot */
+    const char *kind;        /* "function", "program", "builtin"; NULL: a line */
 } ProfileSeen;
 
 typedef struct {
@@ -1380,7 +1382,7 @@ static volatile sig_atomic_t profile_signal;
  * atomic. The depth may pass the stack's size; past it a frame is not kept,
  * and a sample there gives no function its self. */
 static AstStmt *profile_now;
-static AstStmt *profile_stack[PROFILE_STACK_MAX];
+static AstProfCounts *profile_stack[PROFILE_STACK_MAX];
 static int profile_depth;
 static int profile_waiting;
 /* The main thread's own: the statement or function whose wrapper is coming
@@ -1404,6 +1406,7 @@ static int profile_signals_installed;
 #define PROFILE_STMT(s) ((void)0)
 #define PROFILE_ENTER_CALL(s, a, n, r) ((void)0)
 #define PROFILE_CALL(s) ((void)0)
+#define PROFILE_BUILTIN(e) ((void)0)
 #define PROFILE_PUSH(s) 0
 #define PROFILE_POP(depth) ((void)(depth))
 #define PROFILE_WAIT(on) ((void)0)
@@ -1411,12 +1414,14 @@ static int profile_signals_installed;
 static int gb_profiling;
 static EvalResult eval_stmt_profiled(AstStmt *stmt);
 static Value invoke_function_profiled(AstStmt *stmt, Value *args, size_t argc, Value *receiver);
-static int profile_push(AstStmt *function);
+static int profile_push(AstProfCounts *function);
+static Value eval_call_rest_profiled(AstExpr *expr);
 static void profile_pop(int depth);
 static void profile_wait(int on);
 #define PROFILE_STMT(s) do { if (gb_profiling) { if ((s) != profile_entering) { return eval_stmt_profiled(s); } profile_entering = NULL; } } while (0)
 #define PROFILE_ENTER_CALL(s, a, n, r) do { if (gb_profiling) { if ((s) != profile_calling) { return invoke_function_profiled((s), (a), (n), (r)); } profile_calling = NULL; } } while (0)
-#define PROFILE_CALL(s) do { if (gb_profiling && (s)->prof_calls++ == 0) { profile_note_function(s); } } while (0)
+#define PROFILE_CALL(s) do { if (gb_profiling && (s)->prof_fn.calls++ == 0) { profile_note_function(s); } } while (0)
+#define PROFILE_BUILTIN(e) do { if (gb_profiling) { return eval_call_rest_profiled(e); } } while (0)
 #define PROFILE_PUSH(s) (gb_profiling ? profile_push(s) : 0)
 #define PROFILE_POP(depth) do { if (gb_profiling) { profile_pop(depth); } } while (0)
 #define PROFILE_WAIT(on) do { if (gb_profiling) { profile_wait(on); } } while (0)
@@ -1425,7 +1430,8 @@ static void profile_wait(int on);
 #ifndef GB_NO_PROFILER
 static void profile_signalled(void);
 
-static void profile_note(ProfileList *list, AstStmt *stmt, const char *name) {
+/* `path` NULL: the file running now. */
+static void profile_note_at(ProfileList *list, AstStmt *stmt, const char *name, const char *path) {
     if (profile_signal) {
         profile_signalled();
     }
@@ -1438,15 +1444,23 @@ static void profile_note(ProfileList *list, AstStmt *stmt, const char *name) {
         list->items = items;
         list->capacity = grown;
     }
-    const char *path = current_import_path ? current_import_path : root_source_path;
+    if (!path) {
+        path = current_import_path ? current_import_path : root_source_path;
+    }
     ProfileSeen *seen = &list->items[list->count++];
     seen->stmt = stmt;
     seen->path = copy_string(path ? path : "(program)");
     seen->name = name ? copy_string(name) : NULL;
-    seen->line = stmt->line;
+    seen->line = stmt ? stmt->line : 0;
     seen->count = 0;
     seen->samples = 0;
     seen->total = 0;
+    seen->counts = NULL;
+    seen->kind = NULL;
+}
+
+static void profile_note(ProfileList *list, AstStmt *stmt, const char *name) {
+    profile_note_at(list, stmt, name, NULL);
 }
 
 static void profile_note_function(AstStmt *stmt) {
@@ -1456,13 +1470,64 @@ static void profile_note_function(AstStmt *stmt) {
     char shown[256];
     snprintf(shown, sizeof(shown), "%s%s%s", library ? library : "", library ? "." : "",
              name ? name : "(unnamed)");
-    profile_note(&profile_funcs, stmt, shown);
+    /* Its definition's file, stamped at registration: the call is noted
+     * before the callee's file is the one running. */
+    const char *path = stmt->kind == AST_STMT_PROGRAM ? NULL : stmt->as.function.source_path;
+    profile_note_at(&profile_funcs, stmt, shown, path);
+    ProfileSeen *seen = &profile_funcs.items[profile_funcs.count - 1];
+    seen->counts = &stmt->prof_fn;
+    seen->kind = stmt->kind == AST_STMT_PROGRAM ? "program" : "function";
+}
+
+/* BUILTINS AS ROWS (§9 Q5, increment 3). A call site is classified once and
+ * remembered on its node: a registered builtin's name, or a native module's
+ * verb (`pg.query`, and `db.query()` arrives here as `gsql.query` with the
+ * handle first). A user library's function or a record's method is not a
+ * builtin; invoke_function counts those. One row a builtin, however many
+ * sites call it. */
+static int library_is_native_qualifier(const char *name);
+static char profile_not_builtin;
+
+static AstProfCounts *profile_builtin_counts(AstExpr *expr) {
+    if (expr->prof_builtin == &profile_not_builtin) {
+        return NULL;
+    }
+    if (expr->prof_builtin) {
+        return expr->prof_builtin;
+    }
+    const char *library = expr->as.call.library;
+    int builtin = library ? (library_is_native_qualifier(library) && strcmp(library, "this") != 0)
+                          : gbasic_has_builtin(expr->as.call.name);
+    if (expr->as.call.receiver || !builtin) {
+        expr->prof_builtin = &profile_not_builtin;
+        return NULL;
+    }
+    char shown[256];
+    snprintf(shown, sizeof(shown), "%s%s%s", library ? library : "", library ? "." : "",
+             expr->as.call.name);
+    for (size_t i = 0; i < profile_funcs.count; i++) {
+        ProfileSeen *seen = &profile_funcs.items[i];
+        if (seen->kind && strcmp(seen->kind, "builtin") == 0 && strcmp(seen->name, shown) == 0) {
+            expr->prof_builtin = seen->counts;
+            return seen->counts;
+        }
+    }
+    AstProfCounts *counts = calloc(1, sizeof(*counts));
+    if (!counts) {
+        abort();
+    }
+    profile_note_at(&profile_funcs, NULL, shown, "");
+    ProfileSeen *seen = &profile_funcs.items[profile_funcs.count - 1];
+    seen->counts = counts;
+    seen->kind = "builtin";
+    expr->prof_builtin = counts;
+    return counts;
 }
 
 /* The depth before the push, which the pop restores. The frame is stored
  * before the depth that exposes it, with release, so the sampler never reads
  * a slot above the depth it loaded. */
-static int profile_push(AstStmt *function) {
+static int profile_push(AstProfCounts *function) {
     int depth = profile_depth;
     if (depth < PROFILE_STACK_MAX) {
         PROF_STORE(profile_stack[depth], function);
@@ -1507,16 +1572,16 @@ static void profile_take_sample(void) {
     int depth = __atomic_load_n(&profile_depth, __ATOMIC_ACQUIRE);
     int kept = depth < PROFILE_STACK_MAX ? depth : PROFILE_STACK_MAX;
     for (int i = 0; i < kept; i++) {
-        AstStmt *f = PROF_LOAD(profile_stack[i]);
-        if (f && f->prof_stamp != n) {
-            f->prof_stamp = n;
-            f->prof_total++;
+        AstProfCounts *f = PROF_LOAD(profile_stack[i]);
+        if (f && f->stamp != n) {
+            f->stamp = n;
+            f->total++;
         }
     }
     if (!waiting && depth > 0 && depth <= PROFILE_STACK_MAX) {
-        AstStmt *top = PROF_LOAD(profile_stack[depth - 1]);
+        AstProfCounts *top = PROF_LOAD(profile_stack[depth - 1]);
         if (top) {
-            top->prof_self++;
+            top->self++;
         }
     }
 }
@@ -1749,10 +1814,15 @@ static void profile_snapshot(void) {
         profile_lines.items[i].stmt = NULL;
     }
     for (size_t i = 0; i < profile_funcs.count; i++) {
-        profile_funcs.items[i].count = profile_funcs.items[i].stmt->prof_calls;
-        profile_funcs.items[i].samples = profile_funcs.items[i].stmt->prof_self;
-        profile_funcs.items[i].total = profile_funcs.items[i].stmt->prof_total;
-        profile_funcs.items[i].stmt = NULL;
+        ProfileSeen *f = &profile_funcs.items[i];
+        f->count = f->counts->calls;
+        f->samples = f->counts->self;
+        f->total = f->counts->total;
+        if (!f->kind || strcmp(f->kind, "builtin") != 0) {
+            f->counts = NULL;   /* in the tree, which teardown frees; a builtin's
+                                   stays: a site still points at it */
+        }
+        f->stmt = NULL;
     }
     profile_snapshot_taken = 1;
 }
@@ -1851,6 +1921,105 @@ static void profile_share(char *out, size_t size, unsigned long part) {
 
 #define PROFILE_ROWS_SHOWN 20
 
+static int profile_builtin_row(const ProfileSeen *f) {
+    return f->kind && strcmp(f->kind, "builtin") == 0;
+}
+
+/* `--profile=FILE.json` (§9 Q2): chosen by the extension. */
+static int profile_json_path(const char *path) {
+    size_t n = path ? strlen(path) : 0;
+    return n >= 5 && strcmp(path + n - 5, ".json") == 0;
+}
+
+static size_t utf8_first_invalid(const unsigned char *u, size_t len);
+
+/* A JSON string. Text that is not UTF-8 (a path is bytes) has each byte past
+ * ASCII written as U+FFFD, so the file always parses. */
+static void profile_json_string(FILE *out, const char *s) {
+    size_t len = strlen(s);
+    int valid = utf8_first_invalid((const unsigned char *)s, len) == len;
+    fputc('"', out);
+    for (size_t i = 0; i < len; i++) {
+        unsigned char c = (unsigned char)s[i];
+        if (c == '"' || c == '\\') {
+            fprintf(out, "\\%c", c);
+        } else if (c < 0x20) {
+            fprintf(out, "\\u%04x", c);
+        } else if (c >= 0x80 && !valid) {
+            fputs("\\ufffd", out);
+        } else {
+            fputc(c, out);
+        }
+    }
+    fputc('"', out);
+}
+
+/* A file twice: as the text report shows it, and absolute, for an editor. */
+static void profile_json_file(FILE *out, const char *path, const char *cwd) {
+    const char *shown = profile_shown_path(path, cwd);
+    fprintf(out, "\"file\": ");
+    profile_json_string(out, shown);
+    char absolute[8300];
+    if (path[0] == '/' || !cwd) {
+        snprintf(absolute, sizeof(absolute), "%s", path);
+    } else {
+        while (path[0] == '.' && path[1] == '/') {
+            path += 2;
+        }
+        snprintf(absolute, sizeof(absolute), "%s/%s", cwd, path);
+    }
+    fprintf(out, ", \"path\": ");
+    profile_json_string(out, absolute);
+}
+
+/* Every row, as samples rather than shares: the integers add up exactly
+ * (lines + waiting + outside = samples), which a share rounded to 0.1% does
+ * not. Counts only: "sampled" is false and every sample is 0. */
+static void profile_write_json(FILE *out, ProfileSeen *rows, size_t row_count, const char *cwd,
+                               int sampled) {
+    fprintf(out, "{\n  \"profile\": 1,\n  \"sampled\": %s,\n", sampled ? "true" : "false");
+    if (sampled) {
+        fprintf(out, "  \"seconds\": %.6f,\n  \"sample_interval_us\": %ld,\n", profile_seconds,
+                profile_interval_ns / 1000);
+    } else {
+        fprintf(out, "  \"seconds\": null,\n  \"sample_interval_us\": null,\n");
+    }
+    fprintf(out, "  \"samples\": %lu,\n  \"waiting_samples\": %lu,\n  \"outside_samples\": %lu,\n",
+            profile_samples, profile_waiting_samples, profile_outside_samples);
+    if (profile_signal) {
+        fprintf(out, "  \"stopped_by\": \"%s\",\n", profile_signal_name(profile_signal));
+    } else {
+        fprintf(out, "  \"stopped_by\": null,\n");
+    }
+    fprintf(out, "  \"functions\": [");
+    for (size_t i = 0; i < profile_funcs.count; i++) {
+        ProfileSeen *f = &profile_funcs.items[i];
+        fprintf(out, "%s\n    {\"name\": ", i ? "," : "");
+        profile_json_string(out, f->name);
+        fprintf(out, ", \"kind\": \"%s\", ", f->kind ? f->kind : "function");
+        if (profile_builtin_row(f)) {
+            fprintf(out, "\"file\": null, \"path\": null, \"line\": null");
+        } else {
+            profile_json_file(out, f->path, cwd);
+            fprintf(out, ", \"line\": %d", f->line);
+        }
+        fprintf(out, ", \"calls\": %lu, \"total_samples\": %lu, \"self_samples\": %lu}",
+                f->count, f->total, f->samples);
+    }
+    fprintf(out, "%s],\n  \"lines\": [", profile_funcs.count ? "\n  " : "");
+    size_t written = 0;
+    for (size_t i = 0; i < row_count; i++) {
+        if (rows[i].name) {
+            continue;   /* the waiting row: waiting_samples above */
+        }
+        fprintf(out, "%s\n    {", written++ ? "," : "");
+        profile_json_file(out, rows[i].path, cwd);
+        fprintf(out, ", \"line\": %d, \"runs\": %lu, \"self_samples\": %lu}", rows[i].line,
+                rows[i].count, rows[i].samples);
+    }
+    fprintf(out, "%s]\n}\n", written ? "\n  " : "");
+}
+
 /* Print the report: to the --profile=FILE, every row; to standard error, the
  * first PROFILE_ROWS_SHOWN of each table. Only in the process that was asked to
  * profile -- a forked worker returning through main says nothing. */
@@ -1900,7 +2069,8 @@ void eval_profile_report(void) {
         }
     }
     if (sampled && profile_waiting_samples) {
-        ProfileSeen waiting = { NULL, (char *)"", (char *)"(waiting)", 0, 0, profile_waiting_samples, 0 };
+        ProfileSeen waiting = { .path = (char *)"", .name = (char *)"(waiting)",
+                                .samples = profile_waiting_samples };
         rows[row_count++] = waiting;
     }
     qsort(rows, row_count, sizeof(ProfileSeen), profile_by_count);
@@ -1908,7 +2078,7 @@ void eval_profile_report(void) {
 
     int width = 20;
     for (size_t i = 0; i < profile_funcs.count && i < limit; i++) {
-        int n = (int)strlen(profile_funcs.items[i].name);
+        int n = (int)strlen(profile_funcs.items[i].name) + (profile_builtin_row(&profile_funcs.items[i]) ? 10 : 0);
         width = n > width ? n : width;
     }
     char place[600];
@@ -1923,7 +2093,10 @@ void eval_profile_report(void) {
     }
     width = width > 60 ? 60 : width;
 
-    if (out) {
+    if (out && profile_json_path(profile_out_path)) {
+        profile_write_json(out, rows, row_count, cwd, sampled);
+        fclose(out);
+    } else if (out) {
         char share[32], self[32];
         if (!sampled) {
             fprintf(out, "profile: exact counts (GBASIC_PROFILE_HZ=0: times not sampled)\n");
@@ -1948,7 +2121,9 @@ void eval_profile_report(void) {
         }
         for (size_t i = 0; i < profile_funcs.count && i < limit; i++) {
             ProfileSeen *f = &profile_funcs.items[i];
-            fprintf(out, "  %-*s %11lu", width, f->name, f->count);
+            char shown[300];
+            snprintf(shown, sizeof(shown), "%s%s", f->name, profile_builtin_row(f) ? " [builtin]" : "");
+            fprintf(out, "  %-*s %11lu", width, shown, f->count);
             if (sampled) {
                 profile_share(share, sizeof(share), f->total);
                 profile_share(self, sizeof(self), f->samples);
@@ -14839,7 +15014,7 @@ static Value invoke_function_profiled(AstStmt *stmt, Value *args, size_t argc, V
     if (profile_signal) {
         profile_signalled();
     }
-    int depth = profile_push(stmt);
+    int depth = profile_push(&stmt->prof_fn);
     profile_calling = stmt;
     Value result = invoke_function(stmt, args, argc, receiver);
     profile_pop(depth);
@@ -33775,7 +33950,9 @@ static Value handle_method_call(AstExpr *expr, const char *module, Value *receiv
     call.as.call.receiver = NULL;
     call.as.call.args.items = items;
     call.as.call.args.count = n + 1;
+    call.prof_builtin = expr->prof_handle;   /* the verb's class, not the site's */
     Value out = eval_call(&call);
+    expr->prof_handle = call.prof_builtin;
     free(items);
     return out;
 }
@@ -35820,8 +35997,28 @@ static Value eval_call(AstExpr *expr) {
             return eval_user_function(expr, function);
         }
     }
+    PROFILE_BUILTIN(expr);
     return eval_call_rest(expr);
 }
+
+#ifndef GB_NO_PROFILER
+/* A builtin's call counted, and its row on the profile's stack while it runs;
+ * anything else straight through. */
+static Value eval_call_rest_profiled(AstExpr *expr) {
+    if (profile_signal) {
+        profile_signalled();
+    }
+    AstProfCounts *counts = profile_builtin_counts(expr);
+    if (!counts) {
+        return eval_call_rest(expr);
+    }
+    counts->calls++;
+    int depth = profile_push(counts);
+    Value result = eval_call_rest(expr);
+    profile_pop(depth);
+    return result;
+}
+#endif
 
 static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     if (expr->as.call.receiver) {
@@ -50611,7 +50808,7 @@ int eval_program(AstStmtList program) {
     int main_depth = 0;
     if (program_block) {
         PROFILE_CALL(program_block);
-        main_depth = PROFILE_PUSH(program_block);
+        main_depth = PROFILE_PUSH(&program_block->prof_fn);
     }
     if (!raise_in_flight) {
         gsql_blocks_need_load(program);

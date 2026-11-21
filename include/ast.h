@@ -93,6 +93,17 @@ typedef enum {
 typedef struct AstExpr AstExpr;
 typedef struct AstStmt AstStmt;
 
+/* `--profile`'s counts for one function or builtin (docs/profiler_design.md
+ * §3): its calls (the main thread's), and the samples it was on top of the
+ * stack (self) or anywhere on it (total, once a sample: stamp is the last
+ * sample that counted it), which only the sampler thread writes. */
+typedef struct {
+    unsigned long calls;
+    unsigned long self;
+    unsigned long total;
+    unsigned long stamp;
+} AstProfCounts;
+
 /* PBI per-property derivation policy (docs/pbi_design.md §2). COPY is the
  * default so an un-annotated field behaves exactly as before. */
 typedef enum {
@@ -300,6 +311,12 @@ struct AstExpr {
     AstExprKind kind;
     int line;
     int column;
+    /* `--profile`: for a call, the builtin's counts once this site has been
+     * classified, or a marker that it calls no builtin. NULL until then.
+     * prof_handle is the same for the module verb a handle method reaches
+     * (`db.query()` is `gsql.query(db)`), which the site itself is not. */
+    void *prof_builtin;
+    void *prof_handle;
     /* written in parentheses: `(shop.customer[3]).name` ends a G-SQL path
        there, so `.name` is the row's field (docs/gsql_paths_design.md §3.2) */
     int parenthesized;
@@ -383,15 +400,11 @@ struct AstStmt {
      * this statement ran, and for a function how many times it was called.
      * Zero and untouched unless the run is profiled. */
     unsigned long prof_runs;
-    unsigned long prof_calls;
-    /* Its sampled time (§3), written only by the sampler thread and read
-     * after it is joined: samples while this statement ran, and for a
-     * function the samples it was on top of the stack (self) or anywhere on
-     * it (total, once per sample: prof_stamp is the last sample counted). */
+    /* The samples taken while this statement ran (§3), written only by the
+     * sampler thread and read after it is joined. */
     unsigned long prof_samples;
-    unsigned long prof_self;
-    unsigned long prof_total;
-    unsigned long prof_stamp;
+    /* A function's calls and its sampled time. */
+    AstProfCounts prof_fn;
     union {
         struct {
             AstExpr *target;

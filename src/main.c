@@ -1107,12 +1107,6 @@ int main(int argc, char **argv) {
                 fprintf(stderr, "--profile= needs a file to write, as --profile=run.txt\n");
                 return 2;
             }
-            if (n >= 5 && strcmp(profile_path + n - 5, ".json") == 0) {
-                fprintf(stderr, "--profile=%s: a JSON report is not built yet "
-                                "(it is increment 3 of docs/profiler_design.md); "
-                                "name a text file\n", profile_path);
-                return 2;
-            }
             profile_on = 1;
             memmove(argv + i, argv + i + 1, sizeof(char *) * (size_t)(argc - i));
             argc--;

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# `gbasic --profile` (docs/profiler_design.md): exact counts (increment 1) and
-# sampled time (increment 2).
+# `gbasic --profile` (docs/profiler_design.md): exact counts (increment 1),
+# sampled time (increment 2), builtins as rows and a JSON report (increment 3).
 #
 # TIERS
 #   counts     tests/profile/counts.bas keeps its OWN counter beside every place
@@ -22,6 +22,20 @@
 #   waiting    tests/profile/waits.bas sleeps a second after a moment's work:
 #              the waiting row holds at least 85% and the `sleep` line at most
 #              2%.
+#   builtins   tests/profile/builtins.bas: a builtin (sort, mod), a native
+#              module's verb (process.alive) and a handle's method (h.wait(),
+#              process.wait) each a row marked [builtin], its calls equal to the
+#              program's own counter; sort, doing the most work, has at least
+#              30% and more self than build, and the line calling it at least
+#              as much; a user
+#              library's function (countlib.triple) is not a builtin.
+#   json       --profile=FILE.json, read by Python's json module
+#              (tests/profile/check_json.py): sampled, the integers add up
+#              exactly (lines + waiting + outside = samples), totals at least
+#              selfs, every path absolute and existing, a builtin with no file;
+#              counts only, every call and run equal to the text report's; a
+#              program named with a quote, a control character and non-ASCII
+#              named exactly, and one whose name is not UTF-8 still parsing.
 #   signal     tests/profile/signals.py (python3 reads the wait status): SIGTERM
 #              asleep and SIGINT computing each write the report and die by
 #              their signal; a read blocked in C is reported after the 200 ms
@@ -34,8 +48,7 @@
 #              exit(3).
 #   file       --profile=FILE writes every row and standard error gets none;
 #              standard error alone shows 20 rows and says how many more.
-#   refusals   --profile=x.json (increment 3), --profile= with no file, the
-#              prompt, a GBASIC_PROFILE_HZ that is not a rate, and a --profile
+#   refusals   --profile= with no file, the prompt, a GBASIC_PROFILE_HZ that is not a rate, and a --profile
 #              after the file being the program's.
 #   off        the same binary with every hook compiled out (make
 #              gbasic-noprof) against this one with profiling off, counted in
@@ -156,6 +169,53 @@ sleeping="$(awk '/^lines/ { f = 1; next } f && /sleep\(1\)$/ { sub(/%/, "", $3);
 if in_range "$waiting" 85 100; then pass "a second asleep is the waiting row's: $waiting%"; else sed 's/^/  /' "$tmp/waits.txt"; fail "waiting: '$waiting'%"; fi
 if in_range "$sleeping" 0 2; then pass "and not the sleep line's: $sleeping%"; else fail "the sleep line: '$sleeping'%"; fi
 
+echo "--- TIER builtins ---"
+./gbasic --profile="$tmp/builtins.txt" tests/profile/builtins.bas >"$tmp/builtins.out" 2>"$tmp/builtins.err" </dev/null || true
+if [ -s "$tmp/builtins.err" ]; then sed 's/^/  /' "$tmp/builtins.err"; fail "builtins: the fixture wrote to standard error"; fi
+builtin_calls() { awk -v n="$2" '/^functions/ { f = 1; next } /^lines/ { f = 0 } f && $1 == n && $2 == "[builtin]" { print $3 }' "$1"; }
+builtin_self()  { awk -v n="$2" '/^functions/ { f = 1; next } /^lines/ { f = 0 } f && $1 == n && $2 == "[builtin]" { sub(/%/, "", $5); print $5 }' "$1"; }
+for b in mod sort process.alive process.wait; do
+    same "$b, a builtin row" "$(builtin_calls "$tmp/builtins.txt" "$b")" "$(oracle "$tmp/builtins.out" "$b")"
+done
+sort_self="$(builtin_self "$tmp/builtins.txt" sort)"
+build_self="$(self_of "$tmp/builtins.txt" build)"
+sort_line="$(awk '/^lines/ { f = 1; next } f && / ys = sort\(xs\)$/ { sub(/%/, "", $3); print $3 }' "$tmp/builtins.txt")"
+if in_range "$sort_self" 30 100 && awk -v a="$sort_self" -v b="$build_self" 'BEGIN { exit !(a > b) }'; then
+    pass "sort's own row holds its time: $sort_self% (build's self $build_self%)"
+else
+    sed 's/^/  /' "$tmp/builtins.txt"; fail "sort's self '$sort_self'%, build's '$build_self'%"
+fi
+if awk -v l="$sort_line" -v b="$sort_self" 'BEGIN { exit !(l != "" && l + 0 >= b - 1) }'; then
+    pass "and the line calling it holds it too: $sort_line%"
+else
+    fail "the sort line '$sort_line'% under sort's '$sort_self'%"
+fi
+if grep -q 'countlib\.triple \[builtin\]' "$tmp/counts.txt"; then
+    fail "a user library's function was shown as a builtin"
+else
+    pass "a user library's function is not a builtin"
+fi
+
+echo "--- TIER json ---"
+if ! command -v python3 >/dev/null 2>&1; then
+    printf 'SKIP json (needs python3 to read it; NOT measured)\n'
+else
+    ./gbasic --profile="$tmp/b.json" tests/profile/builtins.bas >/dev/null 2>"$tmp/b.json.err" </dev/null || true
+    if [ -s "$tmp/b.json.err" ]; then sed 's/^/  /' "$tmp/b.json.err"; fail "json: something on standard error"; fi
+    python3 tests/profile/check_json.py sampled "$tmp/b.json" >"$tmp/j1.txt" 2>&1 && pass "sampled ($(grep -c '^ok' "$tmp/j1.txt") checks)" || { sed 's/^/  /' "$tmp/j1.txt"; fail "json sampled"; }
+    GBASIC_PROFILE_HZ=0 ./gbasic --profile="$tmp/c.json" tests/profile/counts.bas >/dev/null 2>&1 </dev/null || true
+    GBASIC_PROFILE_HZ=0 ./gbasic --profile="$tmp/c.txt" tests/profile/counts.bas >/dev/null 2>&1 </dev/null || true
+    python3 tests/profile/check_json.py counts "$tmp/c.json" "$tmp/c.txt" >"$tmp/j2.txt" 2>&1 && pass "counts only, as the text report ($(grep -c '^ok' "$tmp/j2.txt") checks)" || { sed 's/^/  /' "$tmp/j2.txt"; fail "json counts"; }
+    odd="$tmp/a \"q\" $(printf '\001')ü.bas"
+    cp tests/profile/shape.bas "$odd"
+    ./gbasic --profile="$tmp/n.json" "$odd" >/dev/null 2>&1 </dev/null || true
+    python3 tests/profile/check_json.py names "$tmp/n.json" "$odd" >"$tmp/j3.txt" 2>&1 && pass "a quote, a control character and ü in the name" || { sed 's/^/  /' "$tmp/j3.txt"; fail "json names"; }
+    bad="$tmp/$(printf 'b\377')ü.bas"
+    cp tests/profile/shape.bas "$bad"
+    ./gbasic --profile="$tmp/x.json" "$bad" >/dev/null 2>&1 </dev/null || true
+    python3 tests/profile/check_json.py names "$tmp/x.json" "$bad" >"$tmp/j4.txt" 2>&1 && pass "a name that is not UTF-8 still parses" || { sed 's/^/  /' "$tmp/j4.txt"; fail "json, a name that is not UTF-8"; }
+fi
+
 echo "--- TIER signal ---"
 if ! command -v python3 >/dev/null 2>&1; then
     printf 'SKIP signal (needs python3 to read the wait status; NOT measured)\n'
@@ -220,9 +280,6 @@ refused() {   # label, expected first line, then gbasic's arguments
     got="$(./gbasic "$@" 2>&1 </dev/null)" || rc=$?
     if [ "$rc" = 2 ] && [ "$(printf '%s\n' "$got" | head -1)" = "$want" ]; then pass "$label"; else fail "$label: exit $rc, '$got'"; fi
 }
-refused "a JSON report is not built yet" \
-    '--profile=x.json: a JSON report is not built yet (it is increment 3 of docs/profiler_design.md); name a text file' \
-    --profile=x.json tests/profile/shape.bas
 refused "--profile= names no file" '--profile= needs a file to write, as --profile=run.txt' --profile= tests/profile/shape.bas
 refused "the prompt" '--profile runs a program file, not the prompt: gbasic --profile FILE' --profile --repl
 for hz in fast -1 100001 12x; do
