@@ -15,7 +15,10 @@
 #              30 and 10 times, take self time in a ratio of 2.5 to 3.5; every
 #              function's total is at least its self; main's total is at least
 #              97%; and the lines, waiting and outside rows sum to 100%. Ratios
-#              of one run, so the machine's speed cancels.
+#              of one run, so the machine's speed cancels. A sample is the
+#              innermost line's (hot's body, not main's line calling it), and
+#              tests/profile/recurse.bas's fib, on the stack many times at
+#              once, totals 90-100%: once a sample, not once a frame.
 #   waiting    tests/profile/waits.bas sleeps a second after a moment's work:
 #              the waiting row holds at least 85% and the `sleep` line at most
 #              2%.
@@ -120,6 +123,22 @@ else
 fi
 bad="$(awk '/^functions/ { f = 1; next } /^lines/ { f = 0 } f { t = $3; s = $4; sub(/%/, "", t); sub(/%/, "", s); if (t + 0 < s + 0) print $1 }' "$tmp/shares.txt")"
 if [ -z "$bad" ]; then pass "every function's total is at least its self"; else fail "total under self: $bad"; fi
+# A sample is the innermost statement's: the loop body inside hot, not the
+# line in main that called hot.
+body="$(awk '/^lines/ { f = 1; next } f && $1 == "tests/profile/shares.bas:6" { sub(/%/, "", $3); print $3 }' "$tmp/shares.txt")"
+caller="$(awk '/^lines/ { f = 1; next } f && $1 == "tests/profile/shares.bas:22" { sub(/%/, "", $3); print $3 }' "$tmp/shares.txt")"
+if in_range "$body" 30 100 && in_range "$caller" 0 2; then
+    pass "a sample is the innermost line's: hot's body $body%, its caller's line $caller%"
+else
+    fail "innermost line: hot's body '$body'%, its caller's line '$caller'%"
+fi
+./gbasic --profile="$tmp/recurse.txt" tests/profile/recurse.bas >/dev/null 2>&1 </dev/null || true
+fib_total="$(total_of "$tmp/recurse.txt" fib)"
+if in_range "$fib_total" 90 100; then
+    pass "recursion counts once a sample: fib's total $fib_total%"
+else
+    sed 's/^/  /' "$tmp/recurse.txt"; fail "recursion: fib's total '$fib_total'%"
+fi
 main_total="$(total_of "$tmp/shares.txt" main)"
 if in_range "$main_total" 97 100; then pass "main's total: $main_total%"; else fail "main's total: '$main_total'%"; fi
 # Every sample is one line's, the waiting row's or outside any line's.
