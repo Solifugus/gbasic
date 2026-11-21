@@ -48,7 +48,9 @@
 #              after copying it: 1.003-1.047 measured), hence the looser bound.
 #   valgrind   the counts fixture, profiled.
 #   helgrind   the shares fixture, profiled: no race between the sampler and
-#              the interpreter. tests/profile_helgrind.supp names the functions
+#              the interpreter, over at least 1000 samples (fair scheduling:
+#              without it the sampler starved, 3 samples, and a planted race
+#              went unseen). tests/profile_helgrind.supp names the functions
 #              whose __atomic accesses helgrind cannot model, by first frame
 #              only; an unprofiled run's own errors (libp11-kit at exit) are
 #              the allowance.
@@ -298,12 +300,17 @@ if vg_available; then
     errors() { awk '/ERROR SUMMARY:/ { print $4 }' "$1"; }
     timeout -k 5 600 bash -c '. tests/valgrind_tier.sh; vg_run_helgrind ./gbasic tests/profile/shares.bas' \
         >/dev/null 2>"$tmp/hg0.err" </dev/null || true
-    timeout -k 5 600 bash -c '. tests/valgrind_tier.sh; vg_run_helgrind --suppressions=tests/profile_helgrind.supp ./gbasic --profile tests/profile/shares.bas' \
+    timeout -k 5 600 bash -c '. tests/valgrind_tier.sh; vg_run_helgrind --suppressions=tests/profile_helgrind.supp ./gbasic --profile="$1" tests/profile/shares.bas' _ "$tmp/hg.txt" \
         >/dev/null 2>"$tmp/hg1.err" </dev/null || true
+    # The sampler must actually have run beside the interpreter, or there was
+    # nothing for helgrind to see (it took 3 samples before --fair-sched).
+    hg_samples="$(awk 'NR == 1 { for (i = 1; i < NF; i++) if ($(i + 1) ~ /^samples,?$/) print $i }' "$tmp/hg.txt" 2>/dev/null)"
     if [ -z "$(errors "$tmp/hg1.err")" ]; then
         tail -20 "$tmp/hg1.err"; fail "helgrind gave no summary"
+    elif ! in_range "$hg_samples" 1000 1000000000; then
+        fail "helgrind: the sampler took '$hg_samples' samples under it, so no race could be seen"
     elif [ "$(races "$tmp/hg1.err")" -eq 0 ] && [ "$(errors "$tmp/hg1.err")" -le "$(errors "$tmp/hg0.err")" ]; then
-        pass "helgrind: no race ($(errors "$tmp/hg1.err") errors, as unprofiled: $(errors "$tmp/hg0.err"))"
+        pass "helgrind: no race over $hg_samples samples ($(errors "$tmp/hg1.err") errors, as unprofiled: $(errors "$tmp/hg0.err"))"
     else
         grep -A12 -E 'Possible data race|lock order' "$tmp/hg1.err" | head -60; fail "helgrind"
     fi

@@ -72,5 +72,9 @@ vg_count_instructions() {
 
 # THREADS, NOT MEMORY: helgrind's race detector, for a suite whose program runs
 # a thread of its own (tests/run_profile.sh: the sampler). Suppressions are the
-# caller's, named in its arguments.
-vg_run_helgrind() { valgrind --tool=helgrind --error-exitcode=0 ${VG_EXTRA:-} "$@"; }
+# caller's, named in its arguments. --fair-sched=yes because valgrind runs one
+# thread at a time and by default a thread waking from a sleep can starve
+# beside one computing: the profiler's sampler took 3 samples in 11.78 s, so a
+# race with it could not be seen (5987 with fair scheduling, and a planted
+# one then was).
+vg_run_helgrind() { valgrind --tool=helgrind --fair-sched=yes --error-exitcode=0 ${VG_EXTRA:-} "$@"; }
