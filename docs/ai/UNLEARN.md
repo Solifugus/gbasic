@@ -33,7 +33,7 @@ the standing ones.
   `assign modifier not found: upper` — this file's most-hit trap — is gone.
   Both spellings are the same modifier; existing code is untouched.
 - **`p = $19.99` now explains itself** (2026-08-18): the lexer error says
-  `'$' is not a money literal; write p{USD}= 19.99` instead of
+  `'$' is not a money literal; write p = {USD}19.99` instead of
   `unexpected token`.
 
 ## Assignment
@@ -385,7 +385,7 @@ day — so assume you will hit them too.
 
 - **Money and dates are modifiers, not literals.** There is no `$19.99` syntax —
   the lexer error tells you the form (`'$' is not a money literal; write
-  p{USD}= 19.99`). A modifier gives the value its kind at the point of
+  p = {USD}19.99`). A modifier gives the value its kind at the point of
   assignment, and the result is a real `money`/`datetime`, not a number or a
   string.
 

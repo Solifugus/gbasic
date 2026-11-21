@@ -16,7 +16,7 @@
 #   7 \ 2      unexpected token
 #   2 ^ 3      unexpected token
 #   7 % 3      unexpected token
-#   a$ = "x"   '$' is not a money literal; write p {USD}= 19.99
+#   a$ = "x"   '$' is not a money literal; write p = {USD}19.99
 #   a% = 5     unexpected token
 #   "a" & "b"  unexpected token
 #

@@ -44,7 +44,8 @@ reader sees.
     `database`), "library not loaded" (write `load pg`), a library's `load`
     outside its block (named at its line, not blamed on the other file), and
     a caught error nobody checked (now says it was caught). The money advice
-    for `$` named a refused spelling and names `p {USD}= 19.99` now.
+    for `$` named a refused spelling and names `p = {USD}19.99` now, the
+    inline form, which works in any expression.
   - **A bare `stretch` or `separator`** in a window is accepted.
   - **Qt's refusals name the part's word** (`button`, `item`), never its Qt
     class.

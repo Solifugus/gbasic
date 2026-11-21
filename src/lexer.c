@@ -1006,9 +1006,11 @@ static Token lexer_scan(Lexer *lexer) {
     /* There is no money literal, and '$' is the guess everyone makes first.
      * A targeted message teaches the modifier form instead of just refusing:
      * sigils privilege one currency and change over time, so money is a
-     * modifier from a plain number -- p {USD}= 19.99 (see reference.md; the
-     * advice named the paren spelling, refused since PLAT-BRACE, until
-     * 2026-11-20, and nothing ran it).
+     * modifier on a plain number -- p = {USD}19.99, the inline form, which
+     * works in any expression where `p {USD}= 19.99` works only in an
+     * assignment (see reference.md; the advice named the paren spelling,
+     * refused since PLAT-BRACE, until 2026-11-20, and nothing ran it; then
+     * the assignment form, until later that day).
      *
      * SPLIT BY POSITION 2026-09-30: `a$ = "x"` is not a money guess at all, it
      * is QBasic's string sigil, and answering it with advice about `p {USD}=`
@@ -1018,7 +1020,7 @@ static Token lexer_scan(Lexer *lexer) {
             return sigil_error(lexer, start, line, column, '$');
         }
         return error_token_message(lexer, start, line, column,
-                                   "'$' is not a money literal; write p {USD}= 19.99 -- money is a modifier from a plain number");
+                                   "'$' is not a money literal; write p = {USD}19.99 -- money is a modifier on a plain number");
     /* The QBasic arithmetic a reader types before they have read anything.
      * Each names a call that EXISTS -- measured: pow(2,3) is 8, floor(7/2) is 3,
      * mod(-7,3) is 2 -- because web.configure shipped a refusal naming a remedy

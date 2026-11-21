@@ -1,1 +1,1 @@
-syntax error at tests/negative_money_dollar.bas:1:5: '$' is not a money literal; write p {USD}= 19.99 -- money is a modifier from a plain number
+syntax error at tests/negative_money_dollar.bas:1:5: '$' is not a money literal; write p = {USD}19.99 -- money is a modifier on a plain number
