@@ -57,6 +57,15 @@ vg_available() { command -v valgrind >/dev/null 2>&1; }
 vg_run() { valgrind $VG_FLAGS ${VG_EXTRA:-} "$@"; }
 
 # shellcheck disable=SC2086
-
-# shellcheck disable=SC2086
 vg_run_access_only() { valgrind $VG_ACCESS_FLAGS ${VG_EXTRA:-} "$@"; }
+
+# INSTRUCTIONS, NOT MEMORY: callgrind's count of the instructions a program ran,
+# printed as one number (empty if valgrind gave none). It is here, not typed
+# into a suite, so that every valgrind invocation stays in this file. A count
+# repeats exactly where wall time does not (tests/run_profile.sh's `off` tier:
+# one binary timed against its own copy ranged 0.81-1.01 under load). Its
+# stdin is /dev/null and the program's own output is thrown away.
+vg_count_instructions() {
+    valgrind --tool=callgrind --callgrind-out-file=/dev/null "$@" 2>&1 >/dev/null </dev/null |
+        awk '/Collected :/ { print $4 }'
+}

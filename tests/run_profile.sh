@@ -150,8 +150,9 @@ for i = 1 to 200000
 next
 print s
 BAS
-    ir() { valgrind --tool=callgrind --callgrind-out-file=/dev/null "$@" 2>&1 >/dev/null </dev/null | awk '/Collected :/ { print $4 }'; }
-    if ! command -v valgrind >/dev/null 2>&1; then
+    . "$(dirname "$0")/valgrind_tier.sh"
+    ir() { vg_count_instructions "$@"; }
+    if ! vg_available; then
         printf 'SKIP off (needs valgrind'"'"'s callgrind to count instructions; NOT measured)\n'
     elif [ -x "$tmp/gbasic-noprof" ]; then
         with="$(ir ./gbasic "$tmp/bench.bas")"
