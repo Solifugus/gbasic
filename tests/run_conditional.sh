@@ -83,8 +83,11 @@ esac
 echo "--- TIER gsql: a path's brackets compile to SQL ---"
 # Without a column the conditional is a value, evaluated in gBASIC and sent as
 # a parameter; with one, the filter compiler has no CASE for it and refuses
-# with its own sentence -- which needs path_has_column to look inside, or the
-# `.credit` would be evaluated in gBASIC and refused as a field outside brackets.
+# with its own sentence. ON THE VALUE SIDE on purpose: there path_has_column
+# decides whether the side is a parameter, and without looking inside the
+# conditional it evaluated `.id` in gBASIC and said `.id` is read only inside
+# brackets -- inside brackets (measured by perturbation; a conditional on the
+# column side reaches the compiler either way, so it could not tell).
 printf 'load gsql\nprint "loaded"\n' >"$tmp/probe.bas"
 if [ "$({ GBASIC_PATH=stdlib ./gbasic "$tmp/probe.bas" 2>&1 || true; })" != loaded ]; then
     printf 'SKIP gsql (this build has no G-SQL; the path case was NOT measured)\n'
@@ -98,7 +101,7 @@ u = shop.exec("insert into customer values (1, 5), (2, 50)")
 lim = 10
 print "rows " + string(len(shop.customer[.credit > (100 if false else lim)].query()))
 on error goto next
-n = shop.customer[(.credit if true else 0) > 10].query()
+n = shop.customer[.credit > (100 if .id = 1 else 5)].query()
 if error then
     print "refused: " + error.message
 end if
