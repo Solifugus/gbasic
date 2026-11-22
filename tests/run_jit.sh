@@ -26,11 +26,16 @@
 #             how many times its body RAN. The count is kept by the compiled
 #             body itself (its first instructions add one), so a body the
 #             interpreter ran instead would not be counted: fact(10) is 10.
+# Every run is bounded: a wrong jump in compiled code is as likely to loop as
+# to print something wrong (a gosub's return dispatched one statement early
+# re-ran the gosub, and the first perturbation of this suite hung it). The
+# valgrind tier runs only after the bounded compiled run has passed.
 #   valgrind  the compiled run under memcheck (the JIT is disposed at exit,
 #             or each body's unwinding tables read as definitely lost).
 set -u
 cd "$(dirname "$0")/.." || exit 1
 make -s >/dev/null || { echo "FAIL build"; exit 1; }
+. tests/portable.sh
 . tests/valgrind_tier.sh
 status=0
 pass() { printf '  ok   %s\n' "$1"; }
@@ -43,7 +48,7 @@ row=$(./gbasic --modules | awk -F'\t' '$1 == "compile" { print $2 }')
 case "$row" in
     built) pass "--modules: compile built" ;;
     "left out")
-        GBASIC_COMPILE=report ./gbasic tests/jit/flow.bas >/dev/null 2>"$tmp/err" </dev/null
+        GBASIC_COMPILE=report timeout 30 ./gbasic tests/jit/flow.bas >/dev/null 2>"$tmp/err" </dev/null
         if grep -qx 'compile: not available in this build (needs LLVM 18 or later); every function is interpreted' "$tmp/err" &&
            [ "$(grep -c '^compile:' "$tmp/err")" = 1 ]; then
             pass "--modules: compile left out, and GBASIC_COMPILE=report says so once"
@@ -57,21 +62,23 @@ case "$row" in
 esac
 
 echo "--- TIER flow ---"
-GBASIC_COMPILE=0 ./gbasic tests/jit/flow.bas >"$tmp/i.out" 2>"$tmp/i.err" </dev/null; irc=$?
-GBASIC_COMPILE=all ./gbasic tests/jit/flow.bas >"$tmp/c.out" 2>"$tmp/c.err" </dev/null; crc=$?
+GBASIC_COMPILE=0 timeout 30 ./gbasic tests/jit/flow.bas >"$tmp/i.out" 2>"$tmp/i.err" </dev/null; irc=$?
+GBASIC_COMPILE=all timeout 30 ./gbasic tests/jit/flow.bas >"$tmp/c.out" 2>"$tmp/c.err" </dev/null; crc=$?
 if cmp -s "$tmp/i.out" tests/jit/flow.out && [ "$irc" = 3 ] && [ ! -s "$tmp/i.err" ]; then
     pass "interpreted: flow.out, status 3, nothing on stderr"
 else
     fail "interpreted: status $irc; $(diff "$tmp/i.out" tests/jit/flow.out | head -5) $(head -3 "$tmp/i.err")"
 fi
+compiled_ok=0
 if cmp -s "$tmp/c.out" "$tmp/i.out" && cmp -s "$tmp/c.err" "$tmp/i.err" && [ "$crc" = "$irc" ]; then
+    compiled_ok=1
     pass "compiled: stdout, stderr and status $crc the interpreter's"
 else
     fail "compiled: status $crc against $irc; $(diff "$tmp/i.out" "$tmp/c.out" | head -5) $(diff "$tmp/i.err" "$tmp/c.err" | head -5)"
 fi
 
 echo "--- TIER report ---"
-GBASIC_COMPILE=report ./gbasic tests/jit/flow.bas >"$tmp/r.out" 2>"$tmp/r.err" </dev/null
+GBASIC_COMPILE=report timeout 30 ./gbasic tests/jit/flow.bas >"$tmp/r.out" 2>"$tmp/r.err" </dev/null
 if cmp -s "$tmp/r.err" tests/jit/flow.report && cmp -s "$tmp/r.out" tests/jit/flow.out; then
     pass "report: $(tail -1 "$tmp/r.err" | sed 's/^compile: //'), each body's runs counted by the body"
 else
@@ -87,7 +94,11 @@ else
 fi
 
 echo "--- TIER valgrind ---"
-if vg_available; then
+# vg_run is a function, which timeout cannot run: so only a compiled run that
+# has already finished, bounded, above
+if [ "$compiled_ok" = 0 ]; then
+    printf 'SKIP valgrind: the compiled run failed above, and might not end\n'
+elif vg_available; then
     GBASIC_COMPILE=all vg_run ./gbasic tests/jit/flow.bas >/dev/null 2>"$tmp/vg.err" </dev/null
     if [ $? = "$VG_EXIT" ]; then
         sed 's/^/  /' "$tmp/vg.err" | tail -30; fail "valgrind: flow.bas compiled"
