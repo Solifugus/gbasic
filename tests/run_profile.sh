@@ -328,7 +328,11 @@ next
 print s
 BAS
     . "$(dirname "$0")/valgrind_tier.sh"
-    ir() { vg_count_instructions "$@"; }
+    # interpreted even in the compiled lane: there LLVM's heap moves
+    # _int_malloc's path by ~10 instructions a call with the program's PATH
+    # (noprof 1016.66M from /tmp, 1018.68M from the scratchpad, the hooks
+    # ~7.0M both times), which is layout, not what this tier prices
+    ir() { GBASIC_COMPILE=0 vg_count_instructions "$@"; }
     if ! vg_available; then
         printf 'SKIP off (needs valgrind'"'"'s callgrind to count instructions; NOT measured)\n'
     elif [ -x "$tmp/gbasic-noprof" ]; then
