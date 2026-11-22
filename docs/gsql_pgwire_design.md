@@ -1,6 +1,7 @@
 # G-SQL speaking PostgreSQL's wire protocol
 
-**Status:** Proposal, 2026-11-19. Nothing is built. §2's capture is real: it was
+**Status:** Proposal, 2026-11-19. Nothing is built. Q1 ruled 2026-11-22
+(§3 B, a front-end process); Q2-Q6 open. §2's capture is real: it was
 run, and it can be run again (`research/pgwire/`). §8 holds the questions for
 Matthew. This note follows `enterprise_data_review.md` §3, which priced the
 protocol and recommended this note, starting from captured client traffic.
@@ -297,7 +298,8 @@ shape.
 ## 8. Questions for Matthew
 
 - **Q1. A front-end process (§3 B),** `gbasic --gsql-pg DIR [--listen ...]`,
-  rather than the owner listening itself? Recommended.
+  rather than the owner listening itself? Recommended. **Ruled 2026-11-22:
+  (B), the front-end process.**
 - **Q2. How to answer the catalog (increment 4).** There are two routes:
   - (a) **By shape.** The front end recognises each catalog query it has seen,
     with literals stripped, and answers it from G-SQL's catalog. An unknown one
