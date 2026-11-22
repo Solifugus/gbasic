@@ -10,9 +10,11 @@ compile: branches: 10 statements, 3 lowered, ran 1 time
 compile: find_first: 7 statements, 3 lowered, ran 2 times
 compile: nested_goto: 15 statements, 3 lowered, ran 1 time
 compile: nested_errors: 13 statements, 3 lowered, ran 2 times
-compile: named_break: 3 statements, 0 lowered, ran 1 time
+compile: named_break: 9 statements, 3 lowered, ran 1 time
 compile: stray_break: 6 statements, 2 lowered, ran 1 time
+compile: counted: 21 statements, 9 lowered, ran 1 time
+compile: for_refusals: 16 statements, 6 lowered, ran 1 time
 compile: refused: 8 statements, 2 lowered, ran 1 time
 compile: loop_gosub: 7 statements, 1 lowered, ran 1 time
 compile: leave_now: 6 statements, 2 lowered, ran 1 time
-compile: 17 functions compiled, 111 statements, 22 lowered
+compile: 19 functions compiled, 154 statements, 40 lowered

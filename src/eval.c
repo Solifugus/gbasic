@@ -15399,6 +15399,8 @@ struct GbList {
     AstStmtList *list;
 };
 
+static int loop_lock_refused(const char *name, int binds_numbers);
+
 size_t gbrt_list_bytes(void) {
     return sizeof(GbList);
 }
@@ -15628,9 +15630,16 @@ static int gbrt_truth(AstExpr *condition, EvalResult *out) {
     return truth ? 1 : 0;
 }
 
-/* `if`, LOWERED (eval_stmt_case_if is the same statement interpreted): 1 to
- * run the body, 0 the else body, or -1 with *out the statement's result
- * (a raise, a refused condition, or the whole `if` run under --profile). */
+/* WHAT A BRANCH LEAVES: what the branch left if it leaves the block, else
+ * nothing. The interpreted `if` ends here too (eval_stmt_case_if). */
+static void if_after_branch(EvalResult *out, EvalResult branch, const int *saved) {
+    *out = eval_result_exits_block(branch) ? branch : eval_no_result();
+    gbrt_restore(saved);
+}
+
+/* `if`, LOWERED: 1 to run the body, 0 the else body, or -1 with the
+ * statement's result at `at` (a raise, a refused condition, or the whole
+ * `if` run under --profile). */
 int gbrt_if(AstStmt *stmt, void *at, int *saved) {
     EvalResult *out = at;
     if (gbrt_enter(stmt, out, saved) == 2) {
@@ -15643,26 +15652,22 @@ int gbrt_if(AstStmt *stmt, void *at, int *saved) {
     return truth;
 }
 
-/* The branch has run: what the `if` leaves is what the branch left if it
- * leaves the block, else nothing. */
 void gbrt_if_done(void *at, GbList *branch, const int *saved) {
-    EvalResult *out = at;
-    *out = eval_result_exits_block(branch->result) ? branch->result : eval_no_result();
-    gbrt_restore(saved);
+    if_after_branch(at, branch->result, saved);
 }
 
-/* `while`, LOWERED (eval_stmt_case_while): entered once, 0 to test the
- * condition, -1 with *out set when --profile ran the whole loop. */
+/* `while`: entered once, 0 to test the condition, -1 with the result at
+ * `at` when --profile ran the whole loop. */
 int gbrt_while_enter(AstStmt *stmt, void *at, int *saved) {
-    EvalResult *out = at;
-    if (gbrt_enter(stmt, out, saved) == 2) {
+    if (gbrt_enter(stmt, at, saved) == 2) {
         return -1;
     }
     loop_depth++;
     return 0;
 }
 
-/* Each pass's test: 1 to run the body, else the loop has ended with *out. */
+/* Each pass's test: 1 to run the body, else the loop has ended with its
+ * result at `at`. The interpreted `while` makes this same call. */
 int gbrt_while_test(AstStmt *stmt, void *at, const int *saved) {
     EvalResult *out = at;
     int truth = gbrt_truth(stmt->as.while_stmt.condition, out);
@@ -15677,11 +15682,9 @@ int gbrt_while_test(AstStmt *stmt, void *at, const int *saved) {
     return truth;
 }
 
-/* After a pass of the body: 1 to test again, else the loop has ended with
- * *out. */
-int gbrt_while_next(void *at, GbList *body, const int *saved) {
-    EvalResult *out = at;
-    EvalResult result = body->result;
+/* After a pass of a `while` body, interpreted or compiled: 1 to test again,
+ * else the loop has ended with *out. */
+static int while_after_pass(EvalResult *out, EvalResult result, const int *saved) {
     /* A NAMED break/continue can never mean this loop: `while` and
      * `do` have no variable to name. Let it travel outward. */
     if ((result.did_break || result.did_continue) && result.loop_target) {
@@ -15700,6 +15703,197 @@ int gbrt_while_next(void *at, GbList *body, const int *saved) {
     loop_depth--;
     gbrt_restore(saved);
     return 0;
+}
+
+int gbrt_while_next(void *at, GbList *body, const int *saved) {
+    return while_after_pass(at, body->result, saved);
+}
+
+/* A COUNTED `for`'s state across its passes, kept by the interpreted loop
+ * on the C stack and by a compiled one on its own (gbrt_for_bytes()). */
+struct GbFor {
+    int exact;
+    int xlimit_exact;
+    int xscale;
+    long long xi, xstep, xlimit;
+    double i, limit, step;
+};
+
+size_t gbrt_for_bytes(void) {
+    return sizeof(GbFor);
+}
+
+/* `for i = a to b [step c]` begun: 0 to test the first pass, or -1 with
+ * the error result at *out. */
+static int for_begin(AstStmt *stmt, EvalResult *out, const int *saved, GbFor *f) {
+    if (loop_lock_refused(stmt->as.for_range.name, 1)) {
+        gbrt_restore(saved);
+        *out = eval_error_result();
+        return -1;
+    }
+    /* `for i = a to b [step c]`. Bounds and step are evaluated ONCE, at loop
+     * entry, which is the classic BASIC rule and the one that makes the loop
+     * predictable: changing `b` inside the body does not move the finish
+     * line. The counter is an ordinary variable, so it keeps its last value
+     * after the loop. Assigning to it inside the body is allowed but does
+     * NOT affect the next pass: the count is kept here (f->xi, f->i) and
+     * written to the variable at each test, so `i = i + 3` in the body of
+     * `for i = 1 to 10` runs ten passes. Classic BASIC would run three; this
+     * comment used to say so, and the code never did (DOGFOOD 2026-11-22,
+     * open item 11, for Matthew to rule on). */
+    int before_error = error_generation;
+    Value start_v = eval_expr(stmt->as.for_range.start);
+    Value limit_v = eval_expr(stmt->as.for_range.limit);
+    Value step_v = stmt->as.for_range.step
+        ? eval_expr(stmt->as.for_range.step)
+        : value_number_exact(1);
+    if (error_generation != before_error) {
+        value_free(start_v); value_free(limit_v); value_free(step_v);
+        gbrt_restore(saved);
+        *out = eval_error_result();
+        return -1;
+    }
+    if (start_v.kind != VALUE_NUMBER || limit_v.kind != VALUE_NUMBER ||
+        step_v.kind != VALUE_NUMBER) {
+        runtime_error_raise("for bounds and step must be numbers", 1003,
+                            "invalid operation");
+        value_free(start_v); value_free(limit_v); value_free(step_v);
+        gbrt_restore(saved);
+        *out = eval_error_result();
+        return -1;
+    }
+    f->i = start_v.as.num.value;
+    f->limit = limit_v.as.num.value;
+    f->step = step_v.as.num.value;
+    /* THE COUNTER IS EXACT WHEN ITS START AND STEP ARE, which is
+     * exact_number_design.md's propagation rule applied to the one place
+     * that made a number by itself: the counter was rebuilt from a double
+     * every pass, so `for i = 1 to 3` handed the body INEXACT integers --
+     * invisible below 2^53, refused by any typed integer column (G-SQL
+     * refuses an inexact value there whatever it holds), and one short in
+     * `i + 2^53`. Found writing the first program that put a loop counter
+     * into a database. The limit is only compared, so it may be either. */
+    /* AND A DECIMAL STEP IS EXACT TOO (docs/exact_decimal_design.md):
+     * the counter is a mantissa at the largest scale of the three, so
+     * `for x = 0 to 1 step 0.1` ends on 1, where adding the double 0.1 ten
+     * times ended on 0.9999999999999999. A scale that does not fit falls
+     * back to the double counter it always was. */
+    long long xstart = 0;
+    int sstart = 0, sstep = 0, slimit = 0;
+    f->xstep = 0;
+    f->xlimit = 0;
+    f->exact = value_exact_parts(start_v, &xstart, &sstart) &&
+               value_exact_parts(step_v, &f->xstep, &sstep);
+    f->xlimit_exact = value_exact_parts(limit_v, &f->xlimit, &slimit);
+    f->xscale = 0;
+    if (f->exact) {
+        f->xscale = sstart > sstep ? sstart : sstep;
+        if (f->xlimit_exact && slimit > f->xscale) {
+            f->xscale = slimit;
+        }
+        if (!decimal_rescale(xstart, f->xscale - sstart, &xstart) ||
+            !decimal_rescale(f->xstep, f->xscale - sstep, &f->xstep)) {
+            f->exact = 0;
+        }
+        if (f->xlimit_exact && !decimal_rescale(f->xlimit, f->xscale - slimit, &f->xlimit)) {
+            f->xlimit_exact = 0;
+        }
+    }
+    value_free(start_v); value_free(limit_v); value_free(step_v);
+    /* Refused rather than run: `step 0` cannot reach any limit, so it is a
+     * hang, and a hang is the least debuggable outcome available. */
+    if (f->step == 0) {
+        runtime_error_raise("for step cannot be zero", 1003, "invalid operation");
+        gbrt_restore(saved);
+        *out = eval_error_result();
+        return -1;
+    }
+    loop_depth++;
+    f->xi = xstart;
+    return 0;
+}
+
+/* The loop has ended normally (its test failed, a break, the counter past
+ * int64). */
+static int for_end(EvalResult *out, const int *saved) {
+    loop_depth--;
+    gbrt_restore(saved);
+    *out = eval_no_result();
+    return 0;
+}
+
+/* Each pass's test: 1 with the counter set for the body, else ended. */
+static int for_test(AstStmt *stmt, EvalResult *out, const int *saved, GbFor *f) {
+    if (f->exact) {
+        double xd = f->xscale ? gb_decimal_to_double(f->xi, f->xscale) : (double)f->xi;
+        int in = f->xlimit_exact ? (f->xstep > 0 ? f->xi <= f->xlimit : f->xi >= f->xlimit)
+                                 : (f->xstep > 0 ? xd <= f->limit : xd >= f->limit);
+        if (!in) {
+            return for_end(out, saved);
+        }
+        env_set_key(for_range_key(stmt), f->xscale ? value_number_decimal(f->xi, f->xscale)
+                                                   : value_number_exact(f->xi));
+    } else {
+        if (!(f->step > 0 ? f->i <= f->limit : f->i >= f->limit)) {
+            return for_end(out, saved);
+        }
+        env_set_key(for_range_key(stmt), value_number(f->i));
+    }
+    return 1;
+}
+
+/* After a pass of the body: 1 to test again (the counter stepped), else
+ * ended with *out. */
+static int for_after_pass(AstStmt *stmt, EvalResult *out, EvalResult result,
+                          const int *saved, GbFor *f) {
+    if ((result.did_break || result.did_continue) &&
+        !loop_claims_flow(result, stmt->as.for_range.name)) {
+        /* Named a loop further out: keep travelling. */
+        loop_depth--;
+        gbrt_restore(saved);
+        *out = result;
+        return 0;
+    }
+    if (result.did_break) {
+        value_free(result.value);
+        return for_end(out, saved);
+    }
+    if (result.did_continue) {
+        value_free(result.value);
+    } else if (eval_result_exits_block(result)) {
+        loop_depth--;
+        gbrt_restore(saved);
+        *out = result;
+        return 0;
+    }
+    if (f->exact) {
+        /* past int64 there is no next counter: the limit, which is
+           within int64, has been passed */
+        if (__builtin_add_overflow(f->xi, f->xstep, &f->xi)) {
+            return for_end(out, saved);
+        }
+    } else {
+        f->i += f->step;
+    }
+    return 1;
+}
+
+/* `for ... to`, LOWERED: enter (0 to test, -1 done: an error, or the whole
+ * loop run under --profile), then test (1 the body, else done) and, after
+ * each pass of the body, next (1 test again, else done). */
+int gbrt_for_enter(AstStmt *stmt, void *at, int *saved, GbFor *f) {
+    if (gbrt_enter(stmt, at, saved) == 2) {
+        return -1;
+    }
+    return for_begin(stmt, at, saved, f);
+}
+
+int gbrt_for_test(AstStmt *stmt, void *at, const int *saved, GbFor *f) {
+    return for_test(stmt, at, saved, f);
+}
+
+int gbrt_for_next(AstStmt *stmt, void *at, GbList *body, const int *saved, GbFor *f) {
+    return for_after_pass(stmt, at, body->result, saved, f);
 }
 
 static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *receiver) {
@@ -49883,139 +50077,16 @@ case_done:
 }
 
 static GB_NOINLINE EvalResult eval_stmt_case_for_range(AstStmt *stmt, int previous_line, int previous_column) {
-
-        if (loop_lock_refused(stmt->as.for_range.name, 1)) {
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
+    /* the compiled `for` makes these calls too (gbrt_for_*) */
+    int saved[2] = { previous_line, previous_column };
+    EvalResult out;
+    GbFor f;
+    if (for_begin(stmt, &out, saved, &f) == 0) {
+        while (for_test(stmt, &out, saved, &f) == 1 &&
+               for_after_pass(stmt, &out, eval_stmt_list(stmt->as.for_range.body), saved, &f)) {
         }
-        /* `for i = a to b [step c]`. Bounds and step are evaluated ONCE, at loop
-         * entry, which is the classic BASIC rule and the one that makes the loop
-         * predictable: changing `b` inside the body does not move the finish
-         * line. The counter is an ordinary variable, so it keeps its last value
-         * after the loop, and assigning to it inside the body is allowed and
-         * affects the next test -- again as BASIC has always behaved. */
-        int before_error = error_generation;
-        Value start_v = eval_expr(stmt->as.for_range.start);
-        Value limit_v = eval_expr(stmt->as.for_range.limit);
-        Value step_v = stmt->as.for_range.step
-            ? eval_expr(stmt->as.for_range.step)
-            : value_number_exact(1);
-        if (error_generation != before_error) {
-            value_free(start_v); value_free(limit_v); value_free(step_v);
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        if (start_v.kind != VALUE_NUMBER || limit_v.kind != VALUE_NUMBER ||
-            step_v.kind != VALUE_NUMBER) {
-            runtime_error_raise("for bounds and step must be numbers", 1003,
-                                "invalid operation");
-            value_free(start_v); value_free(limit_v); value_free(step_v);
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        double start = start_v.as.num.value;
-        double limit = limit_v.as.num.value;
-        double step = step_v.as.num.value;
-        /* THE COUNTER IS EXACT WHEN ITS START AND STEP ARE, which is
-         * exact_number_design.md's propagation rule applied to the one place
-         * that made a number by itself: the counter was rebuilt from a double
-         * every pass, so `for i = 1 to 3` handed the body INEXACT integers --
-         * invisible below 2^53, refused by any typed integer column (G-SQL
-         * refuses an inexact value there whatever it holds), and one short in
-         * `i + 2^53`. Found writing the first program that put a loop counter
-         * into a database. The limit is only compared, so it may be either. */
-        /* AND A DECIMAL STEP IS EXACT TOO (docs/exact_decimal_design.md):
-         * the counter is a mantissa at the largest scale of the three, so
-         * `for x = 0 to 1 step 0.1` ends on 1, where adding the double 0.1 ten
-         * times ended on 0.9999999999999999. A scale that does not fit falls
-         * back to the double counter it always was. */
-        long long xstart = 0, xstep = 0, xlimit = 0;
-        int sstart = 0, sstep = 0, slimit = 0;
-        int exact = value_exact_parts(start_v, &xstart, &sstart) &&
-                    value_exact_parts(step_v, &xstep, &sstep);
-        int xlimit_exact = value_exact_parts(limit_v, &xlimit, &slimit);
-        int xscale = 0;
-        if (exact) {
-            xscale = sstart > sstep ? sstart : sstep;
-            if (xlimit_exact && slimit > xscale) {
-                xscale = slimit;
-            }
-            if (!decimal_rescale(xstart, xscale - sstart, &xstart) ||
-                !decimal_rescale(xstep, xscale - sstep, &xstep)) {
-                exact = 0;
-            }
-            if (xlimit_exact && !decimal_rescale(xlimit, xscale - slimit, &xlimit)) {
-                xlimit_exact = 0;
-            }
-        }
-        value_free(start_v); value_free(limit_v); value_free(step_v);
-        /* Refused rather than run: `step 0` cannot reach any limit, so it is a
-         * hang, and a hang is the least debuggable outcome available. */
-        if (step == 0) {
-            runtime_error_raise("for step cannot be zero", 1003, "invalid operation");
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        loop_depth++;
-        long long xi = xstart;
-        for (double i = start; ; ) {
-            if (exact) {
-                double xd = xscale ? gb_decimal_to_double(xi, xscale) : (double)xi;
-                int in = xlimit_exact ? (xstep > 0 ? xi <= xlimit : xi >= xlimit)
-                                      : (xstep > 0 ? xd <= limit : xd >= limit);
-                if (!in) {
-                    break;
-                }
-                env_set_key(for_range_key(stmt), xscale ? value_number_decimal(xi, xscale)
-                                                        : value_number_exact(xi));
-            } else {
-                if (!(step > 0 ? i <= limit : i >= limit)) {
-                    break;
-                }
-                env_set_key(for_range_key(stmt), value_number(i));
-            }
-            EvalResult result = eval_stmt_list(stmt->as.for_range.body);
-            if ((result.did_break || result.did_continue) &&
-                !loop_claims_flow(result, stmt->as.for_range.name)) {
-                /* Named a loop further out: keep travelling. */
-                loop_depth--;
-                current_line = previous_line;
-                current_column = previous_column;
-                return result;
-            }
-            if (result.did_break) {
-                value_free(result.value);
-                break;
-            }
-            if (result.did_continue) {
-                value_free(result.value);
-            } else if (eval_result_exits_block(result)) {
-                loop_depth--;
-                current_line = previous_line;
-                current_column = previous_column;
-                return result;
-            }
-            if (exact) {
-                /* past int64 there is no next counter: the limit, which is
-                   within int64, has been passed */
-                if (__builtin_add_overflow(xi, xstep, &xi)) {
-                    break;
-                }
-            } else {
-                i += step;
-            }
-        }
-        loop_depth--;
-        goto case_done;
-    goto case_done;
-case_done:
-    current_line = previous_line;
-    current_column = previous_column;
-    return eval_no_result();
+    }
+    return out;
 }
 
 static GB_NOINLINE EvalResult eval_stmt_case_for_each(AstStmt *stmt, int previous_line, int previous_column) {
@@ -50592,47 +50663,17 @@ case_done:
 }
 
 static GB_NOINLINE EvalResult eval_stmt_case_if(AstStmt *stmt, int previous_line, int previous_column) {
-
-        int before_error = error_generation;
-        Value condition = eval_expr(stmt->as.if_stmt.condition);
-        if (error_generation != before_error) {
-            value_free(condition);
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        int refused = 0;
-        int truth = value_truthy(condition, &refused);
-        value_free(condition);
-        if (refused) {
-            /* NOT falling through to the else. A refused condition is not a
-             * false one, and running the else branch after reporting the
-             * refusal is how this looked like it worked. */
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        if (truth) {
-            EvalResult result = eval_stmt_list(stmt->as.if_stmt.body);
-            if (eval_result_exits_block(result)) {
-                current_line = previous_line;
-                current_column = previous_column;
-                return result;
-            }
-        } else {
-            EvalResult result = eval_stmt_list(stmt->as.if_stmt.else_body);
-            if (eval_result_exits_block(result)) {
-                current_line = previous_line;
-                current_column = previous_column;
-                return result;
-            }
-        }
-        goto case_done;
-    goto case_done;
-case_done:
-    current_line = previous_line;
-    current_column = previous_column;
-    return eval_no_result();
+    /* the compiled `if` makes these calls too (gbrt_if, gbrt_if_done) */
+    int saved[2] = { previous_line, previous_column };
+    EvalResult out;
+    int truth = gbrt_truth(stmt->as.if_stmt.condition, &out);
+    if (truth < 0) {
+        gbrt_restore(saved);
+        return out;
+    }
+    if_after_branch(&out, eval_stmt_list(truth ? stmt->as.if_stmt.body
+                                               : stmt->as.if_stmt.else_body), saved);
+    return out;
 }
 
 static GB_NOINLINE EvalResult eval_stmt_case_wait(AstStmt *stmt, int previous_line, int previous_column) {
@@ -50788,61 +50829,14 @@ case_done:
 }
 
 static GB_NOINLINE EvalResult eval_stmt_case_while(AstStmt *stmt, int previous_line, int previous_column) {
-
-        loop_depth++;
-        for (;;) {
-            int before_error = error_generation;
-            Value condition = eval_expr(stmt->as.while_stmt.condition);
-            if (error_generation != before_error) {
-                value_free(condition);
-                loop_depth--;
-                current_line = previous_line;
-                current_column = previous_column;
-                return eval_error_result();
-            }
-            int refused = 0;
-            int truth = value_truthy(condition, &refused);
-            value_free(condition);
-            if (refused) {
-                loop_depth--;
-                current_line = previous_line;
-                current_column = previous_column;
-                return eval_error_result();
-            }
-            if (!truth) {
-                break;
-            }
-            EvalResult result = eval_stmt_list(stmt->as.while_stmt.body);
-            /* A NAMED break/continue can never mean this loop: `while` and
-             * `do` have no variable to name. Let it travel outward. */
-            if ((result.did_break || result.did_continue) && result.loop_target) {
-                loop_depth--;
-                current_line = previous_line;
-                current_column = previous_column;
-                return result;
-            }
-            if (result.did_break) {
-                value_free(result.value);
-                break;
-            }
-            if (result.did_continue) {
-                value_free(result.value);
-                continue;
-            }
-            if (eval_result_exits_block(result)) {
-                loop_depth--;
-                current_line = previous_line;
-                current_column = previous_column;
-                return result;
-            }
-        }
-        loop_depth--;
-        goto case_done;
-    goto case_done;
-case_done:
-    current_line = previous_line;
-    current_column = previous_column;
-    return eval_no_result();
+    /* the compiled `while` makes these calls too (gbrt_while_*) */
+    int saved[2] = { previous_line, previous_column };
+    EvalResult out;
+    loop_depth++;
+    while (gbrt_while_test(stmt, &out, saved) == 1 &&
+           while_after_pass(&out, eval_stmt_list(stmt->as.while_stmt.body), saved)) {
+    }
+    return out;
 }
 
 static GB_NOINLINE EvalResult eval_stmt_case_consider(AstStmt *stmt, int previous_line, int previous_column) {

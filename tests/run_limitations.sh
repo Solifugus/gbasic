@@ -121,6 +121,7 @@ nul_string_literal|is refused in a string literal
 deep_value_teardown|segfaults when it is RELEASED
 decimal_key_collision|share an index key
 gosub_in_compound|returns past the whole statement
+for_counter_assigned|does not change the next pass
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -362,6 +363,19 @@ probe_gosub_in_compound() {
     else
         printf '     %s\n' "$gs_out"
         fixed "a gosub inside an if now returns into the if (or the probe no longer runs)"
+    fi
+}
+
+probe_for_counter_assigned() {
+    # Red when the body moving a `for` counter moves the loop (BASIC's rule):
+    # then `for i = 1 to 10` with `i = i + 3` prints 4 8 12.
+    printf 'for i = 1 to 10\n    i = i + 3\n    print i\nend for\n' > "$WORK/fc.bas"
+    fc_out=$(timeout 30 ./gbasic "$WORK/fc.bas" 2>&1 | tr '\n' ' ')
+    if [ "$fc_out" = "4 5 6 7 8 9 10 11 12 13 " ]; then
+        ok "assigning a for counter in the body still leaves the next pass alone (ten passes)"
+    else
+        printf '     %s\n' "$fc_out"
+        fixed "assigning a for counter in the body now moves the loop (or the probe no longer runs)"
     fi
 }
 

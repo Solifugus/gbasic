@@ -180,6 +180,70 @@ function stray_break()
     return n
 end function
 
+' `for ... to`: a decimal step ends on its limit exactly, a negative step,
+' the counter kept after the loop, a counter assigned by the body (which
+' does not move the loop: DOGFOOD 2026-11-22, open item 11, so 4 to 13),
+' continue, a named continue to the outer loop, and a return from inside
+function counted()
+    out = ""
+    for x = 0 to 1 step 0.1
+    end for
+    out = out + string(x) + " "
+    for i = 5 to 1 step -2
+        out = out + string(i)
+    end for
+    out = out + " " + string(i) + " "
+    for i = 1 to 10
+        i = i + 3
+        out = out + string(i)
+    end for
+    out = out + " "
+    for i = 1 to 3
+        for j = 1 to 3
+            if j = 2 then
+                continue i
+            end if
+            if i = 2 then
+                continue
+            end if
+            out = out + string(i) + string(j)
+        end for
+    end for
+    for i = 1 to 100
+        if i * i > 50 then
+            return out + " " + string(i)
+        end if
+    end for
+    return "not reached"
+end function
+
+' each refusal at a `for`'s start: step 0, a bound that is not a number,
+' and a counter locked to text
+function for_refusals()
+    out = ""
+    on error goto next
+    for i = 1 to 3 step 0
+        out = out + "ran"
+    end for
+    if error then
+        out = out + "[" + error.message + "]"
+    end if
+    for i = 1 to "three"
+        out = out + "ran"
+    end for
+    if error then
+        out = out + "[" + error.message + "]"
+    end if
+    k:text = "k"
+    for k = 1 to 2
+        out = out + "ran"
+    end for
+    if error then
+        out = out + "[locked]"
+    end if
+    return out
+end function
+
 ' an unknown condition is refused, not false: the else does not run
 function refused()
     on error goto next
@@ -247,6 +311,8 @@ program main()
     if error then
         print "stray: " + error.message
     end if
+    print counted()
+    print for_refusals()
     print refused()
     print loop_gosub()
     leave_now()

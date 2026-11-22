@@ -15,6 +15,8 @@ nothing
 caught: 11
 13
 stray: break: no enclosing loop named 'nosuch'
+1 531 1 45678910111213 1131 8
+[for step cannot be zero][for bounds and step must be numbers][locked]
 refused
 1
 leaving

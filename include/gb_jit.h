@@ -36,7 +36,11 @@ long gbrt_after(GbBodyLoop *loop, size_t index);
  * first), and the list's after-call then runs as for any statement. `saved`
  * is two ints of the compiled code's, the line and column put back at the
  * statement's end. Under --profile the first call runs the whole statement
- * interpreted, so the profiler times it as it does any other. */
+ * interpreted, so the profiler times it as it does any other.
+ *
+ * The interpreted `if`, `while` and `for` call the same functions after
+ * their first (eval_stmt has announced them already), so a lowered
+ * statement cannot decide anything differently. */
 typedef struct GbList GbList;
 size_t gbrt_list_bytes(void);
 int gbrt_list_begin(GbList *l, AstStmtList *list);
@@ -51,6 +55,15 @@ void gbrt_if_done(void *at, GbList *branch, const int *saved);
 int gbrt_while_enter(AstStmt *stmt, void *at, int *saved);
 int gbrt_while_test(AstStmt *stmt, void *at, const int *saved);
 int gbrt_while_next(void *at, GbList *body, const int *saved);
+/* `for ... to`, over a GbFor of gbrt_for_bytes() bytes the compiled code
+ * keeps: enter (0, or -1 done), then test (1 the body, the counter set, else
+ * done) and, after each pass, next (1 test again, the counter stepped, else
+ * done). The interpreted `for` calls the same three. */
+typedef struct GbFor GbFor;
+size_t gbrt_for_bytes(void);
+int gbrt_for_enter(AstStmt *stmt, void *at, int *saved, GbFor *f);
+int gbrt_for_test(AstStmt *stmt, void *at, const int *saved, GbFor *f);
+int gbrt_for_next(AstStmt *stmt, void *at, GbList *body, const int *saved, GbFor *f);
 
 /* GBASIC_COMPILE, read once: 0 nothing compiled, 1 `all`, 2 `report`. */
 int gb_jit_mode(void);
