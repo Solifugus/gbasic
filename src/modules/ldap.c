@@ -603,10 +603,10 @@ static Value ldap_eval_close(AstExpr *expr) {
 
 static Value ldap_eval_call(AstExpr *expr) {
     const char *fn = expr->as.call.name;
-    if (strcmp(fn, "connect") == 0) return ldap_eval_connect(expr);
-    if (strcmp(fn, "bind") == 0)    return ldap_eval_bind(expr);
-    if (strcmp(fn, "search") == 0)  return ldap_eval_search(expr);
-    if (strcmp(fn, "close") == 0)   return ldap_eval_close(expr);
+    if (CALL_IS(expr, connect)) return ldap_eval_connect(expr);
+    if (CALL_IS(expr, bind))    return ldap_eval_bind(expr);
+    if (CALL_IS(expr, search))  return ldap_eval_search(expr);
+    if (CALL_IS(expr, close))   return ldap_eval_close(expr);
     char msg[256];
     snprintf(msg, sizeof(msg), "unknown ldap function: %s", fn);
     ldap_raise(msg);

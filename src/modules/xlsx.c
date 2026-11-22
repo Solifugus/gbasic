@@ -6366,8 +6366,8 @@ static Value xlsx_eval_call(AstExpr *expr) {
      * what is readable -- the failure mode that makes a "try_" twin worse than
      * useless is one that accepts a file its raising sibling rejects, or reports
      * a different reason for the same file. `fname` is only for the message. */
-    if (strcmp(name, "open") == 0 || strcmp(name, "try_open") == 0) {
-        int trying = strcmp(name, "try_open") == 0;
+    if (CALL_IS(expr, open) || CALL_IS(expr, try_open)) {
+        int trying = CALL_IS(expr, try_open);
         const char *fname = trying ? "xlsx.try_open" : "xlsx.open";
         char m[512];
         if (expr->as.call.args.count != 1) {
@@ -6459,7 +6459,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
         return xlsx_try_result(1, book, "");
     }
 
-    if (strcmp(name, "sheets") == 0) {
+    if (CALL_IS(expr, sheets)) {
         if (expr->as.call.args.count != 1) {
             return xlsx_raise("xlsx.sheets expects one argument (a workbook)");
         }
@@ -6484,7 +6484,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
     /* Every retained part, in container order, with its byte length and whether
      * anything has interpreted it. Exists so that "the reader discards nothing"
      * is a testable claim rather than a promise (§13.A). */
-    if (strcmp(name, "parts") == 0) {
+    if (CALL_IS(expr, parts)) {
         if (expr->as.call.args.count != 1) {
             return xlsx_raise("xlsx.parts expects one argument (a workbook)");
         }
@@ -6522,7 +6522,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
     /* The raw decompressed bytes of one part, as a binary-safe string. The
      * escape hatch for anything the model does not cover, and the mechanism a
      * round-trip test uses to prove a part survived unchanged. */
-    if (strcmp(name, "part") == 0) {
+    if (CALL_IS(expr, part)) {
         if (expr->as.call.args.count != 2) {
             return xlsx_raise("xlsx.part expects two arguments (a workbook and a part name)");
         }
@@ -6547,8 +6547,8 @@ static Value xlsx_eval_call(AstExpr *expr) {
 
     /* Every populated cell of a sheet, in document order. Sparse by
      * construction: empty cells are absent, not unknown-valued. */
-    if (strcmp(name, "cells") == 0 || strcmp(name, "cell") == 0) {
-        int one = strcmp(name, "cell") == 0;
+    if (CALL_IS(expr, cells) || CALL_IS(expr, cell)) {
+        int one = CALL_IS(expr, cell);
         size_t want_args = one ? 3 : 2;
         if (expr->as.call.args.count != want_args) {
             return xlsx_raise(one
@@ -6661,7 +6661,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
      * from <dimension>: that attribute is a hint Excel writes and other
      * producers get wrong or omit, so trusting it would make the answer depend
      * on who wrote the file. */
-    if (strcmp(name, "dims") == 0) {
+    if (CALL_IS(expr, dims)) {
         if (expr->as.call.args.count != 2) {
             return xlsx_raise("xlsx.dims expects two arguments (workbook, sheet)");
         }
@@ -6752,7 +6752,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
      * exists (§13.D) this refuses to write over a formula rather than guess
      * which the caller meant. */
     /* xlsx.new([first sheet]) -> a workbook with one empty sheet (G14) */
-    if (strcmp(name, "new") == 0) {
+    if (CALL_IS(expr, new)) {
         if (expr->as.call.args.count > 1) {
             return xlsx_raise("xlsx.new expects at most one argument, the first sheet's name");
         }
@@ -6775,7 +6775,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
     }
 
     /* xlsx.add_sheet(wb, name) -> true; the sheet is last in tab order */
-    if (strcmp(name, "add_sheet") == 0) {
+    if (CALL_IS(expr, add_sheet)) {
         if (expr->as.call.args.count != 2) {
             return xlsx_raise("xlsx.add_sheet expects a workbook and a sheet name");
         }
@@ -6794,8 +6794,8 @@ static Value xlsx_eval_call(AstExpr *expr) {
         return ok ? value_bool(1) : xlsx_raise(m);
     }
 
-    if (strcmp(name, "set") == 0 || strcmp(name, "set_formula") == 0) {
-        int formula_mode = strcmp(name, "set_formula") == 0;
+    if (CALL_IS(expr, set) || CALL_IS(expr, set_formula)) {
+        int formula_mode = CALL_IS(expr, set_formula);
         size_t argc = expr->as.call.args.count;
         const char *verb = formula_mode ? "xlsx.set_formula" : "xlsx.set";
         if (argc != 4 && argc != 5) {
@@ -7074,7 +7074,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
      * Each rewrites that sheet's part alone, its element put where the
      * schema orders it, since Excel refuses a worksheet whose children are
      * out of order. Each replaces what was set before. */
-    if (strcmp(name, "column_widths") == 0 || strcmp(name, "freeze") == 0 || strcmp(name, "filter") == 0) {
+    if (CALL_IS(expr, column_widths) || CALL_IS(expr, freeze) || CALL_IS(expr, filter)) {
         int widths = name[0] == 'c', freeze = name[1] == 'r';
         char verb[40], m[600] = "";
         snprintf(verb, sizeof verb, "xlsx.%s", name);
@@ -7262,7 +7262,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
 
     /* Write the workbook out. Untouched parts are emitted from the bytes they
      * were read as — that is the round-trip guarantee (§13.A). */
-    if (strcmp(name, "save") == 0) {
+    if (CALL_IS(expr, save)) {
         if (expr->as.call.args.count != 2) {
             return xlsx_raise("xlsx.save expects two arguments (workbook, path)");
         }
@@ -7342,7 +7342,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
      *
      * xlsx.cells is unchanged and remains the right call for looking at a few
      * cells with their style and formula. */
-    if (strcmp(name, "grid") == 0) {
+    if (CALL_IS(expr, grid)) {
         if (expr->as.call.args.count != 2) {
             return xlsx_raise("xlsx.grid expects two arguments (workbook, sheet)");
         }
@@ -7473,7 +7473,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
         return value_record(fields, 11);
     }
 
-    if (strcmp(name, "apply") == 0) {
+    if (CALL_IS(expr, apply)) {
         if (expr->as.call.args.count != 3) {
             return xlsx_raise("xlsx.apply expects three arguments (formula, mapping, frame)");
         }
@@ -7526,7 +7526,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
         return value_array(items, rows);
     }
 
-    if (strcmp(name, "to_sql") == 0) {
+    if (CALL_IS(expr, to_sql)) {
         if (expr->as.call.args.count != 2) {
             return xlsx_raise("xlsx.to_sql expects two arguments (formula, mapping)");
         }
@@ -7581,7 +7581,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
         return value_record(fields, 3);
     }
 
-    if (strcmp(name, "evaluate") == 0) {
+    if (CALL_IS(expr, evaluate)) {
         if (expr->as.call.args.count != 3) {
             return xlsx_raise("xlsx.evaluate expects three arguments (workbook, sheet, ref)");
         }
@@ -7640,7 +7640,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
      * Volatile functions are reported separately rather than counted as
      * agreements or failures — their cached value dates from whenever the
      * workbook last calculated, so comparing against it is meaningless. */
-    if (strcmp(name, "check") == 0) {
+    if (CALL_IS(expr, check)) {
         if (expr->as.call.args.count != 2) {
             return xlsx_raise("xlsx.check expects two arguments (workbook, sheet)");
         }
@@ -7836,7 +7836,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
      * ACROSS sheets, which the one-sheet form cannot do -- see the XlsxBook
      * comment for why the one-sheet form became a trap once cross-sheet
      * references worked. */
-    if (strcmp(name, "recalc") == 0 && expr->as.call.args.count == 1) {
+    if (CALL_IS(expr, recalc) && expr->as.call.args.count == 1) {
         Value wbv = eval_expr(expr->as.call.args.items[0]);
         if (wbv.kind != VALUE_WORKBOOK) {
             value_free(wbv);
@@ -8017,7 +8017,7 @@ static Value xlsx_eval_call(AstExpr *expr) {
         return value_record(fields, 4);
     }
 
-    if (strcmp(name, "recalc") == 0) {
+    if (CALL_IS(expr, recalc)) {
         if (expr->as.call.args.count != 2) {
             return xlsx_raise("xlsx.recalc expects a workbook, and optionally a sheet");
         }

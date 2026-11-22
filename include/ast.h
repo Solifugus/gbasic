@@ -360,6 +360,11 @@ struct AstExpr {
             AstExpr *receiver; /* NULL for a plain/qualified call; set for a
                                 * method call whose receiver is an arbitrary
                                 * expression (a.b.method(), make().method()) */
+            int name_id;       /* src/call_names.h's number for `name`, found
+                                * the first time the call runs; 0 until then */
+            int registered;    /* in the builtin registry: 2 yes, 1 no, 0 not
+                                * yet asked */
+            int library_id;    /* the same number for `library`; 0 until then */
         } call;
         struct {
             char *op;

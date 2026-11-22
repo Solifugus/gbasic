@@ -70,6 +70,13 @@ vg_count_instructions() {
         awk '/Collected :/ { print $4 }'
 }
 
+# The same count, keeping callgrind's file for callgrind_annotate: OUT, then the
+# command (tests/run_resolve.sh reads who called strcmp from it).
+vg_callgrind_to() {
+    local out="$1"; shift
+    valgrind --tool=callgrind --callgrind-out-file="$out" "$@" >/dev/null 2>&1 </dev/null
+}
+
 # THREADS, NOT MEMORY: helgrind's race detector, for a suite whose program runs
 # a thread of its own (tests/run_profile.sh: the sampler). Suppressions are the
 # caller's, named in its arguments. --fair-sched=yes because valgrind runs one

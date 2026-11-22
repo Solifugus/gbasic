@@ -1869,7 +1869,7 @@ static Value xml_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     size_t argc = expr->as.call.args.count;
 
-    if (strcmp(name, "parse") == 0) {
+    if (CALL_IS(expr, parse)) {
         if (argc < 1 || argc > 2) {
             runtime_error_raise("xml.parse expects one or two arguments",
                                 XML_ERROR_CODE, "xml");
@@ -1940,11 +1940,11 @@ static Value xml_eval_call(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(name, "canonicalize") == 0) {
+    if (CALL_IS(expr, canonicalize)) {
         return xml_eval_canonicalize(expr);
     }
 
-    if (strcmp(name, "parse_html") == 0) {
+    if (CALL_IS(expr, parse_html)) {
         if (argc != 1) {
             runtime_error_raise("xml.parse_html expects one argument",
                                 XML_ERROR_CODE, "xml");
@@ -1965,7 +1965,7 @@ static Value xml_eval_call(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(name, "parse_file") == 0) {
+    if (CALL_IS(expr, parse_file)) {
         if (argc != 1 && argc != 2) {
             runtime_error_raise("xml.parse_file expects a path and optionally an options record",
                                 XML_ERROR_CODE, "xml");
@@ -2013,7 +2013,7 @@ static Value xml_eval_call(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(name, "find") == 0 || strcmp(name, "find_all") == 0) {
+    if (CALL_IS(expr, find) || CALL_IS(expr, find_all)) {
         if (argc != 2) {
             char m[64];
             snprintf(m, sizeof(m), "xml.%s expects two arguments", name);
@@ -2039,7 +2039,7 @@ static Value xml_eval_call(AstExpr *expr) {
             runtime_error_raise(m, XML_ERROR_CODE, "xml");
             return value_null();
         }
-        Value result = (strcmp(name, "find") == 0)
+        Value result = (CALL_IS(expr, find))
                            ? xml_do_find(&node, path.as.string)
                            : xml_do_find_all(&node, path.as.string);
         value_free(node);
@@ -2047,7 +2047,7 @@ static Value xml_eval_call(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(name, "text") == 0) {
+    if (CALL_IS(expr, text)) {
         if (argc != 1) {
             runtime_error_raise("xml.text expects one argument", XML_ERROR_CODE, "xml");
             return value_null();
@@ -2062,7 +2062,7 @@ static Value xml_eval_call(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(name, "attr") == 0) {
+    if (CALL_IS(expr, attr)) {
         if (argc < 2 || argc > 3) {
             runtime_error_raise("xml.attr expects two or three arguments",
                                 XML_ERROR_CODE, "xml");
@@ -2105,7 +2105,7 @@ static Value xml_eval_call(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(name, "encode") == 0) {
+    if (CALL_IS(expr, encode)) {
         if (argc < 1 || argc > 2) {
             runtime_error_raise("xml.encode expects one or two arguments",
                                 XML_ERROR_CODE, "xml");
@@ -2137,19 +2137,19 @@ static Value xml_eval_call(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(name, "reader") == 0) {
+    if (CALL_IS(expr, reader)) {
         return xml_eval_reader(expr);
     }
-    if (strcmp(name, "read") == 0) {
+    if (CALL_IS(expr, read)) {
         return xml_eval_read(expr);
     }
-    if (strcmp(name, "skip_to") == 0) {
+    if (CALL_IS(expr, skip_to)) {
         return xml_eval_skip_to(expr);
     }
-    if (strcmp(name, "subtree") == 0) {
+    if (CALL_IS(expr, subtree)) {
         return xml_eval_subtree(expr);
     }
-    if (strcmp(name, "close") == 0) {
+    if (CALL_IS(expr, close)) {
         return xml_eval_close(expr);
     }
 

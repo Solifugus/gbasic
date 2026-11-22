@@ -82,15 +82,17 @@ fi
 # reached by `ui.invoke` anyway, so the verb would have to carry its own
 # argument marshalling.
 printf 'TIER [N] no zoom verb: the font route is the only one\n'
-zoomverbs=$(grep -c 'strcmp(verb, "zoom' src/modules/ui.c || true)
+# A verb is tested as `CALL_IS(expr, zoom_in)` since names are resolved once
+# (docs/llvm_backend_design.md); the older `strcmp(verb, "zoom_in")` still counts.
+zoomverbs=$(grep -cE 'strcmp\(verb, "zoom|CALL_IS\(expr, zoom' src/modules/ui.c || true)
 if [ "${zoomverbs:-0}" = "0" ]; then
     pass "no ui.zoom -- the zoom is gBASIC arithmetic over the font property"
 else
     fail "a zoom verb appeared ($zoomverbs); §0.21 measured that the font property already does it, so this needs re-arguing rather than re-adding"
 fi
 # THE VACUITY CONTROL: a scanner that read nothing passes the same way.
-printf 'strcmp(verb, "zoom_in") == 0\n' > "$work/planted.c"
-if [ "$(grep -c 'strcmp(verb, "zoom' "$work/planted.c")" != "0" ]; then
+printf 'CALL_IS(expr, zoom_in)\n' > "$work/planted.c"
+if [ "$(grep -cE 'strcmp\(verb, "zoom|CALL_IS\(expr, zoom' "$work/planted.c")" != "0" ]; then
     pass "CONTROL: a planted zoom verb is counted"
 else
     fail "CONTROL: the scan cannot see a zoom verb, so it is measuring nothing"

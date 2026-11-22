@@ -594,16 +594,16 @@ static Value csv_write(AstExpr *expr) {
 
 static Value csv_eval_call(AstExpr *expr) {
     const char *verb = expr->as.call.name;
-    if (strcmp(verb, "records") == 0) {
+    if (CALL_IS(expr, records)) {
         return csv_make_source(expr, 0);
     }
-    if (strcmp(verb, "parse") == 0) {
+    if (CALL_IS(expr, parse)) {
         return csv_make_source(expr, 1);
     }
-    if (strcmp(verb, "line") == 0) {
+    if (CALL_IS(expr, line)) {
         return csv_line(expr);
     }
-    if (strcmp(verb, "write") == 0) {
+    if (CALL_IS(expr, write)) {
         return csv_write(expr);
     }
     char message[200];

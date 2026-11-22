@@ -113,6 +113,81 @@
 #endif
 
 
+/* A CALL'S NAME, RESOLVED ONCE PER SITE (docs/llvm_backend_design.md,
+ * increment 1). The builtins are one long chain of tests on the call's name,
+ * and each test was a strcmp: about 125 of them a builtin call, half of all
+ * the instructions a string-handling program ran. The name is now looked up
+ * the first time its site runs and its number kept on the node, so each test
+ * is an integer compare and the chain's order -- which decides which builtin
+ * a name reaches -- is unchanged. */
+enum {
+    CN_UNRESOLVED = 0,
+    CN_OTHER,             /* a name no test asks about */
+#define CALL_NAME(n) CN_##n,
+#define CALL_NAME_AS(n, text) CN_##n,
+#include "call_names.h"
+#undef CALL_NAME
+#undef CALL_NAME_AS
+    CN_COUNT
+};
+
+static const char *const call_name_text[] = {
+#define CALL_NAME(n) #n,
+#define CALL_NAME_AS(n, text) text,
+#include "call_names.h"
+#undef CALL_NAME
+#undef CALL_NAME_AS
+};
+
+/* The list is sorted, so a binary search; once per call site. */
+static int call_name_lookup(const char *name) {
+    size_t lo = 0, hi = sizeof call_name_text / sizeof call_name_text[0];
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        int c = strcmp(name, call_name_text[mid]);
+        if (c == 0) {
+            return CN_OTHER + 1 + (int)mid;
+        }
+        if (c < 0) {
+            hi = mid;
+        } else {
+            lo = mid + 1;
+        }
+    }
+    return CN_OTHER;
+}
+
+static inline int call_name_id(AstExpr *expr) {
+    if (expr->as.call.name_id == CN_UNRESOLVED) {
+        expr->as.call.name_id = call_name_lookup(expr->as.call.name);
+    }
+    return expr->as.call.name_id;
+}
+
+#define CALL_IS(expr, n) (call_name_id(expr) == CN_##n)
+
+/* The qualifier of `pg.query(...)`, the same way. A node copied with another
+ * library (handle_method_call) resets its number. */
+static inline int call_library_id(AstExpr *expr) {
+    if (expr->as.call.library_id == CN_UNRESOLVED) {
+        expr->as.call.library_id = expr->as.call.library
+            ? call_name_lookup(expr->as.call.library) : CN_OTHER;
+    }
+    return expr->as.call.library_id;
+}
+
+#define CALL_LIB_IS(expr, n) (call_library_id(expr) == CN_##n)
+
+/* Is the call's name in the builtin registry (src/builtins.c)? The registry is
+ * fixed for a build, so the answer is kept on the site like its number: it
+ * was 207 comparisons for each `max(xs)`. */
+static int call_is_registered(AstExpr *expr) {
+    if (expr->as.call.registered == 0) {
+        expr->as.call.registered = gbasic_builtin_function(expr->as.call.name) ? 2 : 1;
+    }
+    return expr->as.call.registered == 2;
+}
+
 #define SECURE_TOKEN_MAX_LENGTH 4096
 
 /* Seedable general-purpose PRNG (statistics_design.md §8 shared infrastructure):
@@ -8547,7 +8622,7 @@ static Value zone_eval_call(AstExpr *expr) {
      * an ISO 8601 offset and a zone-stamped log line are all unwritable. The
      * two-argument form answers "what if this were in that zone"; naming the
      * local zone is exactly the thing the caller cannot do. */
-    if (strcmp(name, "zone_offset") == 0 && expr->as.call.args.count == 1) {
+    if (CALL_IS(expr, zone_offset) && expr->as.call.args.count == 1) {
         Value dv = eval_expr(expr->as.call.args.items[0]);
         if (error_action_pending()) {
             value_free(dv);
@@ -8624,7 +8699,7 @@ static Value zone_eval_call(AstExpr *expr) {
         return value_null();
     }
 
-    if (strcmp(name, "to_zone") == 0) {
+    if (CALL_IS(expr, to_zone)) {
         long long epoch = zone_timegm(dt);
         time_t raw = (time_t)epoch;
         struct tm l;
@@ -8643,10 +8718,10 @@ static Value zone_eval_call(AstExpr *expr) {
     long long chosen, earlier, later;
     int kind = zone_resolve_instants(dt, zone, &chosen, &earlier, &later);
 
-    if (strcmp(name, "from_zone") == 0) {
+    if (CALL_IS(expr, from_zone)) {
         return value_datetime(zone_civil_from_epoch_utc(chosen, dt.precision));
     }
-    if (strcmp(name, "zone_offset") == 0) {
+    if (CALL_IS(expr, zone_offset)) {
         long long naive = zone_timegm(dt);
         return value_duration(duration_from_totals(0, naive - chosen));
     }
@@ -12053,7 +12128,7 @@ static size_t path_length_without_trailing_separators(const char *path) {
 
 static Value eval_path_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
-    size_t expected_count = strcmp(name, "join_path") == 0 ? 2 : 1;
+    size_t expected_count = CALL_IS(expr, join_path) ? 2 : 1;
     if (expr->as.call.args.count != expected_count) {
         char message[256];
         snprintf(message,
@@ -12120,7 +12195,7 @@ static Value eval_path_call(AstExpr *expr) {
     }
 
     Value result = value_null();
-    if (strcmp(name, "real_path") == 0 || strcmp(name, "file_type") == 0) {
+    if (CALL_IS(expr, real_path) || CALL_IS(expr, file_type)) {
         /* PLAT-WEB-1 Gap B. Both answer questions gBASIC could not ask at all,
          * and both exist because a path check that is one step behind the
          * filesystem is a security hole rather than a bug:
@@ -12140,7 +12215,7 @@ static Value eval_path_call(AstExpr *expr) {
          * Both report a missing path as `unknown` rather than raising: the
          * caller is by definition holding a path it does not trust, and being
          * told "no" is the normal case, not an exceptional one. */
-        if (strcmp(name, "real_path") == 0) {
+        if (CALL_IS(expr, real_path)) {
             char *resolved = gb_realpath(first_path);
             if (!resolved) {
                 result = value_unknown();
@@ -12164,7 +12239,7 @@ static Value eval_path_call(AstExpr *expr) {
         value_free(second);
         return result;
     }
-    if (strcmp(name, "join_path") == 0) {
+    if (CALL_IS(expr, join_path)) {
         char *joined = join_path_utility(first_path, second_path);
         result = value_string(joined);
         free(joined);
@@ -12211,12 +12286,12 @@ static Value eval_path_call(AstExpr *expr) {
             dot = NULL;
         }
 
-        if (strcmp(name, "file_name") == 0) {
+        if (CALL_IS(expr, file_name)) {
             result = value_string_n(base, base_length);
-        } else if (strcmp(name, "stem") == 0) {
+        } else if (CALL_IS(expr, stem)) {
             size_t stem_length = dot ? (size_t)(dot - base) : base_length;
             result = value_string_n(base, stem_length);
-        } else if (strcmp(name, "directory_name") == 0) {
+        } else if (CALL_IS(expr, directory_name)) {
             if (!slash) {
                 result = value_string(".");
             } else if (slash == first_path) {
@@ -12685,7 +12760,7 @@ static Value eval_file_call(AstExpr *expr) {
     }
 
     /* lock(f, { wait: false }): answers whether it was taken, never waits */
-    if (strcmp(name, "lock") == 0 && expr->as.call.args.count == 2) {
+    if (CALL_IS(expr, lock) && expr->as.call.args.count == 2) {
         Value file_value = eval_expr(expr->as.call.args.items[0]);
         if (error_action_pending()) {
             value_free(file_value);
@@ -12721,14 +12796,14 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(got == 1);
     }
 
-    if (strcmp(name, "exists") == 0 ||
-        strcmp(name, "read") == 0 ||
-        strcmp(name, "read_lines") == 0 ||
-        strcmp(name, "bytes") == 0 ||
-        strcmp(name, "lines") == 0 ||
-        strcmp(name, "chars") == 0 ||
-        strcmp(name, "lock") == 0 ||
-        strcmp(name, "unlock") == 0) {
+    if (CALL_IS(expr, exists) ||
+        CALL_IS(expr, read) ||
+        CALL_IS(expr, read_lines) ||
+        CALL_IS(expr, bytes) ||
+        CALL_IS(expr, lines) ||
+        CALL_IS(expr, chars) ||
+        CALL_IS(expr, lock) ||
+        CALL_IS(expr, unlock)) {
         if (expr->as.call.args.count != 1) {
             char message[256];
             snprintf(message, sizeof(message), "%s expects one file argument", name);
@@ -12747,7 +12822,7 @@ static Value eval_file_call(AstExpr *expr) {
          * question a program has every reason to ask about a folder, and
          * until now the only way to ask it was to lie about the type -- which
          * is what the `ensure_dir` ceremony in stdlib/persist.bas did. */
-        int dir_ok = strcmp(name, "exists") == 0;
+        int dir_ok = CALL_IS(expr, exists);
         if (!file_arg_from_path(name, &file_value)) {
             return value_null();
         }
@@ -12762,7 +12837,7 @@ static Value eval_file_call(AstExpr *expr) {
             return value_null();
         }
 
-        if (strcmp(name, "exists") == 0) {
+        if (CALL_IS(expr, exists)) {
             /* By `stat`, not by opening. The old implementation was
              * `fopen(path, "rb") != NULL`, which answers a DIFFERENT question
              * -- can I open this -- and agreed with the right one only by
@@ -12774,18 +12849,18 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(file_value);
             return value_bool(exists);
         }
-        if (strcmp(name, "lock") == 0) {
+        if (CALL_IS(expr, lock)) {
             int ok = lock_path(file_value.as.file_path);
             value_free(file_value);
             return value_bool(ok);
         }
-        if (strcmp(name, "unlock") == 0) {
+        if (CALL_IS(expr, unlock)) {
             int ok = unlock_path(file_value.as.file_path);
             value_free(file_value);
             return value_bool(ok);
         }
 
-        if (strcmp(name, "bytes") == 0) {
+        if (CALL_IS(expr, bytes)) {
             /* BY `stat`, NOT BY READING THE FILE. `bytes` shared the
              * read-the-whole-thing path with `read`, `read_lines`, `lines` and
              * `chars` and then used only the SIZE -- so asking how large a file
@@ -12832,7 +12907,7 @@ static Value eval_file_call(AstExpr *expr) {
             return value_null();
         }
 
-        if (strcmp(name, "read") == 0) {
+        if (CALL_IS(expr, read)) {
             /* By LENGTH, not as a C string. gBASIC strings are binary-safe and
              * `write` already was, so `read` truncating at the first NUL made
              * the pair asymmetric: anything holding binary -- a `serialize`
@@ -12844,20 +12919,20 @@ static Value eval_file_call(AstExpr *expr) {
             value_free(file_value);
             return result;
         }
-        if (strcmp(name, "read_lines") == 0) {
+        if (CALL_IS(expr, read_lines)) {
             Value result = lines_from_text(text, (size_t)size);
             free(text);
             value_free(file_value);
             return result;
         }
-        if (strcmp(name, "bytes") == 0) {
+        if (CALL_IS(expr, bytes)) {
             /* Reached only for a non-regular file; the regular case answered
              * from `stat` above without reading anything. */
             free(text);
             value_free(file_value);
             return value_number_exact((long long)size);
         }
-        if (strcmp(name, "chars") == 0) {
+        if (CALL_IS(expr, chars)) {
             /* CODEPOINTS, which is what the name says and what it did not do.
              * The line this replaces was a `TODO: chars currently counts
              * bytes, not Unicode code points.` sharing a branch with `bytes`,
@@ -12891,7 +12966,7 @@ static Value eval_file_call(AstExpr *expr) {
         return value_number_exact((long long)lines);
     }
 
-    if (strcmp(name, "delete") == 0) {
+    if (CALL_IS(expr, delete)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("delete expects one file argument", 1004, "file operation");
             return value_null();
@@ -12921,7 +12996,7 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(name, "file_size") == 0 || strcmp(name, "file_mtime") == 0) {
+    if (CALL_IS(expr, file_size) || CALL_IS(expr, file_mtime)) {
         if (expr->as.call.args.count != 1) {
             char message[256];
             snprintf(message, sizeof(message), "%s expects one file argument", name);
@@ -12960,7 +13035,7 @@ static Value eval_file_call(AstExpr *expr) {
             return value_null();
         }
 
-        if (strcmp(name, "file_size") == 0) {
+        if (CALL_IS(expr, file_size)) {
             /* Size is the regular-file byte length. A directory has no meaningful
              * content size, so reject it rather than return the platform's dirent
              * bookkeeping bytes. A SIZE IS A COUNT, so it is exact, as `len`
@@ -13017,7 +13092,7 @@ static Value eval_file_call(AstExpr *expr) {
     /* fsync(f): what was written to f, or f's entries if it is a directory,
      * on stable storage before this returns (Transward §4). A failure raises,
      * since a sync that silently did not happen is the case it exists for. */
-    if (strcmp(name, "fsync") == 0) {
+    if (CALL_IS(expr, fsync)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("fsync expects one file or directory", 1004, "file operation");
             return value_null();
@@ -13044,7 +13119,7 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(name, "atomic_replace") == 0) {
+    if (CALL_IS(expr, atomic_replace)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("atomic_replace expects source and destination arguments",
                                 1004,
@@ -13108,7 +13183,7 @@ static Value eval_file_call(AstExpr *expr) {
         return value_null();
     }
 
-    if (strcmp(name, "copy") == 0 || strcmp(name, "move") == 0) {
+    if (CALL_IS(expr, copy) || CALL_IS(expr, move)) {
         if (expr->as.call.args.count != 2) {
             char message[256];
             snprintf(message, sizeof(message), "%s expects source and target arguments", name);
@@ -13144,7 +13219,7 @@ static Value eval_file_call(AstExpr *expr) {
             return value_null();
         }
 
-        int ok = strcmp(name, "copy") == 0
+        int ok = CALL_IS(expr, copy)
                      ? copy_file_path(source.as.file_path, target_path)
                      : move_file_path(source.as.file_path, target_path);
         if (!ok) {
@@ -13165,7 +13240,7 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(name, "list_files") == 0) {
+    if (CALL_IS(expr, list_files)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("list_files expects one path argument", 1004, "file operation");
             return value_null();
@@ -13243,7 +13318,7 @@ static Value eval_file_call(AstExpr *expr) {
         return value_array(items, count);
     }
 
-    if (strcmp(name, "remove_tree") == 0) {
+    if (CALL_IS(expr, remove_tree)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("remove_tree expects one path argument", 1004,
                                 "file operation");
@@ -13309,7 +13384,7 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(name, "disk_space") == 0) {
+    if (CALL_IS(expr, disk_space)) {
         /* The filesystem holding a path, in exact bytes (Transward §11.1: a
          * capacity monitor projecting time-to-full ran `df` once a path a
          * sweep, and there is no df on Windows). `available` is beside
@@ -13353,7 +13428,7 @@ static Value eval_file_call(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(name, "permissions") == 0) {
+    if (CALL_IS(expr, permissions)) {
         /* TWO DIFFERENT QUESTIONS, BOTH ANSWERED, because conflating them is
          * the classic bug. `mode` is what the FILE says; `readable`/`writable`/
          * `executable` are what THIS PROCESS can do, from access(2) -- root
@@ -13418,7 +13493,7 @@ static Value eval_file_call(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(name, "chmod") == 0) {
+    if (CALL_IS(expr, chmod)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("chmod expects a path and a mode, as in"
                                 " chmod(f, \"0600\")", 1004, "file operation");
@@ -13520,7 +13595,7 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(name, "set_mtime") == 0) {
+    if (CALL_IS(expr, set_mtime)) {
         /* The WRITE half of `file_mtime`, which has been readable since the
          * port. `copy` does not preserve a timestamp, so an archive step that
          * keeps the source's own time -- ordinary in ETL -- had no spelling. */
@@ -13603,7 +13678,7 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(name, "is_symlink") == 0) {
+    if (CALL_IS(expr, is_symlink)) {
         /* `file_type` FOLLOWS a link -- measured, a link to a file answers
          * "file" -- so it cannot answer this, and `remove_tree` has just made
          * the distinction user-visible ("is a symlink, not a tree"). The
@@ -13635,7 +13710,7 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(answer);
     }
 
-    if (strcmp(name, "symlink") == 0) {
+    if (CALL_IS(expr, symlink)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("symlink expects a target and the path to create,"
                                 " as in symlink(target, link)", 1004,
@@ -13686,7 +13761,7 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(name, "temp_file") == 0 || strcmp(name, "temp_dir") == 0) {
+    if (CALL_IS(expr, temp_file) || CALL_IS(expr, temp_dir)) {
         /* A TEMPORARY FILE THAT ALREADY EXISTS. The platform layer owns the
          * creation (`gb_make_temp_file` / `gb_make_temp_dir`) and the comment
          * there carries the argument: a function that hands back an unused
@@ -13713,7 +13788,7 @@ static Value eval_file_call(AstExpr *expr) {
          * becomes the destination. An interpreter that swept temp files at exit
          * would break exactly that. A temp directory is cleaned with
          * `remove_tree`, which is why the two shipped together. */
-        int want_dir = strcmp(name, "temp_dir") == 0;
+        int want_dir = CALL_IS(expr, temp_dir);
         if (expr->as.call.args.count > 1) {
             char message[256];
             snprintf(message, sizeof(message),
@@ -13875,8 +13950,8 @@ static Value eval_file_call(AstExpr *expr) {
         return want_dir ? value_dir(path) : value_file(path);
     }
 
-    if (strcmp(name, "make_dir") == 0 || strcmp(name, "remove_dir") == 0) {
-        int is_make = strcmp(name, "make_dir") == 0;
+    if (CALL_IS(expr, make_dir) || CALL_IS(expr, remove_dir)) {
+        int is_make = CALL_IS(expr, make_dir);
         /* `make_dir` takes an options record; `remove_dir` does not, because
          * the option it would be offered -- remove what is inside -- is a
          * recursive delete and belongs to a decision nobody should make by
@@ -13986,7 +14061,7 @@ static Value eval_file_call(AstExpr *expr) {
             snprintf(message,
                      sizeof(message),
                      "could not %s directory: %s",
-                     strcmp(name, "make_dir") == 0 ? "create" : "remove",
+                     CALL_IS(expr, make_dir) ? "create" : "remove",
                      path);
             runtime_error_raise(message, 1004, "file operation");
             value_free(path_value);
@@ -13996,7 +14071,7 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(name, "overwrite") == 0) {
+    if (CALL_IS(expr, overwrite)) {
         if (expr->as.call.args.count != 3) {
             runtime_error_raise("overwrite expects file, text, and position arguments",
                                 1004,
@@ -14122,7 +14197,7 @@ static Value eval_file_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(name, "read_at") == 0) {
+    if (CALL_IS(expr, read_at)) {
         /* THE OTHER HALF OF A DOOR THAT ONLY OPENED ONE WAY. `overwrite(f,
          * text, position)` has written at a byte offset since it shipped and
          * NOTHING COULD READ AT ONE -- so a program could modify the middle of
@@ -14315,7 +14390,7 @@ static Value eval_file_call(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(name, "write") == 0 || strcmp(name, "append") == 0) {
+    if (CALL_IS(expr, write) || CALL_IS(expr, append)) {
         if (expr->as.call.args.count != 2) {
             char message[256];
             snprintf(message, sizeof(message), "%s expects file and text arguments", name);
@@ -21516,13 +21591,13 @@ static Value webclient_eval_request(AstExpr *expr) {
 }
 
 static Value webclient_eval_call(AstExpr *expr) {
-    if (strcmp(expr->as.call.name, "get") == 0) {
+    if (CALL_IS(expr, get)) {
         return webclient_eval_get(expr);
     }
-    if (strcmp(expr->as.call.name, "post") == 0) {
+    if (CALL_IS(expr, post)) {
         return webclient_eval_post(expr);
     }
-    if (strcmp(expr->as.call.name, "request") == 0) {
+    if (CALL_IS(expr, request)) {
         return webclient_eval_request(expr);
     }
     char message[256];
@@ -22242,22 +22317,22 @@ static Value http_do_release(AstExpr *expr) {
 }
 
 static Value http_eval_call(AstExpr *expr) {
-    if (strcmp(expr->as.call.name, "start") == 0) {
+    if (CALL_IS(expr, start)) {
         return http_do_start(expr);
     }
-    if (strcmp(expr->as.call.name, "poll") == 0) {
+    if (CALL_IS(expr, poll)) {
         return http_do_poll(expr);
     }
-    if (strcmp(expr->as.call.name, "read") == 0) {
+    if (CALL_IS(expr, read)) {
         return http_do_read(expr);
     }
-    if (strcmp(expr->as.call.name, "wait") == 0) {
+    if (CALL_IS(expr, wait)) {
         return http_do_wait(expr);
     }
-    if (strcmp(expr->as.call.name, "stop") == 0) {
+    if (CALL_IS(expr, stop)) {
         return http_do_stop(expr);
     }
-    if (strcmp(expr->as.call.name, "release") == 0) {
+    if (CALL_IS(expr, release)) {
         return http_do_release(expr);
     }
     char message[200];
@@ -22986,13 +23061,13 @@ static Value timer_do_cancel(AstExpr *expr) {
 }
 
 static Value timer_eval_call(AstExpr *expr) {
-    if (strcmp(expr->as.call.name, "every") == 0) {
+    if (CALL_IS(expr, every)) {
         return timer_make(expr, "timer.every", 1);
     }
-    if (strcmp(expr->as.call.name, "after") == 0) {
+    if (CALL_IS(expr, after)) {
         return timer_make(expr, "timer.after", 0);
     }
-    if (strcmp(expr->as.call.name, "cancel") == 0) {
+    if (CALL_IS(expr, cancel)) {
         return timer_do_cancel(expr);
     }
     char message[200];
@@ -26231,31 +26306,31 @@ static Value webserver_eval_stopping(AstExpr *expr) {
 }
 
 static Value webserver_eval_call(AstExpr *expr) {
-    if (strcmp(expr->as.call.name, "listen") == 0) {
+    if (CALL_IS(expr, listen)) {
         return webserver_eval_listen(expr);
     }
-    if (strcmp(expr->as.call.name, "on_request") == 0) {
+    if (CALL_IS(expr, on_request)) {
         return webserver_eval_on_hook(expr, 0);
     }
-    if (strcmp(expr->as.call.name, "on_drain") == 0) {
+    if (CALL_IS(expr, on_drain)) {
         return webserver_eval_on_hook(expr, 1);
     }
-    if (strcmp(expr->as.call.name, "stopping") == 0) {
+    if (CALL_IS(expr, stopping)) {
         return webserver_eval_stopping(expr);
     }
-    if (strcmp(expr->as.call.name, "inherited") == 0) {
+    if (CALL_IS(expr, inherited)) {
         return webserver_eval_inherited(expr);
     }
-    if (strcmp(expr->as.call.name, "emit") == 0) {
+    if (CALL_IS(expr, emit)) {
         return webserver_eval_emit(expr);
     }
-    if (strcmp(expr->as.call.name, "finish") == 0) {
+    if (CALL_IS(expr, finish)) {
         return webserver_eval_finish(expr);
     }
-    if (strcmp(expr->as.call.name, "close") == 0) {
+    if (CALL_IS(expr, close)) {
         return webserver_eval_close(expr);
     }
-    if (strcmp(expr->as.call.name, "redirect") == 0) {
+    if (CALL_IS(expr, redirect)) {
         return webserver_eval_redirect(expr);
     }
     char message[256];
@@ -27070,28 +27145,28 @@ static Value sqlite_eval_last_insert_rowid(AstExpr *expr) {
 
 static Value sqlite_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
-    if (strcmp(name, "connect") == 0) {
+    if (CALL_IS(expr, connect)) {
         return sqlite_eval_connect(expr);
     }
-    if (strcmp(name, "close") == 0) {
+    if (CALL_IS(expr, close)) {
         return sqlite_eval_close(expr);
     }
-    if (strcmp(name, "query") == 0) {
+    if (CALL_IS(expr, query)) {
         return sqlite_eval_sql(expr, 1);
     }
-    if (strcmp(name, "exec") == 0) {
+    if (CALL_IS(expr, exec)) {
         return sqlite_eval_sql(expr, 0);
     }
-    if (strcmp(name, "begin") == 0) {
+    if (CALL_IS(expr, begin)) {
         return sqlite_eval_transaction(expr, "BEGIN", "begin");
     }
-    if (strcmp(name, "commit") == 0) {
+    if (CALL_IS(expr, commit)) {
         return sqlite_eval_transaction(expr, "COMMIT", "commit");
     }
-    if (strcmp(name, "rollback") == 0) {
+    if (CALL_IS(expr, rollback)) {
         return sqlite_eval_transaction(expr, "ROLLBACK", "rollback");
     }
-    if (strcmp(name, "last_insert_rowid") == 0) {
+    if (CALL_IS(expr, last_insert_rowid)) {
         return sqlite_eval_last_insert_rowid(expr);
     }
     char message[256];
@@ -29303,50 +29378,50 @@ done:
 }
 
 static Value odbc_eval_call(AstExpr *expr) {
-    if (strcmp(expr->as.call.name, "insert") == 0) {
+    if (CALL_IS(expr, insert)) {
         return odbc_eval_insert(expr);
     }
     const char *name = expr->as.call.name;
-    if (strcmp(name, "connect") == 0) {
+    if (CALL_IS(expr, connect)) {
         return odbc_eval_connect(expr);
     }
-    if (strcmp(name, "close") == 0) {
+    if (CALL_IS(expr, close)) {
         return odbc_eval_close(expr);
     }
-    if (strcmp(name, "query") == 0) {
+    if (CALL_IS(expr, query)) {
         return odbc_eval_sql(expr, 1);
     }
-    if (strcmp(name, "exec") == 0) {
+    if (CALL_IS(expr, exec)) {
         return odbc_eval_sql(expr, 0);
     }
-    if (strcmp(name, "begin") == 0) {
+    if (CALL_IS(expr, begin)) {
         return odbc_eval_transaction(expr, -1, "begin");
     }
-    if (strcmp(name, "commit") == 0) {
+    if (CALL_IS(expr, commit)) {
         return odbc_eval_transaction(expr, SQL_COMMIT, "commit");
     }
-    if (strcmp(name, "rollback") == 0) {
+    if (CALL_IS(expr, rollback)) {
         return odbc_eval_transaction(expr, SQL_ROLLBACK, "rollback");
     }
-    if (strcmp(name, "tables") == 0) {
+    if (CALL_IS(expr, tables)) {
         return odbc_eval_schema_call(expr, 0);
     }
-    if (strcmp(name, "columns") == 0) {
+    if (CALL_IS(expr, columns)) {
         return odbc_eval_schema_call(expr, 1);
     }
-    if (strcmp(name, "primary_keys") == 0) {
+    if (CALL_IS(expr, primary_keys)) {
         return odbc_eval_schema_call(expr, 2);
     }
-    if (strcmp(name, "foreign_keys") == 0) {
+    if (CALL_IS(expr, foreign_keys)) {
         return odbc_eval_schema_call(expr, 3);
     }
-    if (strcmp(name, "info") == 0) {
+    if (CALL_IS(expr, info)) {
         return odbc_eval_info(expr);
     }
-    if (strcmp(name, "drivers") == 0) {
+    if (CALL_IS(expr, drivers)) {
         return odbc_eval_catalog(expr, 1);
     }
-    if (strcmp(name, "sources") == 0) {
+    if (CALL_IS(expr, sources)) {
         return odbc_eval_catalog(expr, 0);
     }
     char message[256];
@@ -30985,28 +31060,28 @@ done:
 
 static Value pg_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
-    if (strcmp(name, "insert") == 0) {
+    if (CALL_IS(expr, insert)) {
         return pg_eval_insert(expr);
     }
-    if (strcmp(name, "connect") == 0) {
+    if (CALL_IS(expr, connect)) {
         return pg_eval_connect(expr);
     }
-    if (strcmp(name, "close") == 0) {
+    if (CALL_IS(expr, close)) {
         return pg_eval_close(expr);
     }
-    if (strcmp(name, "query") == 0) {
+    if (CALL_IS(expr, query)) {
         return pg_eval_sql(expr, 1);
     }
-    if (strcmp(name, "exec") == 0) {
+    if (CALL_IS(expr, exec)) {
         return pg_eval_sql(expr, 0);
     }
-    if (strcmp(name, "begin") == 0) {
+    if (CALL_IS(expr, begin)) {
         return pg_eval_transaction(expr, "BEGIN", "begin");
     }
-    if (strcmp(name, "commit") == 0) {
+    if (CALL_IS(expr, commit)) {
         return pg_eval_transaction(expr, "COMMIT", "commit");
     }
-    if (strcmp(name, "rollback") == 0) {
+    if (CALL_IS(expr, rollback)) {
         return pg_eval_transaction(expr, "ROLLBACK", "rollback");
     }
     char message[256];
@@ -33519,43 +33594,43 @@ static Value process_do_which(AstExpr *expr) {
 }
 
 static Value process_eval_call(AstExpr *expr) {
-    if (strcmp(expr->as.call.name, "run") == 0) {
+    if (CALL_IS(expr, run)) {
         return process_do_run(expr);
     }
-    if (strcmp(expr->as.call.name, "which") == 0) {
+    if (CALL_IS(expr, which)) {
         return process_do_which(expr);
     }
-    if (strcmp(expr->as.call.name, "self") == 0) {
+    if (CALL_IS(expr, self)) {
         return process_do_self(expr);
     }
-    if (strcmp(expr->as.call.name, "alive") == 0) {
+    if (CALL_IS(expr, alive)) {
         return process_do_alive(expr);
     }
-    if (strcmp(expr->as.call.name, "info") == 0) {
+    if (CALL_IS(expr, info)) {
         return process_do_info(expr);
     }
-    if (strcmp(expr->as.call.name, "start") == 0) {
+    if (CALL_IS(expr, start)) {
         return process_do_start(expr);
     }
-    if (strcmp(expr->as.call.name, "poll") == 0) {
+    if (CALL_IS(expr, poll)) {
         return process_do_poll(expr);
     }
-    if (strcmp(expr->as.call.name, "write") == 0) {
+    if (CALL_IS(expr, write)) {
         return process_do_write(expr);
     }
-    if (strcmp(expr->as.call.name, "close_stdin") == 0) {
+    if (CALL_IS(expr, close_stdin)) {
         return process_do_close_stdin(expr);
     }
-    if (strcmp(expr->as.call.name, "read") == 0) {
+    if (CALL_IS(expr, read)) {
         return process_do_read(expr);
     }
-    if (strcmp(expr->as.call.name, "wait") == 0) {
+    if (CALL_IS(expr, wait)) {
         return process_do_wait(expr);
     }
-    if (strcmp(expr->as.call.name, "stop") == 0) {
+    if (CALL_IS(expr, stop)) {
         return process_do_stop(expr);
     }
-    if (strcmp(expr->as.call.name, "release") == 0) {
+    if (CALL_IS(expr, release)) {
         return process_do_release(expr);
     }
     char msg[160];
@@ -33831,22 +33906,22 @@ static Value reflect_do_inspect(Value v) {
 
 static Value reflect_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
-    if (strcmp(name, "variables") == 0) {
+    if (CALL_IS(expr, variables)) {
         if (expr->as.call.args.count != 0) {
             return reflect_raise("reflect.variables expects no arguments");
         }
         return reflect_do_variables();
     }
-    if (strcmp(name, "get") == 0) {
+    if (CALL_IS(expr, get)) {
         return reflect_do_get(expr);
     }
-    if (strcmp(name, "kind") == 0) {
+    if (CALL_IS(expr, kind)) {
         Value v; if (!reflect_one_arg(expr, "reflect.kind", &v)) return value_null();
         Value r = value_string(builtin_type_name(v));
         value_free(v);
         return r;
     }
-    if (strcmp(name, "type") == 0) {
+    if (CALL_IS(expr, type)) {
         Value v; if (!reflect_one_arg(expr, "reflect.type", &v)) return value_null();
         char buf[128];
         reflect_type_string(v, buf, sizeof(buf));
@@ -33854,33 +33929,33 @@ static Value reflect_eval_call(AstExpr *expr) {
         value_free(v);
         return r;
     }
-    if (strcmp(name, "category") == 0) {
+    if (CALL_IS(expr, category)) {
         Value v; if (!reflect_one_arg(expr, "reflect.category", &v)) return value_null();
         Value r = value_string(reflect_category(v));
         value_free(v);
         return r;
     }
-    if (strcmp(name, "serializable") == 0) {
+    if (CALL_IS(expr, serializable)) {
         Value v; if (!reflect_one_arg(expr, "reflect.serializable", &v)) return value_null();
         Value r = value_bool(reflect_serializable(v, 0));
         value_free(v);
         return r;
     }
-    if (strcmp(name, "count") == 0) {
+    if (CALL_IS(expr, count)) {
         Value v; if (!reflect_one_arg(expr, "reflect.count", &v)) return value_null();
         return reflect_do_count(v);
     }
-    if (strcmp(name, "fields") == 0) {
+    if (CALL_IS(expr, fields)) {
         Value v; if (!reflect_one_arg(expr, "reflect.fields", &v)) return value_null();
         return reflect_do_fields(v);
     }
-    if (strcmp(name, "field") == 0) {
+    if (CALL_IS(expr, field)) {
         return reflect_do_field(expr);
     }
-    if (strcmp(name, "element") == 0) {
+    if (CALL_IS(expr, element)) {
         return reflect_do_element(expr);
     }
-    if (strcmp(name, "inspect") == 0) {
+    if (CALL_IS(expr, inspect)) {
         Value v; if (!reflect_one_arg(expr, "reflect.inspect", &v)) return value_null();
         return reflect_do_inspect(v);
     }
@@ -33951,6 +34026,7 @@ static Value handle_method_call(AstExpr *expr, const char *module, Value *receiv
 
     AstExpr call = *expr;
     call.as.call.library = (char *)module;
+    call.as.call.library_id = CN_UNRESOLVED;
     call.as.call.receiver = NULL;
     call.as.call.args.items = items;
     call.as.call.args.count = n + 1;
@@ -34768,7 +34844,7 @@ static int fx_apply(long long units_from, int scale_from, int scale_to,
 static Value money_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
 
-    if (strcmp(name, "currencies") == 0) {
+    if (CALL_IS(expr, currencies)) {
         if (expr->as.call.args.count != 0) {
             runtime_error_raise("money.currencies expects no arguments", 1003, "money");
             return value_null();
@@ -34806,7 +34882,7 @@ static Value money_eval_call(AstExpr *expr) {
         return value_array(items, n);
     }
 
-    if (strcmp(name, "register") == 0) {
+    if (CALL_IS(expr, register)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("money.register expects a code and an exponent",
                                 1003, "money");
@@ -34874,7 +34950,7 @@ static Value money_eval_call(AstExpr *expr) {
         return value_number_exact((long long)assigned);
     }
 
-    if (strcmp(name, "of") == 0) {
+    if (CALL_IS(expr, of)) {
         /* Construct money from a currency code held in a VARIABLE.
          *
          * `{USD}=` is a modifier and needs a LITERAL code, so a program that
@@ -34939,7 +35015,7 @@ static Value money_eval_call(AstExpr *expr) {
         return value_money(money_make(units, numeric, exponent));
     }
 
-    if (strcmp(name, "text") == 0) {
+    if (CALL_IS(expr, text)) {
         /* The lossless EXIT, and the mirror of the construction rule.
          *
          * `string(m)` renders at the currency's minor unit, which is right for
@@ -34986,7 +35062,7 @@ static Value money_eval_call(AstExpr *expr) {
         return value_string(buf);
     }
 
-    if (strcmp(name, "currency") == 0) {
+    if (CALL_IS(expr, currency)) {
         /* A money value could not report its own currency at all, which makes
          * it the one typed value you cannot fully introspect: `type(m)` says
          * "money" and nothing says WHICH. Found writing accounting.bas, where
@@ -35016,7 +35092,7 @@ static Value money_eval_call(AstExpr *expr) {
         return value_string(alpha);
     }
 
-    if (strcmp(name, "allocate") == 0) {
+    if (CALL_IS(expr, allocate)) {
         /* --- PLAT-MONEY phase 4: splitting money into PAYABLE parts --------
          *
          * Division and allocation are different problems and guard digits only
@@ -35161,7 +35237,7 @@ static Value money_eval_call(AstExpr *expr) {
         return value_array(items, parts);
     }
 
-    if (strcmp(name, "rate") == 0) {
+    if (CALL_IS(expr, rate)) {
         if (expr->as.call.args.count != 4) {
             runtime_error_raise("money.rate expects from, to, rate and an as-of date",
                                 1003, "money");
@@ -35225,8 +35301,8 @@ static Value money_eval_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(name, "rate_on") == 0 || strcmp(name, "convert") == 0) {
-        int converting = strcmp(name, "convert") == 0;
+    if (CALL_IS(expr, rate_on) || CALL_IS(expr, convert)) {
+        int converting = CALL_IS(expr, convert);
         if (expr->as.call.args.count != 3) {
             runtime_error_raise(converting
                 ? "money.convert expects an amount, a currency and a date"
@@ -35333,7 +35409,7 @@ static Value money_eval_call(AstExpr *expr) {
         return value_money(money_make(units, to, te));
     }
 
-    if (strcmp(name, "retire") == 0) {
+    if (CALL_IS(expr, retire)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("money.retire expects a currency code", 1003, "money");
             return value_null();
@@ -35527,8 +35603,8 @@ static Value eval_pack_family(AstExpr *expr) {
     const char *verb = expr->as.call.name;
     char msg[240];
     size_t argc = expr->as.call.args.count;
-    int is_pack = strcmp(verb, "pack") == 0;
-    int is_size = strcmp(verb, "pack_size") == 0;
+    int is_pack = CALL_IS(expr, pack);
+    int is_size = CALL_IS(expr, pack_size);
     if ((is_size && argc != 1) || (is_pack && argc != 2) || (!is_pack && !is_size && (argc < 2 || argc > 3))) {
         snprintf(msg, sizeof msg, "%s expects %s", verb,
                  is_size ? "a format" : is_pack ? "a format and an array of values"
@@ -35981,7 +36057,7 @@ static Value eval_call_rest(AstExpr *expr);
 
 static Value eval_call(AstExpr *expr) {
     if (!expr->as.call.receiver && !expr->as.call.library &&
-        strcmp(expr->as.call.name, "warning") != 0 && strcmp(expr->as.call.name, "error.clear") != 0) {
+        !CALL_IS(expr, warning) && !CALL_IS(expr, error_clear)) {
         FunctionDef *function = function_in_current_library(expr->as.call.name);
         if (!function) {
             function = function_find_local(expr->as.call.name);
@@ -36059,7 +36135,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
          * on its own object (`this.other()`). Method-call resolution otherwise binds
          * the receiver by variable name, and `this` is not an environment symbol. */
         Value *receiver_value = NULL;
-        if (strcmp(expr->as.call.library, "this") == 0) {
+        if (CALL_LIB_IS(expr, this)) {
             receiver_value = current_this;   /* NULL outside a method → falls through */
         } else {
             Symbol *receiver_symbol = env_find(expr->as.call.library);
@@ -36130,39 +36206,39 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
          * receiver to reach and is about to fail anyway. */
         if (repl_effect_watch &&
             library_is_native_qualifier(expr->as.call.library) &&
-            strcmp(expr->as.call.library, "this") != 0) {
+            !CALL_LIB_IS(expr, this)) {
             repl_note_effect();
         }
 
         /* NAP-6: process.* is an unconditional built-in module (no `load`), like a
          * core library namespace. A `process` variable bound to a record/native
          * value is handled above, so this only fires for the module itself. */
-        if (strcmp(expr->as.call.library, "process") == 0) {
+        if (CALL_LIB_IS(expr, process)) {
             return process_eval_call(expr);
         }
 
         /* money.* -- the currency table, unconditional like process and
          * reflect (no `load`). A `money` variable bound to a record is handled
          * above, so this only fires for the module itself. */
-        if (strcmp(expr->as.call.library, "money") == 0) {
+        if (CALL_LIB_IS(expr, money)) {
             return money_eval_call(expr);
         }
 
         /* NAP-9: reflect.* is an unconditional runtime reflection module (no
          * `load`). A `reflect` variable bound to a record/native value is handled
          * above, so this only fires for the module itself. */
-        if (strcmp(expr->as.call.library, "reflect") == 0) {
+        if (CALL_LIB_IS(expr, reflect)) {
             return reflect_eval_call(expr);
         }
 
         /* xlsx.* — Office Open XML workbooks. Unconditional like process and
          * reflect (no `load`), degrading to a clean runtime error when zlib or
          * libxml2 was unavailable at build time. */
-        if (strcmp(expr->as.call.library, "xlsx") == 0) {
+        if (CALL_LIB_IS(expr, xlsx)) {
             return xlsx_eval_call(expr);
         }
 
-        if (strcmp(expr->as.call.library, "webserver") == 0) {
+        if (CALL_LIB_IS(expr, webserver)) {
             if (!webserver_library_loaded) {
                 runtime_error_raise("library not loaded: webserver (write `load webserver` first)",
                                     4001,
@@ -36172,7 +36248,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
             return webserver_eval_call(expr);
         }
 
-        if (strcmp(expr->as.call.library, "smtp") == 0) {
+        if (CALL_LIB_IS(expr, smtp)) {
             if (!smtp_library_loaded) {
                 runtime_error_raise("library not loaded: smtp (write `load smtp` first)",
                                     SMTP_ERROR_CODE,
@@ -36189,7 +36265,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 #endif
         }
 
-        if (strcmp(expr->as.call.library, "ldap") == 0) {
+        if (CALL_LIB_IS(expr, ldap)) {
             if (!ldap_library_loaded) {
                 runtime_error_raise("library not loaded: ldap (write `load ldap` first)",
                                     LDAP_ERROR_CODE,
@@ -36206,13 +36282,13 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 #endif
         }
 
-        if (strcmp(expr->as.call.library, "timer") == 0) {
+        if (CALL_LIB_IS(expr, timer)) {
             /* No `load`: there is no optional dependency here, only clock
              * arithmetic -- the `process` precedent. */
             return timer_eval_call(expr);
         }
 
-        if (strcmp(expr->as.call.library, "ui") == 0) {
+        if (CALL_LIB_IS(expr, ui)) {
             /* No `load` EVEN THOUGH QT IS OPTIONAL, which is the one place
              * this module departs from the convention and it is deliberate: a
              * `window` block implies no import (window_register says why), and
@@ -36223,7 +36299,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
             return qt_eval_call(expr);
         }
 
-        if (strcmp(expr->as.call.library, "net") == 0) {
+        if (CALL_LIB_IS(expr, net)) {
             if (!net_library_loaded) {
                 runtime_error_raise("library not loaded: net (write `load net` first)", 1003, "net");
                 return value_null();
@@ -36231,7 +36307,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
             return net_eval_call(expr);
         }
 
-        if (strcmp(expr->as.call.library, "http") == 0) {
+        if (CALL_LIB_IS(expr, http)) {
             if (!http_library_loaded) {
                 runtime_error_raise("library not loaded: http (write `load http` first)", 3002, "http");
                 return value_null();
@@ -36245,7 +36321,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 #endif
         }
 
-        if (strcmp(expr->as.call.library, "webclient") == 0) {
+        if (CALL_LIB_IS(expr, webclient)) {
             if (!webclient_library_loaded) {
                 runtime_error_raise("library not loaded: webclient (write `load webclient` first)",
                                     3001,
@@ -36262,7 +36338,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 #endif
         }
 
-        if (strcmp(expr->as.call.library, "pg") == 0) {
+        if (CALL_LIB_IS(expr, pg)) {
             if (!pg_library_loaded) {
                 runtime_error_raise("library not loaded: pg (write `load pg` first)", 2001, "postgres");
                 return value_null();
@@ -36277,19 +36353,19 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 #endif
         }
 
-        if (strcmp(expr->as.call.library, "csv") == 0) {
+        if (CALL_LIB_IS(expr, csv)) {
             return csv_eval_call(expr);
         }
 
-        if (strcmp(expr->as.call.library, "term") == 0) {
+        if (CALL_LIB_IS(expr, term)) {
             return term_eval_call(expr);
         }
 
-        if (strcmp(expr->as.call.library, "zip") == 0) {
+        if (CALL_LIB_IS(expr, zip)) {
             return zip_eval_call(expr);
         }
 
-        if (strcmp(expr->as.call.library, "xml") == 0) {
+        if (CALL_LIB_IS(expr, xml)) {
             if (!xml_library_loaded) {
                 runtime_error_raise("library not loaded: xml (write `load xml` first)", 5001, "xml");
                 return value_null();
@@ -36304,7 +36380,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 #endif
         }
 
-        if (strcmp(expr->as.call.library, "gsql") == 0) {
+        if (CALL_LIB_IS(expr, gsql)) {
             if (!gsql_library_loaded) {
                 runtime_error_raise("library not loaded: gsql (write `load gsql` first)", GSQL_ERROR_CODE, "gsql");
                 return value_null();
@@ -36319,7 +36395,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 #endif
         }
 
-        if (strcmp(expr->as.call.library, "sqlite") == 0) {
+        if (CALL_LIB_IS(expr, sqlite)) {
             if (!sqlite_library_loaded) {
                 runtime_error_raise("library not loaded: sqlite (write `load sqlite` first)", 2002, "sqlite");
                 return value_null();
@@ -36334,7 +36410,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 #endif
         }
 
-        if (strcmp(expr->as.call.library, "odbc") == 0) {
+        if (CALL_LIB_IS(expr, odbc)) {
             if (!odbc_library_loaded) {
                 runtime_error_raise("library not loaded: odbc (write `load odbc` first)", 2003, "odbc");
                 return value_null();
@@ -36372,7 +36448,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
                     qt_loaded = 1;
                 }
             }
-            if (!qt_loaded && strcmp(expr->as.call.library, "qt") == 0) {
+            if (!qt_loaded && CALL_LIB_IS(expr, qt)) {
                 snprintf(message, sizeof(message),
                          "undefined function: %s -- the `qt` module is called "
                          "`ui` since 0.12.0: write `ui.%s`",
@@ -36437,7 +36513,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * conflicts, and the whole point of this design is adding no reserved
      * word. Same shape rules as `error`: a string, or a record whose
      * `message` is required and whose extra fields become `details`. */
-    if (strcmp(expr->as.call.name, "warning") == 0 &&
+    if (CALL_IS(expr, warning) &&
         !env_lookup_exists("warning")) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("warning expects one argument (a message or a record)",
@@ -36509,7 +36585,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         free(source_copy);
         return value_null();
     }
-    if (strcmp(expr->as.call.name, "error.clear") == 0) {
+    if (CALL_IS(expr, error_clear)) {
         if (expr->as.call.args.count != 0) {
             runtime_error_raise("error.clear expects no arguments", 1003, "invalid function call");
             return value_null();
@@ -36551,7 +36627,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * Unwinds through runtime_stopped, the same path the `stop` statement
      * uses, so every frame, watcher and lock tears down exactly as it already
      * does -- `exit` is `stop` that also names a status. */
-    if (strcmp(expr->as.call.name, "exit") == 0) {
+    if (CALL_IS(expr, exit)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("exit expects one argument, the status code", 1003, "invalid function call");
             return value_null();
@@ -36585,7 +36661,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_null();
     }
 
-    if (strcmp(expr->as.call.name, "env") == 0) {
+    if (CALL_IS(expr, env)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("env expects one argument", 1003, "invalid function call");
             return value_null();
@@ -36608,7 +36684,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_string(value);
     }
 
-    if (strcmp(expr->as.call.name, "has_builtin") == 0) {
+    if (CALL_IS(expr, has_builtin)) {
         /* The feature probe. gBASIC programs run on whatever interpreter is
          * installed, and nothing marks which builtins postdate a release — so
          * code written against a newer build was CORRECT, fully tested, and
@@ -36648,7 +36724,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_bool(present != 0);
     }
 
-    if (strcmp(expr->as.call.name, "sleep") == 0) {
+    if (CALL_IS(expr, sleep)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("sleep expects one argument", 1003, "invalid function call");
             return value_null();
@@ -36736,7 +36812,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_null();
     }
 
-    if (strcmp(expr->as.call.name, "principal") == 0) {
+    if (CALL_IS(expr, principal)) {
         /* The identity in force, or `nothing` when no `with principal` block
          * is open. NOTHING rather than an empty record, deliberately: "nobody
          * said" and "acting for a principal that carries no fields" are
@@ -36754,7 +36830,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return principal_current();
     }
 
-    if (strcmp(expr->as.call.name, "library_collisions") == 0) {
+    if (CALL_IS(expr, library_collisions)) {
         /* Every public name defined by more than one LOADED library.
          *
          * The override warning cannot answer this: it lives in the unqualified
@@ -36835,7 +36911,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_array(rows, row_count);
     }
 
-    if (strcmp(expr->as.call.name, "password_hash_cost") == 0) {
+    if (CALL_IS(expr, password_hash_cost)) {
         /* What a password hash actually costs ON THIS MACHINE, and under what
          * parameters.
          *
@@ -36911,7 +36987,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 #endif
     }
 
-    if (strcmp(expr->as.call.name, "password_hash") == 0) {
+    if (CALL_IS(expr, password_hash)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("password_hash expects one argument", 1003, "invalid function call");
             return value_null();
@@ -36964,7 +37040,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 #endif
     }
 
-    if (strcmp(expr->as.call.name, "password_verify") == 0) {
+    if (CALL_IS(expr, password_verify)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("password_verify expects two arguments", 1003, "invalid function call");
             return value_null();
@@ -37061,7 +37137,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * documented route, `from_zone(now(), <your zone>)`, requires naming the
      * zone you are already in. `now("UTC")` is the primitive both were standing
      * in for. */
-    if (strcmp(expr->as.call.name, "now") == 0) {
+    if (CALL_IS(expr, now)) {
         if (expr->as.call.args.count > 1) {
             runtime_error_raise("now expects no arguments, or one zone name", 1003, "invalid function call");
             return value_null();
@@ -37126,7 +37202,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * timestamps hours in the future. With UTC the default the plain form is
      * right for every instant gBASIC makes; the zone form is for civil time
      * that came from somewhere else. */
-    if (strcmp(expr->as.call.name, "epoch") == 0) {
+    if (CALL_IS(expr, epoch)) {
         if (expr->as.call.args.count > 2) {
             runtime_error_raise("epoch expects no arguments, a datetime, or a datetime and a zone name",
                                 1003, "invalid function call");
@@ -37225,7 +37301,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * It is the ROOT program even when a library asks, because "beside the
      * program" is the configuration a person puts there; unknown at the
      * prompt. A file value, so `directory_name` and `join_path` compose. */
-    if (strcmp(expr->as.call.name, "program_file") == 0) {
+    if (CALL_IS(expr, program_file)) {
         if (expr->as.call.args.count != 0) {
             runtime_error_raise("program_file expects no arguments", 1003, "invalid function call");
             return value_null();
@@ -37233,7 +37309,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return root_source_real ? value_file(root_source_real) : value_unknown();
     }
 
-    if (strcmp(expr->as.call.name, "monotonic") == 0) {
+    if (CALL_IS(expr, monotonic)) {
         if (expr->as.call.args.count != 0) {
             runtime_error_raise("monotonic expects no arguments", 1003, "invalid function call");
             return value_null();
@@ -37246,14 +37322,14 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_number((double)ts.tv_sec + (double)ts.tv_nsec / 1000000000.0);
     }
 
-    if (strcmp(expr->as.call.name, "to_zone") == 0 ||
-        strcmp(expr->as.call.name, "from_zone") == 0 ||
-        strcmp(expr->as.call.name, "zone_offset") == 0 ||
-        strcmp(expr->as.call.name, "zone_resolve") == 0) {
+    if (CALL_IS(expr, to_zone) ||
+        CALL_IS(expr, from_zone) ||
+        CALL_IS(expr, zone_offset) ||
+        CALL_IS(expr, zone_resolve)) {
         return zone_eval_call(expr);
     }
 
-    if (strcmp(expr->as.call.name, "from_epoch") == 0) {
+    if (CALL_IS(expr, from_epoch)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("from_epoch expects one argument", 1003, "invalid function call");
             return value_null();
@@ -37293,7 +37369,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_datetime(dt);
     }
 
-    if (strcmp(expr->as.call.name, "secure_token") == 0) {
+    if (CALL_IS(expr, secure_token)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("secure_token expects one argument", 1003, "invalid function call");
             return value_null();
@@ -37348,9 +37424,9 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     }
 
     /* ----- Bitwise (32-bit unsigned) ----- */
-    if (strcmp(expr->as.call.name, "band") == 0 ||
-        strcmp(expr->as.call.name, "bor") == 0 ||
-        strcmp(expr->as.call.name, "bxor") == 0) {
+    if (CALL_IS(expr, band) ||
+        CALL_IS(expr, bor) ||
+        CALL_IS(expr, bxor)) {
         const char *name = expr->as.call.name;
         double a[2];
         if (!bitwise_eval_args(expr, name, 2, a)) return value_null();
@@ -37364,7 +37440,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         uint32_t r = name[1] == 'a' ? (x & y) : (name[1] == 'o' ? (x | y) : (x ^ y));
         return value_number_exact((long long)r);
     }
-    if (strcmp(expr->as.call.name, "bnot") == 0) {
+    if (CALL_IS(expr, bnot)) {
         double a[1];
         if (!bitwise_eval_args(expr, "bnot", 1, a)) return value_null();
         uint32_t x;
@@ -37374,10 +37450,10 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         }
         return value_number_exact((long long)(uint32_t)(~x));
     }
-    if (strcmp(expr->as.call.name, "shl") == 0 ||
-        strcmp(expr->as.call.name, "shr") == 0 ||
-        strcmp(expr->as.call.name, "rotl") == 0 ||
-        strcmp(expr->as.call.name, "rotr") == 0) {
+    if (CALL_IS(expr, shl) ||
+        CALL_IS(expr, shr) ||
+        CALL_IS(expr, rotl) ||
+        CALL_IS(expr, rotr)) {
         const char *name = expr->as.call.name;
         double a[2];
         if (!bitwise_eval_args(expr, name, 2, a)) return value_null();
@@ -37396,11 +37472,11 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
             return value_null();
         }
         uint32_t r;
-        if (strcmp(name, "shl") == 0) {
+        if (CALL_IS(expr, shl)) {
             r = (uint32_t)(x << n);
-        } else if (strcmp(name, "shr") == 0) {
+        } else if (CALL_IS(expr, shr)) {
             r = x >> n;
-        } else if (strcmp(name, "rotl") == 0) {
+        } else if (CALL_IS(expr, rotl)) {
             r = n == 0 ? x : (uint32_t)((x << n) | (x >> (32 - n)));
         } else {
             r = n == 0 ? x : (uint32_t)((x >> n) | (x << (32 - n)));
@@ -37409,21 +37485,21 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     }
 
     /* ----- Cryptography: encoding (always available) ----- */
-    if (strcmp(expr->as.call.name, "base64_encode") == 0) {
+    if (CALL_IS(expr, base64_encode)) {
         Value s;
         if (!crypto_one_string(expr, "base64_encode", &s)) return value_null();
         Value r = crypto_base64_encode((const unsigned char *)s.as.string, string_length(s.as.string), 0, 1);
         value_free(s);
         return r;
     }
-    if (strcmp(expr->as.call.name, "base32_encode") == 0) {
+    if (CALL_IS(expr, base32_encode)) {
         Value s;
         if (!crypto_one_string(expr, "base32_encode", &s)) return value_null();
         Value r = crypto_base32_encode((const unsigned char *)s.as.string, string_length(s.as.string));
         value_free(s);
         return r;
     }
-    if (strcmp(expr->as.call.name, "base32_decode") == 0) {
+    if (CALL_IS(expr, base32_decode)) {
         Value s;
         if (!crypto_one_string(expr, "base32_decode", &s)) return value_null();
         size_t out_len = 0;
@@ -37439,15 +37515,15 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         free(raw);
         return r;
     }
-    if (strcmp(expr->as.call.name, "base64url_encode") == 0) {
+    if (CALL_IS(expr, base64url_encode)) {
         Value s;
         if (!crypto_one_string(expr, "base64url_encode", &s)) return value_null();
         Value r = crypto_base64_encode((const unsigned char *)s.as.string, string_length(s.as.string), 1, 0);
         value_free(s);
         return r;
     }
-    if (strcmp(expr->as.call.name, "base64_decode") == 0 ||
-        strcmp(expr->as.call.name, "base64url_decode") == 0) {
+    if (CALL_IS(expr, base64_decode) ||
+        CALL_IS(expr, base64url_decode)) {
         Value s;
         if (!crypto_one_string(expr, expr->as.call.name, &s)) return value_null();
         size_t out_len = 0;
@@ -37504,11 +37580,11 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * binary. Every other optional builtin (sha256, password_hash) says what is
      * missing and what to do; this one said the function did not exist, which
      * sends an author looking for a typo. Reported by the books session. */
-    if (strcmp(expr->as.call.name, "compress") == 0 ||
-        strcmp(expr->as.call.name, "uncompress") == 0) {
+    if (CALL_IS(expr, compress) ||
+        CALL_IS(expr, uncompress)) {
 #if HAVE_ZLIB
         const char *fname = expr->as.call.name;
-        int is_compress = (strcmp(fname, "compress") == 0);
+        int is_compress = (CALL_IS(expr, compress));
         char m[192];
         if (expr->as.call.args.count < 1 || expr->as.call.args.count > 2) {
             snprintf(m, sizeof(m), "%s expects a string and an optional options record", fname);
@@ -37676,14 +37752,14 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_null();
 #endif
     }
-    if (strcmp(expr->as.call.name, "hex_encode") == 0) {
+    if (CALL_IS(expr, hex_encode)) {
         Value s;
         if (!crypto_one_string(expr, "hex_encode", &s)) return value_null();
         Value r = crypto_hex_encode((const unsigned char *)s.as.string, string_length(s.as.string));
         value_free(s);
         return r;
     }
-    if (strcmp(expr->as.call.name, "hex_decode") == 0) {
+    if (CALL_IS(expr, hex_decode)) {
         Value s;
         if (!crypto_one_string(expr, "hex_decode", &s)) return value_null();
         size_t out_len = 0;
@@ -37698,7 +37774,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         free(dec);
         return r;
     }
-    if (strcmp(expr->as.call.name, "bytes_equal") == 0) {
+    if (CALL_IS(expr, bytes_equal)) {
         Value a, b;
         if (!crypto_two_strings(expr, "bytes_equal", &a, &b)) return value_null();
         int eq = crypto_bytes_equal((const unsigned char *)a.as.string, string_length(a.as.string),
@@ -37707,7 +37783,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         value_free(b);
         return value_bool(eq);
     }
-    if (strcmp(expr->as.call.name, "bytes_xor") == 0) {
+    if (CALL_IS(expr, bytes_xor)) {
         /* data XOR key, the key repeated: WebSocket masking (RFC 6455 §5.3)
          * and any cipher-shaped framing, which a per-byte loop in gBASIC
          * would make quadratic-feeling on a megabyte frame. */
@@ -37733,8 +37809,8 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         value_free(b);
         return r;
     }
-    if (strcmp(expr->as.call.name, "valid_utf8") == 0 ||
-        strcmp(expr->as.call.name, "first_invalid_utf8") == 0) {
+    if (CALL_IS(expr, valid_utf8) ||
+        CALL_IS(expr, first_invalid_utf8)) {
         /* STRICT, as RFC 3629 defines it (utf8_first_invalid). The string
          * builtins read malformed bytes leniently (one unit each); these are
          * the answers a protocol that must REFUSE them needs (WebSocket text,
@@ -37765,10 +37841,10 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         }
         return at == n ? value_null() : value_number_exact((long long)at);
     }
-    if (strcmp(expr->as.call.name, "transcode") == 0) {
+    if (CALL_IS(expr, transcode)) {
         return builtin_transcode(expr);
     }
-    if (strcmp(expr->as.call.name, "random_bytes") == 0) {
+    if (CALL_IS(expr, random_bytes)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("random_bytes expects one argument", 1003, "invalid function call");
             return value_null();
@@ -37809,19 +37885,19 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     }
 
     /* ----- Cryptography: hashing + HMAC (libcrypto) ----- */
-    if (strcmp(expr->as.call.name, "sha256") == 0 ||
-        strcmp(expr->as.call.name, "sha512") == 0 ||
-        strcmp(expr->as.call.name, "sha384") == 0 ||
-        strcmp(expr->as.call.name, "sha1") == 0 ||
-        strcmp(expr->as.call.name, "md5") == 0) {
+    if (CALL_IS(expr, sha256) ||
+        CALL_IS(expr, sha512) ||
+        CALL_IS(expr, sha384) ||
+        CALL_IS(expr, sha1) ||
+        CALL_IS(expr, md5)) {
         Value s;
         if (!crypto_one_string(expr, expr->as.call.name, &s)) return value_null();
 #if HAVE_LIBCRYPTO
         const EVP_MD *md = EVP_sha256();
-        if (strcmp(expr->as.call.name, "sha512") == 0) md = EVP_sha512();
-        else if (strcmp(expr->as.call.name, "sha384") == 0) md = EVP_sha384();
-        else if (strcmp(expr->as.call.name, "sha1") == 0) md = EVP_sha1();
-        else if (strcmp(expr->as.call.name, "md5") == 0) md = EVP_md5();
+        if (CALL_IS(expr, sha512)) md = EVP_sha512();
+        else if (CALL_IS(expr, sha384)) md = EVP_sha384();
+        else if (CALL_IS(expr, sha1)) md = EVP_sha1();
+        else if (CALL_IS(expr, md5)) md = EVP_md5();
         Value r = crypto_digest(md, (const unsigned char *)s.as.string, string_length(s.as.string));
         value_free(s);
         return r;
@@ -37832,10 +37908,10 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_null();
 #endif
     }
-    if (strcmp(expr->as.call.name, "hmac_sha1") == 0 ||
-        strcmp(expr->as.call.name, "hmac_sha256") == 0 ||
-        strcmp(expr->as.call.name, "hmac_sha512") == 0 ||
-        strcmp(expr->as.call.name, "hmac_sha384") == 0) {
+    if (CALL_IS(expr, hmac_sha1) ||
+        CALL_IS(expr, hmac_sha256) ||
+        CALL_IS(expr, hmac_sha512) ||
+        CALL_IS(expr, hmac_sha384)) {
         Value key, msg;
         if (!crypto_two_strings(expr, expr->as.call.name, &key, &msg)) return value_null();
 #if HAVE_LIBCRYPTO
@@ -37843,9 +37919,9 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
          * permits SHA256/512 and authenticator apps in practice ignore the
          * parameter and compute SHA1. Do not reach for it for anything new. */
         const EVP_MD *md = EVP_sha256();
-        if (strcmp(expr->as.call.name, "hmac_sha512") == 0) md = EVP_sha512();
-        else if (strcmp(expr->as.call.name, "hmac_sha384") == 0) md = EVP_sha384();
-        else if (strcmp(expr->as.call.name, "hmac_sha1") == 0) md = EVP_sha1();
+        if (CALL_IS(expr, hmac_sha512)) md = EVP_sha512();
+        else if (CALL_IS(expr, hmac_sha384)) md = EVP_sha384();
+        else if (CALL_IS(expr, hmac_sha1)) md = EVP_sha1();
         Value r = crypto_hmac(md, (const unsigned char *)key.as.string, string_length(key.as.string),
                               (const unsigned char *)msg.as.string, string_length(msg.as.string));
         value_free(key);
@@ -37876,8 +37952,8 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * test vectors use deliberately tiny ones and a floor would make the
      * implementation untestable against them; the recommended values are in
      * docs/reference.md instead, where a reader can see them. */
-    if (strcmp(expr->as.call.name, "pbkdf2_sha256") == 0 ||
-        strcmp(expr->as.call.name, "pbkdf2_sha512") == 0) {
+    if (CALL_IS(expr, pbkdf2_sha256) ||
+        CALL_IS(expr, pbkdf2_sha512)) {
         const char *fname = expr->as.call.name;
         char m[160];
         if (expr->as.call.args.count != 4) {
@@ -37919,7 +37995,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         }
 #if HAVE_LIBCRYPTO
         {
-            const EVP_MD *md = strcmp(fname, "pbkdf2_sha512") == 0 ? EVP_sha512() : EVP_sha256();
+            const EVP_MD *md = CALL_IS(expr, pbkdf2_sha512) ? EVP_sha512() : EVP_sha256();
             int iters = (int)a[2].as.num.value;
             size_t outlen = (size_t)a[3].as.num.value;
             unsigned char *out = malloc(outlen);
@@ -37947,7 +38023,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 #endif
     }
 
-    if (strcmp(expr->as.call.name, "scrypt") == 0) {
+    if (CALL_IS(expr, scrypt)) {
         const char *fname = "scrypt";
         char m[176];
         if (expr->as.call.args.count != 6) {
@@ -38054,12 +38130,12 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     }
 
     /* ----- Cryptography: AES-GCM + Ed25519 (libcrypto) ----- */
-    if (strcmp(expr->as.call.name, "aes_gcm_encrypt") == 0 ||
-        strcmp(expr->as.call.name, "aes_gcm_decrypt") == 0) {
+    if (CALL_IS(expr, aes_gcm_encrypt) ||
+        CALL_IS(expr, aes_gcm_decrypt)) {
         Value a[4];
         if (!crypto_n_strings(expr, expr->as.call.name, 4, a)) return value_null();
 #if HAVE_LIBCRYPTO
-        int encrypt = strcmp(expr->as.call.name, "aes_gcm_encrypt") == 0;
+        int encrypt = CALL_IS(expr, aes_gcm_encrypt);
         const unsigned char *key = (const unsigned char *)a[0].as.string;
         const unsigned char *nonce = (const unsigned char *)a[1].as.string;
         const unsigned char *data = (const unsigned char *)a[2].as.string;
@@ -38077,7 +38153,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
                                          data, string_length(a[2].as.string),
                                          aad, string_length(a[3].as.string), &out_len);
         }
-        int decrypting = strcmp(expr->as.call.name, "aes_gcm_decrypt") == 0;
+        int decrypting = CALL_IS(expr, aes_gcm_decrypt);
         for (int i = 0; i < 4; i++) value_free(a[i]);
         if (!out) {
             /* Decryption failing is AUTHENTICATION failing -- a wrong key,
@@ -38105,7 +38181,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
             return crypto_answer;
         }
     }
-    if (strcmp(expr->as.call.name, "ed25519_keypair") == 0) {
+    if (CALL_IS(expr, ed25519_keypair)) {
         if (expr->as.call.args.count != 0) {
             runtime_error_raise("ed25519_keypair expects no arguments", 1003, "invalid function call");
             return value_null();
@@ -38138,7 +38214,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_null();
 #endif
     }
-    if (strcmp(expr->as.call.name, "ed25519_sign") == 0) {
+    if (CALL_IS(expr, ed25519_sign)) {
         Value a[2];
         if (!crypto_n_strings(expr, "ed25519_sign", 2, a)) return value_null();
 #if HAVE_LIBCRYPTO
@@ -38165,7 +38241,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_null();
 #endif
     }
-    if (strcmp(expr->as.call.name, "ed25519_verify") == 0) {
+    if (CALL_IS(expr, ed25519_verify)) {
         Value a[3];
         if (!crypto_n_strings(expr, "ed25519_verify", 3, a)) return value_null();
 #if HAVE_LIBCRYPTO
@@ -38185,7 +38261,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 #endif
     }
 
-    if (strcmp(expr->as.call.name, "lower") == 0) {
+    if (CALL_IS(expr, lower)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("lower expects one argument", 1003, "invalid function call");
             return value_null();
@@ -38193,7 +38269,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_lower_value(eval_expr(expr->as.call.args.items[0]));
     }
 
-    if (strcmp(expr->as.call.name, "upper") == 0) {
+    if (CALL_IS(expr, upper)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("upper expects one argument", 1003, "invalid function call");
             return value_null();
@@ -38201,7 +38277,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_upper_value(eval_expr(expr->as.call.args.items[0]));
     }
 
-    if (strcmp(expr->as.call.name, "string") == 0) {
+    if (CALL_IS(expr, string)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("string expects one argument", 1003, "invalid function call");
             return value_null();
@@ -38209,7 +38285,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_string_value(eval_expr(expr->as.call.args.items[0]));
     }
 
-    if (strcmp(expr->as.call.name, "number") == 0) {
+    if (CALL_IS(expr, number)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("number expects one argument", 1003, "invalid function call");
             return value_null();
@@ -38258,7 +38334,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_null();
     }
 
-    if (strcmp(expr->as.call.name, "boolean") == 0) {
+    if (CALL_IS(expr, boolean)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("boolean expects one argument", 1003, "invalid function call");
             return value_null();
@@ -38289,7 +38365,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_null();
     }
 
-    if (strcmp(expr->as.call.name, "array") == 0) {
+    if (CALL_IS(expr, array)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("array expects one argument", 1003, "invalid function call");
             return value_null();
@@ -38319,7 +38395,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_null();
     }
 
-    if (strcmp(expr->as.call.name, "record") == 0) {
+    if (CALL_IS(expr, record)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("record expects one argument", 1003, "invalid function call");
             return value_null();
@@ -38349,7 +38425,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_null();
     }
 
-    if (strcmp(expr->as.call.name, "replace") == 0) {
+    if (CALL_IS(expr, replace)) {
         if (expr->as.call.args.count != 3) {
             runtime_error_raise("replace expects three arguments", 1003, "invalid function call");
             return value_null();
@@ -38550,7 +38626,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(expr->as.call.name, "starts_with") == 0) {
+    if (CALL_IS(expr, starts_with)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("starts_with expects two arguments", 1003, "invalid function call");
             return value_null();
@@ -38594,7 +38670,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_bool(result);
     }
 
-    if (strcmp(expr->as.call.name, "ends_with") == 0) {
+    if (CALL_IS(expr, ends_with)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("ends_with expects two arguments", 1003, "invalid function call");
             return value_null();
@@ -38643,7 +38719,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_bool(result);
     }
 
-    if (strcmp(expr->as.call.name, "repeat") == 0) {
+    if (CALL_IS(expr, repeat)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("repeat expects two arguments", 1003, "invalid function call");
             return value_null();
@@ -38720,7 +38796,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(expr->as.call.name, "chr") == 0) {
+    if (CALL_IS(expr, chr)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("chr expects one argument", 1003, "invalid function call");
             return value_null();
@@ -38755,7 +38831,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_string_n(utf8, n);
     }
 
-    if (strcmp(expr->as.call.name, "code") == 0) {
+    if (CALL_IS(expr, code)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("code expects one argument", 1003, "invalid function call");
             return value_null();
@@ -38788,13 +38864,13 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * factory. The byte ORDER HAS NO DEFAULT: a default is a silent bug on half
      * the protocols, so `pack("I", ...)` is refused and says to write > or <.
      * A value that does not fit its width is refused, never wrapped. */
-    if (strcmp(expr->as.call.name, "pack") == 0 ||
-        strcmp(expr->as.call.name, "unpack") == 0 ||
-        strcmp(expr->as.call.name, "pack_size") == 0) {
+    if (CALL_IS(expr, pack) ||
+        CALL_IS(expr, unpack) ||
+        CALL_IS(expr, pack_size)) {
         return eval_pack_family(expr);
     }
 
-    if (strcmp(expr->as.call.name, "byte_count") == 0) {
+    if (CALL_IS(expr, byte_count)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("byte_count expects one argument", 1003, "invalid function call");
             return value_null();
@@ -38829,7 +38905,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * over `byte_at` reassembling with `from_bytes` one byte at a time -- which
      * is correct and QUADRATIC, since every `+` copies the whole accumulator.
      */
-    if (strcmp(expr->as.call.name, "byte_slice") == 0) {
+    if (CALL_IS(expr, byte_slice)) {
         if (expr->as.call.args.count < 2 || expr->as.call.args.count > 3) {
             runtime_error_raise("byte_slice expects a string, a start and an optional count",
                                 1003, "invalid function call");
@@ -38882,7 +38958,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         value_free(text);
         return r;
     }
-    if (strcmp(expr->as.call.name, "byte_find") == 0) {
+    if (CALL_IS(expr, byte_find)) {
         if (expr->as.call.args.count < 2 || expr->as.call.args.count > 3) {
             runtime_error_raise("byte_find expects a string, a needle and an optional start",
                                 1003, "invalid function call");
@@ -38939,7 +39015,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         value_free(hay); value_free(needle);
         return r;
     }
-    if (strcmp(expr->as.call.name, "to_bytes") == 0) {
+    if (CALL_IS(expr, to_bytes)) {
         Value text;
         if (!crypto_one_string(expr, "to_bytes", &text)) return value_null();
         size_t len = string_length(text.as.string);
@@ -38951,7 +39027,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         value_free(text);
         return value_array(items, len);
     }
-    if (strcmp(expr->as.call.name, "byte_at") == 0) {
+    if (CALL_IS(expr, byte_at)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("byte_at expects a string and an index", 1003, "invalid function call");
             return value_null();
@@ -38992,7 +39068,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_number_exact((long long)byte);
     }
 
-    if (strcmp(expr->as.call.name, "from_bytes") == 0) {
+    if (CALL_IS(expr, from_bytes)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("from_bytes expects one argument", 1003, "invalid function call");
             return value_null();
@@ -39031,7 +39107,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(expr->as.call.name, "keys") == 0) {
+    if (CALL_IS(expr, keys)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("keys expects one argument", 1003, "invalid function call");
             return value_null();
@@ -39068,7 +39144,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(expr->as.call.name, "values") == 0) {
+    if (CALL_IS(expr, values)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("values expects one argument", 1003, "invalid function call");
             return value_null();
@@ -39103,7 +39179,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(expr->as.call.name, "has") == 0) {
+    if (CALL_IS(expr, has)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("has expects two arguments", 1003, "invalid function call");
             return value_null();
@@ -39142,7 +39218,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_bool(result);
     }
 
-    if (strcmp(expr->as.call.name, "remove_key") == 0) {
+    if (CALL_IS(expr, remove_key)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("remove_key expects two arguments", 1003, "invalid function call");
             return value_null();
@@ -39216,7 +39292,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(expr->as.call.name, "count") == 0) {
+    if (CALL_IS(expr, count)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("count expects one argument", 1003, "invalid function call");
             return value_null();
@@ -39244,7 +39320,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_number_exact((long long)result);   /* a count is exact */
     }
 
-    if (strcmp(expr->as.call.name, "type") == 0) {
+    if (CALL_IS(expr, type)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("type expects one argument", 1003, "invalid function call");
             return value_null();
@@ -39272,7 +39348,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * A builtin rather than an operator: it needs no grammar, no token and no
      * keyword. The cost is that the fallback is evaluated eagerly, which for
      * the literal defaults this replaces is nothing. */
-    if (strcmp(expr->as.call.name, "default") == 0) {
+    if (CALL_IS(expr, default)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("default expects a value and a fallback",
                                 1003, "invalid function call");
@@ -39320,13 +39396,13 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return eval_expr(expr->as.call.args.items[1]);
     }
 
-    if (strcmp(expr->as.call.name, "is_string") == 0 ||
-        strcmp(expr->as.call.name, "is_number") == 0 ||
-        strcmp(expr->as.call.name, "is_boolean") == 0 ||
-        strcmp(expr->as.call.name, "is_array") == 0 ||
-        strcmp(expr->as.call.name, "is_record") == 0 ||
-        strcmp(expr->as.call.name, "is_nothing") == 0 ||
-        strcmp(expr->as.call.name, "is_unknown") == 0) {
+    if (CALL_IS(expr, is_string) ||
+        CALL_IS(expr, is_number) ||
+        CALL_IS(expr, is_boolean) ||
+        CALL_IS(expr, is_array) ||
+        CALL_IS(expr, is_record) ||
+        CALL_IS(expr, is_nothing) ||
+        CALL_IS(expr, is_unknown)) {
         if (expr->as.call.args.count != 1) {
             char message[128];
             snprintf(message, sizeof(message), "%s expects one argument", expr->as.call.name);
@@ -39339,26 +39415,26 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
             return value_null();
         }
         int result = 0;
-        if (strcmp(expr->as.call.name, "is_string") == 0) {
+        if (CALL_IS(expr, is_string)) {
             result = value.kind == VALUE_STRING;
-        } else if (strcmp(expr->as.call.name, "is_number") == 0) {
+        } else if (CALL_IS(expr, is_number)) {
             result = value.kind == VALUE_NUMBER;
-        } else if (strcmp(expr->as.call.name, "is_boolean") == 0) {
+        } else if (CALL_IS(expr, is_boolean)) {
             result = value.kind == VALUE_BOOL;
-        } else if (strcmp(expr->as.call.name, "is_array") == 0) {
+        } else if (CALL_IS(expr, is_array)) {
             result = value.kind == VALUE_ARRAY;
-        } else if (strcmp(expr->as.call.name, "is_record") == 0) {
+        } else if (CALL_IS(expr, is_record)) {
             result = value.kind == VALUE_RECORD;
-        } else if (strcmp(expr->as.call.name, "is_nothing") == 0) {
+        } else if (CALL_IS(expr, is_nothing)) {
             result = value.kind == VALUE_NULL;
-        } else if (strcmp(expr->as.call.name, "is_unknown") == 0) {
+        } else if (CALL_IS(expr, is_unknown)) {
             result = value.kind == VALUE_UNKNOWN;
         }
         value_free(value);
         return value_bool(result);
     }
 
-    if (strcmp(expr->as.call.name, "input") == 0) {
+    if (CALL_IS(expr, input)) {
         if (expr->as.call.args.count > 1) {
             runtime_error_raise("input expects zero or one argument", 1003, "invalid function call");
             return value_null();
@@ -39402,7 +39478,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(expr->as.call.name, "encode") == 0) {
+    if (CALL_IS(expr, encode)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("encode expects one argument", 1003, "serialization");
             return value_null();
@@ -39410,7 +39486,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_encode_value(eval_expr(expr->as.call.args.items[0]));
     }
 
-    if (strcmp(expr->as.call.name, "json_encode") == 0) {
+    if (CALL_IS(expr, json_encode)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("json_encode expects one argument", 1003, "serialization");
             return value_null();
@@ -39423,7 +39499,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_json_encode_value(arg);
     }
 
-    if (strcmp(expr->as.call.name, "json_encodable") == 0) {
+    if (CALL_IS(expr, json_encodable)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("json_encodable expects one argument", 1003, "serialization");
             return value_null();
@@ -39438,7 +39514,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_bool(ok);
     }
 
-    if (strcmp(expr->as.call.name, "decode") == 0) {
+    if (CALL_IS(expr, decode)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("decode expects one argument", 1003, "serialization");
             return value_null();
@@ -39449,7 +39525,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     /* json_decode(text): RFC 8259 and nothing else, nested (book gap G61).
      * `decode` reads gBASIC's own notation as well, so a model's reply that
      * must be JSON was accepted in the dialect; this refuses it, naming where. */
-    if (strcmp(expr->as.call.name, "json_decode") == 0) {
+    if (CALL_IS(expr, json_decode)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("json_decode expects one argument, the JSON text", 1003, "serialization");
             return value_null();
@@ -39477,7 +39553,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return out;
     }
 
-    if (strcmp(expr->as.call.name, "try_decode") == 0) {
+    if (CALL_IS(expr, try_decode)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("try_decode expects one argument", 1003, "serialization");
             return value_null();
@@ -39485,7 +39561,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_try_decode_text(eval_expr(expr->as.call.args.items[0]));
     }
 
-    if (strcmp(expr->as.call.name, "serialize") == 0) {
+    if (CALL_IS(expr, serialize)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("serialize expects one argument", 1003, "actor");
             return value_null();
@@ -39498,7 +39574,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_serialize_value(arg);
     }
 
-    if (strcmp(expr->as.call.name, "deserialize") == 0) {
+    if (CALL_IS(expr, deserialize)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("deserialize expects one argument", 1003, "actor");
             return value_null();
@@ -39511,7 +39587,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_deserialize_value(arg);
     }
 
-    if (strcmp(expr->as.call.name, "self") == 0) {
+    if (CALL_IS(expr, self)) {
         if (expr->as.call.args.count != 0) {
             runtime_error_raise("self expects no arguments", 1003, "actor");
             return value_null();
@@ -39519,7 +39595,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_actor_self();
     }
 
-    if (strcmp(expr->as.call.name, "send") == 0) {
+    if (CALL_IS(expr, send)) {
         repl_note_effect();   /* a message that has left is not a question */
         size_t sc = expr->as.call.args.count;
         if (sc != 2 && sc != 3) {
@@ -39558,7 +39634,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_actor_send(handle, message, strict);
     }
 
-    if (strcmp(expr->as.call.name, "receive") == 0) {
+    if (CALL_IS(expr, receive)) {
         /* Blocking here inside a watcher stalls every client and every other
          * transfer, exactly as `http.wait` does and for the same reason: the
          * watcher IS the event loop. A pool whose replies are collected with
@@ -39625,7 +39701,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_null();
     }
 
-    if (strcmp(expr->as.call.name, "monitor") == 0) {
+    if (CALL_IS(expr, monitor)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("monitor expects an actor handle", 1003, "actor");
             return value_null();
@@ -39638,7 +39714,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_actor_monitor(handle);
     }
 
-    if (strcmp(expr->as.call.name, "demonitor") == 0) {
+    if (CALL_IS(expr, demonitor)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("demonitor expects a monitor reference",
                                 1003, "actor");
@@ -39652,7 +39728,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_actor_demonitor(ref);
     }
 
-    if (strcmp(expr->as.call.name, "quote") == 0) {
+    if (CALL_IS(expr, quote)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("quote expects one argument", 1003, "source generation");
             return value_null();
@@ -39660,7 +39736,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_quote_value(eval_expr(expr->as.call.args.items[0]));
     }
 
-    if (strcmp(expr->as.call.name, "round") == 0) {
+    if (CALL_IS(expr, round)) {
         /* PLACES IS OPTIONAL AND DEFAULTS TO 0. It was REQUIRED, so `round(3.7)`
          * -- the form every other BASIC has, and the first thing a reader tries
          * -- raised. The refusal was not a decision about rounding: `floor`,
@@ -39771,7 +39847,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * on a container is a semantics question (concatenate, or add
      * element-wise?) that should not be settled as a side effect of adding a
      * convenience. */
-    if (strcmp(expr->as.call.name, "mod") == 0) {
+    if (CALL_IS(expr, mod)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("mod expects two arguments", 1003,
                                 "invalid function call");
@@ -39899,7 +39975,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * RE-BINDING IS REFUSED. Appending two contexts would make a function's
      * arity depend on how many times the value had been bound, which nothing
      * at the call site shows. */
-    if (strcmp(expr->as.call.name, "bound") == 0) {
+    if (CALL_IS(expr, bound)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("bound expects a function value and a context",
                                 1003, "invalid function call");
@@ -39935,7 +40011,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         value_free(fv);
         return out;
     }
-    if (strcmp(expr->as.call.name, "key") == 0) {
+    if (CALL_IS(expr, key)) {
         if (expr->as.call.args.count < 1) {
             runtime_error_raise("key expects at least one value", 1003,
                                 "invalid function call");
@@ -40025,9 +40101,9 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         free(out.items);
         return result;
     }
-    if (strcmp(expr->as.call.name, "concat") == 0 ||
-        strcmp(expr->as.call.name, "merge") == 0) {
-        int is_concat = strcmp(expr->as.call.name, "concat") == 0;
+    if (CALL_IS(expr, concat) ||
+        CALL_IS(expr, merge)) {
+        int is_concat = CALL_IS(expr, concat);
         const char *fn = expr->as.call.name;
         if (expr->as.call.args.count < 1) {
             char message[128];
@@ -40095,17 +40171,17 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
     /* Elementary scalar math (statistics_design.md §8 — the numeric foundation
      * the statistics library builds on). One-argument functions over a number. */
-    if (strcmp(expr->as.call.name, "sqrt") == 0 ||
-        strcmp(expr->as.call.name, "abs") == 0 ||
-        strcmp(expr->as.call.name, "exp") == 0 ||
-        strcmp(expr->as.call.name, "log") == 0 ||
-        strcmp(expr->as.call.name, "log10") == 0 ||
-        strcmp(expr->as.call.name, "floor") == 0 ||
-        strcmp(expr->as.call.name, "ceil") == 0 ||
-        strcmp(expr->as.call.name, "erf") == 0 ||
-        strcmp(expr->as.call.name, "erfc") == 0 ||
-        strcmp(expr->as.call.name, "lgamma") == 0 ||
-        strcmp(expr->as.call.name, "sign") == 0) {
+    if (CALL_IS(expr, sqrt) ||
+        CALL_IS(expr, abs) ||
+        CALL_IS(expr, exp) ||
+        CALL_IS(expr, log) ||
+        CALL_IS(expr, log10) ||
+        CALL_IS(expr, floor) ||
+        CALL_IS(expr, ceil) ||
+        CALL_IS(expr, erf) ||
+        CALL_IS(expr, erfc) ||
+        CALL_IS(expr, lgamma) ||
+        CALL_IS(expr, sign)) {
         const char *fn = expr->as.call.name;
         if (expr->as.call.args.count != 1) {
             char message[256];
@@ -40143,35 +40219,35 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
          * (still a decimal, as a double's floor was still a double), and `sign`
          * an integer, as for any number (docs/exact_decimal_design.md §9). */
         if (x_decimal) {
-            if (strcmp(fn, "abs") == 0) {
+            if (CALL_IS(expr, abs)) {
                 return value_number_decimal(xe < 0 ? -xe : xe, xs);
             }
-            if (strcmp(fn, "sign") == 0) {
+            if (CALL_IS(expr, sign)) {
                 return value_number_exact((xe > 0) - (xe < 0));
             }
-            if (strcmp(fn, "floor") == 0 || strcmp(fn, "ceil") == 0) {
+            if (CALL_IS(expr, floor) || CALL_IS(expr, ceil)) {
                 long long d = 1;
                 for (int i = 0; i < xs; i++) {
                     d *= 10;
                 }
                 long long q = xe / d, r = xe % d;   /* C truncates toward zero */
-                if (r != 0 && strcmp(fn, "floor") == 0 && xe < 0) {
+                if (r != 0 && CALL_IS(expr, floor) && xe < 0) {
                     q--;
                 }
-                if (r != 0 && strcmp(fn, "ceil") == 0 && xe > 0) {
+                if (r != 0 && CALL_IS(expr, ceil) && xe > 0) {
                     q++;
                 }
                 return value_number_exact(q);
             }
         }
         if (x_exact) {
-            if (strcmp(fn, "floor") == 0 || strcmp(fn, "ceil") == 0) {
+            if (CALL_IS(expr, floor) || CALL_IS(expr, ceil)) {
                 return value_number_exact(xe);
             }
-            if (strcmp(fn, "sign") == 0) {
+            if (CALL_IS(expr, sign)) {
                 return value_number_exact((xe > 0) - (xe < 0));
             }
-            if (strcmp(fn, "abs") == 0) {
+            if (CALL_IS(expr, abs)) {
                 if (xe != LLONG_MIN) {
                     return value_number_exact(xe < 0 ? -xe : xe);
                 }
@@ -40190,30 +40266,30 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
             }
         }
         double r;
-        if (strcmp(fn, "sqrt") == 0) {
+        if (CALL_IS(expr, sqrt)) {
             if (x < 0.0) {
                 runtime_error_raise("sqrt of a negative number", 1003, "invalid function call");
                 return value_null();
             }
             r = sqrt(x);
-        } else if (strcmp(fn, "abs") == 0) {
+        } else if (CALL_IS(expr, abs)) {
             r = fabs(x);
-        } else if (strcmp(fn, "exp") == 0) {
+        } else if (CALL_IS(expr, exp)) {
             r = exp(x);
-        } else if (strcmp(fn, "log") == 0) {
+        } else if (CALL_IS(expr, log)) {
             if (x <= 0.0) {
                 runtime_error_raise("log of a non-positive number", 1003, "invalid function call");
                 return value_null();
             }
             r = log(x);
-        } else if (strcmp(fn, "log10") == 0) {
+        } else if (CALL_IS(expr, log10)) {
             if (x <= 0.0) {
                 runtime_error_raise("log10 of a non-positive number", 1003, "invalid function call");
                 return value_null();
             }
             r = log10(x);
-        } else if (strcmp(fn, "floor") == 0 || strcmp(fn, "ceil") == 0) {
-            r = strcmp(fn, "floor") == 0 ? floor(x) : ceil(x);
+        } else if (CALL_IS(expr, floor) || CALL_IS(expr, ceil)) {
+            r = CALL_IS(expr, floor) ? floor(x) : ceil(x);
             /* A WHOLE NUMBER IS EXACT once it is one (Matthew, 2026-11-09): the
              * answer of floor and ceil is whole by definition, and where a
              * double holds every whole number (to 2^53) it is the integer
@@ -40224,11 +40300,11 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
             if (fabs(r) <= 9007199254740992.0) {
                 return value_number_exact((long long)r);
             }
-        } else if (strcmp(fn, "erf") == 0) {
+        } else if (CALL_IS(expr, erf)) {
             r = erf(x);
-        } else if (strcmp(fn, "erfc") == 0) {
+        } else if (CALL_IS(expr, erfc)) {
             r = erfc(x);
-        } else if (strcmp(fn, "lgamma") == 0) {
+        } else if (CALL_IS(expr, lgamma)) {
             /* log |Gamma(x)|; poles at non-positive integers. */
             if (x <= 0.0 && x == floor(x)) {
                 runtime_error_raise("lgamma of a non-positive integer", 1003, "invalid function call");
@@ -40242,7 +40318,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     }
 
     /* pow(base, exponent) — two-argument scalar math. */
-    if (strcmp(expr->as.call.name, "pow") == 0) {
+    if (CALL_IS(expr, pow)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("pow expects two arguments", 1003, "invalid function call");
             return value_null();
@@ -40342,7 +40418,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     }
 
     /* seed(n) — set the PRNG seed for reproducible draws; returns the seed. */
-    if (strcmp(expr->as.call.name, "seed") == 0) {
+    if (CALL_IS(expr, seed)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("seed expects one argument", 1003, "invalid function call");
             return value_null();
@@ -40377,7 +40453,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     }
 
     /* random() — uniform double in [0, 1). */
-    if (strcmp(expr->as.call.name, "random") == 0) {
+    if (CALL_IS(expr, random)) {
         if (expr->as.call.args.count != 0) {
             runtime_error_raise("random expects no arguments", 1003, "invalid function call");
             return value_null();
@@ -40386,7 +40462,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     }
 
     /* random_int(lo, hi) — uniform integer in [lo, hi], both ends inclusive. */
-    if (strcmp(expr->as.call.name, "random_int") == 0) {
+    if (CALL_IS(expr, random_int)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("random_int expects two arguments", 1003, "invalid function call");
             return value_null();
@@ -40419,8 +40495,8 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     /* quantile(xs, q) / percentile(xs, p) — a numeric array plus a cut point,
      * linear interpolation (statistics_design.md §8). quantile takes q in
      * [0,1]; percentile takes p in [0,100]. */
-    if (strcmp(expr->as.call.name, "quantile") == 0 ||
-        strcmp(expr->as.call.name, "percentile") == 0) {
+    if (CALL_IS(expr, quantile) ||
+        CALL_IS(expr, percentile)) {
         const char *fn = expr->as.call.name;
         if (expr->as.call.args.count != 2) {
             char message[256];
@@ -40441,7 +40517,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
             return value_null();
         }
         double q = cut.as.num.value;
-        if (strcmp(fn, "percentile") == 0) {
+        if (CALL_IS(expr, percentile)) {
             q /= 100.0;
         }
         if (q < 0.0 || q > 1.0) {
@@ -40492,8 +40568,8 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     /* correlation(xs, ys) / covariance(xs, ys) — paired numeric arrays of equal
      * length. covariance is the sample form (divide by n-1); correlation is
      * Pearson's r (statistics_design.md §8). */
-    if (strcmp(expr->as.call.name, "correlation") == 0 ||
-        strcmp(expr->as.call.name, "covariance") == 0) {
+    if (CALL_IS(expr, correlation) ||
+        CALL_IS(expr, covariance)) {
         const char *fn = expr->as.call.name;
         if (expr->as.call.args.count != 2) {
             char message[256];
@@ -40530,7 +40606,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
             syy += dy * dy;
         }
         double r;
-        if (strcmp(fn, "covariance") == 0) {
+        if (CALL_IS(expr, covariance)) {
             r = sxy / (double)(n - 1);
         } else {
             if (sxx == 0.0 || syy == 0.0) {
@@ -40547,7 +40623,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_number(r);
     }
 
-    if (strcmp(expr->as.call.name, "compare") == 0) {
+    if (CALL_IS(expr, compare)) {
         if (expr->as.call.args.count != 3) {
             runtime_error_raise("compare expects three arguments", 1003, "invalid function call");
             return value_null();
@@ -40572,7 +40648,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     }
 
     /* regex(pattern [, flags]) -> a compiled pattern (docs/text_design.md §3). */
-    if (strcmp(expr->as.call.name, "regex") == 0) {
+    if (CALL_IS(expr, regex)) {
         if (expr->as.call.args.count != 1 && expr->as.call.args.count != 2) {
             runtime_error_raise("regex expects one or two arguments", 1003,
                                 "invalid function call");
@@ -40629,9 +40705,9 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * return shape differs: a literal find yields one index, a regex match must
      * yield text/start/length/groups (§3). `match` SCANS — it is Python's
      * re.search, not re.match (§13.E). */
-    if (strcmp(expr->as.call.name, "match") == 0 ||
-        strcmp(expr->as.call.name, "match_all") == 0) {
-        int all = strcmp(expr->as.call.name, "match_all") == 0;
+    if (CALL_IS(expr, match) ||
+        CALL_IS(expr, match_all)) {
+        int all = CALL_IS(expr, match_all);
         const char *verb = all ? "match_all" : "match";
         if (expr->as.call.args.count != 2 && expr->as.call.args.count != 3) {
             char message[64];
@@ -40732,7 +40808,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_array(list.items, list.count);
     }
 
-    if (strcmp(expr->as.call.name, "find") == 0) {
+    if (CALL_IS(expr, find)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("find expects two arguments", 1003, "invalid function call");
             return value_null();
@@ -40791,7 +40867,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_null();
     }
 
-    if (strcmp(expr->as.call.name, "contains") == 0) {
+    if (CALL_IS(expr, contains)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("contains expects two arguments", 1003, "invalid function call");
             return value_null();
@@ -40852,7 +40928,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_bool(found);
     }
 
-    if (strcmp(expr->as.call.name, "remove_value") == 0) {
+    if (CALL_IS(expr, remove_value)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("remove_value expects two arguments", 1003, "invalid function call");
             return value_null();
@@ -40892,7 +40968,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return remove_value_from_array_value(array, target);
     }
 
-    if (strcmp(expr->as.call.name, "find_by") == 0) {
+    if (CALL_IS(expr, find_by)) {
         if (expr->as.call.args.count != 3) {
             runtime_error_raise("find_by expects three arguments", 1003, "invalid function call");
             return value_null();
@@ -40942,7 +41018,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_null();
     }
 
-    if (strcmp(expr->as.call.name, "join_from") == 0) {
+    if (CALL_IS(expr, join_from)) {
         if (expr->as.call.args.count != 3) {
             runtime_error_raise("join_from expects three arguments", 1003, "invalid function call");
             return value_null();
@@ -40987,7 +41063,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_join_value(value_array(items, count), separator);
     }
 
-    if (strcmp(expr->as.call.name, "first") == 0) {
+    if (CALL_IS(expr, first)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("first expects one argument", 1003, "invalid function call");
             return value_null();
@@ -41018,7 +41094,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      *
      * `take_last` exists and POPS, which is a different thing; nothing read the
      * last element without removing it. */
-    if (strcmp(expr->as.call.name, "last") == 0) {
+    if (CALL_IS(expr, last)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("last expects one argument", 1003,
                                 "invalid function call");
@@ -41068,7 +41144,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * An absence is `nothing` or `unknown`, treated alike -- §2a's rule, because
      * the distinction does not help here and two rules are a trap people hit once
      * a year. */
-    if (strcmp(expr->as.call.name, "present") == 0) {
+    if (CALL_IS(expr, present)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("present expects one argument", 1003,
                                 "invalid function call");
@@ -41116,7 +41192,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * over 105 rows is the last page, not a mistake. A negative `at` IS refused,
      * since it means the caller computed an index and the computation is wrong;
      * there is no from-the-end convention to read it as. */
-    if (strcmp(expr->as.call.name, "slice") == 0) {
+    if (CALL_IS(expr, slice)) {
         if (expr->as.call.args.count < 2 || expr->as.call.args.count > 3) {
             runtime_error_raise("slice expects a list, a start and an optional"
                                 " count", 1003, "invalid function call");
@@ -41190,7 +41266,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_array(items, want);
     }
 
-    if (strcmp(expr->as.call.name, "rest") == 0) {
+    if (CALL_IS(expr, rest)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("rest expects one argument", 1003, "invalid function call");
             return value_null();
@@ -41198,8 +41274,8 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return array_rest_value(eval_expr(expr->as.call.args.items[0]));
     }
 
-    if (strcmp(expr->as.call.name, "left") == 0 ||
-        strcmp(expr->as.call.name, "right") == 0) {
+    if (CALL_IS(expr, left) ||
+        CALL_IS(expr, right)) {
         const char *name = expr->as.call.name;
         if (expr->as.call.args.count != 2) {
             char message[80];
@@ -41226,7 +41302,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         }
         /* Translate codepoint slice bounds to byte offsets. */
         size_t byte_start, byte_end;
-        if (strcmp(name, "right") == 0) {
+        if (CALL_IS(expr, right)) {
             byte_start = string_cp_offset(text.as.string, cp_len - count);
             byte_end = byte_len;
         } else {
@@ -41247,7 +41323,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(expr->as.call.name, "mid") == 0) {
+    if (CALL_IS(expr, mid)) {
         /* TWO ARGUMENTS RUN TO THE END (DOGFOOD 2026-11-04 and 2026-11-20), as
          * VB's Mid(s, start) and a slice do: it was refused, and the rest of a
          * string was mid(s, start, len(s) - start) */
@@ -41333,7 +41409,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return result;
     }
 
-    if (strcmp(expr->as.call.name, "trim") == 0) {
+    if (CALL_IS(expr, trim)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("trim expects one argument", 1003, "invalid function call");
             return value_null();
@@ -41341,7 +41417,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_trim_value(eval_expr(expr->as.call.args.items[0]));
     }
 
-    if (strcmp(expr->as.call.name, "split") == 0) {
+    if (CALL_IS(expr, split)) {
         if (expr->as.call.args.count != 1 && expr->as.call.args.count != 2) {
             runtime_error_raise("split expects one or two arguments", 1003, "invalid function call");
             return value_null();
@@ -41411,7 +41487,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_split_value(text, separator, has_separator);
     }
 
-    if (strcmp(expr->as.call.name, "join") == 0) {
+    if (CALL_IS(expr, join)) {
         if (expr->as.call.args.count != 1 && expr->as.call.args.count != 2) {
             runtime_error_raise("join expects one or two arguments", 1003, "invalid function call");
             return value_null();
@@ -41425,9 +41501,9 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_join_value(array, separator);
     }
 
-    if (strcmp(expr->as.call.name, "append") == 0 ||
-        strcmp(expr->as.call.name, "prepend") == 0) {
-        int prepend = strcmp(expr->as.call.name, "prepend") == 0;
+    if (CALL_IS(expr, append) ||
+        CALL_IS(expr, prepend)) {
+        int prepend = CALL_IS(expr, prepend);
         if (expr->as.call.args.count != 2) {
             runtime_error_raise(prepend ? "prepend expects two arguments" : "append expects two arguments",
                                 1003,
@@ -41497,7 +41573,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return append_to_array_value(array, item, prepend);
     }
 
-    if (strcmp(expr->as.call.name, "insert") == 0) {
+    if (CALL_IS(expr, insert)) {
         if (expr->as.call.args.count != 3) {
             runtime_error_raise("insert expects three arguments", 1003, "invalid function call");
             return value_null();
@@ -41541,7 +41617,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return insert_into_array_value(array, index, item);
     }
 
-    if (strcmp(expr->as.call.name, "remove") == 0) {
+    if (CALL_IS(expr, remove)) {
         if (expr->as.call.args.count != 2) {
             runtime_error_raise("remove expects two arguments", 1003, "invalid function call");
             return value_null();
@@ -41578,9 +41654,9 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return remove_from_array_value(array, index);
     }
 
-    if (strcmp(expr->as.call.name, "take_first") == 0 ||
-        strcmp(expr->as.call.name, "take_last") == 0) {
-        int take_last = strcmp(expr->as.call.name, "take_last") == 0;
+    if (CALL_IS(expr, take_first) ||
+        CALL_IS(expr, take_last)) {
+        int take_last = CALL_IS(expr, take_last);
         if (expr->as.call.args.count != 1) {
             runtime_error_raise(take_last ? "take_last expects one argument" : "take_first expects one argument",
                                 1003,
@@ -41616,7 +41692,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return take_from_array_value(array, take_last);
     }
 
-    if (strcmp(expr->as.call.name, "reverse") == 0) {
+    if (CALL_IS(expr, reverse)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("reverse expects one argument", 1003, "invalid function call");
             return value_null();
@@ -41657,7 +41733,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return reverse_array_value(array);
     }
 
-    if (strcmp(expr->as.call.name, "unique") == 0) {
+    if (CALL_IS(expr, unique)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("unique expects one argument", 1003, "invalid function call");
             return value_null();
@@ -41703,8 +41779,8 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * so `all(rows.paid)` over rows where one lacks the field is false, not
      * true, and not an error. That is the conservative reading: a row that
      * never said it was paid has not been paid. */
-    if (strcmp(expr->as.call.name, "any") == 0 ||
-        strcmp(expr->as.call.name, "all") == 0) {
+    if (CALL_IS(expr, any) ||
+        CALL_IS(expr, all)) {
         const char *verb = expr->as.call.name;
         if (expr->as.call.args.count != 1) {
             char message[128];
@@ -41725,7 +41801,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
             runtime_error_raise(message, 1003, "invalid argument type");
             return value_null();
         }
-        int want_all = strcmp(verb, "all") == 0;
+        int want_all = CALL_IS(expr, all);
         size_t n = arg.as.array.store ? arg.as.array.store->count : 0;
         int result = want_all ? 1 : 0;
         for (size_t i = 0; i < n; i++) {
@@ -41763,7 +41839,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_bool(result);
     }
 
-    if (strcmp(expr->as.call.name, "sort") == 0) {
+    if (CALL_IS(expr, sort)) {
         if (expr->as.call.args.count < 1 || expr->as.call.args.count > 2) {
             runtime_error_raise("sort expects 1 to 2 arguments", 1003,
                                 "invalid function call");
@@ -41818,7 +41894,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return out;
     }
 
-    if (strcmp(expr->as.call.name, "len") == 0) {
+    if (CALL_IS(expr, len)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("len expects one argument", 1003, "invalid function call");
             return value_null();
@@ -41826,56 +41902,56 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_len_value(eval_expr(expr->as.call.args.items[0]));
     }
 
-    if (strcmp(expr->as.call.name, "join_path") == 0 ||
-        strcmp(expr->as.call.name, "file_name") == 0 ||
-        strcmp(expr->as.call.name, "directory_name") == 0 ||
-        strcmp(expr->as.call.name, "real_path") == 0 ||
-        strcmp(expr->as.call.name, "file_type") == 0 ||
-        strcmp(expr->as.call.name, "extension") == 0 ||
-        strcmp(expr->as.call.name, "stem") == 0) {
+    if (CALL_IS(expr, join_path) ||
+        CALL_IS(expr, file_name) ||
+        CALL_IS(expr, directory_name) ||
+        CALL_IS(expr, real_path) ||
+        CALL_IS(expr, file_type) ||
+        CALL_IS(expr, extension) ||
+        CALL_IS(expr, stem)) {
         return eval_path_call(expr);
     }
 
-    if (strcmp(expr->as.call.name, "exists") == 0 ||
-        strcmp(expr->as.call.name, "read") == 0 ||
-        strcmp(expr->as.call.name, "read_lines") == 0 ||
-        strcmp(expr->as.call.name, "write") == 0 ||
-        strcmp(expr->as.call.name, "append") == 0 ||
-        strcmp(expr->as.call.name, "delete") == 0 ||
-        strcmp(expr->as.call.name, "copy") == 0 ||
-        strcmp(expr->as.call.name, "move") == 0 ||
-        strcmp(expr->as.call.name, "list_files") == 0 ||
-        strcmp(expr->as.call.name, "make_dir") == 0 ||
-        strcmp(expr->as.call.name, "remove_dir") == 0 ||
-        strcmp(expr->as.call.name, "remove_tree") == 0 ||
-        strcmp(expr->as.call.name, "permissions") == 0 ||
-        strcmp(expr->as.call.name, "disk_space") == 0 ||
-        strcmp(expr->as.call.name, "chmod") == 0 ||
-        strcmp(expr->as.call.name, "set_mtime") == 0 ||
-        strcmp(expr->as.call.name, "is_symlink") == 0 ||
-        strcmp(expr->as.call.name, "symlink") == 0 ||
-        strcmp(expr->as.call.name, "temp_file") == 0 ||
-        strcmp(expr->as.call.name, "temp_dir") == 0 ||
-        strcmp(expr->as.call.name, "file_size") == 0 ||
-        strcmp(expr->as.call.name, "file_mtime") == 0 ||
-        strcmp(expr->as.call.name, "atomic_replace") == 0 ||
-        strcmp(expr->as.call.name, "fsync") == 0 ||
-        strcmp(expr->as.call.name, "overwrite") == 0 ||
-        strcmp(expr->as.call.name, "read_at") == 0 ||
-        strcmp(expr->as.call.name, "lock") == 0 ||
-        strcmp(expr->as.call.name, "unlock") == 0 ||
-        strcmp(expr->as.call.name, "bytes") == 0 ||
-        strcmp(expr->as.call.name, "lines") == 0 ||
-        strcmp(expr->as.call.name, "chars") == 0) {
+    if (CALL_IS(expr, exists) ||
+        CALL_IS(expr, read) ||
+        CALL_IS(expr, read_lines) ||
+        CALL_IS(expr, write) ||
+        CALL_IS(expr, append) ||
+        CALL_IS(expr, delete) ||
+        CALL_IS(expr, copy) ||
+        CALL_IS(expr, move) ||
+        CALL_IS(expr, list_files) ||
+        CALL_IS(expr, make_dir) ||
+        CALL_IS(expr, remove_dir) ||
+        CALL_IS(expr, remove_tree) ||
+        CALL_IS(expr, permissions) ||
+        CALL_IS(expr, disk_space) ||
+        CALL_IS(expr, chmod) ||
+        CALL_IS(expr, set_mtime) ||
+        CALL_IS(expr, is_symlink) ||
+        CALL_IS(expr, symlink) ||
+        CALL_IS(expr, temp_file) ||
+        CALL_IS(expr, temp_dir) ||
+        CALL_IS(expr, file_size) ||
+        CALL_IS(expr, file_mtime) ||
+        CALL_IS(expr, atomic_replace) ||
+        CALL_IS(expr, fsync) ||
+        CALL_IS(expr, overwrite) ||
+        CALL_IS(expr, read_at) ||
+        CALL_IS(expr, lock) ||
+        CALL_IS(expr, unlock) ||
+        CALL_IS(expr, bytes) ||
+        CALL_IS(expr, lines) ||
+        CALL_IS(expr, chars)) {
         return eval_file_call(expr);
     }
-    if (strcmp(expr->as.call.name, "list") == 0 ||
-        strcmp(expr->as.call.name, "files") == 0 ||
-        strcmp(expr->as.call.name, "folders") == 0) {
+    if (CALL_IS(expr, list) ||
+        CALL_IS(expr, files) ||
+        CALL_IS(expr, folders)) {
         return eval_dir_call(expr);
     }
 
-    if (strcmp(expr->as.call.name, "runtime") == 0) {
+    if (CALL_IS(expr, runtime)) {
         /* WHICH gBASIC IS RUNNING THIS (book gap G36): a program recording,
          * for each file it loads, what read it, so a reading can be reproduced
          * or questioned, had to be handed `gbasic --version` in an environment
@@ -41905,7 +41981,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return r;
     }
 
-    if (strcmp(expr->as.call.name, "platform") == 0) {
+    if (CALL_IS(expr, platform)) {
         /* WHICH PLATFORM THIS BINARY WAS BUILT FOR -- "linux", "windows",
          * "macos", or "posix" for a POSIX family nobody has named yet.
          *
@@ -41931,7 +42007,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_string(gb_platform_name());
     }
 
-    if (strcmp(expr->as.call.name, "watchers") == 0) {
+    if (CALL_IS(expr, watchers)) {
         if (expr->as.call.args.count != 0) {
             runtime_error_raise("watchers expects no arguments", 1003,
                                 "invalid function call");
@@ -41957,7 +42033,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_array(items, live);
     }
 
-    if (strcmp(expr->as.call.name, "source_comments") == 0) {
+    if (CALL_IS(expr, source_comments)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("source_comments expects one argument, the text",
                                 1003, "invalid function call");
@@ -41968,7 +42044,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return builtin_source_comments_value(text);
     }
 
-    if (strcmp(expr->as.call.name, "source_outline") == 0) {
+    if (CALL_IS(expr, source_outline)) {
         size_t n = expr->as.call.args.count;
         if (n != 1 && n != 2) {
             runtime_error_raise("source_outline expects (text) or (text, path)",
@@ -41994,7 +42070,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     }
 
     const char *name = expr->as.call.name;
-    if (gbasic_builtin_function(name)) {
+    if (call_is_registered(expr)) {
         if (expr->as.call.args.count != 1) {
             /* Name what is expected. This family all take ONE numeric array,
              * and the old text -- "invalid function call: range" -- read as
@@ -42154,7 +42230,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
          * the defect, one level up. Where they are NOT orderable (records, arrays)
          * the list is in first-seen order; the complete answer is there either way,
          * and inventing an order over records is what `sort` itself refuses. */
-        if (strcmp(expr->as.call.name, "mode") == 0 && arg.kind == VALUE_ARRAY) {
+        if (CALL_IS(expr, mode) && arg.kind == VALUE_ARRAY) {
             size_t n = arg.as.array.store ? arg.as.array.store->count : 0;
             if (n == 0) {
                 runtime_error_raise("mode expects a non-empty array", 1003,
@@ -42230,8 +42306,8 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
             }
             return out;
         }
-        if ((strcmp(expr->as.call.name, "min") == 0 ||
-             strcmp(expr->as.call.name, "max") == 0) &&
+        if ((CALL_IS(expr, min) ||
+             CALL_IS(expr, max)) &&
             arg.kind == VALUE_ARRAY && !array_is_numeric(arg)) {
             if (!array_all_sort_comparable(arg, expr->as.call.name)) {
                 value_free(arg);
@@ -42246,7 +42322,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
                 value_free(arg);
                 return value_null();
             }
-            int want_max = strcmp(expr->as.call.name, "max") == 0;
+            int want_max = CALL_IS(expr, max);
             size_t best = 0;
             for (size_t i = 1; i < n; i++) {
                 int cmp = sort_value_compare(&arg.as.array.store->items[i],
@@ -42278,8 +42354,8 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
          * (a variance of money is money squared) and the rest are not among the
          * five the loop survey measured, so they stay numeric until something
          * measures a need. */
-        if ((strcmp(expr->as.call.name, "sum") == 0 ||
-             strcmp(expr->as.call.name, "mean") == 0) &&
+        if ((CALL_IS(expr, sum) ||
+             CALL_IS(expr, mean)) &&
             arg.kind == VALUE_ARRAY && arg.as.array.store &&
             arg.as.array.store->count > 0 &&
             arg.as.array.store->items[0].kind == VALUE_MONEY) {
@@ -42318,7 +42394,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
                     return value_null();
                 }
             }
-            if (strcmp(expr->as.call.name, "mean") == 0) {
+            if (CALL_IS(expr, mean)) {
                 const char *merr = NULL;
                 long long scaled = 0;
                 if (!money_scale_by(total.units, (double)n, 1, &scaled, &merr)) {
@@ -42392,8 +42468,8 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * gone, no diagnostic, exit 0. `mod(b, 2)` answered **0**, which is not lost
      * precision but a WRONG ANSWER, the odd literal having become an even double
      * before `mod` saw it. */
-    if (count > 0 && (strcmp(name, "min") == 0 || strcmp(name, "max") == 0)) {
-        int want_max = strcmp(name, "max") == 0;
+    if (count > 0 && (CALL_IS(expr, min) || CALL_IS(expr, max))) {
+        int want_max = CALL_IS(expr, max);
         size_t best = 0;
         for (size_t i = 1; i < count; i++) {
             int cmp = number_order(&arg.as.array.store->items[i],
@@ -42419,7 +42495,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * including `6 / 3` -- so `mean` is inexact by the rule already in force
      * rather than by omission. The same reading governs the EVEN case of
      * `median`, which is the mean of two values. */
-    if (count > 0 && strcmp(name, "sum") == 0) {
+    if (count > 0 && CALL_IS(expr, sum)) {
         int all_exact = 1;
         for (size_t i = 0; i < count; i++) {
             if (!arg.as.array.store->items[i].as.num.is_exact) {
@@ -42454,7 +42530,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
     /* A SUM WITH EXACT DECIMALS IN IT is exact when every item is exact,
      * integer or decimal, by the operator's rule and with its warning. */
-    if (count > 0 && strcmp(name, "sum") == 0) {
+    if (count > 0 && CALL_IS(expr, sum)) {
         int all_exact = 1, any_decimal = 0;
         for (size_t i = 0; i < count; i++) {
             long long m = 0;
@@ -42505,7 +42581,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * 2^53 two distinct exact integers round to the SAME double, so a double sort
      * cannot order them and the "middle" element would be whichever the tie
      * happened to leave there. */
-    if (count > 0 && strcmp(name, "median") == 0) {
+    if (count > 0 && CALL_IS(expr, median)) {
         Value *ordered = malloc(sizeof(Value) * count);
         if (!ordered) {
             abort();
@@ -42526,7 +42602,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return out;
     }
 
-    if (strcmp(name, "len") == 0) {
+    if (CALL_IS(expr, len)) {
         value_free(arg);
         return value_number_exact((long long)count);   /* a count is exact */
     } else if (count == 0) {
@@ -42535,11 +42611,11 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         runtime_error_raise(message, 1003, "invalid function call");
         value_free(arg);
         return value_null();
-    } else if (strcmp(name, "sum") == 0 || strcmp(name, "mean") == 0) {
+    } else if (CALL_IS(expr, sum) || CALL_IS(expr, mean)) {
         for (size_t i = 0; i < count; i++) {
             result += arg.as.array.store->items[i].as.num.value;
         }
-        if (strcmp(name, "mean") == 0) {
+        if (CALL_IS(expr, mean)) {
             result /= (double)count;
         }
     /* `min`, `max` AND `median` ARE HANDLED ABOVE, before this chain, because they
@@ -42550,14 +42626,14 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      *
      * `mode` is handled earlier still, before the numeric gate, because it accepts
      * text. */
-    } else if (strcmp(name, "variance") == 0 || strcmp(name, "stdev") == 0 ||
-               strcmp(name, "pvariance") == 0 || strcmp(name, "pstdev") == 0 ||
-               strcmp(name, "skewness") == 0 || strcmp(name, "kurtosis") == 0) {
+    } else if (CALL_IS(expr, variance) || CALL_IS(expr, stdev) ||
+               CALL_IS(expr, pvariance) || CALL_IS(expr, pstdev) ||
+               CALL_IS(expr, skewness) || CALL_IS(expr, kurtosis)) {
         /* Central moments about the mean (statistics_design.md §8). variance/
          * stdev are sample estimators (divide by n-1); pvariance/pstdev are the
          * population forms (divide by n). skewness/kurtosis are moment-based
          * (population) with excess kurtosis, matching scipy defaults. */
-        int sample = (strcmp(name, "variance") == 0 || strcmp(name, "stdev") == 0);
+        int sample = (CALL_IS(expr, variance) || CALL_IS(expr, stdev));
         if (sample && count < 2) {
             char message[256];
             snprintf(message, sizeof(message), "%s expects at least two values", name);
@@ -42578,13 +42654,13 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
             m3 += d2 * d;
             m4 += d2 * d2;
         }
-        if (strcmp(name, "variance") == 0) {
+        if (CALL_IS(expr, variance)) {
             result = m2 / (double)(count - 1);
-        } else if (strcmp(name, "stdev") == 0) {
+        } else if (CALL_IS(expr, stdev)) {
             result = sqrt(m2 / (double)(count - 1));
-        } else if (strcmp(name, "pvariance") == 0) {
+        } else if (CALL_IS(expr, pvariance)) {
             result = m2 / (double)count;
-        } else if (strcmp(name, "pstdev") == 0) {
+        } else if (CALL_IS(expr, pstdev)) {
             result = sqrt(m2 / (double)count);
         } else {
             double var_p = m2 / (double)count;
@@ -42596,13 +42672,13 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
                 value_free(arg);
                 return value_null();
             }
-            if (strcmp(name, "skewness") == 0) {
+            if (CALL_IS(expr, skewness)) {
                 result = (m3 / (double)count) / pow(var_p, 1.5);
             } else {
                 result = (m4 / (double)count) / (var_p * var_p) - 3.0;
             }
         }
-    } else if (strcmp(name, "range") == 0) {
+    } else if (CALL_IS(expr, range)) {
         double lo = arg.as.array.store->items[0].as.num.value;
         double hi = lo;
         for (size_t i = 1; i < count; i++) {
@@ -42615,7 +42691,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
             }
         }
         result = hi - lo;
-    } else if (strcmp(name, "iqr") == 0) {
+    } else if (CALL_IS(expr, iqr)) {
         /* THIS ONE SORTS DOUBLES AND THAT IS CORRECT HERE, which is worth saying
          * because `median` and `percentile` beside it had to stop doing so. An
          * `iqr` is a DIFFERENCE of two quantiles, so it calculates and is

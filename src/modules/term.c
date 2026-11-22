@@ -71,10 +71,10 @@ static Value term_eval_call(AstExpr *expr) {
     if (!term_library_loaded) {
         return term_raise("library not loaded: term (write `load term` first)");
     }
-    if (strcmp(expr->as.call.name, "can") == 0 || strcmp(expr->as.call.name, "is_open") == 0) {
+    if (CALL_IS(expr, can) || CALL_IS(expr, is_open)) {
         return value_bool(0);
     }
-    if (strcmp(expr->as.call.name, "close") == 0) {
+    if (CALL_IS(expr, close)) {
         return value_null();
     }
     return term_raise("term is not available in this build: the Windows console is the next increment "
@@ -663,54 +663,54 @@ static Value term_eval_call(AstExpr *expr) {
     if (!term_library_loaded) {
         return term_raise("library not loaded: term (write `load term` first)");
     }
-    if (strcmp(verb, "can") == 0) {
+    if (CALL_IS(expr, can)) {
         if (expr->as.call.args.count != 0) {
             return term_raise("term.can expects no arguments");
         }
         return value_bool(term_open_now || term_unusable() == NULL);
     }
-    if (strcmp(verb, "open") == 0) {
+    if (CALL_IS(expr, open)) {
         return term_open(expr);
     }
-    if (strcmp(verb, "close") == 0) {
+    if (CALL_IS(expr, close)) {
         term_close_now();
         return value_null();
     }
-    if (strcmp(verb, "is_open") == 0) {
+    if (CALL_IS(expr, is_open)) {
         return value_bool(term_open_now);
     }
-    if (strcmp(verb, "size") == 0) {
+    if (CALL_IS(expr, size)) {
         if (!term_need_open("term.size")) {
             return value_null();
         }
         term_check_resized();
         return term_size_value();
     }
-    if (strcmp(verb, "colours") == 0 || strcmp(verb, "colors") == 0) {
+    if (CALL_IS(expr, colours) || CALL_IS(expr, colors)) {
         if (!term_need_open("term.colors")) {
             return value_null();
         }
         return value_number_exact(term_screen.depth == TERM_DEPTH_24BIT ? 16777216 : term_screen.depth);
     }
-    if (strcmp(verb, "put") == 0) {
+    if (CALL_IS(expr, put)) {
         return term_put(expr);
     }
-    if (strcmp(verb, "fill") == 0) {
+    if (CALL_IS(expr, fill)) {
         return term_fill(expr);
     }
-    if (strcmp(verb, "clear") == 0) {
+    if (CALL_IS(expr, clear)) {
         return term_clear(expr);
     }
-    if (strcmp(verb, "cursor") == 0) {
+    if (CALL_IS(expr, cursor)) {
         return term_cursor(expr);
     }
-    if (strcmp(verb, "show") == 0) {
+    if (CALL_IS(expr, show)) {
         return term_show();
     }
-    if (strcmp(verb, "width") == 0) {
+    if (CALL_IS(expr, width)) {
         return term_width_of(expr);
     }
-    if (strcmp(verb, "wait") == 0) {
+    if (CALL_IS(expr, wait)) {
         return term_wait(expr);
     }
     char message[200];

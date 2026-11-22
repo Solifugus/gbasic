@@ -441,7 +441,7 @@ static Value smtp_eval_send(AstExpr *expr) {
 }
 
 static Value smtp_eval_call(AstExpr *expr) {
-    if (strcmp(expr->as.call.name, "send") == 0) {
+    if (CALL_IS(expr, send)) {
         return smtp_eval_send(expr);
     }
     char message[192];

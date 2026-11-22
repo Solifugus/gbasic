@@ -1102,8 +1102,11 @@ fi
 QTREF=docs/reference.md
 if [ -f "$QTREF" ] && [ -f src/modules/ui.c ] && [ -f src/window_check.c ]; then
     qt_ok=1
-    verbs=$(grep -oE 'strcmp\(verb, "[a-z_]+"\)' src/modules/ui.c \
-            | grep -oE '"[a-z_]+"' | tr -d '"' | sort -u)
+    # a verb is tested as `CALL_IS(expr, verb)` since names are resolved once
+    # (docs/llvm_backend_design.md increment 1), and was `strcmp(verb, "verb")`
+    verbs=$( { grep -oE 'strcmp\(verb, "[a-z_]+"\)' src/modules/ui.c | grep -oE '"[a-z_]+"' | tr -d '"'
+               grep -oE 'CALL_IS\(expr, [a-z_]+\)' src/modules/ui.c | sed 's/CALL_IS(expr, \(.*\))/\1/'
+             } | sort -u)
     nverbs=0
     for v in $verbs; do
         nverbs=$((nverbs + 1))

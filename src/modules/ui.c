@@ -3994,14 +3994,14 @@ static Value qt_eval_call(AstExpr *expr) {
      * asks them in order to choose, so refusing would make the choice
      * unmakeable. A group that does not exist is a misspelling, though, and
      * is refused whatever the build. */
-    if (strcmp(verb, "backend") == 0) {
+    if (CALL_IS(expr, backend)) {
         if (argc != 0) {
             qt_raise("ui.backend takes no arguments");
             return value_null();
         }
         return ui_be_choose() ? value_string(ui->name) : value_unknown();
     }
-    if (strcmp(verb, "can") == 0) {
+    if (CALL_IS(expr, can)) {
         if (argc != 1) {
             qt_raise("ui.can expects one capability group's name, as text");
             return value_null();
@@ -4041,13 +4041,13 @@ static Value qt_eval_call(AstExpr *expr) {
          * may open a window is DEGRADING GRACEFULLY, and a build with no
          * backend is one of the answers to that question. Every other verb
          * refuses in the convention's own words. */
-        if (strcmp(verb, "can_display") == 0 && argc == 0) {
+        if (CALL_IS(expr, can_display) && argc == 0) {
             return value_bool(0);
         }
         /* ANSWERS WITHOUT A BACKEND, like can_display and for the same
          * reason: "can this build highlight?" is a question a program asks in
          * order to choose, so refusing it would make the choice unmakeable. */
-        if (strcmp(verb, "can_highlight") == 0 && argc == 0) {
+        if (CALL_IS(expr, can_highlight) && argc == 0) {
             return value_bool(0);
         }
         /* ANSWERS WITHOUT A BACKEND for the same reason: a program asking
@@ -4055,7 +4055,7 @@ static Value qt_eval_call(AstExpr *expr) {
          * on a build that cannot open one the true answer is no. Refusing
          * would make a program that degrades gracefully have to special-case
          * the degradation. */
-        if (strcmp(verb, "is_open") == 0 && argc == 1) {
+        if (CALL_IS(expr, is_open) && argc == 1) {
             Value win = eval_expr(expr->as.call.args.items[0]);
             value_free(win);
             if (error_action_pending()) {
@@ -4063,7 +4063,7 @@ static Value qt_eval_call(AstExpr *expr) {
             }
             return value_bool(0);
         }
-        if (strcmp(verb, "check") == 0) {
+        if (CALL_IS(expr, check)) {
             return qt_check_verb(expr, argc);
         }
         qt_raise(ui_be_problem);
@@ -4095,7 +4095,7 @@ static Value qt_eval_call(AstExpr *expr) {
 
     char err[QT_ERRBUF];
 
-    if (strcmp(verb, "can_display") == 0) {
+    if (CALL_IS(expr, can_display)) {
         if (argc != 0) {
             qt_raise("ui.can_display takes no arguments");
             return value_null();
@@ -4108,7 +4108,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * at all, that one tells it what a particular editor actually got -- which
      * a boolean cannot, since the definition can be the wrong one or somebody
      * else's copy of the right one. */
-    if (strcmp(verb, "can_highlight") == 0) {
+    if (CALL_IS(expr, can_highlight)) {
         if (argc != 0) {
             qt_raise("ui.can_highlight takes no arguments");
             return value_null();
@@ -4128,7 +4128,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * uncatchably (§0.3) -- so the refusal names the display rather than a
      * window, which is the wrong-cause class this tree has recorded six times.
      */
-    if (strcmp(verb, "copy") == 0) {
+    if (CALL_IS(expr, copy)) {
         if (argc != 1) {
             qt_raise("ui.copy expects the text to copy");
             return value_null();
@@ -4186,7 +4186,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * deliberately copied empty string reports text of length 0), so both
      * answers are honest rather than a guess. The §0.16 rule: a cancelled
      * chooser answers `unknown` and a chosen empty name could not happen. */
-    if (strcmp(verb, "clipboard") == 0) {
+    if (CALL_IS(expr, clipboard)) {
         if (argc != 0) {
             qt_raise("ui.clipboard takes no arguments -- it answers what is on "
                      "the clipboard, and ui.copy(text) puts something there");
@@ -4215,11 +4215,11 @@ static Value qt_eval_call(AstExpr *expr) {
         return out;
     }
 
-    if (strcmp(verb, "check") == 0) {
+    if (CALL_IS(expr, check)) {
         return qt_check_verb(expr, argc);
     }
 
-    if (strcmp(verb, "open") == 0) {
+    if (CALL_IS(expr, open)) {
         void *root = NULL;
         if (!qt_open_declared(expr, argc, "open", 0, &root)) {
             return value_null();
@@ -4245,7 +4245,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * `closed` handler fire exactly once however the window ended, so §0.17's
      * single rule -- the handler is where a dismissed form is read -- holds
      * for a modal window too. */
-    if (strcmp(verb, "open_modal") == 0) {
+    if (CALL_IS(expr, open_modal)) {
         void *root = NULL;
         if (!qt_open_declared(expr, argc, "open_modal", 1, &root)) {
             return value_null();
@@ -4286,8 +4286,8 @@ static Value qt_eval_call(AstExpr *expr) {
      * person's own answer arriving through a button they pressed: a different
      * thing wearing the same word, so it gets its own verb rather than a third
      * argument shape on that one. */
-    if (strcmp(verb, "accept") == 0 || strcmp(verb, "reject") == 0) {
-        int accepting = strcmp(verb, "accept") == 0;
+    if (CALL_IS(expr, accept) || CALL_IS(expr, reject)) {
+        int accepting = CALL_IS(expr, accept);
         if (argc != 1) {
             snprintf(message, sizeof(message),
                      "ui.%s expects one window declaration", verb);
@@ -4341,7 +4341,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * the declaration, so a form captures its subject again and nothing of the
      * old one survives -- which is what makes a dismissed window's values
      * readable only in the `closed` handler. */
-    if (strcmp(verb, "close") == 0) {
+    if (CALL_IS(expr, close)) {
         if (argc != 1) {
             qt_raise("ui.close expects one window declaration");
             return value_null();
@@ -4387,7 +4387,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * that is nobody's mistake, and a program with no way to ask would have to
      * wrap each call in `on error` to find out something it could simply be
      * told. */
-    if (strcmp(verb, "is_open") == 0) {
+    if (CALL_IS(expr, is_open)) {
         if (argc != 1) {
             qt_raise("ui.is_open expects one window declaration");
             return value_null();
@@ -4422,12 +4422,12 @@ static Value qt_eval_call(AstExpr *expr) {
      * ADDRESSED BY NAME, NOT BY COLUMN NUMBER, because a number is the one
      * thing that changes when the declaration is reordered -- and then it
      * reads a real value from the wrong column, which is a plausible answer. */
-    if (strcmp(verb, "cell") == 0 || strcmp(verb, "alignment") == 0) {
+    if (CALL_IS(expr, cell) || CALL_IS(expr, alignment)) {
         /* `ui.alignment` IS `ui.cell` ASKING A DIFFERENT QUESTION OF THE SAME
          * CELL: where its text sits, as Qt would paint it ("left", "right" or
          * "center"). One branch, so the two address a cell identically and
          * refuse identically. */
-        int is_align = strcmp(verb, "alignment") == 0;
+        int is_align = CALL_IS(expr, alignment);
         const char *vn = is_align ? "ui.alignment" : "ui.cell";
         if (argc != 4) {
             snprintf(message, sizeof(message),
@@ -4562,7 +4562,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * ASKED OF THE LAYOUT, walking up from a part that CAN be named -- the rule
      * `ui.at` already follows, and for the same reason: a position we
      * remembered would agree with a placement that was wrong. */
-    if (strcmp(verb, "pane") == 0) {
+    if (CALL_IS(expr, pane)) {
         if (argc != 2) {
             qt_raise("ui.pane expects a window and a part's name");
             return value_null();
@@ -4655,7 +4655,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return out;
     }
 
-    if (strcmp(verb, "at") == 0) {
+    if (CALL_IS(expr, at)) {
         if (argc != 2) {
             qt_raise("ui.at expects a window and a part's name");
             return value_null();
@@ -4723,7 +4723,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * NAMED container cannot be configured in its head. With this it is
      * configured at run time instead, which makes that limit affordable rather
      * than something the author has to design around. */
-    if (strcmp(verb, "set") == 0) {
+    if (CALL_IS(expr, set)) {
         if (argc != 4) {
             qt_raise("ui.set expects a window, a part, a property and a value");
             return value_null();
@@ -4843,7 +4843,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(verb, "children") == 0) {
+    if (CALL_IS(expr, children)) {
         /* THE NAMES OF A CONTAINER'S CHILDREN, IN ORDER -- the oracle for
          * `ui.refresh(win, name, items)` and the only way a box's order can be
          * seen at all: `ui.at` answers coordinates for a `cells` grid alone
@@ -4902,7 +4902,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_array(names, (size_t)(n > 0 ? n : 0));
     }
 
-    if (strcmp(verb, "caret") == 0 || strcmp(verb, "caret_to") == 0) {
+    if (CALL_IS(expr, caret) || CALL_IS(expr, caret_to)) {
         /* WHERE THE CARET IS, AND PUTTING IT SOMEWHERE (§0.32). Asked for by
          * the consumer with the use that justifies it -- *"stopped at line 7,
          * put the caret there to see why"* -- and it needs a verb rather than
@@ -4913,7 +4913,7 @@ static Value qt_eval_call(AstExpr *expr) {
          * already follow: a reader and a writer that disagreed about what a
          * line number MEANS would be the off-by-one §0.29 exists to have no
          * room for, and here they share the numbering by construction. */
-        int putting = strcmp(verb, "caret_to") == 0;
+        int putting = CALL_IS(expr, caret_to);
         if (argc != (putting ? 4 : 2)) {
             qt_raise(putting
                          ? "ui.caret_to expects a window, a part's name, a "
@@ -4996,7 +4996,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return out;
     }
 
-    if (strcmp(verb, "mark") == 0 || strcmp(verb, "marks") == 0) {
+    if (CALL_IS(expr, mark) || CALL_IS(expr, marks)) {
         /* A MARK PER LINE IN A `source`'S MARGIN (§0.29) -- the second of the
          * two asks docs/qt_studio_requests.md names as blocking a feature
          * Studio already has, and the one the user widened on reading it:
@@ -5012,7 +5012,7 @@ static Value qt_eval_call(AstExpr *expr) {
          * what a category IS: a writer that accepted `warn` and a reader that
          * did not would make a mark unreadable for a reason nothing explains.
          * The shape `ui.read`/`ui.set` already share. */
-        int setting = strcmp(verb, "mark") == 0;
+        int setting = CALL_IS(expr, mark);
         if (argc != (setting ? 4 : 3)) {
             qt_raise(setting
                          ? "ui.mark expects a window, a `source`'s name, a "
@@ -5174,7 +5174,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(verb, "dock") == 0) {
+    if (CALL_IS(expr, dock)) {
         /* WHERE A PANE IS AND WHAT IT IS DOING (§0.30) -- the oracle, built
          * before the fixture, which is the discipline §0.8 arrived at by
          * getting it wrong. Without it a pane placed in the WRONG AREA is
@@ -5245,7 +5245,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return out;
     }
 
-    if (strcmp(verb, "layout") == 0 || strcmp(verb, "restore_layout") == 0) {
+    if (CALL_IS(expr, layout) || CALL_IS(expr, restore_layout)) {
         /* THE WINDOW'S OWN LAYOUT, AS TEXT -- which is how "put my panes back
          * where I left them" is written, and the same question §0.22 answered
          * for a splitter. A dock layout is richer than pane sizes (which area,
@@ -5263,7 +5263,7 @@ static Value qt_eval_call(AstExpr *expr) {
          * AND IT IS QT'S FORMAT, NOT OURS: a program keeps it and does not
          * read it, which is why it is one opaque string rather than a record
          * naming areas -- `ui.dock` is what answers questions. */
-        int saving = strcmp(verb, "layout") == 0;
+        int saving = CALL_IS(expr, layout);
         if (argc != (saving ? 1 : 2)) {
             qt_raise(saving
                          ? "ui.layout expects a window"
@@ -5329,7 +5329,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(verb, "gutter_press") == 0) {
+    if (CALL_IS(expr, gutter_press)) {
         /* A PRESS IN THE MARGIN, which is how the `gutter` handler is driven
          * without a person -- `ui.right_click`'s shape (§0.20) and
          * `ui.scroll`'s (§0.21), and in the product surface for the reason
@@ -5380,7 +5380,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(verb, "gutter") == 0) {
+    if (CALL_IS(expr, gutter)) {
         /* WHAT THE MARGIN IS, or NOTHING AT ALL -- the shape `ui.pane`,
          * `ui.dialog` and `principal()` all take, for the reason stated
          * there: a record reading `width: 0` would say a margin exists and is
@@ -5443,7 +5443,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return out;
     }
 
-    if (strcmp(verb, "gutter_click") == 0) {
+    if (CALL_IS(expr, gutter_click)) {
         /* WHICH LINE WAS CLICKED, asked for rather than passed in -- §0.21's
          * arrangement, reused rather than re-argued: a handler in this
          * backend takes no arguments, so `on code.gutter` fires and the
@@ -5468,7 +5468,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return out;
     }
 
-    if (strcmp(verb, "which_tab") == 0) {
+    if (CALL_IS(expr, which_tab)) {
         /* WHICH TAB THE EVENT BEING HANDLED IS ABOUT -- the fourth verb of a
          * shape the Studio bench named rather than this backend: `ui.selected`
          * answers which row, `ui.gutter_click` which line, `ui.wheel` which
@@ -5509,7 +5509,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_number((double)which);
     }
 
-    if (strcmp(verb, "shortcuts") == 0 || strcmp(verb, "key") == 0) {
+    if (CALL_IS(expr, shortcuts) || CALL_IS(expr, key)) {
         /* `ui.shortcuts(win, part)` answers EVERY shortcut a part answers to,
          * because `ui.read(..., "shortcut")` reports only the first -- the
          * property holds one sequence, measured. `ui.key(win, part, keys)`
@@ -5517,7 +5517,7 @@ static Value qt_eval_call(AstExpr *expr) {
          * the keyboard's `ui.right_click`, and answers whether anything took
          * it. Both asked for by gBASIC Studio, whose accelerators were
          * untestable. */
-        int is_key = strcmp(verb, "key") == 0;
+        int is_key = CALL_IS(expr, key);
         if (argc != (is_key ? 3 : 2)) {
             qt_raise(is_key ? "ui.key expects a window, a part's name and the "
                               "keys to press, like \"Ctrl+S\""
@@ -5602,7 +5602,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_array(items, n);
     }
 
-    if (strcmp(verb, "depth") == 0) {
+    if (CALL_IS(expr, depth)) {
         /* HOW DEEP A ROW SITS IN A TREE, asked of THE WIDGET by walking the
          * item's parents -- never of the record that was handed over. That is
          * the whole reason the verb exists: a populate that IGNORED the depth
@@ -5667,7 +5667,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_number((double)d);
     }
 
-    if (strcmp(verb, "tabs") == 0) {
+    if (CALL_IS(expr, tabs)) {
         /* THE CAPTIONS OF A `tabs`, AS A LIST, and it exists because they are
          * otherwise unobservable: `QTabWidget::tabText(int)` takes an argument
          * and `ui.invoke` passes none, so every check about a caption would
@@ -5733,7 +5733,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_array(caps, (size_t)n);
     }
 
-    if (strcmp(verb, "menus") == 0) {
+    if (CALL_IS(expr, menus)) {
         /* ONE ARGUMENT gives the BAR's captions; TWO gives the ENTRIES of the
          * menu at that position -- the same oracle one level in, which closes
          * the case that is structurally worse than a missing separator: an
@@ -5867,7 +5867,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * what the language already has, where a file argument would put file
      * resolution, missing-file behaviour and a search path inside a GUI
      * module that has no business owning them. */
-    if (strcmp(verb, "theme") == 0) {
+    if (CALL_IS(expr, theme)) {
         /* A RECORD IS EVERY BACKEND'S THEME (docs/ui_design.md §7); TEXT IS
          * A Qt STYLESHEET, the `stylesheet` capability, kept for a program
          * that is Qt's on purpose. Reading answers whichever was set last. */
@@ -6026,7 +6026,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * list that has moved is how a form comes to report a value nobody picked.
      * A program that wants the old choice back asks for it with `ui.write`,
      * which refuses one that is not in the new list. */
-    if (strcmp(verb, "options") == 0) {
+    if (CALL_IS(expr, options)) {
         if (argc != 3) {
             qt_raise("ui.options expects a window, a part's name and a list");
             return value_null();
@@ -6065,7 +6065,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_number((double)n);
     }
 
-    if (strcmp(verb, "refresh") == 0) {
+    if (CALL_IS(expr, refresh)) {
         /* A THIRD ARGUMENT IS A CONTAINER'S CHILDREN (§0.27), which is one
          * verb taking either rather than a second verb asking the same
          * question about a different word -- the rule §0.11 took when this
@@ -6286,7 +6286,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * file was used. That precedence is deliberate, being the rule `load`
      * already follows; what would not be acceptable is being unable to see
      * it. */
-    if (strcmp(verb, "highlighting") == 0) {
+    if (CALL_IS(expr, highlighting)) {
         if (argc != 2) {
             qt_raise("ui.highlighting expects a window and a part's name");
             return value_null();
@@ -6349,8 +6349,8 @@ static Value qt_eval_call(AstExpr *expr) {
      * webserver and an actor mailbox all keep running while a box is up, and
      * that is asserted through the interpreter rather than taken on trust.
      */
-    if (strcmp(verb, "inform") == 0 || strcmp(verb, "confirm") == 0) {
-        int asking = strcmp(verb, "confirm") == 0;
+    if (CALL_IS(expr, inform) || CALL_IS(expr, confirm)) {
+        int asking = CALL_IS(expr, confirm);
         if (argc != 2) {
             snprintf(message, sizeof(message),
                      "ui.%s expects a window and a message", verb);
@@ -6418,7 +6418,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * changed, and an unattended run all need it -- and `ui.invoke` is already
      * here on the same argument. It is only reachable from a `watch` body or a
      * handler, because that is the only code that runs while a box is up. */
-    if (strcmp(verb, "answer") == 0) {
+    if (CALL_IS(expr, answer)) {
         if (argc != 1) {
             qt_raise("ui.answer expects one value -- true or false for a message box, or a path for a file chooser");
             return value_null();
@@ -6505,11 +6505,11 @@ static Value qt_eval_call(AstExpr *expr) {
      * puzzle instead of a raise. `unknown` is what `ui.selected` already
      * answers for "nothing is chosen" and what `ui.highlighting` answers for
      * "no definition", and `if path then` on it RAISES, which is loud. */
-    if (strcmp(verb, "choose_file") == 0 || strcmp(verb, "choose_save") == 0 ||
-        strcmp(verb, "choose_folder") == 0) {
+    if (CALL_IS(expr, choose_file) || CALL_IS(expr, choose_save) ||
+        CALL_IS(expr, choose_folder)) {
         int kind = GB_UI_PICK_OPEN;
-        if (strcmp(verb, "choose_save") == 0)   { kind = GB_UI_PICK_SAVE; }
-        if (strcmp(verb, "choose_folder") == 0) { kind = GB_UI_PICK_FOLDER; }
+        if (CALL_IS(expr, choose_save))   { kind = GB_UI_PICK_SAVE; }
+        if (CALL_IS(expr, choose_folder)) { kind = GB_UI_PICK_FOLDER; }
         if (argc < 1 || argc > 2) {
             snprintf(message, sizeof(message),
                      "ui.%s expects a window, and optionally a record of "
@@ -6716,7 +6716,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * increments while every check passed. It is not a test hook for the same
      * reason `ui.highlighting` is not -- being unable to see what landed is
      * being unable to tell an option that worked from one that did nothing. */
-    if (strcmp(verb, "dialog") == 0) {
+    if (CALL_IS(expr, dialog)) {
         if (argc != 0) {
             qt_raise("ui.dialog takes nothing -- it answers the dialog that "
                      "is open");
@@ -6748,7 +6748,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return out;
     }
 
-    if (strcmp(verb, "heading") == 0) {
+    if (CALL_IS(expr, heading)) {
         if (argc != 3) {
             qt_raise("ui.heading expects a window, a table and a column name");
             return value_null();
@@ -6840,7 +6840,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * order highlighted, or a row just added being made current. `unknown`
      * clears the selection, so "nobody has chosen" is sayable in both
      * directions rather than only readable. */
-    if (strcmp(verb, "select") == 0) {
+    if (CALL_IS(expr, select)) {
         if (argc != 3) {
             qt_raise("ui.select expects a window, a table's name and a row");
             return value_null();
@@ -6894,7 +6894,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * end in a language that allowed it -- so either would let a program act
      * on a row nobody picked. `unknown` is the answer `materiality` and
      * `principal()` already give for "nobody said". */
-    if (strcmp(verb, "selected") == 0) {
+    if (CALL_IS(expr, selected)) {
         if (argc != 2) {
             qt_raise("ui.selected expects a window and a table's name");
             return value_null();
@@ -6960,7 +6960,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * downstream would notice. So the kind comes from `type:` where the author
      * declared one, from the CAPTURED field otherwise, and from a check being
      * a check in the one case where the widget decides. */
-    if (strcmp(verb, "subject") == 0) {
+    if (CALL_IS(expr, subject)) {
         if (argc != 2) {
             qt_raise("ui.subject expects a window and the subject's name");
             return value_null();
@@ -7027,8 +7027,8 @@ static Value qt_eval_call(AstExpr *expr) {
         return out;
     }
 
-    if (strcmp(verb, "read") == 0 || strcmp(verb, "write") == 0) {
-        int writing = strcmp(verb, "write") == 0;
+    if (CALL_IS(expr, read) || CALL_IS(expr, write)) {
+        int writing = CALL_IS(expr, write);
         /* `ui.read` TAKES AN OPTIONAL PROPERTY NAME, which is the read half of
          * the by-name route the declaration's options already take. Two
          * arguments ask what the part is SHOWING; three ask one named property
@@ -7206,7 +7206,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * and HIDES the ones a row does not offer, and its comment says an empty
      * one "reads as a control that failed" -- so a row that offers nothing is
      * an ordinary outcome and `false` is the truthful report, not an error. */
-    if (strcmp(verb, "popup") == 0) {
+    if (CALL_IS(expr, popup)) {
         if (argc != 2 && argc != 3) {
             qt_raise("ui.popup expects a window, a popup menu's name and "
                      "optionally a part to pop under");
@@ -7282,8 +7282,8 @@ static Value qt_eval_call(AstExpr *expr) {
     /* `ui.click` is the left button through the same aiming (§0.36): Studio's
      * single-click-opens path could not be driven, since nothing fired
      * `itemClicked`. */
-    if (strcmp(verb, "right_click") == 0 || strcmp(verb, "click") == 0) {
-        int left = strcmp(verb, "click") == 0;
+    if (CALL_IS(expr, right_click) || CALL_IS(expr, click)) {
+        int left = CALL_IS(expr, click);
         if (argc != 2 && argc != 3) {
             snprintf(message, sizeof(message), "ui.%s expects a window, a part's name "
                      "and optionally a row", verb);
@@ -7365,7 +7365,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * mistake about where the call was written rather than an ordinary
      * outcome: there is no sensible record to hand back, and a program that
      * asked in the wrong place would otherwise read zeros and act on them. */
-    if (strcmp(verb, "wheel") == 0) {
+    if (CALL_IS(expr, wheel)) {
         if (argc != 0) {
             qt_raise("ui.wheel takes no arguments -- it answers the event "
                      "being handled");
@@ -7395,7 +7395,7 @@ static Value qt_eval_call(AstExpr *expr) {
     }
 
     /* CLAIM IT, so the view does not also act on it. */
-    if (strcmp(verb, "swallow") == 0) {
+    if (CALL_IS(expr, swallow)) {
         if (argc != 0) {
             qt_raise("ui.swallow takes no arguments");
             return value_null();
@@ -7414,7 +7414,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * `ui.pane` reports, and the answer to §0.19's open item: `setSizes` takes
      * a QList<int>, so it is neither a property nor invokable, and a `split`
      * cannot be named -- so the part is what addresses it. */
-    if (strcmp(verb, "resize_panes") == 0) {
+    if (CALL_IS(expr, resize_panes)) {
         if (argc != 3) {
             qt_raise("ui.resize_panes expects a window, a part's name and a "
                      "list of sizes");
@@ -7489,9 +7489,9 @@ static Value qt_eval_call(AstExpr *expr) {
      * It is also what a program needs, an icon the machine's theme lacks being
      * a warning rather than a refusal -- so falling back to a text-only button
      * means being able to ask. */
-    if (strcmp(verb, "select_text") == 0 || strcmp(verb, "selection") == 0 ||
-        strcmp(verb, "replace_text") == 0 || strcmp(verb, "highlight_text") == 0 ||
-        strcmp(verb, "highlights") == 0 || strcmp(verb, "label") == 0) {
+    if (CALL_IS(expr, select_text) || CALL_IS(expr, selection) ||
+        CALL_IS(expr, replace_text) || CALL_IS(expr, highlight_text) ||
+        CALL_IS(expr, highlights) || CALL_IS(expr, label)) {
         return qt_text_verb(expr, verb, argc);
     }
 
@@ -7511,7 +7511,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * on after any edits, its height as laid out, whether it is on screen,
      * collapsed, and covering its line -- the oracle a fixture proves
      * anchoring with. */
-    if (strcmp(verb, "blocks") == 0) {
+    if (CALL_IS(expr, blocks)) {
         if (argc != 2 && argc != 3) {
             qt_raise("ui.blocks expects a window and a `source`'s name, and "
                      "the blocks as an array to set them");
@@ -7806,7 +7806,7 @@ static Value qt_eval_call(AstExpr *expr) {
 
     /* FOLDS (§0.38 B2): replace-all ranges, each keeping its first line and
      * hiding the rest; with no ranges, what Qt holds now. */
-    if (strcmp(verb, "fold") == 0) {
+    if (CALL_IS(expr, fold)) {
         if (argc != 2 && argc != 3) {
             qt_raise("ui.fold expects a window and a `source`'s name, and the "
                      "ranges as an array of { from, to } to set them");
@@ -7898,7 +7898,7 @@ static Value qt_eval_call(AstExpr *expr) {
 
     /* THE LINK BEING HANDLED in a `markdown` part's `link` handler (§0.38
      * B4): its target as text, `unknown` outside one. */
-    if (strcmp(verb, "link") == 0) {
+    if (CALL_IS(expr, link)) {
         if (argc != 0) {
             qt_raise("ui.link takes no arguments -- it answers the link being "
                      "handled");
@@ -7914,7 +7914,7 @@ static Value qt_eval_call(AstExpr *expr) {
     }
 
     /* A REAL PRESS ON A LINK in a `markdown` part, for a fixture. */
-    if (strcmp(verb, "link_press") == 0) {
+    if (CALL_IS(expr, link_press)) {
         if (argc != 3) {
             qt_raise("ui.link_press expects a window, a `markdown` part's name "
                      "and the link's target");
@@ -7947,7 +7947,7 @@ static Value qt_eval_call(AstExpr *expr) {
     /* THE `block` EVENT BEING HANDLED (§0.38 A), asked for as
      * `ui.gutter_click` is: `{ id, action, target }`, `target` a link's
      * address and `unknown` otherwise; `unknown` outside a handler. */
-    if (strcmp(verb, "block_event") == 0) {
+    if (CALL_IS(expr, block_event)) {
         if (argc != 0) {
             qt_raise("ui.block_event takes no arguments -- it answers the "
                      "block event being handled");
@@ -7968,7 +7968,7 @@ static Value qt_eval_call(AstExpr *expr) {
     /* DRIVING A BLOCK, as ui.gutter_press drives the margin: a real press on
      * its body, a real click on its collapse control, or a real press on a
      * link's text, so the `block` handler runs as it would for a person. */
-    if (strcmp(verb, "block_press") == 0) {
+    if (CALL_IS(expr, block_press)) {
         if (argc != 4 && argc != 5) {
             qt_raise("ui.block_press expects a window, a `source`'s name, a "
                      "block's id, an action (click, collapse or link) and, for "
@@ -8016,7 +8016,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * is the text given. The option set is closed and refused by name, as
      * ui.capture's is, for the same reason -- a misspelt `scale` is a figure
      * at the wrong resolution with nothing to say so. */
-    if (strcmp(verb, "render_svg") == 0) {
+    if (CALL_IS(expr, render_svg)) {
         if (argc < 2 || argc > 3) {
             qt_raise("ui.render_svg expects the SVG as text, the file to write "
                      "the PNG to, and optionally { width, height, scale }");
@@ -8126,7 +8126,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return answer;
     }
 
-    if (strcmp(verb, "capture") == 0) {
+    if (CALL_IS(expr, capture)) {
         if (argc < 2 || argc > 3) {
             qt_raise("ui.capture expects a window, the file to write the PNG "
                      "to, and optionally a record of options");
@@ -8246,7 +8246,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return answer;
     }
 
-    if (strcmp(verb, "has_icon") == 0) {
+    if (CALL_IS(expr, has_icon)) {
         if (argc != 2) {
             qt_raise("ui.has_icon expects a window and a part's name");
             return value_null();
@@ -8295,7 +8295,7 @@ static Value qt_eval_call(AstExpr *expr) {
      *
      * READ WITH NO COUNT, which is the only way to observe that a set took --
      * the shape `ui.menus` already has. */
-    if (strcmp(verb, "rows") == 0) {
+    if (CALL_IS(expr, rows)) {
         if (argc != 2 && argc != 3) {
             qt_raise("ui.rows expects a window, a table's name and optionally "
                      "how many rows it now has");
@@ -8366,8 +8366,8 @@ static Value qt_eval_call(AstExpr *expr) {
         return setting ? value_bool(1) : value_number(howmany);
     }
 
-    if (strcmp(verb, "scrolled") == 0 || strcmp(verb, "scroll_to") == 0) {
-        int writing = strcmp(verb, "scroll_to") == 0;
+    if (CALL_IS(expr, scrolled) || CALL_IS(expr, scroll_to)) {
+        int writing = CALL_IS(expr, scroll_to);
         size_t want = writing ? 3 : 2;
         if (argc != want) {
             qt_raise(writing
@@ -8439,7 +8439,7 @@ static Value qt_eval_call(AstExpr *expr) {
      * anything CLAIMED the event, which is the only thing that makes
      * `ui.swallow` observable: a QPlainTextEdit has no scroll position a
      * program can read. */
-    if (strcmp(verb, "scroll") == 0) {
+    if (CALL_IS(expr, scroll)) {
         if (argc != 3 && argc != 4) {
             qt_raise("ui.scroll expects a window, a part's name, how many "
                      "notches and optionally a modifier");
@@ -8527,7 +8527,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_bool(claimed);
     }
 
-    if (strcmp(verb, "invoke") == 0) {
+    if (CALL_IS(expr, invoke)) {
         if (argc != 3) {
             qt_raise("ui.invoke expects a window, a part's name and a method");
             return value_null();
@@ -8587,7 +8587,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_bool(1);
     }
 
-    if (strcmp(verb, "run") == 0) {
+    if (CALL_IS(expr, run)) {
         if (argc != 0) {
             qt_raise("ui.run takes no arguments");
             return value_null();
@@ -8607,7 +8607,7 @@ static Value qt_eval_call(AstExpr *expr) {
         return value_number((double)rc);
     }
 
-    if (strcmp(verb, "stop") == 0) {
+    if (CALL_IS(expr, stop)) {
         if (argc != 0) {
             qt_raise("ui.stop takes no arguments");
             return value_null();

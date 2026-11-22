@@ -660,25 +660,43 @@ static Value crypto_x509_time(const ASN1_TIME *t) {
 
 /* ---- dispatch -------------------------------------------------------------*/
 
-static int crypto_ssh_is(const char *name) {
-    static const char *const names[] = {
-        "x25519_keypair", "x25519_public", "x25519_shared",
-        "rsa_generate", "rsa_public", "rsa_sign", "rsa_verify", "rsa_from_pem", "rsa_to_pem",
-        "aes_ctr", "bcrypt_pbkdf",
-        "chacha20", "poly1305",
-        "ec_keypair", "ec_public", "ecdsa_sign", "ecdsa_verify", "ecdh_shared",
-        "dh_keypair", "dh_shared", "hkdf", "hash_start", "hash_update", "hash_finish", "x509_parse", NULL
-    };
-    for (size_t i = 0; names[i]; i++) {
-        if (strcmp(names[i], name) == 0) return 1;
+static int crypto_ssh_is(AstExpr *expr) {
+    switch (call_name_id(expr)) {
+    case CN_x25519_keypair:
+    case CN_x25519_public:
+    case CN_x25519_shared:
+    case CN_rsa_generate:
+    case CN_rsa_public:
+    case CN_rsa_sign:
+    case CN_rsa_verify:
+    case CN_rsa_from_pem:
+    case CN_rsa_to_pem:
+    case CN_aes_ctr:
+    case CN_bcrypt_pbkdf:
+    case CN_chacha20:
+    case CN_poly1305:
+    case CN_ec_keypair:
+    case CN_ec_public:
+    case CN_ecdsa_sign:
+    case CN_ecdsa_verify:
+    case CN_ecdh_shared:
+    case CN_dh_keypair:
+    case CN_dh_shared:
+    case CN_hkdf:
+    case CN_hash_start:
+    case CN_hash_update:
+    case CN_hash_finish:
+    case CN_x509_parse:
+        return 1;
+    default:
+        return 0;
     }
-    return 0;
 }
 
 /* 1 when `expr` is one of this file's builtins, with the answer in *out. */
 static int crypto_ssh_call(AstExpr *expr, Value *out) {
     const char *name = expr->as.call.name;
-    if (!crypto_ssh_is(name)) {
+    if (!crypto_ssh_is(expr)) {
         return 0;
     }
     *out = value_null();
@@ -688,7 +706,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
 #else
     Value a[5];
 
-    if (strcmp(name, "x25519_keypair") == 0) {
+    if (CALL_IS(expr, x25519_keypair)) {
         if (!crypto_ssh_args(expr, name, 0, 0, a)) return 1;
         unsigned char priv[32], pub[32];
         if (RAND_bytes(priv, 32) != 1 || !crypto_x25519_public_of(priv, pub)) {
@@ -703,7 +721,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "x25519_public") == 0) {
+    if (CALL_IS(expr, x25519_public)) {
         if (!crypto_ssh_args(expr, name, 1, 1, a)) return 1;
         if (a[0].kind != VALUE_STRING || string_length(a[0].as.string) != 32) {
             crypto_ssh_free(a, 1);
@@ -721,7 +739,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "x25519_shared") == 0) {
+    if (CALL_IS(expr, x25519_shared)) {
         if (!crypto_ssh_args(expr, name, 2, 2, a)) return 1;
         if (a[0].kind != VALUE_STRING || a[1].kind != VALUE_STRING ||
             string_length(a[0].as.string) != 32 || string_length(a[1].as.string) != 32) {
@@ -749,7 +767,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "rsa_generate") == 0) {
+    if (CALL_IS(expr, rsa_generate)) {
         if (!crypto_ssh_args(expr, name, 1, 1, a)) return 1;
         double bits = a[0].kind == VALUE_NUMBER ? a[0].as.num.value : 0;
         value_free(a[0]);
@@ -769,7 +787,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "rsa_public") == 0) {
+    if (CALL_IS(expr, rsa_public)) {
         if (!crypto_ssh_args(expr, name, 1, 1, a)) return 1;
         char why[200];
         EVP_PKEY *pkey = crypto_rsa_from_record(&a[0], 0, why, sizeof(why));
@@ -791,8 +809,8 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "rsa_sign") == 0 || strcmp(name, "rsa_verify") == 0) {
-        int signing = strcmp(name, "rsa_sign") == 0;
+    if (CALL_IS(expr, rsa_sign) || CALL_IS(expr, rsa_verify)) {
+        int signing = CALL_IS(expr, rsa_sign);
         size_t argc = signing ? 3 : 4;
         if (!crypto_ssh_args(expr, name, argc, argc, a)) return 1;
         Value *hash = &a[argc - 1];
@@ -863,7 +881,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "rsa_from_pem") == 0) {
+    if (CALL_IS(expr, rsa_from_pem)) {
         if (!crypto_ssh_args(expr, name, 1, 2, a)) return 1;
         size_t argc = expr->as.call.args.count;
         if (a[0].kind != VALUE_STRING || (argc == 2 && a[1].kind != VALUE_STRING)) {
@@ -924,7 +942,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
      * and pinned by metadata). The key comes back in the record shape
      * rsa_verify and ecdsa_verify already take, so a certificate's key is
      * used as any other. */
-    if (strcmp(name, "x509_parse") == 0) {
+    if (CALL_IS(expr, x509_parse)) {
         if (!crypto_ssh_args(expr, name, 1, 1, a)) return 1;
         if (a[0].kind != VALUE_STRING || string_length(a[0].as.string) == 0) {
             crypto_ssh_free(a, 1);
@@ -1016,7 +1034,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "rsa_to_pem") == 0) {
+    if (CALL_IS(expr, rsa_to_pem)) {
         if (!crypto_ssh_args(expr, name, 1, 1, a)) return 1;
         char why[200];
         int priv = a[0].kind == VALUE_RECORD && crypto_rsa_is_private(&a[0]);
@@ -1051,7 +1069,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
      * salt and rounds read from the file's kdfoptions. OpenSSH's own code,
      * vendored in src/vendor/bcrypt_pbkdf.c because OpenSSL has none. Its own
      * limits are checked here first so a refusal says which argument. */
-    if (strcmp(name, "bcrypt_pbkdf") == 0) {
+    if (CALL_IS(expr, bcrypt_pbkdf)) {
         if (!crypto_ssh_args(expr, name, 4, 4, a)) return 1;
         double rounds = a[2].kind == VALUE_NUMBER ? a[2].as.num.value : 0;
         double length = a[3].kind == VALUE_NUMBER ? a[3].as.num.value : 0;
@@ -1085,7 +1103,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "chacha20") == 0) {
+    if (CALL_IS(expr, chacha20)) {
         if (!crypto_ssh_args(expr, name, 3, 3, a)) return 1;
         if (a[0].kind != VALUE_STRING || string_length(a[0].as.string) != 32 ||
             a[1].kind != VALUE_STRING || string_length(a[1].as.string) != 16 ||
@@ -1111,7 +1129,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "poly1305") == 0) {
+    if (CALL_IS(expr, poly1305)) {
         if (!crypto_ssh_args(expr, name, 2, 2, a)) return 1;
         if (a[0].kind != VALUE_STRING || string_length(a[0].as.string) != 32 ||
             a[1].kind != VALUE_STRING) {
@@ -1132,7 +1150,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "ec_keypair") == 0) {
+    if (CALL_IS(expr, ec_keypair)) {
         if (!crypto_ssh_args(expr, name, 1, 1, a)) return 1;
         const CryptoCurve *c = a[0].kind == VALUE_STRING ? crypto_curve_named(a[0].as.string) : NULL;
         value_free(a[0]);
@@ -1160,7 +1178,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "ec_public") == 0) {
+    if (CALL_IS(expr, ec_public)) {
         if (!crypto_ssh_args(expr, name, 2, 2, a)) return 1;
         const CryptoCurve *c = a[0].kind == VALUE_STRING ? crypto_curve_named(a[0].as.string) : NULL;
         if (!c || a[1].kind != VALUE_STRING || string_length(a[1].as.string) == 0 ||
@@ -1187,8 +1205,8 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "ecdsa_sign") == 0 || strcmp(name, "ecdsa_verify") == 0) {
-        int signing = strcmp(name, "ecdsa_sign") == 0;
+    if (CALL_IS(expr, ecdsa_sign) || CALL_IS(expr, ecdsa_verify)) {
+        int signing = CALL_IS(expr, ecdsa_sign);
         size_t argc = signing ? 2 : 3;
         if (!crypto_ssh_args(expr, name, argc, argc, a)) return 1;
         char why[200];
@@ -1269,7 +1287,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "ecdh_shared") == 0) {
+    if (CALL_IS(expr, ecdh_shared)) {
         if (!crypto_ssh_args(expr, name, 2, 2, a)) return 1;
         char why[200];
         const CryptoCurve *c = NULL;
@@ -1308,7 +1326,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "dh_keypair") == 0) {
+    if (CALL_IS(expr, dh_keypair)) {
         if (!crypto_ssh_args(expr, name, 2, 2, a)) return 1;
         BIGNUM *p = crypto_bn_of(&a[0]);
         BIGNUM *gen = crypto_bn_of(&a[1]);
@@ -1346,7 +1364,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "dh_shared") == 0) {
+    if (CALL_IS(expr, dh_shared)) {
         if (!crypto_ssh_args(expr, name, 3, 3, a)) return 1;
         BIGNUM *p = crypto_bn_of(&a[0]);
         BIGNUM *x = crypto_bn_of(&a[1]);
@@ -1384,7 +1402,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "hkdf") == 0) {
+    if (CALL_IS(expr, hkdf)) {
         if (!crypto_ssh_args(expr, name, 5, 5, a)) return 1;
         static const char *const digests[] = { NULL, "SHA256", "SHA384", "SHA512" };
         static const int sizes[] = { 0, 32, 48, 64 };
@@ -1442,7 +1460,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
     }
 
     /* THE STATE IS A VALUE (see crypto_hash_state): `s = hash_update(s, data)`. */
-    if (strcmp(name, "hash_start") == 0) {
+    if (CALL_IS(expr, hash_start)) {
         if (!crypto_ssh_args(expr, name, 1, 1, a)) return 1;
         int alg = crypto_hash_alg_named(&a[0]);
         value_free(a[0]);
@@ -1454,8 +1472,8 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "hash_update") == 0 || strcmp(name, "hash_finish") == 0) {
-        int updating = strcmp(name, "hash_update") == 0;
+    if (CALL_IS(expr, hash_update) || CALL_IS(expr, hash_finish)) {
+        int updating = CALL_IS(expr, hash_update);
         size_t argc = updating ? 2 : 1;
         if (!crypto_ssh_args(expr, name, argc, argc, a)) return 1;
         if (updating && a[1].kind != VALUE_STRING) {
@@ -1474,7 +1492,7 @@ static int crypto_ssh_call(AstExpr *expr, Value *out) {
         return 1;
     }
 
-    if (strcmp(name, "aes_ctr") == 0) {
+    if (CALL_IS(expr, aes_ctr)) {
         if (!crypto_ssh_args(expr, name, 3, 3, a)) return 1;
         const EVP_CIPHER *cipher = a[0].kind == VALUE_STRING
                                        ? crypto_aes_ctr_cipher(string_length(a[0].as.string))

@@ -3417,26 +3417,26 @@ static Value net_eval_call(AstExpr *expr) {
     const char *name = expr->as.call.name;
     char verb[64];
     snprintf(verb, sizeof verb, "net.%s", name);
-    if (strcmp(name, "connect") == 0) return net_do_connect(expr);
-    if (strcmp(name, "listen") == 0) return net_do_listen(expr);
-    if (strcmp(name, "resolve") == 0) return net_do_resolve(expr);
-    if (strcmp(name, "start_tls") == 0) return net_do_start_tls(expr);
-    if (strcmp(name, "datagram") == 0) return net_do_datagram(expr);
-    if (strcmp(name, "send_to") == 0) return net_do_send_to(expr);
-    if (strcmp(name, "receive") == 0) return net_do_receive(expr);
-    if (strcmp(name, "set_state") == 0) return net_do_set_state(expr);
-    if (strcmp(name, "write") == 0) return net_do_write(expr);
-    if (strcmp(name, "take") == 0 || strcmp(name, "take_exactly") == 0 || strcmp(name, "take_until") == 0 ||
-        strcmp(name, "take_line") == 0 || strcmp(name, "peek_exactly") == 0) {
+    if (CALL_IS(expr, connect)) return net_do_connect(expr);
+    if (CALL_IS(expr, listen)) return net_do_listen(expr);
+    if (CALL_IS(expr, resolve)) return net_do_resolve(expr);
+    if (CALL_IS(expr, start_tls)) return net_do_start_tls(expr);
+    if (CALL_IS(expr, datagram)) return net_do_datagram(expr);
+    if (CALL_IS(expr, send_to)) return net_do_send_to(expr);
+    if (CALL_IS(expr, receive)) return net_do_receive(expr);
+    if (CALL_IS(expr, set_state)) return net_do_set_state(expr);
+    if (CALL_IS(expr, write)) return net_do_write(expr);
+    if (CALL_IS(expr, take) || CALL_IS(expr, take_exactly) || CALL_IS(expr, take_until) ||
+        CALL_IS(expr, take_line) || CALL_IS(expr, peek_exactly)) {
         return net_do_take(expr, verb);
     }
-    if (strcmp(name, "read") == 0 || strcmp(name, "read_exactly") == 0 || strcmp(name, "read_until") == 0 ||
-        strcmp(name, "read_line") == 0) {
+    if (CALL_IS(expr, read) || CALL_IS(expr, read_exactly) || CALL_IS(expr, read_until) ||
+        CALL_IS(expr, read_line)) {
         return net_do_read(expr, verb);
     }
-    if (strcmp(name, "buffered") == 0 || strcmp(name, "queued") == 0 || strcmp(name, "flush") == 0 ||
-        strcmp(name, "shutdown_write") == 0 || strcmp(name, "close") == 0 || strcmp(name, "abort") == 0 ||
-        strcmp(name, "accept") == 0) {
+    if (CALL_IS(expr, buffered) || CALL_IS(expr, queued) || CALL_IS(expr, flush) ||
+        CALL_IS(expr, shutdown_write) || CALL_IS(expr, close) || CALL_IS(expr, abort) ||
+        CALL_IS(expr, accept)) {
         return net_do_simple(expr, verb);
     }
     char message[200];

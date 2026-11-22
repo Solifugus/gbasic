@@ -972,16 +972,16 @@ static Value zip_eval_call(AstExpr *expr) {
     (void)verb;
     return zip_raise("zip support is not available in this build; install zlib development files and rebuild");
 #else
-    if (strcmp(verb, "members") == 0) {
+    if (CALL_IS(expr, members)) {
         return zip_members(expr);
     }
-    if (strcmp(verb, "read") == 0) {
+    if (CALL_IS(expr, read)) {
         return zip_read(expr);
     }
-    if (strcmp(verb, "extract") == 0) {
+    if (CALL_IS(expr, extract)) {
         return zip_extract(expr);
     }
-    if (strcmp(verb, "write") == 0) {
+    if (CALL_IS(expr, write)) {
         return zip_write(expr);
     }
     char message[200];
