@@ -39,7 +39,10 @@ bad() { checks=$((checks + 1)); printf 'MISMATCH %s\n  %s\n' "$1" "$2"; status=1
 cut -f1 "$tmp/reported" | sort >"$tmp/names"
 
 # --- the two source lists, read out of the C ---------------------------------
-sed -n '/static int library_is_native_qualifier/,/^}/p' src/eval.c \
+# The DEFINITION, by its opening brace: a forward declaration earlier in the
+# file (the profiler's, 2026-11-21) started the range there and read the next
+# function's strings as qualifiers.
+sed -n '/^static int library_is_native_qualifier(const char \*name) {$/,/^}/p' src/eval.c \
   | grep -oE '"[a-z_]+"' | tr -d '"' | sort -u >"$tmp/qualifiers"
 sed -n '/static const char \*dispatch_only\[\]/,/};/p' src/builtins.c \
   | grep -oE '"[a-z_]+"' | tr -d '"' | sort -u >"$tmp/verbs"
