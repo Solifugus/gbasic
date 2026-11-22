@@ -21,8 +21,10 @@ reader sees.
   call's qualifier, are looked up once per call site and kept on the node, so
   the builtin chain and each module's verbs compare integers instead of text
   (about 125 string comparisons a builtin call before). A string-handling
-  program runs 1.96x fewer instructions and a record-handling one 1.71x
-  (callgrind); nothing a program can see changes. `tests/run_resolve.sh`.
+  program runs 2.00x fewer instructions and a record-handling one 1.77x
+  (callgrind). Operators are read as codes rather than compared as text: a
+  tight arithmetic loop runs 1.21x fewer instructions. Nothing a program can
+  see changes. `tests/run_resolve.sh`.
 - **`gbasic --profile`: builtins as rows, and JSON** (2026-11-21), increment
   3 of `docs/profiler_design.md`. `sort`, `pg.query` and a handle's methods
   (`db.query()` as `gsql.query`) get rows of their own, marked `[builtin]`,

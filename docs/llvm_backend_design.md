@@ -1,8 +1,8 @@
 # Compiling gBASIC with LLVM: a design note
 
 **Status:** In progress. Matthew ruled all six questions (§8) as recommended
-on 2026-11-21. Increment 1 has begun: builtins and module verbs are found by
-number (§4, "Increment 1, as built"); operators and variables are next. It follows his
+on 2026-11-21. Increment 1 has begun: builtins, module verbs and operators
+are resolved (§4, "Increment 1, as built"); variables are next. It follows his
 direction of 2026-08-20 (an LLVM backend compiling gBASIC to machine code),
 sharpened 2026-11-03 to "actual code generation by gBASIC 1.0"; typed
 variables (`x:number`) were designed with that aim. The costs below were
@@ -138,6 +138,30 @@ real speed-up, not LLVM.
   in the source, and the dispatch's `strcmp` calls the same at 2,000 and 4,000
   passes. Three perturbations each turned it or `run_handle_methods` red: the
   list unsorted, the number not kept, and the qualifier's number not reset.
+
+- **Operators (2026-11-21).** `op_code` reads an operator's code from its
+  characters with a switch (no `strcmp`), once in each function that tests
+  one, and the tests compare codes. Nothing new on the node: the text stays
+  for messages, and the nodes the interpreter builds for itself need no care.
+  `env_get` checks a name's first character before comparing it with
+  `error` and `this`, the two names it asks about on every read.
+- **Measured** against the interpreter before increment 1: `loop` 1.21x
+  fewer instructions (the bound in §3 was 1.33x, the rest is variables),
+  `fib` 1.10x, `strings` 2.00x, `records` 1.77x.
+- **A lesson from the gate.** `run_profile`'s off tier (the profiler's hooks
+  at most 1.01x the instructions of a build without them) failed at 1.0102
+  after the first slice. The two binaries made the same 7,202,959 `strcmp`
+  calls, at 21.83 and 21.22 instructions each: `env_get`'s literals sat at
+  different alignments, and `strcmp`'s cost depends on where its strings
+  lie. A count of instructions is exact, but a ratio between two binaries
+  still carries layout; removing the `strcmp`s (1.0065 after) removes most
+  of it.
+- **Held by** `run_resolve`'s operators tier (all twenty operators against
+  answers worked by hand) and its cost tier for `tests/resolve/loop.bas`.
+  Perturbed: `>=` read as `<=` turned it red, and so did a `strcmp` hidden
+  from the source scan behind a `volatile` pointer, which only the cost tier
+  saw. A `strcmp` against a one-character literal is compiled inline by gcc,
+  so no call is left to count; the source scan is what catches that one.
 
 ## 5. Correctness
 
