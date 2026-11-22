@@ -201,7 +201,9 @@ real speed-up, not LLVM.
   instructions on its bench: 4.5 a statement, 7 a call and 14 of layout in
   `eval_user_function_bound`), but the interpreter under them has shrunk
   from 1,041 to 788 million, so the same hooks now measure 1.0093x. A faster
-  interpreter will fail a ratio that the hooks themselves never moved.
+  interpreter will fail a ratio that the hooks themselves never moved. Done
+  2026-11-22: the bound is now on the hooks, 6 instructions a statement run
+  and 25 a call (`docs/profiler_design.md`).
 
 ## 5. Correctness
 
