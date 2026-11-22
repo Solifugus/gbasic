@@ -22,9 +22,11 @@ reader sees.
   the builtin chain and each module's verbs compare integers instead of text
   (about 125 string comparisons a builtin call before). A string-handling
   program runs 2.00x fewer instructions and a record-handling one 1.77x
-  (callgrind). Operators are read as codes rather than compared as text: a
-  tight arithmetic loop runs 1.21x fewer instructions. Nothing a program can
-  see changes. `tests/run_resolve.sh`.
+  (callgrind). Operators are read as codes, variables are found by comparing
+  pointers to one interned copy of each name, and the function a call
+  reaches is kept on the call: a tight arithmetic loop runs 1.50x fewer
+  instructions and a recursive function 1.26x. Nothing a program can see
+  changes. `tests/run_resolve.sh`.
 - **`gbasic --profile`: builtins as rows, and JSON** (2026-11-21), increment
   3 of `docs/profiler_design.md`. `sort`, `pg.query` and a handle's methods
   (`db.query()` as `gsql.query`) get rows of their own, marked `[builtin]`,

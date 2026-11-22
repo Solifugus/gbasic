@@ -1,8 +1,11 @@
 # Compiling gBASIC with LLVM: a design note
 
 **Status:** In progress. Matthew ruled all six questions (§8) as recommended
-on 2026-11-21. Increment 1 has begun: builtins, module verbs and operators
-are resolved (§4, "Increment 1, as built"); variables are next. It follows his
+on 2026-11-21. Increment 1 is built (§4, "Increment 1, as built"): builtins,
+module verbs, operators, variables and the function a call reaches are
+resolved, and the whole program makes no `strcmp` per pass in the three
+programs `tests/run_resolve.sh` measures. Increment 2, the baseline JIT, is
+next. It follows his
 direction of 2026-08-20 (an LLVM backend compiling gBASIC to machine code),
 sharpened 2026-11-03 to "actual code generation by gBASIC 1.0"; typed
 variables (`x:number`) were designed with that aim. The costs below were
@@ -162,6 +165,43 @@ real speed-up, not LLVM.
   from the source scan behind a `volatile` pointer, which only the cost tier
   saw. A `strcmp` against a one-character literal is compiled inline by gcc,
   so no call is left to count; the source scan is what catches that one.
+
+- **Variables, and the function a call reaches (2026-11-21).** Not slots, as
+  §4 planned: interning gave the same result with less change. Every
+  variable's name is held once (`name_intern`), and a frame's symbols, its
+  `outer_reads`, an identifier (`AstExpr.key`), a parameter list and a `for`
+  counter keep that one pointer, so a frame is searched by comparing
+  pointers. The walk -- this frame, then its parents, the first that has the
+  name -- is unchanged, so what a name means is unchanged, including a name
+  that becomes local only when first assigned, which is what made slots
+  hard. `error` and `this`, which a read asks about first, are interned
+  before anything and compared by pointer. The function an unqualified call
+  reaches (the calling library's own, else the program's), a qualified
+  call's, and whether a name is a builtin are kept on the call while the
+  function table and the library-name table are unchanged
+  (`function_generation`): every call had scanned the table by name, and a
+  builtin call twice.
+- **Measured** against the interpreter before increment 1: `loop` 1.50x
+  fewer instructions, `fib` 1.26x, `strings` 2.21x, `records` 1.91x -- past
+  §3's bounds, which counted only `strcmp`'s own instructions and not the
+  walks around them.
+- **Held by** `run_resolve`'s cost tier, which now counts the WHOLE program's
+  `strcmp` calls at 2,000 and 4,000 passes of three programs (builtins, an
+  arithmetic loop, user and library functions with parameters): the same at
+  both. One perturbation stayed green and is recorded rather than hidden:
+  not moving the generation when a function is registered. No path was
+  found that registers a function after a call site has run; at the prompt,
+  each entry resets the library-name table, which moves the generation
+  anyway.
+- **Left:** a call through a function value (`f = area`, then `f(1, 1)`)
+  still finds its function by the value's name on every call, because a
+  function value carries its own copy of the name; and the profiler's off
+  cost. `run_profile` holds the hooks to 1.01x the instructions of a build
+  without them, and the hooks have not changed (about 7.4 million
+  instructions on its bench: 4.5 a statement, 7 a call and 14 of layout in
+  `eval_user_function_bound`), but the interpreter under them has shrunk
+  from 1,041 to 788 million, so the same hooks now measure 1.0093x. A faster
+  interpreter will fail a ratio that the hooks themselves never moved.
 
 ## 5. Correctness
 
