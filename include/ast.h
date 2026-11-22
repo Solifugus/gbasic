@@ -173,6 +173,9 @@ typedef struct {
      * parameter in the list has one (docs/typed_variables_design.md). Only a
      * function honours them; the other users of a parameter list refuse one. */
     AstTypeLock *locks;
+    /* The names interned (src/eval.c param_key), filled the first time a
+     * function's parameters are bound; NULL until then. */
+    const char **keys;
 } AstNameList;
 
 /* PLAT-WEB-5: one entry in a `server` declarative block. The grammar is
@@ -317,6 +320,13 @@ struct AstExpr {
      * (`db.query()` is `gsql.query(db)`), which the site itself is not. */
     void *prof_builtin;
     void *prof_handle;
+    /* An identifier's name interned (src/eval.c name_intern), found the first
+     * time it is evaluated: a variable is looked up by comparing pointers
+     * (docs/llvm_backend_design.md, increment 1). NULL until then. */
+    const char *key;
+    /* For a call: the intern table's generation when its name was last found
+     * NOT to be interned (src/eval.c name_known). */
+    unsigned long key_generation;
     /* written in parentheses: `(shop.customer[3]).name` ends a G-SQL path
        there, so `.name` is the row's field (docs/gsql_paths_design.md §3.2) */
     int parenthesized;
@@ -365,6 +375,16 @@ struct AstExpr {
             int registered;    /* in the builtin registry: 2 yes, 1 no, 0 not
                                 * yet asked */
             int library_id;    /* the same number for `library`; 0 until then */
+            const char *library_key;   /* `library` interned, once it is */
+            unsigned long library_key_generation;
+            /* The function an unqualified call reaches (src/eval.c
+             * call_function): its index in the function table plus one, or 0
+             * for none, good while the table's generation and the calling
+             * library are the ones recorded. */
+            size_t fn_index;
+            unsigned long fn_generation;
+            const char *fn_library;
+            int has_builtin;   /* gbasic_has_builtin(name): 2 yes, 1 no, 0 not yet */
         } call;
         struct {
             char *op;
@@ -410,6 +430,8 @@ struct AstStmt {
     unsigned long prof_samples;
     /* A function's calls and its sampled time. */
     AstProfCounts prof_fn;
+    /* A `for` counter's name interned, as AstExpr.key. */
+    const char *key;
     union {
         struct {
             AstExpr *target;

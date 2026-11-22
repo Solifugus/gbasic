@@ -1883,6 +1883,7 @@ void ast_free_name_list(AstNameList list) {
     free(list.items);
     free(list.defaults);
     free(list.locks);
+    free(list.keys);   /* the interned names themselves are not the list's */
 }
 
 void ast_free_record_field_list(AstRecordFieldList list) {

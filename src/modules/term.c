@@ -40,7 +40,7 @@ static void term_bind_events_global(void) {
         abort();
     }
     global_env.items = items;
-    global_env.items[global_env.count].name = copy_string("term");
+    global_env.items[global_env.count].name = name_intern("term");
     memset(&global_env.items[global_env.count].lock, 0, sizeof(TypeLock));
     global_env.items[global_env.count].value = record;
     global_env.count++;

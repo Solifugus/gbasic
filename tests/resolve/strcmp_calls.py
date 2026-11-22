@@ -4,7 +4,8 @@
     strcmp_calls.py CALLGRIND_OUT FUNCTION...
 
 Prints one number: the calls to strcmp made directly by any function whose
-name (with callgrind's recursion suffix `'2` removed) is one of FUNCTION.
+name (with callgrind's recursion suffix `'2` removed) is one of FUNCTION, or
+by any function at all when FUNCTION is `ALL`.
 A call through the PLT shows as an unnamed stub (`???:0x...`) whose own
 callee is strcmp, so a stub is counted as strcmp when it calls one. Reads
 `callgrind_annotate --tree=calling`, which comes with valgrind.
@@ -41,6 +42,8 @@ def is_strcmp(fn):
 
 total = 0
 for fn, callees in blocks.items():
-    if short(fn) in wanted:
+    if fn.startswith("???:0x") and is_strcmp(fn):
+        continue   # a PLT stub, counted at its callers
+    if short(fn) in wanted or ("ALL" in wanted and not is_strcmp(fn)):
         total += sum(n for c, n in callees if is_strcmp(c))
 print(total)

@@ -178,13 +178,9 @@ static GsqlHv *gsql_apply(const char *source, const Value *const *args, size_t n
     current_column = column;
     current_env = saved;
     for (size_t k = 0; k < frame.count; k++) {
-        free(frame.items[k].name);
-        value_free(frame.items[k].value);
+        value_free(frame.items[k].value);   /* names are interned */
     }
     free(frame.items);
-    for (size_t k = 0; k < frame.outer_reads_count; k++) {
-        free(frame.outer_reads[k]);
-    }
     free(frame.outer_reads);
     if (gsql_host_caught(err)) {
         value_free(r);

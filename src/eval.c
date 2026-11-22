@@ -822,7 +822,7 @@ typedef struct {
 } TypeLock;
 
 typedef struct {
-    char *name;
+    const char *name;    /* interned (name_intern): one pointer per name */
     Value value;
     TypeLock lock;       /* LOCK_NONE unless declared */
 } Symbol;
@@ -971,7 +971,7 @@ typedef struct Env {
      * old value — the "everything looks right and the world did not change"
      * trap (DOGFOOD 2026-07-20, -07-22, -08-22). Only function frames record;
      * the global frame never does. */
-    char **outer_reads;
+    const char **outer_reads;   /* interned, like a Symbol's name */
     size_t outer_reads_count;
 } Env;
 
@@ -1071,6 +1071,7 @@ static Env *library_frame_find(const char *name) {
 static int repl_effect_watch = 0;
 static FunctionDef *functions = NULL;
 static size_t function_count = 0;
+static unsigned long function_generation = 1;   /* moves whenever the table does */
 static ModifierDef *modifiers = NULL;
 static size_t modifier_count = 0;
 static LockEntry *locks = NULL;
@@ -7033,23 +7034,173 @@ static void value_print_to(FILE *out, Value value) {
     value_free(text);
 }
 
-static Symbol *env_find_in_frame(Env *env, const char *name) {
+/* VARIABLE NAMES, INTERNED (docs/llvm_backend_design.md, increment 1). Every
+ * variable's name is held once, here, for the life of the process, and a
+ * Symbol and a frame's outer_reads keep that one pointer; so finding a
+ * variable compares pointers. It was a strcmp against every name in every
+ * frame on the way, 11% of a tight loop's instructions after the builtins and
+ * operators were resolved. The walk itself -- this frame, then its parents,
+ * the first that has the name -- is unchanged, so what a name resolves to is
+ * unchanged. An identifier keeps its interned name on its node
+ * (AstExpr.key); a name given as text is hashed once. A name never interned
+ * is bound in no frame. Names are identifiers, so a C string. */
+static const char **name_table;
+static size_t name_table_size;    /* a power of two, or 0 */
+static size_t name_table_count;
+static unsigned long name_table_generation = 1;   /* moves when a name is added */
+
+static uint64_t name_hash(const char *s) {
+    uint64_t h = 1469598103934665603ULL;   /* FNV-1a */
+    while (*s) {
+        h = (h ^ (unsigned char)*s++) * 1099511628211ULL;
+    }
+    return h;
+}
+
+static const char *name_intern(const char *name);
+
+/* The two names env_get answers itself, interned with the table so a read
+ * asks by pointer. */
+static const char *key_error;
+static const char *key_this;
+
+/* The interned copy of `name`, or NULL when it has never been interned. */
+static const char *name_interned(const char *name) {
+    static int started;
+    if (!started) {
+        started = 1;
+        key_error = name_intern("error");
+        key_this = name_intern("this");
+    }
+    if (!name_table_size) {
+        return NULL;   /* only while the two above are being interned */
+    }
+    size_t mask = name_table_size - 1;
+    for (size_t i = (size_t)name_hash(name) & mask;; i = (i + 1) & mask) {
+        if (!name_table[i]) {
+            return NULL;
+        }
+        if (strcmp(name_table[i], name) == 0) {
+            return name_table[i];
+        }
+    }
+}
+
+static const char *name_intern(const char *name) {
+    const char *found = name_interned(name);
+    if (found) {
+        return found;
+    }
+    if ((name_table_count + 1) * 2 > name_table_size) {
+        size_t size = name_table_size ? name_table_size * 2 : 256;
+        const char **table = calloc(size, sizeof(char *));
+        if (!table) {
+            abort();
+        }
+        for (size_t k = 0; k < name_table_size; k++) {
+            if (name_table[k]) {
+                size_t i = (size_t)name_hash(name_table[k]) & (size - 1);
+                while (table[i]) {
+                    i = (i + 1) & (size - 1);
+                }
+                table[i] = name_table[k];
+            }
+        }
+        free(name_table);
+        name_table = table;
+        name_table_size = size;
+    }
+    size_t mask = name_table_size - 1;
+    size_t i = (size_t)name_hash(name) & mask;
+    while (name_table[i]) {
+        i = (i + 1) & mask;
+    }
+    name_table[i] = copy_string(name);
+    name_table_count++;
+    name_table_generation++;
+    return name_table[i];
+}
+
+/* A name that may never be a variable's -- a call's, asked whether a variable
+ * of that name shadows it -- interned if it is, NULL if no frame can bind it.
+ * The answer is kept on the node: a NULL stays good until the table gains a
+ * name, so the usual case, a builtin or function nobody named a variable
+ * after, costs no hashing either. */
+static const char *name_known(const char *name, const char **key, unsigned long *generation) {
+    if (!*key && *generation != name_table_generation) {
+        *key = name_interned(name);
+        *generation = name_table_generation;
+    }
+    return *key;
+}
+
+static Symbol *env_find_key_chain(const char *key);
+
+static Symbol *env_find_known(const char *key) {
+    return key ? env_find_key_chain(key) : NULL;
+}
+
+#define CALL_NAME_KEY(e) name_known((e)->as.call.name, &(e)->key, &(e)->key_generation)
+#define CALL_LIBRARY_KEY(e) \
+    name_known((e)->as.call.library, &(e)->as.call.library_key, &(e)->as.call.library_key_generation)
+
+/* A parameter's interned name, kept on its list: a call binds each one. */
+static const char *param_key(AstNameList *list, size_t i) {
+    if (!list->keys) {
+        list->keys = calloc(list->count ? list->count : 1, sizeof(char *));
+        if (!list->keys) {
+            abort();
+        }
+    }
+    if (!list->keys[i]) {
+        list->keys[i] = name_intern(list->items[i]);
+    }
+    return list->keys[i];
+}
+
+/* A `for` counter's interned name, kept on its statement. */
+static inline const char *for_range_key(AstStmt *stmt) {
+    if (!stmt->key) {
+        stmt->key = name_intern(stmt->as.for_range.name);
+    }
+    return stmt->key;
+}
+
+/* An identifier's interned name, kept on the node. */
+static inline const char *ident_key(AstExpr *expr) {
+    if (!expr->key) {
+        expr->key = name_intern(expr->as.ident);
+    }
+    return expr->key;
+}
+
+static Symbol *env_find_key(Env *env, const char *key) {
     for (size_t i = 0; i < env->count; i++) {
-        if (strcmp(env->items[i].name, name) == 0) {
+        if (env->items[i].name == key) {
             return &env->items[i];
         }
     }
     return NULL;
 }
 
-static Symbol *env_find(const char *name) {
+static Symbol *env_find_in_frame(Env *env, const char *name) {
+    const char *key = name_interned(name);
+    return key ? env_find_key(env, key) : NULL;
+}
+
+static Symbol *env_find_key_chain(const char *key) {
     for (Env *env = current_env; env; env = env->parent) {
-        Symbol *symbol = env_find_in_frame(env, name);
+        Symbol *symbol = env_find_key(env, key);
         if (symbol) {
             return symbol;
         }
     }
     return NULL;
+}
+
+static Symbol *env_find(const char *name) {
+    const char *key = name_interned(name);
+    return key ? env_find_key_chain(key) : NULL;
 }
 
 /* Names already warned about, once per name per process: the trap fires inside
@@ -7114,8 +7265,16 @@ static int lock_admits(const TypeLock *lock, const Value *v) {
  * the same name -- are declarations themselves, so like `x:text = ...` they
  * replace the lock rather than being refused by it. Loops refuse a locked
  * variable before binding it (for_loop_lock_refused). */
+static void env_set_key(const char *key, Value value);
+
 static void env_set(const char *name, Value value) {
-    Symbol *symbol = env_find_in_frame(current_env, name);
+    env_set_key(name_intern(name), value);
+}
+
+/* env_set with the name already interned. */
+static void env_set_key(const char *key, Value value) {
+    const char *name = key;
+    Symbol *symbol = env_find_key(current_env, key);
     if (symbol) {
         value_free(symbol->value);
         symbol->value = value;
@@ -7141,7 +7300,7 @@ static void env_set(const char *name, Value value) {
      * §7 row 6. */
     if (current_env != &global_env) {
         for (size_t i = 0; i < current_env->outer_reads_count; i++) {
-            if (strcmp(current_env->outer_reads[i], name) == 0) {
+            if (current_env->outer_reads[i] == key) {
                 env_warn_shadow(name);
                 break;
             }
@@ -7153,7 +7312,7 @@ static void env_set(const char *name, Value value) {
         abort();
     }
     current_env->items = items;
-    current_env->items[current_env->count].name = copy_string(name);
+    current_env->items[current_env->count].name = key;
     current_env->items[current_env->count].value = value;
     memset(&current_env->items[current_env->count].lock, 0, sizeof(TypeLock));
     current_env->count++;
@@ -7171,11 +7330,18 @@ static int env_lookup_exists(const char *name) {
     return 0;
 }
 
+static Value env_get_key(const char *name, const char *key);
+
 static Value env_get(const char *name) {
-    /* Two names that are not variables, asked of every read; the first
-     * character first, so an ordinary name costs no strcmp here
-     * (docs/llvm_backend_design.md, increment 1). */
-    if (name[0] == 'e' && strcmp(name, "error") == 0) {
+    return env_get_key(name, name_interned(name));
+}
+
+/* A variable's value: `key` is `name` interned, or NULL when it never was
+ * (then no frame binds it). */
+static Value env_get_key(const char *name, const char *key) {
+    /* Two names that are not variables, asked of every read by pointer:
+     * name_interned interns both before anything else. */
+    if (key && key == key_error) {
         /* PLAT-ERR: bare `error` asks "is there an UNACKNOWLEDGED error?" and
          * CLAIMS it -- true exactly once per raise, so a second `if error then`
          * is false and there is no stale-state trap. `error.field` (handled at
@@ -7190,7 +7356,7 @@ static Value env_get(const char *name) {
         current_error_frame->tried = 0;
         return value_error_object();
     }
-    if (name[0] == 't' && strcmp(name, "this") == 0) {
+    if (key && key == key_this) {
         /* The receiver, bound at the call site (first_class_functions_design §4).
          * Outside a method call there is no receiver. */
         if (!current_this) {
@@ -7201,8 +7367,8 @@ static Value env_get(const char *name) {
         return value_copy(*current_this);
     }
     Symbol *symbol = NULL;
-    for (Env *env = current_env; env; env = env->parent) {
-        symbol = env_find_in_frame(env, name);
+    for (Env *env = current_env; key && env; env = env->parent) {
+        symbol = env_find_key(env, key);
         if (symbol) {
             /* Resolved in an ENCLOSING frame from inside a function: remember
              * the name (deduplicated; the list stays tiny) so env_set can warn
@@ -7212,16 +7378,16 @@ static Value env_get(const char *name) {
             if (env != current_env && current_env != &global_env) {
                 int seen = 0;
                 for (size_t i = 0; i < current_env->outer_reads_count; i++) {
-                    if (strcmp(current_env->outer_reads[i], name) == 0) {
+                    if (current_env->outer_reads[i] == key) {
                         seen = 1;
                         break;
                     }
                 }
                 if (!seen) {
-                    char **grown = realloc(current_env->outer_reads,
-                                           sizeof(char *) * (current_env->outer_reads_count + 1));
+                    const char **grown = realloc(current_env->outer_reads,
+                                                 sizeof(char *) * (current_env->outer_reads_count + 1));
                     if (grown) {
-                        grown[current_env->outer_reads_count] = copy_string(name);
+                        grown[current_env->outer_reads_count] = key;
                         current_env->outer_reads = grown;
                         current_env->outer_reads_count++;
                     }
@@ -7279,14 +7445,10 @@ static void env_clear(Env *env) {
     if (env != &global_env) {
         watcher_end_frame(env);
     }
-    for (size_t i = 0; i < env->outer_reads_count; i++) {
-        free(env->outer_reads[i]);
-    }
-    free(env->outer_reads);
+    free(env->outer_reads);   /* the names are interned, not owned */
     env->outer_reads = NULL;
     env->outer_reads_count = 0;
     for (size_t i = 0; i < env->count; i++) {
-        free(env->items[i].name);
         value_free(env->items[i].value);
     }
     free(env->items);
@@ -9402,6 +9564,52 @@ static FunctionDef *function_in_current_library(const char *name) {
     return NULL;
 }
 
+/* THE FUNCTION AN UNQUALIFIED CALL REACHES -- the calling library's own, else
+ * the program's -- found once per call site (docs/llvm_backend_design.md,
+ * increment 1). Both are scans of the whole function table by name, and every
+ * call asked them, a builtin's twice; the answer, including "none", is kept on
+ * the node while the table is unchanged and the call comes from the same
+ * library. */
+static FunctionDef *call_function(AstExpr *expr) {
+    if (expr->as.call.fn_generation == function_generation &&
+        expr->as.call.fn_library == current_function_library) {
+        return expr->as.call.fn_index ? &functions[expr->as.call.fn_index - 1] : NULL;
+    }
+    FunctionDef *function = function_in_current_library(expr->as.call.name);
+    if (!function) {
+        function = function_find_local(expr->as.call.name);
+    }
+    expr->as.call.fn_index = function ? (size_t)(function - functions) + 1 : 0;
+    expr->as.call.fn_generation = function_generation;
+    expr->as.call.fn_library = current_function_library;
+    return function;
+}
+
+static const char *library_identity_of(const char *written);
+
+/* `lib.f(...)`'s function the same way: which library `lib` names depends on
+ * the calling library's loads, so a change to the library-name table moves
+ * function_generation too. */
+static FunctionDef *qualified_call_function(AstExpr *expr) {
+    if (expr->as.call.fn_generation == function_generation &&
+        expr->as.call.fn_library == current_function_library) {
+        return expr->as.call.fn_index ? &functions[expr->as.call.fn_index - 1] : NULL;
+    }
+    FunctionDef *function = function_resolve(library_identity_of(expr->as.call.library), expr->as.call.name);
+    expr->as.call.fn_index = function ? (size_t)(function - functions) + 1 : 0;
+    expr->as.call.fn_generation = function_generation;
+    expr->as.call.fn_library = current_function_library;
+    return function;
+}
+
+/* gbasic_has_builtin for the call's name, kept like call_is_registered. */
+static int call_has_builtin(AstExpr *expr) {
+    if (expr->as.call.has_builtin == 0) {
+        expr->as.call.has_builtin = gbasic_has_builtin(expr->as.call.name) ? 2 : 1;
+    }
+    return expr->as.call.has_builtin == 2;
+}
+
 static FunctionDef *function_resolve(const char *library, const char *name) {
     if (library) {
         for (size_t i = function_count; i > 0; i--) {
@@ -9769,6 +9977,7 @@ static void function_register_def(AstStmt *stmt, int imported, const char *libra
         }
         function = NULL;   /* fall through and add a separate entry */
     }
+    function_generation++;
     if (function) {
         function->stmt = stmt;
         function->imported = imported;
@@ -9801,6 +10010,7 @@ static void function_clear(void) {
     free(functions);
     functions = NULL;
     function_count = 0;
+    function_generation++;
 }
 
 static ModifierDef *modifier_find(const char *name, const char *context) {
@@ -11164,6 +11374,7 @@ static const char *library_name_claim_as(const char *written, const char *path, 
     }
     library_names = next;
     LibraryName *entry = &library_names[library_name_count++];
+    function_generation++;   /* a qualifier may now name another library */
     entry->scope = scope ? copy_string(scope) : NULL;
     entry->written = copy_string(written);
     entry->identity = copy_string(identity);
@@ -11252,6 +11463,7 @@ static void library_names_clear(void) {
     free(library_names);
     library_names = NULL;
     library_name_count = 0;
+    function_generation++;
 }
 
 static void library_import(const char *name, const char *path, const char *alias) {
@@ -15231,11 +15443,11 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
                 bind_failed = 1;
                 continue;
             }
-            env_set(stmt->as.function.params.items[i], v);
-            env_find_in_frame(current_env, stmt->as.function.params.items[i])->lock = lock;
+            env_set_key(param_key(&stmt->as.function.params, i), v);
+            env_find_key(current_env, param_key(&stmt->as.function.params, i))->lock = lock;
             continue;
         }
-        env_set(stmt->as.function.params.items[i], args[i]);
+        env_set_key(param_key(&stmt->as.function.params, i), args[i]);
     }
     if (bind_failed) {
         free(args);
@@ -15278,11 +15490,11 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
                 env_clear(&local_env);
                 return value_null();
             }
-            env_set(stmt->as.function.params.items[i], v);
-            env_find_in_frame(current_env, stmt->as.function.params.items[i])->lock = lock;
+            env_set_key(param_key(&stmt->as.function.params, i), v);
+            env_find_key(current_env, param_key(&stmt->as.function.params, i))->lock = lock;
             continue;
         }
-        env_set(stmt->as.function.params.items[i], v);
+        env_set_key(param_key(&stmt->as.function.params, i), v);
     }
     free(args);
     if (!bind_failed) {
@@ -22444,7 +22656,7 @@ static void http_bind_events_global(void) {
         abort();
     }
     global_env.items = items;
-    global_env.items[global_env.count].name = copy_string("http");
+    global_env.items[global_env.count].name = name_intern("http");
     memset(&global_env.items[global_env.count].lock, 0, sizeof(TypeLock));
     global_env.items[global_env.count].value = record;
     global_env.count++;
@@ -22719,7 +22931,7 @@ static void inbox_bind_global(void) {
         abort();
     }
     global_env.items = items;
-    global_env.items[global_env.count].name = copy_string("inbox");
+    global_env.items[global_env.count].name = name_intern("inbox");
     memset(&global_env.items[global_env.count].lock, 0, sizeof(TypeLock));
     global_env.items[global_env.count].value = record;
     global_env.count++;
@@ -22808,7 +23020,7 @@ static void stdin_bind_global(void) {
         abort();
     }
     global_env.items = items;
-    global_env.items[global_env.count].name = copy_string("stdin");
+    global_env.items[global_env.count].name = name_intern("stdin");
     memset(&global_env.items[global_env.count].lock, 0, sizeof(TypeLock));
     global_env.items[global_env.count].value = record;
     global_env.count++;
@@ -22983,7 +23195,7 @@ static void timer_bind_global(void) {
         abort();
     }
     global_env.items = items;
-    global_env.items[global_env.count].name = copy_string("timer");
+    global_env.items[global_env.count].name = name_intern("timer");
     memset(&global_env.items[global_env.count].lock, 0, sizeof(TypeLock));
     global_env.items[global_env.count].value = record;
     global_env.count++;
@@ -34092,6 +34304,9 @@ static Value handle_method_call(AstExpr *expr, const char *module, Value *receiv
     AstExpr call = *expr;
     call.as.call.library = (char *)module;
     call.as.call.library_id = CN_UNRESOLVED;
+    call.as.call.library_key = NULL;
+    call.as.call.library_key_generation = 0;
+    call.as.call.fn_generation = 0;   /* resolved afresh for the module */
     call.as.call.receiver = NULL;
     call.as.call.args.items = items;
     call.as.call.args.count = n + 1;
@@ -36123,16 +36338,13 @@ static Value eval_call_rest(AstExpr *expr);
 static Value eval_call(AstExpr *expr) {
     if (!expr->as.call.receiver && !expr->as.call.library &&
         !CALL_IS(expr, warning) && !CALL_IS(expr, error_clear)) {
-        FunctionDef *function = function_in_current_library(expr->as.call.name);
-        if (!function) {
-            function = function_find_local(expr->as.call.name);
-        }
+        FunctionDef *function = call_function(expr);
         if (function) {
             /* the warning eval_call_rest gives a function value shadowed by a
                builtin's name, given here too since this call never reaches it */
-            Symbol *shadowed = env_find(expr->as.call.name);
+            Symbol *shadowed = env_find_known(CALL_NAME_KEY(expr));
             if (shadowed && shadowed->value.kind == VALUE_FUNCTION &&
-                gbasic_has_builtin(expr->as.call.name) &&
+                call_has_builtin(expr) &&
                 warn_site_first_time(expr->line, expr->column)) {
                 warn_fmt(2102, "override",
                          "'%s' holds a function value, but the call reaches the BUILT-IN of that name; "
@@ -36183,9 +36395,9 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * common harmless case. Once per call site: the trap lives in loops and
      * handlers, and advice repeated ten thousand times is advice nobody reads. */
     if (!expr->as.call.library) {
-        Symbol *shadowed = env_find(expr->as.call.name);
+        Symbol *shadowed = env_find_known(CALL_NAME_KEY(expr));
         if (shadowed && shadowed->value.kind == VALUE_FUNCTION &&
-            gbasic_has_builtin(expr->as.call.name) &&
+            call_has_builtin(expr) &&
             warn_site_first_time(expr->line, expr->column)) {
             warn_fmt(2102, "override",
                      "'%s' holds a function value, but the call reaches the BUILT-IN of that name; "
@@ -36203,7 +36415,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         if (CALL_LIB_IS(expr, this)) {
             receiver_value = current_this;   /* NULL outside a method → falls through */
         } else {
-            Symbol *receiver_symbol = env_find(expr->as.call.library);
+            Symbol *receiver_symbol = env_find_known(CALL_LIBRARY_KEY(expr));
             if (receiver_symbol) {
                 receiver_value = &receiver_symbol->value;
             }
@@ -36492,7 +36704,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
         /* the written qualifier means what the CALLING library loaded under
            that name, else the program-wide one (private loads) */
-        FunctionDef *function = function_resolve(library_identity_of(expr->as.call.library), expr->as.call.name);
+        FunctionDef *function = qualified_call_function(expr);
         if (function) {
             return eval_user_function(expr, function);
         }
@@ -36672,14 +36884,9 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
      * function to a library calling itself. Fixing only function_resolve left
      * exactly that hole, and it was invisible until a root program happened to
      * define the same name. */
-    FunctionDef *own_function = function_in_current_library(expr->as.call.name);
-    if (own_function) {
-        return eval_user_function(expr, own_function);
-    }
-
-    FunctionDef *local_function = function_find_local(expr->as.call.name);
-    if (local_function) {
-        return eval_user_function(expr, local_function);
+    FunctionDef *function_reached = call_function(expr);
+    if (function_reached) {
+        return eval_user_function(expr, function_reached);
     }
 
     /* PLAT-EXIT: end the program with a status. A gBASIC program had no way to
@@ -42796,7 +43003,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     /* A variable bound to a function value, called like `f(args)`. Functions and
      * builtins above take precedence; this is the fallback once nothing else
      * matched the name (first_class_functions_design.md §3). */
-    Symbol *fn_symbol = env_find(expr->as.call.name);
+    Symbol *fn_symbol = env_find_known(CALL_NAME_KEY(expr));
     if (fn_symbol && fn_symbol->value.kind == VALUE_FUNCTION) {
         FunctionDef *target = function_resolve(fn_symbol->value.as.function.library,
                                                fn_symbol->value.as.function.name);
@@ -46068,7 +46275,7 @@ static Value eval_expr(AstExpr *expr) {
     case AST_EXPR_STRING:
         return value_string(expr->as.string);
     case AST_EXPR_IDENT:
-        return env_get(expr->as.ident);
+        return env_get_key(expr->as.ident, ident_key(expr));
     case AST_EXPR_BOOL:
         return value_bool(expr->as.boolean);
     case AST_EXPR_NULL:
@@ -47550,7 +47757,7 @@ static char *lvalue_watch_path(AstExpr *target) {
 static Value *resolve_lvalue_ref(AstExpr *target) {
     switch (target->kind) {
     case AST_EXPR_IDENT: {
-        if (strcmp(target->as.ident, "this") == 0) {
+        if (ident_key(target) == key_this) {
             /* `this.field = …` resolves through the live receiver, so the write
              * reaches the real object and PBI field policies apply. */
             if (!current_this) {
@@ -47560,7 +47767,7 @@ static Value *resolve_lvalue_ref(AstExpr *target) {
             }
             return current_this;
         }
-        Symbol *symbol = env_find(target->as.ident);
+        Symbol *symbol = env_find_key_chain(ident_key(target));
         if (!symbol) {
             char message[256];
             snprintf(message, sizeof(message), "undefined variable: %s", target->as.ident);
@@ -47656,18 +47863,19 @@ typedef enum {
 static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
     switch (target->kind) {
     case AST_EXPR_IDENT: {
-        if (strcmp(target->as.ident, "this") == 0) {
+        if (ident_key(target) == key_this) {
             /* `this` is read-only — you mutate through it, never rebind it. */
             runtime_error_raise("this is read-only", 1003, "this");
             value_free(value);
             return LVALUE_ASSIGN_ERROR;
         }
-        Symbol *symbol = env_find_in_frame(current_env, target->as.ident);
+        const char *key = ident_key(target);
+        Symbol *symbol = env_find_key(current_env, key);
         if (symbol && value_storage_equal(&symbol->value, &value)) {
             value_free(value);
             return LVALUE_ASSIGN_UNCHANGED;
         }
-        env_set(target->as.ident, value);
+        env_set_key(key, value);
         return LVALUE_ASSIGN_CHANGED;
     }
     case AST_EXPR_FIELD: {
@@ -49066,7 +49274,7 @@ static GB_NOINLINE EvalResult eval_stmt_case_assign(AstStmt *stmt, int previous_
                 return eval_error_result();
             }
         } else if (stmt->as.assign.target->kind == AST_EXPR_IDENT) {
-            Symbol *held = env_find_in_frame(current_env, stmt->as.assign.target->as.ident);
+            Symbol *held = env_find_key(current_env, ident_key(stmt->as.assign.target));
             if (held && held->lock.kind != LOCK_NONE) {
                 lock = held->lock;
                 lock_var = stmt->as.assign.target->as.ident;
@@ -49517,13 +49725,13 @@ static GB_NOINLINE EvalResult eval_stmt_case_for_range(AstStmt *stmt, int previo
                 if (!in) {
                     break;
                 }
-                env_set(stmt->as.for_range.name, xscale ? value_number_decimal(xi, xscale)
+                env_set_key(for_range_key(stmt), xscale ? value_number_decimal(xi, xscale)
                                                         : value_number_exact(xi));
             } else {
                 if (!(step > 0 ? i <= limit : i >= limit)) {
                     break;
                 }
-                env_set(stmt->as.for_range.name, value_number(i));
+                env_set_key(for_range_key(stmt), value_number(i));
             }
             EvalResult result = eval_stmt_list(stmt->as.for_range.body);
             if ((result.did_break || result.did_continue) &&
