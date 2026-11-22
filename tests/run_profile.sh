@@ -138,6 +138,11 @@ fi
 # 0.14 s, and a loaded gate's scheduling moved the ratio (1.72 in gate 25; with
 # three-quarters of the cores busy, one run in 20 outside 2.5-3.5 at 40000 and
 # none at 150000). The sampler counts wall time, so a short run is exposed.
+# And so is one whose halves see different loads: with every function run
+# back to back (hot's 30 calls, then cold's 10) gate 30 read 4.29, and with
+# every core busy 4 runs in 60 were outside 2.5-3.5 for the binary before
+# increment 2 of the LLVM work as for the one after. Interleaved (three hot
+# to each cold, 2026-11-22): 0 in 40, 2.86-3.33.
 echo "--- TIER shares ---"
 ./gbasic --profile="$tmp/shares.txt" tests/profile/shares.bas >/dev/null 2>"$tmp/shares.err" </dev/null || true
 hot="$(self_of "$tmp/shares.txt" hot)"; cold="$(self_of "$tmp/shares.txt" cold)"

@@ -18,10 +18,10 @@ end function
 
 program main()
     x = warm()
-    for r = 1 to 30
-        x = x + hot(150000)
-    next
     for r = 1 to 10
+        x = x + hot(150000)
+        x = x + hot(150000)
+        x = x + hot(150000)
         x = x + cold(150000)
     next
     print x
@@ -34,3 +34,8 @@ end program
 function warm()
     return 0
 end function
+
+' main's calls are interleaved, three of one to each of the other, so a change in the
+' machine's load falls on both: run back to back (all 30, then all 10) the
+' ratio left 2.5-3.5 in 4 runs of 60 with every core busy, for the binary
+' before increment 2 as for the one after.
