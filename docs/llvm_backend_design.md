@@ -1,6 +1,7 @@
 # Compiling gBASIC with LLVM: a design note
 
-**Status:** Design, for Matthew, 2026-11-21. Nothing is built. It follows his
+**Status:** Design, 2026-11-21. Matthew ruled all six questions (§8) as
+recommended the same day. Nothing is built yet; increment 1 is next. It follows his
 direction of 2026-08-20 (an LLVM backend compiling gBASIC to machine code),
 sharpened 2026-11-03 to "actual code generation by gBASIC 1.0"; typed
 variables (`x:number`) were designed with that aim. The costs below were
@@ -150,7 +151,9 @@ real speed-up, not LLVM.
 - **Do nothing but increment 1.** It is worth doing alone. It does not reach
   Matthew's aim.
 
-## 8. Questions for Matthew
+## 8. Questions for Matthew, ruled
+
+All six were ruled as recommended, 2026-11-21.
 
 1. **Is increment 1 (resolving names in the interpreter) the first increment
    of the LLVM work?** I recommend yes. It removes 25-50% of the
