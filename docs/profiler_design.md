@@ -146,7 +146,7 @@ exit passes back through the wrapper.
 
 **This is measured, not claimed:** the suite builds a second copy with the
 hooks compiled out (`make gbasic-noprof`, `-DGB_NO_PROFILER`) and counts both
-in **instructions** with callgrind, held to at most 1.01. Wall time was tried
+in **instructions** with callgrind. Wall time was tried
 first and could not hold a 3% bound: on a loaded machine this binary timed
 against its own copy ranged from 0.81 to 1.01 (2026-11-21), while an
 instruction count repeats exactly. Increment 1 measured 0.9994 off.
@@ -156,6 +156,17 @@ million `invoke_function`'s, and 2.8 million are `eval_user_function_bound`,
 which holds no hook and compiled differently (its stack frame grew 64 bytes:
 GCC's inlining in a 50,000-line file moved). Marking the wrappers cold and
 never inlined changed nothing, so they are not marked.
+
+The bound was 1.01 of the whole run until 2026-11-22. Resolving names once
+(docs/llvm_backend_design.md, increment 1) left the hooks at the same 7.4
+million instructions but cut the run around them from 1,041 to 788 million,
+so the ratio rose to 1.0093 with no change to the hooks, and a faster
+interpreter would have failed it. The bound is now on the hooks themselves:
+the difference at most **6 instructions a statement run and 25 a call**, the
+runs and calls counted by the profiler on the same program (600,004 and
+200,000). Measured then: about 4.5 a statement and 21 a call (7 in
+`invoke_function`, 7 in `eval_call`, the rest `eval_user_function_bound`'s
+layout).
 
 Profiling on measured 1.003 to 1.047 in increment 1, and 0.98 in increment 2,
 by where the program's file sits: the note copies its path, and a path of

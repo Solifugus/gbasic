@@ -52,11 +52,18 @@
 #              after the file being the program's.
 #   off        the same binary with every hook compiled out (make
 #              gbasic-noprof) against this one with profiling off, counted in
-#              INSTRUCTIONS by callgrind: at most 1.01, and profiling on at
-#              most 1.10. Not wall time: this binary timed against its own copy
-#              ranged 0.81 to 1.01 on a loaded machine (2026-11-21), while an
-#              instruction count repeats exactly. The hooks' cost IS
-#              instructions, a load and a branch each.
+#              INSTRUCTIONS by callgrind: the difference at most 6 a statement
+#              run and 25 a call (both counted by the profiler on the same
+#              program), and profiling on at most 1.10. Not wall time: this
+#              binary timed against its own copy ranged 0.81 to 1.01 on a
+#              loaded machine (2026-11-21), while an instruction count repeats
+#              exactly. The hooks' cost IS instructions, a load and a branch
+#              each. The bound was 1.01 of the whole run until 2026-11-22; the
+#              hooks cost the same 7.4M instructions after names were resolved
+#              once (docs/llvm_backend_design.md, increment 1), but the run
+#              around them fell from 1,041M to 788M, so the ratio rose to
+#              1.0093 with no change to the hooks. Measured then: 4.5 a
+#              statement, about 21 a call.
 #              Profiling on varies with the program's PATH (malloc's state
 #              after copying it: 1.003-1.047 measured), hence the looser bound.
 #   valgrind   the counts fixture, profiled.
@@ -323,15 +330,22 @@ BAS
         with="$(ir ./gbasic "$tmp/bench.bas")"
         without="$(ir "$tmp/gbasic-noprof" "$tmp/bench.bas")"
         profiled="$(ir ./gbasic --profile="$tmp/bench.txt" "$tmp/bench.bas")"
+        GBASIC_PROFILE_HZ=0 ./gbasic --profile="$tmp/bench.json" "$tmp/bench.bas" >/dev/null 2>&1 </dev/null
+        runs="$(grep -o '"runs": *[0-9]*' "$tmp/bench.json" | awk -F: '{ s += $2 } END { print s + 0 }')"
+        calls="$(grep -o '"calls": *[0-9]*' "$tmp/bench.json" | awk -F: '{ s += $2 } END { print s + 0 }')"
         if [ -z "$with" ] || [ -z "$without" ] || [ -z "$profiled" ]; then
             fail "off: callgrind gave no count ('$with' '$without' '$profiled')"
+        elif [ "$runs" -lt 600000 ] || [ "$calls" -lt 200000 ]; then
+            fail "off: the profiler counted $runs statement runs and $calls calls, fewer than the program makes"
         else
             ratio="$(awk -v a="$with" -v b="$without" 'BEGIN { printf "%.4f", a / b }')"
             on="$(awk -v a="$profiled" -v b="$without" 'BEGIN { printf "%.4f", a / b }')"
-            if awk -v r="$ratio" 'BEGIN { exit !(r <= 1.01) }'; then
-                pass "off: ${ratio}x the instructions of the hooks compiled out (at most 1.01)"
+            bound=$((6 * runs + 25 * calls))
+            extra=$((with - without))
+            if [ "$extra" -le "$bound" ]; then
+                pass "off: the hooks cost $extra instructions, at most $bound (6 a statement run x $runs, 25 a call x $calls; ${ratio}x the whole run)"
             else
-                fail "off: ${ratio}x the instructions of the hooks compiled out, over 1.01 ($with against $without)"
+                fail "off: the hooks cost $extra instructions, over $bound (6 a statement run x $runs, 25 a call x $calls; $with against $without)"
             fi
             if awk -v r="$on" 'BEGIN { exit !(r <= 1.10) }'; then
                 pass "profiling on: ${on}x (at most 1.10; $profiled against $without instructions)"
