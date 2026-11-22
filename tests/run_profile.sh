@@ -126,6 +126,11 @@ else
     sed 's/^/  /' "$tmp/sampled.err"; fail "sampled: the header or the headings"
 fi
 
+# shares.bas calls each function with 150000, not the 40000 it had: once
+# increment 1 of docs/llvm_backend_design.md made its loop cheaper the run took
+# 0.14 s, and a loaded gate's scheduling moved the ratio (1.72 in gate 25; with
+# three-quarters of the cores busy, one run in 20 outside 2.5-3.5 at 40000 and
+# none at 150000). The sampler counts wall time, so a short run is exposed.
 echo "--- TIER shares ---"
 ./gbasic --profile="$tmp/shares.txt" tests/profile/shares.bas >/dev/null 2>"$tmp/shares.err" </dev/null || true
 hot="$(self_of "$tmp/shares.txt" hot)"; cold="$(self_of "$tmp/shares.txt" cold)"

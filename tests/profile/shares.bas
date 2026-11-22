@@ -19,10 +19,10 @@ end function
 program main()
     x = 0
     for r = 1 to 30
-        x = x + hot(40000)
+        x = x + hot(150000)
     next
     for r = 1 to 10
-        x = x + cold(40000)
+        x = x + cold(150000)
     next
     print x
 end program
