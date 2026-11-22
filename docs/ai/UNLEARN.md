@@ -637,7 +637,7 @@ function safe_div(a, b)
 end function
 ```
 
-Three things that surprise on the way in:
+Four things that surprise on the way in:
 
 - **Only bare `error` acknowledges.** `if error then` claims the error and is
   true exactly once; `error.message` reads without claiming. Reading only
@@ -648,6 +648,9 @@ Three things that surprise on the way in:
   Forgetting a check makes noise, never silence.
 - **A callee is not covered by your handler.** It arms its own frame or its
   raise propagates through it.
+- **`on error goto <label>` is acknowledged by the jump.** In the handler,
+  bare `error` is already `false`; read `error.message` there, and do not
+  test `if error then` first (it skips the handler's body).
 
 See `docs/error_model_design.md`; proof in `examples/on_error_goto_next_test.bas`
 and `tests/run_error_model.sh`.

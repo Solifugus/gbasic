@@ -69,6 +69,12 @@ end if' ;;
 else
     print "left out"
 end if' ;;
+        # GBASIC_COMPILE=report says what it compiled, or that this build
+        # cannot (set below): built only when a function WAS compiled
+        compile) body='function one()
+    return 1
+end function
+print one()' ;;
         *) return 1 ;;
     esac
     printf '%s\n' "$body" > "$work/$name.bas"
@@ -79,9 +85,14 @@ end if' ;;
     # without Qt still has the terminal backend (the `term` row)
     local chosen=""
     [ "$name" = ui ] && chosen=qt
-    out=$(cd "$work" && GBASIC_UI="$chosen" timeout 30 "$bin" "$name.bas" 2>&1)
+    local compile=""
+    [ "$name" = compile ] && compile=report
+    out=$(cd "$work" && GBASIC_UI="$chosen" GBASIC_COMPILE="$compile" timeout 30 "$bin" "$name.bas" 2>&1)
     if printf '%s' "$out" | grep -q 'not available in this build'; then
         echo "left out"
+    elif [ "$name" = compile ]; then
+        printf '%s' "$out" | grep -qx 'compile: 1 function compiled, 1 statement, 0 lowered' &&
+            echo built || echo "neither: $out"
     else
         printf '%s\n' "$out" | tail -1
     fi

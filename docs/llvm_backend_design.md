@@ -5,7 +5,7 @@ on 2026-11-21. Increment 1 is built (§4, "Increment 1, as built"): builtins,
 module verbs, operators, variables and the function a call reaches are
 resolved, and the whole program makes no `strcmp` per pass in the three
 programs `tests/run_resolve.sh` measures. Increment 2, the baseline JIT, is
-next. It follows his
+under way; its shape is in §4, "Increment 2, its shape". It follows his
 direction of 2026-08-20 (an LLVM backend compiling gBASIC to machine code),
 sharpened 2026-11-03 to "actual code generation by gBASIC 1.0"; typed
 variables (`x:number`) were designed with that aim. The costs below were
@@ -204,6 +204,88 @@ real speed-up, not LLVM.
   interpreter will fail a ratio that the hooks themselves never moved. Done
   2026-11-22: the bound is now on the hooks, 6 instructions a statement run
   and 25 a call (`docs/profiler_design.md`).
+
+### Increment 2, its shape (written before any of it is built)
+
+**What is compiled is the body loop, and only that.** `invoke_function`
+binds the arguments, opens the error frame, pushes the call-stack slot and
+runs the profiler's call hooks; then a `while (pc < count)` loop runs each
+statement and decides, from the statement's `EvalResult`, whether to go on,
+absorb a raise (`on error goto next` / `goto label`), jump (`goto`,
+`gosub`, a bare `return` to a gosub), or leave. A compiled function replaces
+that loop and nothing else, so everything around it (binding, locks on
+parameters, defaults, the error frame's rule 2, the trace, `this`, the
+library frame) is the interpreter's own code, run once per call as now.
+
+**The compiled body is a C function** `void body(EvalResult *out)`, built as
+LLVM IR by `src/jit.c` (the only file that includes LLVM's headers) and run
+by ORC's LLJIT. The interpreter calls it through `gb_jit_body(stmt)`, which
+answers the compiled entry or NULL; NULL means the loop runs as now.
+
+**The runtime it calls** is a set of `gbrt_*` functions in `src/eval.c`,
+non-static, given to the JIT as absolute symbols (`LLVMOrcAbsoluteSymbols`)
+so no `-rdynamic` and no symbol lookup by the dynamic linker. Values are
+`Value`s on the compiled function's stack, passed by pointer; the IR never
+looks inside one in this increment (`Value`'s layout is the interpreter's,
+and increment 3 is where unboxed numbers come in).
+
+**Built in three steps, each with the gate's second lane green:**
+
+1. **Every statement through the runtime.** The IR is the body loop
+   unrolled: block `s_i` calls `gbrt_stmt(stmt_i, &r)` (which is
+   `eval_stmt`) and then one call, `gbrt_after(loop, i)`, which
+   does what the loop does after a statement and answers the index of the
+   next statement (the body's count at its end) or -1 to leave; anything
+   but `i + 1` goes to a `switch` on that index. The interpreter's loop
+   calls the same two functions. Labels,
+   `goto`, `gosub`, `on error goto` and `runtime_stopped` all go through
+   that one function, so they cannot differ from the interpreter's. Every
+   function compiles. It removes nothing yet; it is the plumbing, and the
+   lane proves the plumbing against all 239 suites.
+2. **Statements lowered.** `if`, `while`, `for ... to`, an assignment to a
+   plain name, a bare call and `return` become IR control flow, with each
+   statement still announcing itself (`gbrt_enter(stmt)`: the profiler's
+   statement hook and `current_line`/`current_column`, exactly eval_stmt's
+   first lines) and every expression evaluated by `gbrt_eval(expr, &v)`.
+   Loops in IR carry the interpreter's checks (interrupt, `break x`,
+   `continue x`, the `for` counter's exactness).
+3. **Expressions lowered.** Identifiers by their kept key, literals as
+   constants built once, binary operators by `op_code`, calls with the
+   function or builtin already resolved (increment 1's caches): each a
+   `gbrt_*` call on stack `Value`s, so the tree walk and its dispatch are
+   gone.
+
+**What decides whether a function compiles:** in step 1, everything does.
+From step 2, a statement kind not yet lowered stays a `gbrt_stmt` call
+inside an otherwise compiled body, so a function is never refused for one
+statement. `GBASIC_COMPILE=report` prints each compiled function with how
+many of its statements were lowered, so coverage is a number (§5).
+
+**Switches:** `GBASIC_COMPILE` unset or `0`: nothing compiled, `gbasic` as
+today. `all`: every function, on its first call. `report`: as `all`, plus
+the coverage lines on stderr at exit. A build without LLVM (`HAVE_LLVM=0`)
+accepts the variable and compiles nothing, saying so once under `report`.
+
+**Build:** `llvm-config` 18 or later, found as Qt is (`HAVE_LLVM`,
+`LLVM_AVAILABLE=0` to leave it out); its flags only on `src/jit.c`. The
+codegen level is O0 in step 1 (compile time is the gate's time) and
+measured before raising it.
+
+**The lane:** `GBASIC_COMPILE=all ./tests/run_all.sh`, the whole gate
+again with every function compiled. Output, exit status and stderr must
+match byte for byte; a suite that cannot (one that counts instructions or
+times the interpreter) says why and skips under the lane, by name. Both
+lanes gate a push once the lane exists.
+
+**Perturbations planned:** `gbrt_after` answering NEXT on a raise (an
+`on error` skipped); a JUMP to the label's own index instead of the next
+(a statement run twice); a lowered `for` without the exactness check; the
+statement hook left out of a lowered statement (the profiler's counts).
+
+**Not in `tools/deps.list` yet.** That list's library rows are `pkg-config`
+probes, and LLVM is found by a versioned `llvm-config` (`llvm-config-20`
+here, with no unversioned name); it joins the list, and `install.sh`'s
+question, when compiling makes a program faster (step 2 or 3).
 
 ## 5. Correctness
 

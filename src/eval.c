@@ -3,6 +3,7 @@
 #endif
 
 #include "eval.h"
+#include "gb_jit.h"
 #include "builtins.h"
 #include "gb_decimal.h"
 #include "platform.h"
@@ -11232,6 +11233,8 @@ void gb_print_modules(FILE *out) {
         { "tls",           HAVE_LIBSSL,                 "OpenSSL's libssl" },
         { "crypto",        HAVE_LIBCRYPTO,              "OpenSSL's libcrypto" },
         { "password_hash", GB_PASSWORD_HASH,            "libxcrypt (or a libc with yescrypt)" },
+        /* GBASIC_COMPILE: functions as machine code (docs/llvm_backend_design.md §4) */
+        { "compile",       HAVE_LLVM,                   "LLVM 18 or later" },
     };
     for (size_t i = 0; i < sizeof rows / sizeof rows[0]; i++) {
         fprintf(out, "%s\t%s\t%s\n", rows[i].name, rows[i].built ? "built" : "left out", rows[i].needs);
@@ -15378,6 +15381,109 @@ static Value invoke_function_profiled(AstStmt *stmt, Value *args, size_t argc, V
 }
 #endif
 
+/* THE BODY LOOP'S STATE (include/gb_jit.h), shared by invoke_function's
+ * loop and a compiled body: what the last statement left, and the gosub
+ * stack. */
+struct GbBodyLoop {
+    AstStmt *fn;
+    EvalResult result;
+    size_t *gosub_stack;
+    size_t gosub_count;
+};
+
+/* Statement `index` of the body. */
+void gbrt_stmt(GbBodyLoop *loop, size_t index) {
+    loop->result = eval_stmt(loop->fn->as.function.body.items[index]);
+}
+
+/* WHAT FOLLOWS A STATEMENT, for the loop and a compiled body alike: the
+ * index of the statement to run next (the body's count when it has run off
+ * the end), or -1 to leave with loop->result. */
+long gbrt_after(GbBodyLoop *loop, size_t pc) {
+    AstStmt *stmt = loop->fn;
+    EvalResult result = loop->result;
+    /* PLAT-EXIT, AS eval_stmt_list ALREADY HAS IT: a function body is run
+     * by this loop, not by eval_stmt_list, and lacked its check. So after
+     * `exit(70)` as a bare statement in a function, the function's next
+     * statements ran, and its caller's too (book gap G63, "a refusal can
+     * carry on"). And a statement that ran under the stop printed a stray
+     * `nothing`: `print "x" + string(v)` evaluates to nothing once the
+     * program is stopping (book gap G48, the same defect seen from a
+     * caller's `print`). */
+    if (runtime_stopped && !eval_result_exits_block(result)) {
+        value_free(result.value);
+        loop->result = eval_stop();
+        return -1;
+    }
+    if (result.did_raise) {
+        char *jump = NULL;
+        int absorbed = error_frame_absorb(&jump);
+        if (absorbed == 1) {
+            loop->result = eval_no_result();
+            return (long)pc + 1;
+        }
+        if (absorbed == 2) {
+            size_t target = 0;
+            if (find_function_label(stmt->as.function.body, jump, &target)) {
+                free(jump);
+                loop->result = eval_no_result();
+                return (long)target + 1;
+            }
+            /* A raise, not a printed line: this ABANDONS THE REST OF THE
+             * FUNCTION, so a typo'd label used to truncate it silently and
+             * still exit 0. */
+            raise_fmt(1003, "invalid control flow", "unknown label in function %s: %s",
+                      stmt->as.function.name, jump);
+            free(jump);
+            loop->result = eval_error_result();
+        }
+        return -1;
+    }
+    if (result.did_return) {
+        if (!result.return_has_value && loop->gosub_count > 0) {
+            loop->result = eval_no_result();
+            return (long)loop->gosub_stack[--loop->gosub_count];
+        }
+        return -1;
+    }
+    if (result.did_goto) {
+        size_t target = 0;
+        if (!find_function_label(stmt->as.function.body, result.goto_label, &target)) {
+            raise_fmt(1003, "invalid control flow", "unknown label in function %s: %s",
+                      stmt->as.function.name, result.goto_label);
+            free(result.goto_label);
+            loop->result = eval_error_result();
+            return -1;
+        }
+        free(result.goto_label);
+        loop->result = eval_no_result();
+        return (long)target + 1;
+    }
+    if (result.did_gosub) {
+        size_t target = 0;
+        if (!find_function_label(stmt->as.function.body, result.gosub_label, &target)) {
+            raise_fmt(1003, "invalid control flow", "unknown label in function %s: %s",
+                      stmt->as.function.name, result.gosub_label);
+            free(result.gosub_label);
+            loop->result = eval_error_result();
+            return -1;
+        }
+        free(result.gosub_label);
+        size_t *next = realloc(loop->gosub_stack, sizeof(size_t) * (loop->gosub_count + 1));
+        if (!next) {
+            abort();
+        }
+        loop->gosub_stack = next;
+        loop->gosub_stack[loop->gosub_count++] = pc + 1;
+        loop->result = eval_no_result();
+        return (long)target + 1;
+    }
+    if (result.did_break || result.did_continue || result.did_stop) {
+        return -1;
+    }
+    return (long)pc + 1;
+}
+
 static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *receiver) {
     PROFILE_ENTER_CALL(stmt, args, argc, receiver);
     if (gb_stack_exhausted(CALL_STACK_RESERVE)) {
@@ -15537,105 +15643,28 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     function_depth++;
     AstStmt *previous_function_stmt = current_function_stmt;
     current_function_stmt = stmt;
-    size_t pc = 0;
-    size_t *gosub_stack = NULL;
-    size_t gosub_count = 0;
-    EvalResult result = eval_no_result();
-    while (pc < stmt->as.function.body.count) {
-        result = eval_stmt(stmt->as.function.body.items[pc]);
-        /* PLAT-EXIT, AS eval_stmt_list ALREADY HAS IT: a function body is run
-         * by this loop, not by eval_stmt_list, and lacked its check. So after
-         * `exit(70)` as a bare statement in a function, the function's next
-         * statements ran, and its caller's too (book gap G63, "a refusal can
-         * carry on"). And a statement that ran under the stop printed a stray
-         * `nothing`: `print "x" + string(v)` evaluates to nothing once the
-         * program is stopping (book gap G48, the same defect seen from a
-         * caller's `print`). */
-        if (runtime_stopped && !eval_result_exits_block(result)) {
-            value_free(result.value);
-            result = eval_stop();
-            break;
-        }
-        if (result.did_raise) {
-            char *jump = NULL;
-            int absorbed = error_frame_absorb(&jump);
-            if (absorbed == 1) {
-                result = eval_no_result();
-                pc++;
-                continue;
-            }
-            if (absorbed == 2) {
-                size_t target = 0;
-                if (find_function_label(stmt->as.function.body, jump, &target)) {
-                    free(jump);
-                    result = eval_no_result();
-                    pc = target + 1;
-                    continue;
-                }
-                {
-                    /* A raise, not a printed line: this ABANDONS THE REST OF
-                     * THE FUNCTION, so a typo'd label used to truncate it
-                     * silently and still exit 0. */
-                    raise_fmt(1003, "invalid control flow", "unknown label in function %s: %s",
-                              stmt->as.function.name, jump);
-                    free(jump);
-                    result = eval_error_result();
-                }
-            }
-            break;
-        }
-        if (result.did_return) {
-            if (!result.return_has_value && gosub_count > 0) {
-                pc = gosub_stack[--gosub_count];
-                result = eval_no_result();
-                continue;
-            }
-            break;
-        }
-        if (result.did_goto) {
-            size_t target = 0;
-            if (!find_function_label(stmt->as.function.body, result.goto_label, &target)) {
-                {
-                    raise_fmt(1003, "invalid control flow", "unknown label in function %s: %s",
-                              stmt->as.function.name, result.goto_label);
-                    free(result.goto_label);
-                    result = eval_error_result();
-                }
+    /* THE BODY'S STATEMENTS, compiled or by this loop: either way each
+     * statement is gbrt_stmt and what follows it is gbrt_after, so the two
+     * cannot differ in what they do between statements. */
+    GbBodyLoop loop = { stmt, eval_no_result(), NULL, 0 };
+    GbJitBody compiled = gb_jit_mode() ? gb_jit_body(&stmt->jit, stmt->as.function.name,
+                                                     stmt->as.function.body.count)
+                                       : NULL;
+    if (compiled) {
+        compiled(&loop);
+    } else {
+        size_t pc = 0;
+        while (pc < stmt->as.function.body.count) {
+            gbrt_stmt(&loop, pc);
+            long next = gbrt_after(&loop, pc);
+            if (next < 0) {
                 break;
             }
-            free(result.goto_label);
-            result = eval_no_result();
-            pc = target + 1;
-            continue;
+            pc = (size_t)next;
         }
-        if (result.did_gosub) {
-            size_t target = 0;
-            if (!find_function_label(stmt->as.function.body, result.gosub_label, &target)) {
-                {
-                    raise_fmt(1003, "invalid control flow", "unknown label in function %s: %s",
-                              stmt->as.function.name, result.gosub_label);
-                    free(result.gosub_label);
-                    result = eval_error_result();
-                }
-                break;
-            }
-            free(result.gosub_label);
-            size_t *next = realloc(gosub_stack, sizeof(size_t) * (gosub_count + 1));
-            if (!next) {
-                abort();
-            }
-            gosub_stack = next;
-            gosub_stack[gosub_count++] = pc + 1;
-            result = eval_no_result();
-            pc = target + 1;
-            continue;
-        }
-        if (result.did_break || result.did_continue || result.did_stop) {
-            break;
-        }
-        pc++;
     }
-    free(gosub_stack);
+    EvalResult result = loop.result;
+    free(loop.gosub_stack);
     function_depth--;
     current_function_stmt = previous_function_stmt;
 

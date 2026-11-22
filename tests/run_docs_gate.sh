@@ -649,6 +649,8 @@ if [ -f Makefile ] && [ -f README.md ]; then
             # absent on a machine where it works.
             HAVE_KSYNTAX)  want='KSyntaxHighlighting' ;;
             HAVE_QT_SVG)   want='QtSvg' ;;
+            # found by llvm-config, not pkg-config, as the row says
+            HAVE_LLVM)     want='LLVM 18' ;;
             *) echo "FAIL dependency     Makefile probes $m and this check has no README spelling for it"
                dep_ok=0; status=1; continue ;;
         esac

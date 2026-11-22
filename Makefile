@@ -373,6 +373,33 @@ CFLAGS += -DHAVE_QT=0
 QT_OBJS :=
 endif
 
+# LLVM -- the compiler (docs/llvm_backend_design.md §4, increment 2): a
+# function's body as machine code through ORC's LLJIT, under GBASIC_COMPILE.
+# Found by `llvm-config`, not pkg-config, which LLVM does not ship; and the
+# name is VERSIONED where several LLVMs can be installed (Debian and Ubuntu
+# have llvm-config-20 and no plain llvm-config unless llvm-dev is), so each
+# name is asked in turn and the first at 18 or later WITH its C headers wins.
+# A library without headers (libllvm21 alone, as here) is not a build.
+#
+# Its flags go on src/jit.o alone, the one file that includes LLVM's headers;
+# -lLLVM joins the link only when it is in, as -lstdc++ does for Qt.
+LLVM_CONFIG := $(shell for c in llvm-config llvm-config-22 llvm-config-21 llvm-config-20 llvm-config-19 llvm-config-18; do \
+  p=$$(command -v $$c 2>/dev/null) || continue; v=$$($$p --version 2>/dev/null); \
+  [ "$${v%%.*}" -ge 18 ] 2>/dev/null || continue; \
+  [ -f "$$($$p --includedir)/llvm-c/LLJIT.h" ] || continue; echo $$p; break; done)
+LLVM_AVAILABLE := $(if $(LLVM_CONFIG),1,0)
+ifeq ($(OS),Windows_NT)
+LLVM_AVAILABLE := 0
+endif
+ifeq ($(LLVM_AVAILABLE),1)
+CFLAGS += -DHAVE_LLVM=1
+LLVM_CFLAGS := $(shell $(LLVM_CONFIG) --cflags 2>/dev/null)
+LDLIBS += $(shell $(LLVM_CONFIG) --ldflags 2>/dev/null) $(shell $(LLVM_CONFIG) --libs 2>/dev/null)
+else
+CFLAGS += -DHAVE_LLVM=0
+LLVM_CFLAGS :=
+endif
+
 # libgbasic is every object except the CLI entry points (src/main.o, src/repl.o,
 # src/lineedit.o). The CLI is
 # its first consumer; the archive is the seam a future embedder links against.
@@ -448,7 +475,7 @@ endif
 # absence leaves the terminal without the `highlighting` group.
 KSYNTAX_OBJS := src/ksyntax.o
 
-LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o src/window_check.o src/csv_reader.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS) $(QT_OBJS) $(GSQL_OBJS) $(TERM_OBJS) $(KSYNTAX_OBJS)
+LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o src/window_check.o src/csv_reader.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS) src/jit.o $(QT_OBJS) $(GSQL_OBJS) $(TERM_OBJS) $(KSYNTAX_OBJS)
 OBJS := src/main.o src/repl.o src/lineedit.o $(LIB_OBJS)
 
 # gbasic-lsp: the Language Server, first external consumer of libgbasic. Kept out
@@ -571,7 +598,7 @@ FORCE:
 # `^[A-Z0-9_]+_AVAILABLE` from COLUMN ONE, and a name used only inside this
 # variable never appears there -- so tests/run_library_tiers.sh asserts the
 # names in this line are all assigned, which catches the NEXT one.
-BUILD_SWITCH_SIG := $(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE)|$(LIBPQ_AVAILABLE)|$(LIBSSL_AVAILABLE)|$(LIBXCRYPT_AVAILABLE)|$(LIBXML2_AVAILABLE)|$(ODBC_AVAILABLE)|$(QT_AVAILABLE)|$(KSYNTAX_AVAILABLE)|$(QT_SVG_AVAILABLE)|$(SQLITE3_AVAILABLE)|$(ZLIB_AVAILABLE)|$(YESCRYPT_VENDORED)|$(OPT)
+BUILD_SWITCH_SIG := $(LDAP_AVAILABLE)|$(LIBCRYPTO_AVAILABLE)|$(LIBCURL_AVAILABLE)|$(LIBPQ_AVAILABLE)|$(LIBSSL_AVAILABLE)|$(LIBXCRYPT_AVAILABLE)|$(LIBXML2_AVAILABLE)|$(ODBC_AVAILABLE)|$(QT_AVAILABLE)|$(LLVM_AVAILABLE)|$(KSYNTAX_AVAILABLE)|$(QT_SVG_AVAILABLE)|$(SQLITE3_AVAILABLE)|$(ZLIB_AVAILABLE)|$(YESCRYPT_VENDORED)|$(OPT)
 .buildswitch-stamp: FORCE
 	@printf '%s' '$(BUILD_SWITCH_SIG)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(BUILD_SWITCH_SIG)' > $@
 
@@ -619,7 +646,7 @@ src/ast.o: src/ast.c include/ast.h .buildswitch-stamp
 src/gsql/%.o: src/gsql/%.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gb_decimal.h include/serialize_tags.h include/platform.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/eval.o: src/eval.c src/modules/crypto_ssh.c src/vendor/bcrypt_pbkdf.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/ui.c src/modules/ui_qt.c src/modules/ui_tui.c src/modules/ui_tui_parts.c src/modules/ui_tui_editor.c src/modules/gsql.c src/modules/csv.c src/modules/net.c src/modules/zip.c src/modules/term.c include/term.h include/ksyntax.h include/gb_csv.h include/gb_decimal.h include/gb_number_text.h include/gsql_sql.h $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gsql_owner.h include/gsql_table.h include/eval.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/lexer.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h include/ui_backend.h include/window_check.h src/currency_table.h src/call_names.h third_party/yescrypt/yescrypt.h .stdlibdir-stamp .buildswitch-stamp
+src/eval.o: src/eval.c src/modules/crypto_ssh.c src/vendor/bcrypt_pbkdf.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/ui.c src/modules/ui_qt.c src/modules/ui_tui.c src/modules/ui_tui_parts.c src/modules/ui_tui_editor.c src/modules/gsql.c src/modules/csv.c src/modules/net.c src/modules/zip.c src/modules/term.c include/term.h include/ksyntax.h include/gb_csv.h include/gb_decimal.h include/gb_number_text.h include/gsql_sql.h $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gsql_owner.h include/gsql_table.h include/eval.h include/gb_jit.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/lexer.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h include/ui_backend.h include/window_check.h src/currency_table.h src/call_names.h third_party/yescrypt/yescrypt.h .stdlibdir-stamp .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 # THE QT BACKEND: moc, then C++. The generated unit is `#include`d by the .cpp
@@ -665,6 +692,11 @@ src/ksyntax.o: src/ksyntax.c include/ksyntax.h src/ksyntax_themes.h .buildswitch
 
 src/frontend.o: src/frontend.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gbasic.h include/diagnostics.h include/ast.h include/window_check.h include/lexer.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
+
+# THE COMPILER, built in every build: without LLVM it is the few lines that
+# accept GBASIC_COMPILE and say, under `report`, that nothing is compiled.
+src/jit.o: src/jit.c include/gb_jit.h .buildswitch-stamp
+	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c $< -o $@
 
 src/actor.o: src/actor.c include/actor.h include/platform.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@

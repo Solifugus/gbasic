@@ -430,6 +430,10 @@ struct AstStmt {
     unsigned long prof_samples;
     /* A function's calls and its sampled time. */
     AstProfCounts prof_fn;
+    /* A function's compiled body (include/gb_jit.h): NULL until its first
+     * call under GBASIC_COMPILE, then the entry, or a marker of src/jit.c's
+     * when it is interpreted. */
+    void *jit;
     /* A `for` counter's name interned, as AstExpr.key. */
     const char *key;
     union {

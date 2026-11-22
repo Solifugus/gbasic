@@ -1,0 +1,10 @@
+compile: fact: 2 statements, 0 lowered, ran 10 times
+compile: count_to: 8 statements, 0 lowered, ran 1 time
+compile: subs: 11 statements, 0 lowered, ran 1 time
+compile: absorbed: 4 statements, 0 lowered, ran 1 time
+compile: handled: 5 statements, 0 lowered, ran 2 times
+compile: lost: 2 statements, 0 lowered, ran 1 time
+compile: empty: 0 statements, 0 lowered, ran 1 time
+compile: off_the_end: 1 statement, 0 lowered, ran 1 time
+compile: leave_now: 3 statements, 0 lowered, ran 1 time
+compile: 9 functions compiled, 36 statements, 0 lowered

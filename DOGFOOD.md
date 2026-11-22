@@ -14130,3 +14130,20 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   or weigh a conditional expression; START-HERE/UNLEARN say nothing about it.
 
 - **Status 2026-11-20: RESOLVED.** `a if c else b` exists (Matthew chose Python's spelling); `?` is refused with ``gBASIC has no `c ? a : b`; write `a if c else b` ``; UNLEARN says so. Held by `tests/run_conditional.sh`.
+
+## 2026-11-22 — CC — while: writing the compiler's flow fixture (tests/jit/flow.bas)
+- **Type:** language-surprise
+- **Severity:** low
+- **What:** under `on error goto oops`, I wrote the handler as
+  `oops:` / `if error then return "handled" end if`, from the goto-next
+  habit. The `if` was false and the function fell through to its next line.
+  This is the documented rule (docs/error_model_design.md §2.2: "the jump is
+  the acknowledgment", so bare `error` is false in a handler while
+  `error.message` still holds the reason), but UNLEARN's error section shows
+  only the goto-next form and says "only bare `error` acknowledges", which
+  read on its own points the other way.
+- **Workaround:** the handler reads `error.message` without testing `error`.
+  For the doc: one line in UNLEARN beside the goto-next example, that in a
+  `goto <label>` handler the jump has already acknowledged the error.
+
+- **Status 2026-11-22: RESOLVED.** UNLEARN's error section now has a fourth surprise: in a `goto <label>` handler the jump has acknowledged the error, so read `error.message` and do not test `error`.
