@@ -5,7 +5,9 @@ on 2026-11-21. Increment 1 is built (§4, "Increment 1, as built"): builtins,
 module verbs, operators, variables and the function a call reaches are
 resolved, and the whole program makes no `strcmp` per pass in the three
 programs `tests/run_resolve.sh` measures. Increment 2, the baseline JIT, is
-under way; its shape is in §4, "Increment 2, its shape". It follows his
+under way: steps 1 and 2 are built (§4, "Increment 2, as built so far"),
+and step 2 measured no faster than the interpreter, which is what the
+finding in §3 predicts; its shape is in §4, "Increment 2, its shape". It follows his
 direction of 2026-08-20 (an LLVM backend compiling gBASIC to machine code),
 sharpened 2026-11-03 to "actual code generation by gBASIC 1.0"; typed
 variables (`x:number`) were designed with that aim. The costs below were
@@ -286,6 +288,75 @@ statement hook left out of a lowered statement (the profiler's counts).
 probes, and LLVM is found by a versioned `llvm-config` (`llvm-config-20`
 here, with no unversioned name); it joins the list, and `install.sh`'s
 question, when compiling makes a program faster (step 2 or 3).
+
+### Increment 2, as built so far
+
+**Step 1** (2026-11-22, pushed): as planned above. LLVM is opened with
+`dlopen` on the first compile rather than linked (linked, every process
+peaked at 85 MB against 31 MB), so a program that compiles nothing never
+maps it; loading it costs about 18 ms once (a one-line program: 0.018 s
+interpreted, 0.036 s compiled).
+
+**Step 2** (2026-11-22): `if`, `while` and `for ... to` lowered; assignment,
+a bare call and `return` were NOT, because lowered they would still be one
+runtime call each (their whole work is the expression, step 3), which
+saves nothing over `gbrt_stmt`.
+
+- **Shape.** A lowered statement is IR control flow around runtime calls:
+  `gbrt_if` / `gbrt_if_done`; `gbrt_while_enter` / `_test` / `_next`;
+  `gbrt_for_enter` / `_test` / `_next` over a `GbFor` (the exact counter,
+  its scale, the double counter) on the compiled code's stack. The lists
+  inside them are unrolled as the body is, over a `GbList`, each statement
+  followed by `gbrt_list_after`.
+- **One runtime, not two.** The interpreted `if`, `while` and `for` call the
+  same functions after their first (`eval_stmt` has already announced the
+  statement), and `eval_stmt_list` calls `gbrt_list_begin`, `gbrt_list_stmt`
+  and `gbrt_list_after`, as invoke_function's loop calls `gbrt_stmt` and
+  `gbrt_after` since step 1. The first draft of step 2 copied the `if` and
+  `while` logic into its runtime functions instead; it passed, and was
+  replaced before the `for`, whose exact-counter rules were too much to
+  hold in two places.
+- **`--profile`.** The first call of a lowered statement runs the whole
+  statement through `eval_stmt` when profiling, so the profiler times it as
+  it times any other; profiling measures the interpreter.
+- **The report** counts the statements the compiled code runs itself (the
+  body and every list inside a lowered statement) and how many are lowered:
+  `tests/jit/flow.report`, 19 functions, 154 statements, 40 lowered.
+- **Held by** `run_jit`'s flow tier (every path out of a lowered `if`,
+  `while` and `for`, compiled against interpreted byte for byte) and the
+  gate's compiled lane. Perturbations proven red: a `continue` ending the
+  lowered `while`, the IR's `if` branches swapped, an absorbed raise in a
+  nested list re-running its statement, the `while`'s `loop_depth` dropped,
+  the compiled `for` never stepping, the compiled `for` leaving after one
+  pass, and a named `continue` claimed by the inner `for`.
+- **Measured, best of five, this machine, otherwise idle:**
+
+  | | interpreted | compiled |
+  |---|---|---|
+  | `loop` (10,000,000 passes of `s = s + i * 2` in a `for`, in a function) | 1.22 s | 1.21 s |
+  | `while` with an `if`, 3,000,000 passes | 1.14 s | 1.15 s |
+  | `fib(30)` | 0.57 s | 0.58 s |
+
+  No difference: dispatching statements was never where the time went
+  (§3). Step 3 removes the expression walk; increment 3 removes the boxing,
+  which is where §3 puts the large gain.
+- **How much of the compiled lane compiles** (a tally of every process the
+  lane started, step 1's binary, 2026-11-22): 5,719 processes; 1,585 ran
+  compiled code; 4,129 (72%) called no function at all, their code being at
+  the top level or in a `program` block, which are not compiled. 19,859
+  bodies compiled and 32 fell back to the interpreter, all in the
+  packaging suite's copied binary, which cannot reach LLVM; 36.4 million
+  calls ran compiled against 87 interpreted. So the lane holds the compiled
+  code to the interpreter wherever a function is called, and a `program`
+  block's own statements are a gap (below).
+- **Found on the way** (DOGFOOD, open items 10 and 11, each with a
+  `run_limitations` probe): a `gosub` inside an `if`, `while` or `for`
+  returns past the whole statement, and a body assigning its `for` counter
+  does not change the next pass. Both are the interpreter's behaviour, so
+  the compiled code keeps them; each is a language question.
+- **Not lowered yet:** `do ... until`, `for each`, `consider`, `with`; and a
+  `program` block's body, which is not a function. Compiling the `program`
+  block as a function body would bring most of the 72% into the lane.
 
 ## 5. Correctness
 
