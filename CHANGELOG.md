@@ -16,6 +16,13 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **Builtins found by number, not by name** (2026-11-21), the first slice of
+  increment 1 of `docs/llvm_backend_design.md`. A call's name, and a module
+  call's qualifier, are looked up once per call site and kept on the node, so
+  the builtin chain and each module's verbs compare integers instead of text
+  (about 125 string comparisons a builtin call before). A string-handling
+  program runs 1.96x fewer instructions and a record-handling one 1.71x
+  (callgrind); nothing a program can see changes. `tests/run_resolve.sh`.
 - **`gbasic --profile`: builtins as rows, and JSON** (2026-11-21), increment
   3 of `docs/profiler_design.md`. `sort`, `pg.query` and a handle's methods
   (`db.query()` as `gsql.query`) get rows of their own, marked `[builtin]`,

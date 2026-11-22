@@ -1,7 +1,8 @@
 # Compiling gBASIC with LLVM: a design note
 
-**Status:** Design, 2026-11-21. Matthew ruled all six questions (§8) as
-recommended the same day. Nothing is built yet; increment 1 is next. It follows his
+**Status:** In progress. Matthew ruled all six questions (§8) as recommended
+on 2026-11-21. Increment 1 has begun: builtins and module verbs are found by
+number (§4, "Increment 1, as built"); operators and variables are next. It follows his
 direction of 2026-08-20 (an LLVM backend compiling gBASIC to machine code),
 sharpened 2026-11-03 to "actual code generation by gBASIC 1.0"; typed
 variables (`x:number`) were designed with that aim. The costs below were
@@ -114,6 +115,29 @@ real speed-up, not LLVM.
 4. **Ahead of time.** `gbasic build prog.bas -o prog`: the same IR written as
    an object and linked against `libgbasic.a`, a program that starts
    without an interpreter.
+
+### Increment 1, as built
+
+- **Builtins and module verbs (2026-11-21).** Every name a call is tested
+  against is in `src/call_names.h`, a sorted list; a call site looks its name
+  (and its qualifier, `pg` in `pg.query`) up once by binary search and keeps
+  the number on the node (`AstExpr.as.call.name_id`, `library_id`). The
+  chain's `strcmp(expr->as.call.name, "len")` tests became `CALL_IS(expr,
+  len)`, an integer compare, in the same order, so which builtin a name
+  reaches is unchanged; 472 names, from the builtin chain and the verbs of
+  every module (`ui`, `net`, `gsql`, `xlsx` and the rest). The registry's
+  answer for the aggregate family (`sum`, `max`) is kept the same way. A node
+  copied with another qualifier (a handle's method, `db.query()` reaching
+  `gsql`) resets its qualifier's number.
+- **Measured** (callgrind, the programs of §2): `strings` 1,960 M to
+  1,000 M instructions (1.96x; the bound in §3 was 2.0x), `records` 1,337 M to
+  782 M (1.71x; bound 1.8x); `loop` and `fib` unchanged, as expected, since
+  their names are variables and operators.
+- **Held by** `tests/run_resolve.sh`: the list sorted (a binary search over an
+  unsorted list misses silently), no comparison of a call's name as text left
+  in the source, and the dispatch's `strcmp` calls the same at 2,000 and 4,000
+  passes. Three perturbations each turned it or `run_handle_methods` red: the
+  list unsorted, the number not kept, and the qualifier's number not reset.
 
 ## 5. Correctness
 
