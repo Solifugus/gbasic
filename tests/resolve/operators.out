@@ -1,0 +1,22 @@
++ 10
+- 4
+* 21
+/ 4
+neg -7
+= true false
+!= true false
+> true false
+< false true
+>= true false
+<= true false
+!> false true
+!< true false
+!>= false true
+!<= false true
+and false true
+or false true
+not true
+excluding [1,3]
+intersecting [1,3]
+try 1
+text + abcd

@@ -3,13 +3,16 @@
 # name, and a qualified call's library, are looked up the first time the call
 # site runs and kept on the node as a number (src/call_names.h), so the
 # builtin chain in eval_call_rest -- and each module's chain of verbs -- tests
-# integers, not text.
+# integers, not text. An operator is read as a code by op_code, a switch on
+# its characters, once in each function that tests it.
 #
 # MEASURED FIRST (2026-11-21, callgrind): strcmp was 50.6% of the instructions
 # of a string-handling program and 45.0% of a record-handling one, nearly all
 # of it the builtin chain: 37.7 million comparisons for about 300,000 builtin
 # calls, some 125 a call. After: 1.96x and 1.71x fewer instructions on those
-# two programs, and no comparison per call at all.
+# two programs, and no comparison per call at all. Operators were 14 strcmps a
+# pass of `s = s + i * 2`; with them gone the loop of §2 runs 1.21x fewer
+# instructions.
 #
 # Tiers:
 #   list      src/call_names.h is sorted in C order and has no name twice: the
@@ -20,6 +23,9 @@
 #             `strcmp(expr->as.call.library, "...")` is left in src/eval.c or
 #             src/modules/*.c (a new one would put the cost back for every call
 #             before it in the chain); a planted one is the control.
+#   operators tests/resolve/operators.bas: all twenty operators (the ten
+#             comparisons, + - * /, unary -, and, or, not, try, excluding,
+#             intersecting), each on a case worked by hand in operators.out.
 #   behaviour tests/resolve/builtins.bas: names early, in the middle and at the
 #             end of the chain, the aggregate family, and a native module's
 #             verb give the right answer.
@@ -27,7 +33,10 @@
 #             calls made by the dispatch (eval_call, eval_call_rest,
 #             call_name_lookup, crypto_ssh_call/_is, gbasic_builtin_function,
 #             process_eval_call) must not grow with N -- at most one per 100
-#             passes, where the old chain made over 600 a pass. Instruction
+#             passes, where the old chain made over 600 a pass. The same for
+#             tests/resolve/loop.bas and the operator functions (eval_binary,
+#             binary_apply, eval_comparison, comparison_result_from_cmp,
+#             op_code, the unary case), which made 14 a pass. Instruction
 #             counts, so the machine's load does not matter.
 #             (tests/resolve/strcmp_calls.py reads callgrind_annotate's tree.)
 #   valgrind  the fixture under memcheck.
@@ -58,17 +67,29 @@ printf 'b\na\n' | LC_ALL=C sort -c 2>/dev/null && fail "CONTROL: the sort check 
     || pass "CONTROL: an unsorted list is caught"
 
 echo "--- TIER source ---"
+# calls everywhere; operators in src/eval.c only, since src/modules/xlsx.c's
+# `op` is a spreadsheet formula's (`<>`), not gBASIC's
 scan() { grep -nE 'strcmp\(expr->as\.call\.(name|library), "' "$@" || true; }
-left=$(scan src/eval.c src/modules/*.c)
+scan_ops() { grep -nE 'strcmp\((op|expr->as\.(binary|unary)\.op), "' "$@" || true; }
+left=$(scan src/eval.c src/modules/*.c; scan_ops src/eval.c)
 if [ -z "$left" ]; then
-    pass "no call's name or library is compared as text"
+    pass "no call's name or library, and no operator, is compared as text"
 else
     printf '%s\n' "$left" | sed 's/^/    /'
-    fail "a call's name compared as text: write CALL_IS(expr, name) or CALL_LIB_IS(expr, lib), and add the name to src/call_names.h"
+    fail "compared as text: for a call write CALL_IS(expr, name) or CALL_LIB_IS(expr, lib) and add the name to src/call_names.h; for an operator, compare op_code(op) with OP_..."
 fi
 printf '    if (strcmp(expr->as.call.name, "len") == 0) {\n' > "$tmp/planted.c"
-[ -n "$(scan "$tmp/planted.c")" ] && pass "CONTROL: a planted comparison is found" \
+printf '    if (strcmp(op, "+") == 0) {\n' > "$tmp/planted_op.c"
+[ -n "$(scan "$tmp/planted.c")" ] && [ -n "$(scan_ops "$tmp/planted_op.c")" ] && pass "CONTROL: a planted comparison of each kind is found" \
     || fail "CONTROL: the scan cannot see a planted comparison"
+
+echo "--- TIER operators ---"
+if ./gbasic tests/resolve/operators.bas 2>&1 | cmp -s - tests/resolve/operators.out; then
+    pass "all twenty operators answer as worked by hand"
+else
+    ./gbasic tests/resolve/operators.bas 2>&1 | diff tests/resolve/operators.out - | sed 's/^/    /'
+    fail "an operator answered wrongly"
+fi
 
 echo "--- TIER behaviour ---"
 got=$(RESOLVE_N=3 ./gbasic tests/resolve/builtins.bas 2>&1)
@@ -94,6 +115,18 @@ else
         pass "the dispatch's strcmp calls: $a at 2000 passes, $b at 4000 (none per call)"
     else
         fail "the dispatch's strcmp calls grow with the passes: $a at 2000, $b at 4000"
+    fi
+    ops="eval_binary binary_apply eval_comparison comparison_result_from_cmp op_code op_word eval_expr_case_unary"
+    RESOLVE_N=2000 vg_callgrind_to "$tmp/cl.1" ./gbasic tests/resolve/loop.bas
+    RESOLVE_N=4000 vg_callgrind_to "$tmp/cl.2" ./gbasic tests/resolve/loop.bas
+    a=$(python3 tests/resolve/strcmp_calls.py "$tmp/cl.1" $ops)
+    b=$(python3 tests/resolve/strcmp_calls.py "$tmp/cl.2" $ops)
+    if [ -z "$a" ] || [ -z "$b" ]; then
+        fail "the operators' strcmp count read nothing"
+    elif [ $((b - a)) -le 20 ]; then
+        pass "the operators' strcmp calls: $a at 2000 passes, $b at 4000 (none per operator)"
+    else
+        fail "the operators' strcmp calls grow with the passes: $a at 2000, $b at 4000"
     fi
 fi
 

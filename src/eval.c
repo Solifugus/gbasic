@@ -6303,6 +6303,67 @@ static double value_number_or_zero(Value value) {
     return 0.0;
 }
 
+enum {
+    OP_OTHER = 0,
+    OP_EQ,
+    OP_NE,
+    OP_GT,
+    OP_LT,
+    OP_GE,
+    OP_LE,
+    OP_NGT,
+    OP_NLT,
+    OP_NGE,
+    OP_NLE,
+    OP_ADD,
+    OP_SUB,
+    OP_MUL,
+    OP_DIV,
+    OP_AND,
+    OP_OR,
+    OP_NOT,
+    OP_TRY,
+    OP_EXCLUDING,
+    OP_INTERSECTING,
+};
+
+/* AN OPERATOR'S CODE, from its text without a strcmp (docs/llvm_backend_design.md,
+ * increment 1). The parser's operators are these twenty; each test of an
+ * operator was a strcmp, 14 a pass of `s = s + i * 2`. The text stays on the
+ * node -- messages print it -- and the code is read from it once where a
+ * function tests it. Anything else is OP_OTHER. */
+static inline int op_word(const char *op, const char *word) {
+    while (*word && *op == *word) {
+        op++;
+        word++;
+    }
+    return *op == *word;
+}
+
+static int op_code(const char *op) {
+    switch (op[0]) {
+    case '=': return op[1] == '\0' ? OP_EQ : OP_OTHER;
+    case '+': return op[1] == '\0' ? OP_ADD : OP_OTHER;
+    case '-': return op[1] == '\0' ? OP_SUB : OP_OTHER;
+    case '*': return op[1] == '\0' ? OP_MUL : OP_OTHER;
+    case '/': return op[1] == '\0' ? OP_DIV : OP_OTHER;
+    case '>': return op[1] == '\0' ? OP_GT : (op[1] == '=' && op[2] == '\0') ? OP_GE : OP_OTHER;
+    case '<': return op[1] == '\0' ? OP_LT : (op[1] == '=' && op[2] == '\0') ? OP_LE : OP_OTHER;
+    case '!':
+        if (op[1] == '=') return op[2] == '\0' ? OP_NE : OP_OTHER;
+        if (op[1] == '>') return op[2] == '\0' ? OP_NGT : (op[2] == '=' && op[3] == '\0') ? OP_NGE : OP_OTHER;
+        if (op[1] == '<') return op[2] == '\0' ? OP_NLT : (op[2] == '=' && op[3] == '\0') ? OP_NLE : OP_OTHER;
+        return OP_OTHER;
+    case 'a': return op_word(op, "and") ? OP_AND : OP_OTHER;
+    case 'o': return op_word(op, "or") ? OP_OR : OP_OTHER;
+    case 'n': return op_word(op, "not") ? OP_NOT : OP_OTHER;
+    case 't': return op_word(op, "try") ? OP_TRY : OP_OTHER;
+    case 'e': return op_word(op, "excluding") ? OP_EXCLUDING : OP_OTHER;
+    case 'i': return op_word(op, "intersecting") ? OP_INTERSECTING : OP_OTHER;
+    default: return OP_OTHER;
+    }
+}
+
 static int value_number_for_arithmetic(Value value, const char *op, double *out_number) {
     if (value.kind == VALUE_NUMBER) {
         *out_number = value.as.num.value;
@@ -7111,7 +7172,10 @@ static int env_lookup_exists(const char *name) {
 }
 
 static Value env_get(const char *name) {
-    if (strcmp(name, "error") == 0) {
+    /* Two names that are not variables, asked of every read; the first
+     * character first, so an ordinary name costs no strcmp here
+     * (docs/llvm_backend_design.md, increment 1). */
+    if (name[0] == 'e' && strcmp(name, "error") == 0) {
         /* PLAT-ERR: bare `error` asks "is there an UNACKNOWLEDGED error?" and
          * CLAIMS it -- true exactly once per raise, so a second `if error then`
          * is false and there is no stale-state trap. `error.field` (handled at
@@ -7126,7 +7190,7 @@ static Value env_get(const char *name) {
         current_error_frame->tried = 0;
         return value_error_object();
     }
-    if (strcmp(name, "this") == 0) {
+    if (name[0] == 't' && strcmp(name, "this") == 0) {
         /* The receiver, bound at the call site (first_class_functions_design §4).
          * Outside a method call there is no receiver. */
         if (!current_this) {
@@ -8369,16 +8433,17 @@ static int datetime_compare_exact(DateTime left, DateTime right) {
 }
 
 static int comparison_result_from_cmp(const char *op, int cmp) {
-    if (strcmp(op, "=") == 0) return cmp == 0;
-    if (strcmp(op, "!=") == 0) return cmp != 0;
-    if (strcmp(op, ">") == 0) return cmp > 0;
-    if (strcmp(op, "<") == 0) return cmp < 0;
-    if (strcmp(op, ">=") == 0) return cmp >= 0;
-    if (strcmp(op, "<=") == 0) return cmp <= 0;
-    if (strcmp(op, "!>") == 0) return !(cmp > 0);
-    if (strcmp(op, "!<") == 0) return !(cmp < 0);
-    if (strcmp(op, "!>=") == 0) return !(cmp >= 0);
-    if (strcmp(op, "!<=") == 0) return !(cmp <= 0);
+    int opc = op_code(op);
+    if (opc == OP_EQ) return cmp == 0;
+    if (opc == OP_NE) return cmp != 0;
+    if (opc == OP_GT) return cmp > 0;
+    if (opc == OP_LT) return cmp < 0;
+    if (opc == OP_GE) return cmp >= 0;
+    if (opc == OP_LE) return cmp <= 0;
+    if (opc == OP_NGT) return !(cmp > 0);
+    if (opc == OP_NLT) return !(cmp < 0);
+    if (opc == OP_NGE) return !(cmp >= 0);
+    if (opc == OP_NLE) return !(cmp <= 0);
     return 0;
 }
 
@@ -43284,6 +43349,7 @@ static int text_reads_as_number(Value text) {
 
 static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     const char *op = expr->as.binary.op;
+    int opc = op_code(op);
     int result = 0;
 
     /* AN UNKNOWN OPERAND MAKES THE COMPARISON UNKNOWN (docs/unknown_nan_design.md
@@ -43524,7 +43590,7 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
      * this pair before asking the operator, so `contains` does not warn. */
     if (((left.kind == VALUE_NUMBER && right.kind == VALUE_STRING) ||
          (left.kind == VALUE_STRING && right.kind == VALUE_NUMBER)) &&
-        (strcmp(op, "=") == 0 || strcmp(op, "!=") == 0)) {
+        (opc == OP_EQ || opc == OP_NE)) {
         Value text = left.kind == VALUE_STRING ? left : right;
         Value number = left.kind == VALUE_NUMBER ? left : right;
         if (text_reads_as_number(text)) {
@@ -43561,9 +43627,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         long long lm, ls, rm, rs;
         duration_totals(left.as.duration, &lm, &ls);
         duration_totals(right.as.duration, &rm, &rs);
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = (lm == rm && ls == rs);
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = !(lm == rm && ls == rs);
         } else if (lm != 0 || rm != 0) {
             runtime_error_raise("a month has no fixed length; compare exact durations or use dates.between",
@@ -43578,9 +43644,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     } else if (left.kind == VALUE_DURATION || right.kind == VALUE_DURATION) {
         /* Mixed duration vs other: equal is honestly false (so `contains` over
          * a mixed array works), ordering is refused like money and datetime. */
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = 0;
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = 1;
         } else {
             runtime_error_raise("duration comparison requires duration values", 1003, "duration");
@@ -43593,23 +43659,23 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         left.kind == VALUE_STRING &&
         right.kind == VALUE_STRING) {
         int equal = string_value_equal_caseless(left.as.string, right.as.string);
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = equal;
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = !equal;
         }
     } else if (left.kind == VALUE_STRING && right.kind == VALUE_STRING) {
         int cmp = string_value_compare(left.as.string, right.as.string);
-        if (strcmp(op, "=") == 0) result = cmp == 0;
-        else if (strcmp(op, "!=") == 0) result = cmp != 0;
-        else if (strcmp(op, ">") == 0) result = cmp > 0;
-        else if (strcmp(op, "<") == 0) result = cmp < 0;
-        else if (strcmp(op, ">=") == 0) result = cmp >= 0;
-        else if (strcmp(op, "<=") == 0) result = cmp <= 0;
-        else if (strcmp(op, "!>") == 0) result = cmp <= 0;
-        else if (strcmp(op, "!<") == 0) result = cmp >= 0;
-        else if (strcmp(op, "!>=") == 0) result = cmp < 0;
-        else if (strcmp(op, "!<=") == 0) result = cmp > 0;
+        if (opc == OP_EQ) result = cmp == 0;
+        else if (opc == OP_NE) result = cmp != 0;
+        else if (opc == OP_GT) result = cmp > 0;
+        else if (opc == OP_LT) result = cmp < 0;
+        else if (opc == OP_GE) result = cmp >= 0;
+        else if (opc == OP_LE) result = cmp <= 0;
+        else if (opc == OP_NGT) result = cmp <= 0;
+        else if (opc == OP_NLT) result = cmp >= 0;
+        else if (opc == OP_NGE) result = cmp < 0;
+        else if (opc == OP_NLE) result = cmp > 0;
     } else if (left.kind == VALUE_MONEY && right.kind == VALUE_MONEY) {
         /* The equality/ordering split follows PLAT-EQ: equality answers a
          * question about the values, ordering refuses where no order exists.
@@ -43620,7 +43686,7 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
                             left.as.money.exponent == right.as.money.exponent;
         long long a = left.as.money.units;
         long long b = right.as.money.units;
-        if (!same_currency && strcmp(op, "=") != 0 && strcmp(op, "!=") != 0) {
+        if (!same_currency && opc != OP_EQ && opc != OP_NE) {
             char message[160];
             const char *la = currency_alpha_of(left.as.money.currency);
             const char *ra = currency_alpha_of(right.as.money.currency);
@@ -43632,16 +43698,16 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
             runtime_error_raise(message, 1003, "money");
             return value_null();
         }
-        if (strcmp(op, "=") == 0) result = same_currency && a == b;
-        else if (strcmp(op, "!=") == 0) result = !(same_currency && a == b);
-        else if (strcmp(op, ">") == 0) result = a > b;
-        else if (strcmp(op, "<") == 0) result = a < b;
-        else if (strcmp(op, ">=") == 0) result = a >= b;
-        else if (strcmp(op, "<=") == 0) result = a <= b;
-        else if (strcmp(op, "!>") == 0) result = !(a > b);
-        else if (strcmp(op, "!<") == 0) result = !(a < b);
-        else if (strcmp(op, "!>=") == 0) result = !(a >= b);
-        else if (strcmp(op, "!<=") == 0) result = !(a <= b);
+        if (opc == OP_EQ) result = same_currency && a == b;
+        else if (opc == OP_NE) result = !(same_currency && a == b);
+        else if (opc == OP_GT) result = a > b;
+        else if (opc == OP_LT) result = a < b;
+        else if (opc == OP_GE) result = a >= b;
+        else if (opc == OP_LE) result = a <= b;
+        else if (opc == OP_NGT) result = !(a > b);
+        else if (opc == OP_NLT) result = !(a < b);
+        else if (opc == OP_NGE) result = !(a >= b);
+        else if (opc == OP_NLE) result = !(a <= b);
     } else if (left.kind == VALUE_MONEY || right.kind == VALUE_MONEY) {
         runtime_error_raise("money comparison requires money values", 1003, "money");
         value_free(left);
@@ -43658,9 +43724,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
          * coercion at the end of the chain, where an array becomes 0 -- so ANY
          * two arrays compared equal, including [] = [1,2,3]. */
         int equal = value_storage_equal(&left, &right);
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = equal;
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = !equal;
         } else {
             /* Refused rather than guessed. There is no defensible ordering
@@ -43675,9 +43741,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         /* An array compared against a non-array: unequal, matching the function
          * and gobject rules above. Previously `[1,2] = "hi"` was TRUE, both
          * sides having coerced to 0. */
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = 0;
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = 1;
         } else {
             runtime_error_raise("arrays support only = and !=", 1003, "comparison");
@@ -43690,9 +43756,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
          * since a record is a mapping and field order is how it was written
          * rather than what it means. Deep, for the same reason as arrays. */
         int equal = value_storage_equal(&left, &right);
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = equal;
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = !equal;
         } else {
             runtime_error_raise("records support only = and !=", 1003, "comparison");
@@ -43702,9 +43768,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         }
     } else if (left.kind == VALUE_RECORD || right.kind == VALUE_RECORD) {
         /* A record compared against a non-record: unequal. */
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = 0;
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = 1;
         } else {
             runtime_error_raise("records support only = and !=", 1003, "comparison");
@@ -43714,9 +43780,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         }
     } else if (left.kind == VALUE_FUNCTION && right.kind == VALUE_FUNCTION) {
         int equal = function_value_equal(&left, &right);
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = equal;
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = !equal;
         } else {
             runtime_error_raise("functions support only = and !=", 1003, "comparison");
@@ -43726,9 +43792,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         }
     } else if (left.kind == VALUE_FUNCTION || right.kind == VALUE_FUNCTION) {
         /* A function compared against a non-function: equal only under !=. */
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = 0;
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = 1;
         } else {
             runtime_error_raise("functions support only = and !=", 1003, "comparison");
@@ -43743,9 +43809,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
          * the numeric coercion at the end of the chain and ANY two watchers
          * compared equal -- the PLAT-EQ fallthrough, third occurrence. */
         int equal = left.as.watcher_id == right.as.watcher_id;
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = equal;
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = !equal;
         } else {
             runtime_error_raise("watcher values support only = and !=", 1003, "comparison");
@@ -43756,9 +43822,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     } else if (left.kind == VALUE_WATCHER || right.kind == VALUE_WATCHER) {
         /* A watcher compared against a non-watcher: unequal, matching the
          * function/regex/gobject rules. */
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = 0;
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = 1;
         } else {
             runtime_error_raise("watcher values support only = and !=", 1003, "comparison");
@@ -43773,9 +43839,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
          * which have identity but no comparable content. */
         int equal = regex_same_pattern(left.as.regex, right.as.regex) &&
                     strcmp(left.as.regex->flags, right.as.regex->flags) == 0;
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = equal;
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = !equal;
         } else {
             runtime_error_raise("regex values support only = and !=", 1003, "comparison");
@@ -43786,9 +43852,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
     } else if (left.kind == VALUE_REGEX || right.kind == VALUE_REGEX) {
         /* A regex compared against a non-regex: unequal, matching the function
          * and gobject rules. */
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = 0;
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = 1;
         } else {
             runtime_error_raise("regex values support only = and !=", 1003, "comparison");
@@ -43800,8 +43866,8 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
                left.kind == VALUE_UNKNOWN || right.kind == VALUE_UNKNOWN) {
         int equal = left.kind == right.kind &&
             (left.kind == VALUE_NULL || left.kind == VALUE_UNKNOWN);
-        if (strcmp(op, "=") == 0) result = equal;
-        else if (strcmp(op, "!=") == 0) result = !equal;
+        if (opc == OP_EQ) result = equal;
+        else if (opc == OP_NE) result = !equal;
         else {
             runtime_error_raise("unknown and nothing support only = and !=", 1003, "comparison");
             value_free(left);
@@ -43840,9 +43906,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
          * `x = 0` is the shape that makes this worth refusing rather than
          * documenting: `if input("n: ") = 0` was true for any answer that was
          * not a number. */
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = 0;
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = 1;
         } else {
             char message[128];
@@ -43879,9 +43945,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
             if (cmp == 2) {
                 /* NaN is unordered: `=` is false, `!=` is true, and the ordering
                  * operators answer the way the double path answers for NaN. */
-                result = strcmp(op, "!=") == 0 || strcmp(op, "!>") == 0 ||
-                         strcmp(op, "!<") == 0 || strcmp(op, "!>=") == 0 ||
-                         strcmp(op, "!<=") == 0;
+                result = opc == OP_NE || opc == OP_NGT ||
+                         opc == OP_NLT || opc == OP_NGE ||
+                         opc == OP_NLE;
             } else {
                 result = comparison_result_from_cmp(op, cmp);
             }
@@ -43891,16 +43957,16 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
         }
         double a = value_number_or_zero(left);
         double b = value_number_or_zero(right);
-        if (strcmp(op, "=") == 0) result = a == b;
-        else if (strcmp(op, "!=") == 0) result = a != b;
-        else if (strcmp(op, ">") == 0) result = a > b;
-        else if (strcmp(op, "<") == 0) result = a < b;
-        else if (strcmp(op, ">=") == 0) result = a >= b;
-        else if (strcmp(op, "<=") == 0) result = a <= b;
-        else if (strcmp(op, "!>") == 0) result = !(a > b);
-        else if (strcmp(op, "!<") == 0) result = !(a < b);
-        else if (strcmp(op, "!>=") == 0) result = !(a >= b);
-        else if (strcmp(op, "!<=") == 0) result = !(a <= b);
+        if (opc == OP_EQ) result = a == b;
+        else if (opc == OP_NE) result = a != b;
+        else if (opc == OP_GT) result = a > b;
+        else if (opc == OP_LT) result = a < b;
+        else if (opc == OP_GE) result = a >= b;
+        else if (opc == OP_LE) result = a <= b;
+        else if (opc == OP_NGT) result = !(a > b);
+        else if (opc == OP_NLT) result = !(a < b);
+        else if (opc == OP_NGE) result = !(a >= b);
+        else if (opc == OP_NLE) result = !(a <= b);
     } else {
         /* THE FALLTHROUGH IS CLOSED, and closing it is the general form of a
          * fix this chain had already received twice by hand.
@@ -43936,9 +44002,9 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
          * cannot disagree. Ordering refuses, as it does for the eleven kinds
          * that already had a branch. */
         int equal = value_storage_equal(&left, &right);
-        if (strcmp(op, "=") == 0) {
+        if (opc == OP_EQ) {
             result = equal;
-        } else if (strcmp(op, "!=") == 0) {
+        } else if (opc == OP_NE) {
             result = !equal;
         } else {
             char message[160];
@@ -44033,17 +44099,18 @@ static GB_NOINLINE Value binary_setop(AstExpr *expr, const char *op, int is_excl
 static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, int previous_line,
                                       int previous_column) {
     const char *op = expr->as.binary.op;
+    int opc = op_code(op);
 
-    if (strcmp(op, "=") == 0 ||
-        strcmp(op, "!=") == 0 ||
-        strcmp(op, ">") == 0 ||
-        strcmp(op, "<") == 0 ||
-        strcmp(op, ">=") == 0 ||
-        strcmp(op, "<=") == 0 ||
-        strcmp(op, "!>") == 0 ||
-        strcmp(op, "!<") == 0 ||
-        strcmp(op, "!>=") == 0 ||
-        strcmp(op, "!<=") == 0) {
+    if (opc == OP_EQ ||
+        opc == OP_NE ||
+        opc == OP_GT ||
+        opc == OP_LT ||
+        opc == OP_GE ||
+        opc == OP_LE ||
+        opc == OP_NGT ||
+        opc == OP_NLT ||
+        opc == OP_NGE ||
+        opc == OP_NLE) {
         Value result = eval_comparison(expr, left, right);
         current_line = previous_line;
         current_column = previous_column;
@@ -44055,7 +44122,7 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
      * operands, which is how a program builds a message, so a string beside an
      * unknown still renders it as the word. */
     if ((left.kind == VALUE_UNKNOWN || right.kind == VALUE_UNKNOWN) &&
-        !(strcmp(op, "+") == 0 &&
+        !(opc == OP_ADD &&
           (left.kind == VALUE_STRING || right.kind == VALUE_STRING))) {
         value_free(left);
         value_free(right);
@@ -44064,12 +44131,12 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
         return value_unknown();
     }
 
-    if ((strcmp(op, "+") == 0 || strcmp(op, "-") == 0) &&
+    if ((opc == OP_ADD || opc == OP_SUB) &&
         left.kind == VALUE_DATETIME &&
         right.kind == VALUE_DURATION) {
         DateTime result = add_duration_to_datetime(left.as.datetime,
                                                    right.as.duration,
-                                                   strcmp(op, "+") == 0 ? 1 : -1);
+                                                   opc == OP_ADD ? 1 : -1);
         value_free(left);
         value_free(right);
         current_line = previous_line;
@@ -44077,7 +44144,7 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
         return value_datetime(result);
     }
 
-    if (strcmp(op, "+") == 0 &&
+    if (opc == OP_ADD &&
         left.kind == VALUE_DURATION &&
         right.kind == VALUE_DATETIME) {
         DateTime result = add_duration_to_datetime(right.as.datetime,
@@ -44094,7 +44161,7 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
      * days/hours/minutes/seconds, never months -- "how many months apart" is a
      * calendar question served by dates.between in stdlib. Signed, so earlier
      * minus later is honest rather than an error. */
-    if (strcmp(op, "-") == 0 &&
+    if (opc == OP_SUB &&
         left.kind == VALUE_DATETIME &&
         right.kind == VALUE_DATETIME) {
         /* THE DIFFERENCE OF TWO CIVIL DATETIMES MUST NOT DEPEND ON A TIMEZONE,
@@ -44143,13 +44210,13 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
     /* Duration algebra (§4.2): closed under + - and scaling, computed on the
      * (months, seconds) totals and returned in canonical form -- so
      * (45 minutes) * 4 is 3 hours, not 180 minutes. */
-    if ((strcmp(op, "+") == 0 || strcmp(op, "-") == 0) &&
+    if ((opc == OP_ADD || opc == OP_SUB) &&
         left.kind == VALUE_DURATION &&
         right.kind == VALUE_DURATION) {
         long long lm, ls, rm, rs;
         duration_totals(left.as.duration, &lm, &ls);
         duration_totals(right.as.duration, &rm, &rs);
-        int sub = strcmp(op, "-") == 0;
+        int sub = opc == OP_SUB;
         Duration out = duration_from_totals(sub ? lm - rm : lm + rm,
                                             sub ? ls - rs : ls + rs);
         value_free(left);
@@ -44159,10 +44226,10 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
         return value_duration(out);
     }
 
-    if ((strcmp(op, "*") == 0 &&
+    if ((opc == OP_MUL &&
          ((left.kind == VALUE_DURATION && right.kind == VALUE_NUMBER) ||
           (left.kind == VALUE_NUMBER && right.kind == VALUE_DURATION))) ||
-        (strcmp(op, "/") == 0 &&
+        (opc == OP_DIV &&
          left.kind == VALUE_DURATION && right.kind == VALUE_NUMBER)) {
         Duration d = left.kind == VALUE_DURATION ? left.as.duration
                                                  : right.as.duration;
@@ -44171,7 +44238,7 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
         value_free(right);
         current_line = previous_line;
         current_column = previous_column;
-        int divide = strcmp(op, "/") == 0;
+        int divide = opc == OP_DIV;
         if (divide && n == 0) {
             runtime_error_raise("division by zero", 1003, "duration");
             return value_null();
@@ -44203,7 +44270,7 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
                                                    llround(scaled_seconds)));
     }
 
-    if (strcmp(op, "+") == 0 &&
+    if (opc == OP_ADD &&
         (left.kind == VALUE_STRING || right.kind == VALUE_STRING)) {
         Value left_text = builtin_string_value(left);
         if (error_action_pending()) {
@@ -44239,7 +44306,7 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
 
     if (left.kind == VALUE_MONEY || right.kind == VALUE_MONEY) {
         if (left.kind == VALUE_MONEY && right.kind == VALUE_MONEY &&
-            (strcmp(op, "+") == 0 || strcmp(op, "-") == 0)) {
+            (opc == OP_ADD || opc == OP_SUB)) {
             /* Adding dollars to euros is not an arithmetic question, it is a
              * missing exchange rate -- so it raises rather than producing a
              * number that looks like an answer. */
@@ -44250,7 +44317,7 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
                 const char *ra = currency_alpha_of(right.as.money.currency);
                 snprintf(message, sizeof(message),
                          "cannot %s money in different currencies (%s and %s)",
-                         strcmp(op, "+") == 0 ? "add" : "subtract",
+                         opc == OP_ADD ? "add" : "subtract",
                          la ? la : "?", ra ? ra : "?");
                 value_free(left);
                 value_free(right);
@@ -44263,7 +44330,7 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
              * and `int64max + one unit` returned the most NEGATIVE money
              * value. A raise is the only safe answer. */
             MoneyValue sum = left.as.money;
-            int overflowed = strcmp(op, "+") == 0
+            int overflowed = opc == OP_ADD
                 ? __builtin_add_overflow(left.as.money.units,
                                          right.as.money.units, &sum.units)
                 : __builtin_sub_overflow(left.as.money.units,
@@ -44281,9 +44348,9 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
             return value_money(sum);
         }
         if (left.kind == VALUE_MONEY && right.kind == VALUE_NUMBER &&
-            (strcmp(op, "*") == 0 || strcmp(op, "/") == 0)) {
+            (opc == OP_MUL || opc == OP_DIV)) {
             double number = right.as.num.value;
-            if (strcmp(op, "/") == 0 && number == 0.0) {
+            if (opc == OP_DIV && number == 0.0) {
                 value_free(left);
                 value_free(right);
                 runtime_error_raise("division by zero", 1002, "division");
@@ -44295,7 +44362,7 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
             long long scaled = 0;
             MoneyValue result_money = left.as.money;
             int ok = money_scale_by(left.as.money.units, number,
-                                    strcmp(op, "*") != 0, &scaled, &merr);
+                                    opc != OP_MUL, &scaled, &merr);
             result_money.units = scaled;
             value_free(left);
             value_free(right);
@@ -44310,7 +44377,7 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
             current_column = previous_column;
             return value_money(result_money);
         }
-        if (left.kind == VALUE_NUMBER && right.kind == VALUE_MONEY && strcmp(op, "*") == 0) {
+        if (left.kind == VALUE_NUMBER && right.kind == VALUE_MONEY && opc == OP_MUL) {
             const char *merr = NULL;
             long long scaled = 0;
             MoneyValue result_money = right.as.money;
@@ -44435,22 +44502,22 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
     value_free(left);
     value_free(right);
 
-    if (decimal_both && (strcmp(op, "+") == 0 || strcmp(op, "-") == 0 ||
-                         strcmp(op, "*") == 0)) {
+    if (decimal_both && (opc == OP_ADD || opc == OP_SUB ||
+                         opc == OP_MUL)) {
         Value out = {0};
         if (decimal_arith(op[0], dm_l, ds_l, dm_r, ds_r, &out)) {
             current_line = previous_line;
             current_column = previous_column;
             return out;
         }
-        double whole = strcmp(op, "+") == 0 ? a + b : (strcmp(op, "-") == 0 ? a - b : a * b);
+        double whole = opc == OP_ADD ? a + b : (opc == OP_SUB ? a - b : a * b);
         if (decimal_loss_is_loud(whole)) {
             warn_fmt(2112, "exactness",
                      "this %s of two exact numbers does not fit a whole number"
                      " the runtime can hold, so the answer is approximate from"
                      " here on",
-                     strcmp(op, "+") == 0 ? "sum"
-                         : (strcmp(op, "-") == 0 ? "difference" : "product"));
+                     opc == OP_ADD ? "sum"
+                         : (opc == OP_SUB ? "difference" : "product"));
         }
         if (error_action_pending()) {
             current_line = previous_line;
@@ -44459,12 +44526,12 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
         }
     }
 
-    if (exact_both && (strcmp(op, "+") == 0 || strcmp(op, "-") == 0 ||
-                       strcmp(op, "*") == 0)) {
+    if (exact_both && (opc == OP_ADD || opc == OP_SUB ||
+                       opc == OP_MUL)) {
         long long out = 0;
-        int overflowed = strcmp(op, "+") == 0
+        int overflowed = opc == OP_ADD
             ? __builtin_add_overflow(la, lb, &out)
-            : (strcmp(op, "-") == 0 ? __builtin_sub_overflow(la, lb, &out)
+            : (opc == OP_SUB ? __builtin_sub_overflow(la, lb, &out)
                                     : __builtin_mul_overflow(la, lb, &out));
         if (!overflowed) {
             current_line = previous_line;
@@ -44476,8 +44543,8 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
         warn_fmt(2112, "exactness",
                  "this %s of two exact integers does not fit a whole number the"
                  " runtime can hold, so the answer is approximate from here on",
-                 strcmp(op, "+") == 0 ? "sum"
-                     : (strcmp(op, "-") == 0 ? "difference" : "product"));
+                 opc == OP_ADD ? "sum"
+                     : (opc == OP_SUB ? "difference" : "product"));
         if (error_action_pending()) {   /* `on warning stop` escalated it */
             current_line = previous_line;
             current_column = previous_column;
@@ -44485,22 +44552,22 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
         }
     }
 
-    if (strcmp(op, "+") == 0) {
+    if (opc == OP_ADD) {
         current_line = previous_line;
         current_column = previous_column;
         return value_number(a + b);
     }
-    if (strcmp(op, "-") == 0) {
+    if (opc == OP_SUB) {
         current_line = previous_line;
         current_column = previous_column;
         return value_number(a - b);
     }
-    if (strcmp(op, "*") == 0) {
+    if (opc == OP_MUL) {
         current_line = previous_line;
         current_column = previous_column;
         return value_number(a * b);
     }
-    if (strcmp(op, "/") == 0) {
+    if (opc == OP_DIV) {
         if (b == 0.0) {
             runtime_error_raise("division by zero", 1002, "division");
             current_line = previous_line;
@@ -44519,6 +44586,7 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
 
 static Value eval_binary(AstExpr *expr) {
     const char *op = expr->as.binary.op;
+    int opc = op_code(op);
     int previous_line = current_line;
     int previous_column = current_column;
     if (expr->line > 0) {
@@ -44551,8 +44619,8 @@ static Value eval_binary(AstExpr *expr) {
      * THE LEFT SIDE'S ORDER AND DUPLICATES ARE PRESERVED. These are filters over
      * `a`, not set-theoretic sets: `unique` exists separately and composes, so
      * folding it in here would take away the choice. */
-    int is_excluding = strcmp(op, "excluding") == 0;
-    if (is_excluding || strcmp(op, "intersecting") == 0) {
+    int is_excluding = opc == OP_EXCLUDING;
+    if (is_excluding || opc == OP_INTERSECTING) {
         return binary_setop(expr, op, is_excluding, previous_line, previous_column);
     }
 
@@ -44562,8 +44630,8 @@ static Value eval_binary(AstExpr *expr) {
      * skipped only when the LEFT DETERMINES the answer (false for `and`, true for
      * `or`) -- an unknown left does not, so the right is evaluated. Any operand
      * other than `unknown` keeps its ordinary truthiness. */
-    int is_and = strcmp(op, "and") == 0;
-    if (is_and || strcmp(op, "or") == 0) {
+    int is_and = opc == OP_AND;
+    if (is_and || opc == OP_OR) {
         int refused = 0;
         Value left = eval_expr(expr->as.binary.left);
         int left_unknown = left.kind == VALUE_UNKNOWN;
@@ -45886,11 +45954,11 @@ static GB_NOINLINE Value eval_expr_case_conditional(AstExpr *expr) {
 
 static GB_NOINLINE Value eval_expr_case_unary(AstExpr *expr, int path_keep) {
 
-        if (strcmp(expr->as.unary.op, "try") == 0) {
+        if (op_code(expr->as.unary.op) == OP_TRY) {
             return eval_try(expr->as.unary.expr);
         }
         Value value = eval_expr(expr->as.unary.expr);
-        if (strcmp(expr->as.unary.op, "not") == 0) {
+        if (op_code(expr->as.unary.op) == OP_NOT) {
             if (value.kind == VALUE_UNKNOWN) {
                 return value_unknown();   /* Kleene: not unknown is unknown */
             }
@@ -45899,7 +45967,7 @@ static GB_NOINLINE Value eval_expr_case_unary(AstExpr *expr, int path_keep) {
             value_free(value);
             return refused ? value_null() : value_bool(result);
         }
-        if (strcmp(expr->as.unary.op, "-") == 0) {
+        if (op_code(expr->as.unary.op) == OP_SUB) {
             if (value.kind == VALUE_UNKNOWN) {
                 return value_unknown();   /* arithmetic propagates unknown */
             }
