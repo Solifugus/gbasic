@@ -381,20 +381,27 @@ endif
 # name is asked in turn and the first at 18 or later WITH its C headers wins.
 # A library without headers (libllvm21 alone, as here) is not a build.
 #
-# Its flags go on src/jit.o alone, the one file that includes LLVM's headers;
-# -lLLVM joins the link only when it is in, as -lstdc++ does for Qt.
+# Its flags go on src/jit.o alone, the one file that includes LLVM's headers.
+# AND IT IS NOT LINKED: src/jit.c opens the library on the first compile, from
+# the path recorded here (the -l name's file in llvm-config's libdir, links
+# resolved), because linked, every program paid for it -- one line printed
+# peaked at 85 MB against 31 MB, GBASIC_COMPILE unset. So LLVM must be a
+# shared library; a static-only LLVM (--shared-mode says `static`) is not a
+# build.
 LLVM_CONFIG := $(shell for c in llvm-config llvm-config-22 llvm-config-21 llvm-config-20 llvm-config-19 llvm-config-18; do \
   p=$$(command -v $$c 2>/dev/null) || continue; v=$$($$p --version 2>/dev/null); \
   [ "$${v%%.*}" -ge 18 ] 2>/dev/null || continue; \
-  [ -f "$$($$p --includedir)/llvm-c/LLJIT.h" ] || continue; echo $$p; break; done)
+  [ -f "$$($$p --includedir)/llvm-c/LLJIT.h" ] || continue; \
+  [ "$$($$p --shared-mode 2>/dev/null)" = shared ] || continue; echo $$p; break; done)
 LLVM_AVAILABLE := $(if $(LLVM_CONFIG),1,0)
 ifeq ($(OS),Windows_NT)
 LLVM_AVAILABLE := 0
 endif
 ifeq ($(LLVM_AVAILABLE),1)
 CFLAGS += -DHAVE_LLVM=1
-LLVM_CFLAGS := $(shell $(LLVM_CONFIG) --cflags 2>/dev/null)
-LDLIBS += $(shell $(LLVM_CONFIG) --ldflags 2>/dev/null) $(shell $(LLVM_CONFIG) --libs 2>/dev/null)
+LLVM_LIB := $(shell readlink -f '$(shell $(LLVM_CONFIG) --libdir 2>/dev/null)/lib$(patsubst -l%,%,$(firstword $(shell $(LLVM_CONFIG) --libs 2>/dev/null))).so' 2>/dev/null)
+LLVM_CFLAGS := $(shell $(LLVM_CONFIG) --cflags 2>/dev/null) -DGBASIC_LLVM_LIB='"$(LLVM_LIB)"'
+LDLIBS += -ldl
 else
 CFLAGS += -DHAVE_LLVM=0
 LLVM_CFLAGS :=

@@ -41,6 +41,8 @@ int gb_jit_mode(void) {
 
 #if HAVE_LLVM
 
+#include <dlfcn.h>
+
 #include <llvm-c/Analysis.h>
 #include <llvm-c/Core.h>
 #include <llvm-c/Error.h>
@@ -48,6 +50,116 @@ int gb_jit_mode(void) {
 #include <llvm-c/Orc.h>
 #include <llvm-c/Target.h>
 #include <llvm-c/TargetMachine.h>
+
+/* LLVM IS LOADED WHEN FIRST ASKED FOR, not linked. Linked, libLLVM's
+ * relocations were done at every start: a program printing one line peaked
+ * at 85 MB against 31 MB without it, GBASIC_COMPILE unset, and
+ * run_read_at's memory ratio failed on that alone. So the binary carries the
+ * library's path (GBASIC_LLVM_LIB, from llvm-config at build time) and the
+ * first compile opens it; a program that compiles nothing never maps it.
+ *
+ * Every function used is in this list, its type taken from LLVM's own
+ * declaration, so a call through the table is checked as a direct call is. */
+#define JIT_LLVM_FUNCTIONS(X) \
+    X(LLVMAddCase) \
+    X(LLVMAddFunction) \
+    X(LLVMAddIncoming) \
+    X(LLVMAppendBasicBlockInContext) \
+    X(LLVMBuildAdd) \
+    X(LLVMBuildBr) \
+    X(LLVMBuildCall2) \
+    X(LLVMBuildCondBr) \
+    X(LLVMBuildICmp) \
+    X(LLVMBuildLoad2) \
+    X(LLVMBuildPhi) \
+    X(LLVMBuildRetVoid) \
+    X(LLVMBuildStore) \
+    X(LLVMBuildSwitch) \
+    X(LLVMConstInt) \
+    X(LLVMConstIntToPtr) \
+    X(LLVMConsumeError) \
+    X(LLVMCreateBuilderInContext) \
+    X(LLVMCreateTargetMachine) \
+    X(LLVMDisposeBuilder) \
+    X(LLVMDisposeErrorMessage) \
+    X(LLVMDisposeMessage) \
+    X(LLVMDisposeModule) \
+    X(LLVMFunctionType) \
+    X(LLVMGetDefaultTargetTriple) \
+    X(LLVMGetErrorMessage) \
+    X(LLVMGetHostCPUFeatures) \
+    X(LLVMGetHostCPUName) \
+    X(LLVMGetParam) \
+    X(LLVMGetTargetFromTriple) \
+    X(LLVMInt64TypeInContext) \
+    X(LLVMIntTypeInContext) \
+    X(LLVMModuleCreateWithNameInContext) \
+    X(LLVMOrcAbsoluteSymbols) \
+    X(LLVMOrcCreateLLJIT) \
+    X(LLVMOrcCreateLLJITBuilder) \
+    X(LLVMOrcCreateNewThreadSafeContext) \
+    X(LLVMOrcCreateNewThreadSafeModule) \
+    X(LLVMOrcDisposeLLJIT) \
+    X(LLVMOrcDisposeMaterializationUnit) \
+    X(LLVMOrcDisposeThreadSafeContext) \
+    X(LLVMOrcDisposeThreadSafeModule) \
+    X(LLVMOrcJITDylibDefine) \
+    X(LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine) \
+    X(LLVMOrcLLJITAddLLVMIRModule) \
+    X(LLVMOrcLLJITBuilderSetJITTargetMachineBuilder) \
+    X(LLVMOrcLLJITGetMainJITDylib) \
+    X(LLVMOrcLLJITLookup) \
+    X(LLVMOrcLLJITMangleAndIntern) \
+    X(LLVMOrcThreadSafeContextGetContext) \
+    X(LLVMPointerTypeInContext) \
+    X(LLVMPositionBuilderAtEnd) \
+    X(LLVMVerifyModule) \
+    X(LLVMVoidTypeInContext)
+
+#define JIT_LLVM_MEMBER(f) __typeof__(&f) f;
+static struct {
+    JIT_LLVM_FUNCTIONS(JIT_LLVM_MEMBER)
+} llvm;
+
+/* the native target's initialisers, by the names LLVM's configuration gives
+ * them (LLVMInitializeX86Target, ...): the header's inline
+ * LLVMInitializeNativeTarget would link them directly */
+#define JIT_NAME_(x) #x
+#define JIT_NAME(x) JIT_NAME_(x)
+static const char *const jit_native_names[] = {
+    JIT_NAME(LLVM_NATIVE_TARGETINFO), JIT_NAME(LLVM_NATIVE_TARGET),
+    JIT_NAME(LLVM_NATIVE_TARGETMC), JIT_NAME(LLVM_NATIVE_ASMPRINTER),
+};
+static void (*jit_native[4])(void);
+
+/* NULL once every function is bound, else what was missing */
+static const char *jit_load(void) {
+    static const char *missing;
+    static int tried;
+    if (tried) {
+        return missing;
+    }
+    tried = 1;
+    void *h = dlopen(GBASIC_LLVM_LIB, RTLD_NOW | RTLD_LOCAL);
+    if (!h) {
+        missing = dlerror();
+        return missing;
+    }
+    void *sym;
+#define JIT_LLVM_BIND(f) \
+    if (!(sym = dlsym(h, #f))) { \
+        return missing = #f; \
+    } \
+    memcpy(&llvm.f, &sym, sizeof sym);
+    JIT_LLVM_FUNCTIONS(JIT_LLVM_BIND)
+    for (size_t i = 0; i < sizeof jit_native / sizeof jit_native[0]; i++) {
+        if (!(sym = dlsym(h, jit_native_names[i]))) {
+            return missing = jit_native_names[i];
+        }
+        memcpy(&jit_native[i], &sym, sizeof sym);
+    }
+    return NULL;
+}
 
 /* What `report` prints at exit: each body compiled, in the order compiled. */
 typedef struct {
@@ -110,11 +222,11 @@ static unsigned long jit_serial;
 /* The reason, on stderr under `report` only: a failure to compile is never
  * the program's failure, since the loop runs instead. */
 static void jit_error(const char *what, LLVMErrorRef err) {
-    char *msg = LLVMGetErrorMessage(err);
+    char *msg = llvm.LLVMGetErrorMessage(err);
     if (gb_jit_mode() == 2) {
         fprintf(stderr, "compile: %s: %s\n", what, msg);
     }
-    LLVMDisposeErrorMessage(msg);
+    llvm.LLVMDisposeErrorMessage(msg);
 }
 
 /* AT EXIT, THE JIT IS DISPOSED, which unregisters each body's unwinding
@@ -123,14 +235,14 @@ static void jit_error(const char *what, LLVMErrorRef err) {
  * the compiled lane runs every suite's valgrind tier. */
 static void jit_stop(void) {
     if (jit) {
-        LLVMErrorRef err = LLVMOrcDisposeLLJIT(jit);
+        LLVMErrorRef err = llvm.LLVMOrcDisposeLLJIT(jit);
         if (err) {
-            LLVMConsumeError(err);
+            llvm.LLVMConsumeError(err);
         }
         jit = NULL;
     }
     if (jit_ctx) {
-        LLVMOrcDisposeThreadSafeContext(jit_ctx);
+        llvm.LLVMOrcDisposeThreadSafeContext(jit_ctx);
         jit_ctx = NULL;
     }
 }
@@ -143,36 +255,45 @@ static int jit_start(void) {
         return 0;
     }
     jit_broken = 1;
-    LLVMInitializeNativeTarget();
-    LLVMInitializeNativeAsmPrinter();
+    const char *missing = jit_load();
+    if (missing) {
+        if (gb_jit_mode() == 2) {
+            fprintf(stderr, "compile: LLVM could not be loaded (%s); every function is interpreted\n",
+                    missing);
+        }
+        return 0;
+    }
+    for (size_t i = 0; i < sizeof jit_native / sizeof jit_native[0]; i++) {
+        jit_native[i]();
+    }
 
     /* O0 in step 1: the IR is calls and branches, and compile time is the
      * gate's time. Measured before it is raised (§4). */
-    char *triple = LLVMGetDefaultTargetTriple();
+    char *triple = llvm.LLVMGetDefaultTargetTriple();
     LLVMTargetRef target;
     char *why = NULL;
-    if (LLVMGetTargetFromTriple(triple, &target, &why)) {
+    if (llvm.LLVMGetTargetFromTriple(triple, &target, &why)) {
         if (gb_jit_mode() == 2) {
             fprintf(stderr, "compile: no target for %s: %s\n", triple, why);
         }
-        LLVMDisposeMessage(why);
-        LLVMDisposeMessage(triple);
+        llvm.LLVMDisposeMessage(why);
+        llvm.LLVMDisposeMessage(triple);
         return 0;
     }
-    char *cpu = LLVMGetHostCPUName();
-    char *features = LLVMGetHostCPUFeatures();
-    LLVMTargetMachineRef tm = LLVMCreateTargetMachine(target, triple, cpu, features,
+    char *cpu = llvm.LLVMGetHostCPUName();
+    char *features = llvm.LLVMGetHostCPUFeatures();
+    LLVMTargetMachineRef tm = llvm.LLVMCreateTargetMachine(target, triple, cpu, features,
                                                       LLVMCodeGenLevelNone,
                                                       LLVMRelocDefault,
                                                       LLVMCodeModelJITDefault);
-    LLVMDisposeMessage(features);
-    LLVMDisposeMessage(cpu);
-    LLVMDisposeMessage(triple);
+    llvm.LLVMDisposeMessage(features);
+    llvm.LLVMDisposeMessage(cpu);
+    llvm.LLVMDisposeMessage(triple);
 
-    LLVMOrcLLJITBuilderRef builder = LLVMOrcCreateLLJITBuilder();
-    LLVMOrcLLJITBuilderSetJITTargetMachineBuilder(
-        builder, LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine(tm));
-    LLVMErrorRef err = LLVMOrcCreateLLJIT(&jit, builder);
+    LLVMOrcLLJITBuilderRef builder = llvm.LLVMOrcCreateLLJITBuilder();
+    llvm.LLVMOrcLLJITBuilderSetJITTargetMachineBuilder(
+        builder, llvm.LLVMOrcJITTargetMachineBuilderCreateFromTargetMachine(tm));
+    LLVMErrorRef err = llvm.LLVMOrcCreateLLJIT(&jit, builder);
     if (err) {
         jit_error("starting the JIT", err);
         jit = NULL;
@@ -182,21 +303,21 @@ static int jit_start(void) {
     /* THE RUNTIME BY ADDRESS, as absolute symbols: nothing is looked up by
      * the dynamic linker, so the binary needs no -rdynamic. */
     LLVMOrcCSymbolMapPair syms[] = {
-        { LLVMOrcLLJITMangleAndIntern(jit, "gbrt_stmt"),
+        { llvm.LLVMOrcLLJITMangleAndIntern(jit, "gbrt_stmt"),
           { (LLVMOrcExecutorAddress)(uintptr_t)&gbrt_stmt,
             { LLVMJITSymbolGenericFlagsCallable, 0 } } },
-        { LLVMOrcLLJITMangleAndIntern(jit, "gbrt_after"),
+        { llvm.LLVMOrcLLJITMangleAndIntern(jit, "gbrt_after"),
           { (LLVMOrcExecutorAddress)(uintptr_t)&gbrt_after,
             { LLVMJITSymbolGenericFlagsCallable, 0 } } },
     };
-    LLVMOrcMaterializationUnitRef mu = LLVMOrcAbsoluteSymbols(syms, sizeof syms / sizeof syms[0]);
-    err = LLVMOrcJITDylibDefine(LLVMOrcLLJITGetMainJITDylib(jit), mu);
+    LLVMOrcMaterializationUnitRef mu = llvm.LLVMOrcAbsoluteSymbols(syms, sizeof syms / sizeof syms[0]);
+    err = llvm.LLVMOrcJITDylibDefine(llvm.LLVMOrcLLJITGetMainJITDylib(jit), mu);
     if (err) {
-        LLVMOrcDisposeMaterializationUnit(mu);
+        llvm.LLVMOrcDisposeMaterializationUnit(mu);
         jit_error("defining the runtime", err);
         return 0;
     }
-    jit_ctx = LLVMOrcCreateNewThreadSafeContext();
+    jit_ctx = llvm.LLVMOrcCreateNewThreadSafeContext();
     jit_broken = 0;
     atexit(jit_stop);
     return 1;
@@ -205,62 +326,62 @@ static int jit_start(void) {
 /* The body's IR, in a module of its own named after it. */
 static LLVMModuleRef jit_build(LLVMContextRef c, const char *sym, size_t count,
                                unsigned long *runs) {
-    LLVMModuleRef m = LLVMModuleCreateWithNameInContext(sym, c);
-    LLVMTypeRef ptr = LLVMPointerTypeInContext(c, 0);
-    LLVMTypeRef i64 = LLVMInt64TypeInContext(c);
-    LLVMTypeRef vd = LLVMVoidTypeInContext(c);
+    LLVMModuleRef m = llvm.LLVMModuleCreateWithNameInContext(sym, c);
+    LLVMTypeRef ptr = llvm.LLVMPointerTypeInContext(c, 0);
+    LLVMTypeRef i64 = llvm.LLVMInt64TypeInContext(c);
+    LLVMTypeRef vd = llvm.LLVMVoidTypeInContext(c);
     LLVMTypeRef stmt_params[] = { ptr, i64 };
-    LLVMTypeRef stmt_ty = LLVMFunctionType(vd, stmt_params, 2, 0);
-    LLVMTypeRef after_ty = LLVMFunctionType(i64, stmt_params, 2, 0);
-    LLVMValueRef gbrt_stmt_fn = LLVMAddFunction(m, "gbrt_stmt", stmt_ty);
-    LLVMValueRef gbrt_after_fn = LLVMAddFunction(m, "gbrt_after", after_ty);
+    LLVMTypeRef stmt_ty = llvm.LLVMFunctionType(vd, stmt_params, 2, 0);
+    LLVMTypeRef after_ty = llvm.LLVMFunctionType(i64, stmt_params, 2, 0);
+    LLVMValueRef gbrt_stmt_fn = llvm.LLVMAddFunction(m, "gbrt_stmt", stmt_ty);
+    LLVMValueRef gbrt_after_fn = llvm.LLVMAddFunction(m, "gbrt_after", after_ty);
     LLVMTypeRef body_params[] = { ptr };
-    LLVMValueRef fn = LLVMAddFunction(m, sym, LLVMFunctionType(vd, body_params, 1, 0));
-    LLVMValueRef loop = LLVMGetParam(fn, 0);
+    LLVMValueRef fn = llvm.LLVMAddFunction(m, sym, llvm.LLVMFunctionType(vd, body_params, 1, 0));
+    LLVMValueRef loop = llvm.LLVMGetParam(fn, 0);
 
-    LLVMBuilderRef b = LLVMCreateBuilderInContext(c);
-    LLVMBasicBlockRef entry = LLVMAppendBasicBlockInContext(c, fn, "entry");
+    LLVMBuilderRef b = llvm.LLVMCreateBuilderInContext(c);
+    LLVMBasicBlockRef entry = llvm.LLVMAppendBasicBlockInContext(c, fn, "entry");
     LLVMBasicBlockRef *s = malloc(sizeof *s * (count + 1));
     if (!s) {
         abort();
     }
     for (size_t i = 0; i < count; i++) {
-        s[i] = LLVMAppendBasicBlockInContext(c, fn, "s");
+        s[i] = llvm.LLVMAppendBasicBlockInContext(c, fn, "s");
     }
-    LLVMBasicBlockRef dispatch = LLVMAppendBasicBlockInContext(c, fn, "dispatch");
-    LLVMBasicBlockRef done = LLVMAppendBasicBlockInContext(c, fn, "done");
+    LLVMBasicBlockRef dispatch = llvm.LLVMAppendBasicBlockInContext(c, fn, "dispatch");
+    LLVMBasicBlockRef done = llvm.LLVMAppendBasicBlockInContext(c, fn, "done");
     s[count] = done;
 
-    LLVMPositionBuilderAtEnd(b, entry);
+    llvm.LLVMPositionBuilderAtEnd(b, entry);
     if (runs) {
-        LLVMTypeRef ul = LLVMIntTypeInContext(c, 8 * sizeof *runs);
-        LLVMValueRef at = LLVMConstIntToPtr(LLVMConstInt(i64, (uintptr_t)runs, 0), ptr);
-        LLVMValueRef was = LLVMBuildLoad2(b, ul, at, "runs");
-        LLVMBuildStore(b, LLVMBuildAdd(b, was, LLVMConstInt(ul, 1, 0), ""), at);
+        LLVMTypeRef ul = llvm.LLVMIntTypeInContext(c, 8 * sizeof *runs);
+        LLVMValueRef at = llvm.LLVMConstIntToPtr(llvm.LLVMConstInt(i64, (uintptr_t)runs, 0), ptr);
+        LLVMValueRef was = llvm.LLVMBuildLoad2(b, ul, at, "runs");
+        llvm.LLVMBuildStore(b, llvm.LLVMBuildAdd(b, was, llvm.LLVMConstInt(ul, 1, 0), ""), at);
     }
-    LLVMBuildBr(b, s[0]);
+    llvm.LLVMBuildBr(b, s[0]);
 
     /* `n` reaches the dispatch block from every statement's block */
-    LLVMPositionBuilderAtEnd(b, dispatch);
-    LLVMValueRef n_phi = LLVMBuildPhi(b, i64, "n");
-    LLVMValueRef sw = LLVMBuildSwitch(b, n_phi, done, (unsigned)count);
+    llvm.LLVMPositionBuilderAtEnd(b, dispatch);
+    LLVMValueRef n_phi = llvm.LLVMBuildPhi(b, i64, "n");
+    LLVMValueRef sw = llvm.LLVMBuildSwitch(b, n_phi, done, (unsigned)count);
     for (size_t k = 0; k < count; k++) {
-        LLVMAddCase(sw, LLVMConstInt(i64, k, 0), s[k]);
+        llvm.LLVMAddCase(sw, llvm.LLVMConstInt(i64, k, 0), s[k]);
     }
 
     for (size_t i = 0; i < count; i++) {
-        LLVMPositionBuilderAtEnd(b, s[i]);
-        LLVMValueRef args[] = { loop, LLVMConstInt(i64, i, 0) };
-        LLVMBuildCall2(b, stmt_ty, gbrt_stmt_fn, args, 2, "");
-        LLVMValueRef n = LLVMBuildCall2(b, after_ty, gbrt_after_fn, args, 2, "next");
-        LLVMValueRef straight = LLVMBuildICmp(b, LLVMIntEQ, n, LLVMConstInt(i64, i + 1, 0), "");
-        LLVMBuildCondBr(b, straight, s[i + 1], dispatch);
-        LLVMAddIncoming(n_phi, &n, &s[i], 1);
+        llvm.LLVMPositionBuilderAtEnd(b, s[i]);
+        LLVMValueRef args[] = { loop, llvm.LLVMConstInt(i64, i, 0) };
+        llvm.LLVMBuildCall2(b, stmt_ty, gbrt_stmt_fn, args, 2, "");
+        LLVMValueRef n = llvm.LLVMBuildCall2(b, after_ty, gbrt_after_fn, args, 2, "next");
+        LLVMValueRef straight = llvm.LLVMBuildICmp(b, LLVMIntEQ, n, llvm.LLVMConstInt(i64, i + 1, 0), "");
+        llvm.LLVMBuildCondBr(b, straight, s[i + 1], dispatch);
+        llvm.LLVMAddIncoming(n_phi, &n, &s[i], 1);
     }
 
-    LLVMPositionBuilderAtEnd(b, done);
-    LLVMBuildRetVoid(b);
-    LLVMDisposeBuilder(b);
+    llvm.LLVMPositionBuilderAtEnd(b, done);
+    llvm.LLVMBuildRetVoid(b);
+    llvm.LLVMDisposeBuilder(b);
     free(s);
     return m;
 }
@@ -284,31 +405,31 @@ GbJitBody gb_jit_body(void **slot, const char *name, size_t count) {
     }
     char sym[48];
     snprintf(sym, sizeof sym, "gb_body_%lu", ++jit_serial);
-    LLVMContextRef c = LLVMOrcThreadSafeContextGetContext(jit_ctx);
+    LLVMContextRef c = llvm.LLVMOrcThreadSafeContextGetContext(jit_ctx);
     LLVMModuleRef m = jit_build(c, sym, count, runs);
     char *why = NULL;
-    if (LLVMVerifyModule(m, LLVMReturnStatusAction, &why)) {
+    if (llvm.LLVMVerifyModule(m, LLVMReturnStatusAction, &why)) {
         if (gb_jit_mode() == 2) {
             fprintf(stderr, "compile: %s: the IR did not verify: %s\n", name, why);
         }
-        LLVMDisposeMessage(why);
-        LLVMDisposeModule(m);
+        llvm.LLVMDisposeMessage(why);
+        llvm.LLVMDisposeModule(m);
         free(runs);
         jit_note(name, count, NULL);
         return NULL;
     }
-    LLVMDisposeMessage(why);
-    LLVMOrcThreadSafeModuleRef tsm = LLVMOrcCreateNewThreadSafeModule(m, jit_ctx);
-    LLVMErrorRef err = LLVMOrcLLJITAddLLVMIRModule(jit, LLVMOrcLLJITGetMainJITDylib(jit), tsm);
+    llvm.LLVMDisposeMessage(why);
+    LLVMOrcThreadSafeModuleRef tsm = llvm.LLVMOrcCreateNewThreadSafeModule(m, jit_ctx);
+    LLVMErrorRef err = llvm.LLVMOrcLLJITAddLLVMIRModule(jit, llvm.LLVMOrcLLJITGetMainJITDylib(jit), tsm);
     if (err) {
-        LLVMOrcDisposeThreadSafeModule(tsm);
+        llvm.LLVMOrcDisposeThreadSafeModule(tsm);
         jit_error(name, err);
         free(runs);
         jit_note(name, count, NULL);
         return NULL;
     }
     LLVMOrcExecutorAddress addr = 0;
-    err = LLVMOrcLLJITLookup(jit, &addr, sym);
+    err = llvm.LLVMOrcLLJITLookup(jit, &addr, sym);
     if (err || !addr) {
         if (err) {
             jit_error(name, err);
