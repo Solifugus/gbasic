@@ -1,10 +1,18 @@
-compile: fact: 2 statements, 0 lowered, ran 10 times
-compile: count_to: 8 statements, 0 lowered, ran 1 time
+compile: fact: 3 statements, 1 lowered, ran 10 times
+compile: count_to: 9 statements, 1 lowered, ran 1 time
 compile: subs: 11 statements, 0 lowered, ran 1 time
-compile: absorbed: 4 statements, 0 lowered, ran 1 time
+compile: absorbed: 5 statements, 1 lowered, ran 1 time
 compile: handled: 5 statements, 0 lowered, ran 2 times
 compile: lost: 2 statements, 0 lowered, ran 1 time
 compile: empty: 0 statements, 0 lowered, ran 1 time
 compile: off_the_end: 1 statement, 0 lowered, ran 1 time
-compile: leave_now: 3 statements, 0 lowered, ran 1 time
-compile: 9 functions compiled, 36 statements, 0 lowered
+compile: branches: 10 statements, 3 lowered, ran 1 time
+compile: find_first: 7 statements, 3 lowered, ran 2 times
+compile: nested_goto: 15 statements, 3 lowered, ran 1 time
+compile: nested_errors: 13 statements, 3 lowered, ran 2 times
+compile: named_break: 3 statements, 0 lowered, ran 1 time
+compile: stray_break: 6 statements, 2 lowered, ran 1 time
+compile: refused: 8 statements, 2 lowered, ran 1 time
+compile: loop_gosub: 7 statements, 1 lowered, ran 1 time
+compile: leave_now: 6 statements, 2 lowered, ran 1 time
+compile: 17 functions compiled, 111 statements, 22 lowered

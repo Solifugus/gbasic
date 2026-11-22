@@ -15383,13 +15383,25 @@ static Value invoke_function_profiled(AstStmt *stmt, Value *args, size_t argc, V
 
 /* THE BODY LOOP'S STATE (include/gb_jit.h), shared by invoke_function's
  * loop and a compiled body: what the last statement left, and the gosub
- * stack. */
+ * stack. `result` is first here and in GbList, so a lowered statement writes
+ * its result through the same pointer whichever list it is in. */
 struct GbBodyLoop {
-    AstStmt *fn;
     EvalResult result;
+    AstStmt *fn;
     size_t *gosub_stack;
     size_t gosub_count;
 };
+
+/* A NESTED STATEMENT LIST'S STATE (an `if`'s branch, a `while`'s body),
+ * shared by eval_stmt_list and a compiled list the same way. */
+struct GbList {
+    EvalResult result;
+    AstStmtList *list;
+};
+
+size_t gbrt_list_bytes(void) {
+    return sizeof(GbList);
+}
 
 /* Statement `index` of the body. */
 void gbrt_stmt(GbBodyLoop *loop, size_t index) {
@@ -15482,6 +15494,212 @@ long gbrt_after(GbBodyLoop *loop, size_t pc) {
         return -1;
     }
     return (long)pc + 1;
+}
+
+/* ENTERING A NESTED LIST, as eval_stmt_list does: an interrupt is a raise
+ * here, at every list's start (and so at every pass of a loop's body). 0 to
+ * run the list, -1 to leave it with l->result. */
+int gbrt_list_begin(GbList *l, AstStmtList *list) {
+    l->list = list;
+    l->result = eval_no_result();
+    if (interrupt_requested) {
+        interrupt_requested = 0;
+        /* An ordinary raise, so it unwinds through every `with lock`, every
+         * `with principal` and every open frame exactly as a real failure
+         * does -- an interrupt that skipped the unwinding would leave a lock
+         * held and a file open. It is catchable for the same reason: a program
+         * that wants to tidy up after being stopped should be able to. */
+        runtime_error_raise("interrupted", 1003, "interrupted");
+        l->result = eval_error_result();
+        return -1;
+    }
+    return 0;
+}
+
+/* Statement `index` of a nested list. */
+void gbrt_list_stmt(GbList *l, size_t index) {
+    l->result = eval_stmt(l->list->items[index]);
+}
+
+/* WHAT FOLLOWS A STATEMENT IN A NESTED LIST, for eval_stmt_list and a
+ * compiled list alike: the next index (the list's count at its end, with
+ * l->result nothing), or -1 to leave the list with l->result. */
+long gbrt_list_after(GbList *l, size_t pc) {
+    EvalResult result = l->result;
+    /* PLAT-EXIT: `runtime_stopped` always means STOP -- it is set by a
+     * fatal raise and by `exit(n)`. A statement kind that does not itself
+     * produce a stop result (a bare call, which is how `exit` is spelled)
+     * would otherwise set the flag and let the NEXT statement run: the
+     * status was right and the program kept going. Checked here, once, so
+     * it holds for every statement kind rather than per kind. */
+    if (runtime_stopped && !eval_result_exits_block(result)) {
+        value_free(result.value);
+        l->result = eval_stop();
+        return -1;
+    }
+    if (result.did_raise) {
+        /* PLAT-ERR: the raise has unwound to a statement list of the
+         * current frame. Ask the frame whether it absorbs. Fall-through is
+         * to the next statement OF THIS LIST, so inside a loop body a
+         * per-item failure is checked per item and the loop keeps going. */
+        char *jump = NULL;
+        int absorbed = error_frame_absorb(&jump);
+        if (absorbed == 1) {
+            l->result = eval_no_result();
+            return (long)pc + 1;
+        }
+        if (absorbed == 2) {
+            size_t target = 0;
+            if (find_function_label(*l->list, jump, &target)) {
+                free(jump);
+                l->result = eval_no_result();
+                return (long)target + 1;
+            }
+            /* The label is in an enclosing list of the same frame: hand
+             * the jump outward, where the function-body loop resolves it
+             * against the whole body. */
+            l->result = eval_goto(jump);
+            free(jump);
+        }
+        return -1;
+    }
+    if (result.did_goto) {
+        size_t target = 0;
+        if (find_function_label(*l->list, result.goto_label, &target)) {
+            free(result.goto_label);
+            l->result = eval_no_result();
+            return (long)target + 1;
+        }
+        return -1;
+    }
+    if (result.did_return || result.did_gosub || result.did_stop ||
+        result.did_break || result.did_continue) {
+        return -1;
+    }
+    l->result = eval_no_result();
+    return (long)pc + 1;
+}
+
+/* A LOWERED STATEMENT ANNOUNCES ITSELF as eval_stmt's first lines do: the
+ * line and column it sets are put back by the statement's last call. Under
+ * --profile it is not lowered at all: the whole statement is eval_stmt's,
+ * which is what the profiler times, and 2 says it is done. */
+static int gbrt_enter(AstStmt *stmt, EvalResult *out, int *saved) {
+#ifndef GB_NO_PROFILER
+    if (gb_profiling) {
+        *out = eval_stmt(stmt);
+        return 2;
+    }
+#else
+    (void)out;
+#endif
+    saved[0] = current_line;
+    saved[1] = current_column;
+    current_line = stmt->line;
+    current_column = stmt->column;
+    return 0;
+}
+
+static void gbrt_restore(const int *saved) {
+    current_line = saved[0];
+    current_column = saved[1];
+}
+
+/* A condition, as `if` and `while` read it: 1 true, 0 false, -1 a raise or
+ * a refused truth (unknown), with *out the error result. */
+static int gbrt_truth(AstExpr *condition, EvalResult *out) {
+    int before_error = error_generation;
+    Value value = eval_expr(condition);
+    if (error_generation != before_error) {
+        value_free(value);
+        *out = eval_error_result();
+        return -1;
+    }
+    int refused = 0;
+    int truth = value_truthy(value, &refused);
+    value_free(value);
+    if (refused) {
+        /* NOT falling through to the else. A refused condition is not a
+         * false one, and running the else branch after reporting the
+         * refusal is how this looked like it worked. */
+        *out = eval_error_result();
+        return -1;
+    }
+    return truth ? 1 : 0;
+}
+
+/* `if`, LOWERED (eval_stmt_case_if is the same statement interpreted): 1 to
+ * run the body, 0 the else body, or -1 with *out the statement's result
+ * (a raise, a refused condition, or the whole `if` run under --profile). */
+int gbrt_if(AstStmt *stmt, void *at, int *saved) {
+    EvalResult *out = at;
+    if (gbrt_enter(stmt, out, saved) == 2) {
+        return -1;
+    }
+    int truth = gbrt_truth(stmt->as.if_stmt.condition, out);
+    if (truth < 0) {
+        gbrt_restore(saved);
+    }
+    return truth;
+}
+
+/* The branch has run: what the `if` leaves is what the branch left if it
+ * leaves the block, else nothing. */
+void gbrt_if_done(void *at, GbList *branch, const int *saved) {
+    EvalResult *out = at;
+    *out = eval_result_exits_block(branch->result) ? branch->result : eval_no_result();
+    gbrt_restore(saved);
+}
+
+/* `while`, LOWERED (eval_stmt_case_while): entered once, 0 to test the
+ * condition, -1 with *out set when --profile ran the whole loop. */
+int gbrt_while_enter(AstStmt *stmt, void *at, int *saved) {
+    EvalResult *out = at;
+    if (gbrt_enter(stmt, out, saved) == 2) {
+        return -1;
+    }
+    loop_depth++;
+    return 0;
+}
+
+/* Each pass's test: 1 to run the body, else the loop has ended with *out. */
+int gbrt_while_test(AstStmt *stmt, void *at, const int *saved) {
+    EvalResult *out = at;
+    int truth = gbrt_truth(stmt->as.while_stmt.condition, out);
+    if (truth == 1) {
+        return 1;
+    }
+    if (truth == 0) {
+        *out = eval_no_result();
+    }
+    loop_depth--;
+    gbrt_restore(saved);
+    return truth;
+}
+
+/* After a pass of the body: 1 to test again, else the loop has ended with
+ * *out. */
+int gbrt_while_next(void *at, GbList *body, const int *saved) {
+    EvalResult *out = at;
+    EvalResult result = body->result;
+    /* A NAMED break/continue can never mean this loop: `while` and
+     * `do` have no variable to name. Let it travel outward. */
+    if ((result.did_break || result.did_continue) && result.loop_target) {
+        *out = result;
+    } else if (result.did_break) {
+        value_free(result.value);
+        *out = eval_no_result();
+    } else if (result.did_continue) {
+        value_free(result.value);
+        return 1;
+    } else if (eval_result_exits_block(result)) {
+        *out = result;
+    } else {
+        return 1;
+    }
+    loop_depth--;
+    gbrt_restore(saved);
+    return 0;
 }
 
 static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *receiver) {
@@ -15646,10 +15864,8 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     /* THE BODY'S STATEMENTS, compiled or by this loop: either way each
      * statement is gbrt_stmt and what follows it is gbrt_after, so the two
      * cannot differ in what they do between statements. */
-    GbBodyLoop loop = { stmt, eval_no_result(), NULL, 0 };
-    GbJitBody compiled = gb_jit_mode() ? gb_jit_body(&stmt->jit, stmt->as.function.name,
-                                                     stmt->as.function.body.count)
-                                       : NULL;
+    GbBodyLoop loop = { eval_no_result(), stmt, NULL, 0 };
+    GbJitBody compiled = gb_jit_mode() ? gb_jit_body(stmt) : NULL;
     if (compiled) {
         compiled(&loop);
     } else {
@@ -50897,72 +51113,21 @@ static EvalResult eval_stmt(AstStmt *stmt) {
 }
 
 static EvalResult eval_stmt_list(AstStmtList statements) {
-    if (interrupt_requested) {
-        interrupt_requested = 0;
-        /* An ordinary raise, so it unwinds through every `with lock`, every
-         * `with principal` and every open frame exactly as a real failure
-         * does -- an interrupt that skipped the unwinding would leave a lock
-         * held and a file open. It is catchable for the same reason: a program
-         * that wants to tidy up after being stopped should be able to. */
-        runtime_error_raise("interrupted", 1003, "interrupted");
-        return eval_error_result();
+    /* gbrt_list_begin, gbrt_list_stmt and gbrt_list_after, which a compiled
+     * list calls too, so the two cannot differ between statements */
+    GbList l;
+    if (gbrt_list_begin(&l, &statements) == 0) {
+        size_t pc = 0;
+        while (pc < statements.count) {
+            gbrt_list_stmt(&l, pc);
+            long next = gbrt_list_after(&l, pc);
+            if (next < 0) {
+                break;
+            }
+            pc = (size_t)next;
+        }
     }
-    size_t pc = 0;
-    while (pc < statements.count) {
-        EvalResult result = eval_stmt(statements.items[pc]);
-        /* PLAT-EXIT: `runtime_stopped` always means STOP -- it is set by a
-         * fatal raise and by `exit(n)`. A statement kind that does not itself
-         * produce a stop result (a bare call, which is how `exit` is spelled)
-         * would otherwise set the flag and let the NEXT statement run: the
-         * status was right and the program kept going. Checked here, once, so
-         * it holds for every statement kind rather than per kind. */
-        if (runtime_stopped && !eval_result_exits_block(result)) {
-            value_free(result.value);
-            return eval_stop();
-        }
-        if (result.did_raise) {
-            /* PLAT-ERR: the raise has unwound to a statement list of the
-             * current frame. Ask the frame whether it absorbs. Fall-through is
-             * to the next statement OF THIS LIST, so inside a loop body a
-             * per-item failure is checked per item and the loop keeps going. */
-            char *jump = NULL;
-            int absorbed = error_frame_absorb(&jump);
-            if (absorbed == 1) {
-                pc++;
-                continue;
-            }
-            if (absorbed == 2) {
-                size_t target = 0;
-                if (find_function_label(statements, jump, &target)) {
-                    free(jump);
-                    pc = target + 1;
-                    continue;
-                }
-                /* The label is in an enclosing list of the same frame: hand
-                 * the jump outward, where the function-body loop resolves it
-                 * against the whole body. */
-                EvalResult jump_result = eval_goto(jump);
-                free(jump);
-                return jump_result;
-            }
-            return result;
-        }
-        if (result.did_goto) {
-            size_t target = 0;
-            if (find_function_label(statements, result.goto_label, &target)) {
-                free(result.goto_label);
-                pc = target + 1;
-                continue;
-            }
-            return result;
-        }
-        if (result.did_return || result.did_gosub || result.did_stop ||
-            result.did_break || result.did_continue) {
-            return result;
-        }
-        pc++;
-    }
-    return eval_no_result();
+    return l.result;
 }
 
 /* Everything a finished run releases: the error frame, the import and

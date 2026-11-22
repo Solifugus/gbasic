@@ -7,4 +7,14 @@ handled: division by zero
 lost: unknown label in function lost: nowhere
 nothing
 nothing
+8
+6
+-1
+1i2
+11
+caught: 11
+13
+stray: break: no enclosing loop named 'nosuch'
+refused
+1
 leaving

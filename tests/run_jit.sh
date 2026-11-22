@@ -1,10 +1,13 @@
 #!/usr/bin/env bash
-# The compiler, increment 2 step 1 (docs/llvm_backend_design.md §4): under
+# The compiler, increment 2 (docs/llvm_backend_design.md §4): under
 # GBASIC_COMPILE=all each function's body is compiled by LLVM's ORC LLJIT on
-# its first call (src/jit.c) and run as machine code. In step 1 that code
-# calls the runtime for every statement (gbrt_stmt) and for what follows it
-# (gbrt_after), the same two functions invoke_function's own loop calls, so
-# nothing may differ but the speed -- and step 1 saves nothing yet.
+# its first call (src/jit.c) and run as machine code. Step 1: that code calls
+# the runtime for every statement (gbrt_stmt) and for what follows it
+# (gbrt_after), the same two functions invoke_function's own loop calls.
+# Step 2: `if` and `while` are IR branches and loops, their conditions read
+# by the runtime, and the lists inside them unrolled the same way, each
+# statement followed by gbrt_list_after, which eval_stmt_list calls too. So
+# nothing may differ but the speed.
 #
 # This suite holds the switch and the paths through a body. The whole of the
 # behaviour is held by the gate's second lane, `GBASIC_COMPILE=all
@@ -18,12 +21,17 @@
 #             decides (a return, recursion, goto back and forward, gosub
 #             nested, a raise absorbed by goto next and sent to a label, a
 #             goto to a label that does not exist, an empty body, a body run
-#             off its end, exit() from inside a function): interpreted, it
+#             off its end, exit() from inside a function), and every path out
+#             of a lowered `if` or `while` (else if, break, continue, a
+#             return, goto and exit from inside, a label inside a branch, a
+#             raise absorbed inside a loop, a refused condition, a named
+#             break that names no loop, a gosub from a loop): interpreted, it
 #             prints flow.out and exits 3; compiled, stdout, stderr and the
 #             status are the interpreter's, byte for byte.
 #   report    GBASIC_COMPILE=report's lines against tests/jit/flow.report:
 #             each function compiled once, in the order first called, with
-#             how many times its body RAN. The count is kept by the compiled
+#             how many of its statements are lowered and how many times its
+#             body RAN. The count is kept by the compiled
 #             body itself (its first instructions add one), so a body the
 #             interpreter ran instead would not be counted: fact(10) is 10.
 # Every run is bounded: a wrong jump in compiled code is as likely to loop as
@@ -86,7 +94,7 @@ else
 fi
 # the count is the body's, so it must be the number of calls: fact(10) is
 # ten, handled(2) and handled(0) two
-if grep -qx 'compile: fact: 2 statements, 0 lowered, ran 10 times' "$tmp/r.err" &&
+if grep -qx 'compile: fact: 3 statements, 1 lowered, ran 10 times' "$tmp/r.err" &&
    grep -qx 'compile: handled: 5 statements, 0 lowered, ran 2 times' "$tmp/r.err"; then
     pass "fact ran 10 times compiled, handled 2"
 else

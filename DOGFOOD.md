@@ -49,6 +49,7 @@ live list is:
 |---|---|---|
 | — | ~~**`xml.find_all(node, "a/b")` collects only under the first `a`**: two `<s><n/></s>` answer one for `"s/n"`, where the reference says "all matches". A path through repeated elements misses all but the first. Workaround: walk the path a step at a time, taking every match at each.~~ **FIXED 2026-11-09**: each step is taken from every element the step before reached, so `find_all` answers every element the path reaches in document order, and `find` the first of them (it too had missed an `n` only a later `s` held). A path over 1023 bytes or 64 steps, which was cut short in silence, is refused. Held by `examples/xml_find_paths_test.bas` in `tests/run_examples.sh`. | 2026-11-08 entry |
 | — | ~~**`load xlsx` says "library not found: xlsx"** where `xlsx` needs no load at all (`xlsx.new()` just works), and `load sqlite` is required beside it: the refusal reads as "this build has no xlsx", which is false, and nothing says which modules need `load`. Workaround: drop the line. The message could say xlsx is built in and needs no `load`.~~ **FIXED 2026-11-18**: a `load` naming a module that needs none (`xlsx`, `money`, `ui`, ...) says "xlsx needs no `load`: it is part of gbasic, not a library file. Remove this line"; a name that is neither still says "library not found". Held by `tests/negative_load_native` in `tests/run_negative.sh`. | 2026-11-16 entry |
+| 10 | **A `gosub` inside an `if`, `while` or `for` returns past the whole statement**: `if c then` / `gosub s` / `print "a"` / `end if` / `print "b"` prints only `b` after `s` returns, and a `gosub` in a `while` body ends the loop. The return point is kept by the function body's loop, which sees the compound statement as one statement, so `return` resumes after it. Classic BASIC resumes at the line after the `gosub`. No error, no warning. Workaround: a `gosub` only at a function body's own level. | 2026-11-22 entry |
 | 9 | **Two exact decimals that differ only past a double's 17 digits share an index key**: G-SQL keys a decimal by its nearest double, so a UNIQUE index refuses `0.100000000000000001` beside `0.100000000000000002`, and `ORDER BY` through that index ties them. Answers through an index are still right (the condition is checked on every row). By design, since gBASIC compares a decimal and a double as doubles, which no byte order can follow exactly (`docs/exact_decimal_design.md` §6). | 2026-11-08 entry |
 | — | ~~**`gpdf.save(d, path)` as a statement draws warning 2101**, "the result of 'save' is discarded; a gBASIC function cannot change its caller, so an update returns the new value...": `save` returns the bytes it wrote, so the warning fires on the ordinary call and explains a mistake that was not made. Any library function returning something informational does the same.~~ **FIXED 2026-11-09** (Matthew): `gpdf.save` returns `nothing`; the size is `file_size(path)`, exactly, and a failed write raises. The warning stays as it was, right for a dropped update. Held by `tests/run_gpdf.sh`, whose demos now save as a statement and print `file_size`. | 2026-11-09 entry |
 | — | ~~**`xml.parse` drops an entity reference in silence**: `<!DOCTYPE a [<!ENTITY y 'Y'>]><a>&y;</a>` parses as an empty `<a>`, no error. Safe against XXE, but silent data loss; an error naming the DTD, or a `refuse_dtd` option, was asked for (Transward M31).~~ **FIXED 2026-11-09** (Matthew: give proper errors): a DTD entity in text is still never expanded, and the parse now raises naming it and its line ("xml: line 1 uses the entity &y; in text, which the document's DTD declares, ..."), as do `parse_file`, `xml.read` and `xml.subtree`. In an attribute libxml2 expands it, so nothing was lost there. Held by `examples/xml_refusals_test.bas` in `tests/run_examples.sh`. | 2026-11-08 entry |
@@ -14147,3 +14148,36 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   `goto <label>` handler the jump has already acknowledged the error.
 
 - **Status 2026-11-22: RESOLVED.** UNLEARN's error section now has a fourth surprise: in a `goto <label>` handler the jump has acknowledged the error, so read `error.message` and do not test `error`.
+
+## 2026-11-22 — CC — while: extending the compiler's flow fixture for step 2 (tests/jit/flow.bas)
+- **Type:** bug
+- **Severity:** medium
+- **What:** a `gosub` from inside a compound statement returns to the
+  statement after the WHOLE compound statement, not after the `gosub`:
+
+  ```basic
+  function f()
+      if true then
+          gosub s
+          print "after gosub, inside the if"    ' never printed
+      end if
+      print "after the if"
+      return 0
+  s:
+      print "in s"
+      return
+  end function
+  ```
+
+  prints `in s`, `after the if`. In a `while` body the `gosub` ends the
+  loop (`while n < 3` / `gosub bump` returns 1, not 3). The gosub result
+  leaves every nested list (`eval_result_exits_block`), and the body loop
+  pushes `pc + 1` of the BODY-level statement it came out of. Nothing says
+  so; reference.md says only that `gosub` works inside functions.
+- **Workaround:** none needed for the fixture (it holds the compiled code to
+  the interpreter, whatever the interpreter does, and `loop_gosub` there
+  pins today's answer). For a program: `gosub` only at a function body's own
+  level. A fix (resume inside the nested list, or refuse a `gosub` that is
+  not at body level, located) is a language decision, so it is left for
+  Matthew.
+

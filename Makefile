@@ -702,7 +702,7 @@ src/frontend.o: src/frontend.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_
 
 # THE COMPILER, built in every build: without LLVM it is the few lines that
 # accept GBASIC_COMPILE and say, under `report`, that nothing is compiled.
-src/jit.o: src/jit.c include/gb_jit.h .buildswitch-stamp
+src/jit.o: src/jit.c include/gb_jit.h include/ast.h .buildswitch-stamp
 	$(CC) $(CFLAGS) $(LLVM_CFLAGS) -c $< -o $@
 
 src/actor.o: src/actor.c include/actor.h include/platform.h .buildswitch-stamp
