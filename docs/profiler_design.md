@@ -224,6 +224,15 @@ out. Windows has no signal path. A `SIGKILL` writes nothing.
 - **Memory.** Time only. Allocation profiling is another tool.
 - **A flame graph.** The stacks sampled are enough to write one (§9 Q2), and
   the counts alone are not.
+- **A row for compiling.** Under `GBASIC_COMPILE` (docs/llvm_backend_design.md
+  §4), a function is compiled on its first call, after the profiler has
+  pushed it and before any of its statements runs. That time is the
+  function's, on the line that called it; the first compile also opens LLVM
+  and starts the JIT. Measured 2026-11-22 in the compiled lane: 5.0% of
+  `tests/profile/shares.bas` was the line in `main` calling `hot`, which the
+  innermost-line check allows 2% of. The fixture now calls `warm()` first, so
+  that cost is paid where the check does not look; the report says the truth
+  either way.
 
 ## 7. The suite: `tests/run_profile.sh`
 

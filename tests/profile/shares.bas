@@ -17,7 +17,7 @@ function cold(n)
 end function
 
 program main()
-    x = 0
+    x = warm()
     for r = 1 to 30
         x = x + hot(150000)
     next
@@ -26,3 +26,11 @@ program main()
     next
     print x
 end program
+
+' Called first, and returns the 0 main starts from: under GBASIC_COMPILE the
+' first call opens LLVM and starts the JIT before a statement of the callee
+' runs, and that one-time cost is charged to the CALLING line (truthfully).
+' Paid here, it lands on line 20 rather than in hot's call on line 22.
+function warm()
+    return 0
+end function
