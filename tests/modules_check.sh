@@ -91,7 +91,7 @@ print one()' ;;
     if printf '%s' "$out" | grep -q 'not available in this build'; then
         echo "left out"
     elif [ "$name" = compile ]; then
-        printf '%s' "$out" | grep -qx 'compile: one: 1 statement, 0 lowered, ran 1 time' &&
+        printf '%s' "$out" | grep -qE '^compile: one: 1 statement, .*, ran 1 time$' &&
             echo built || echo "neither: $out"
     else
         printf '%s\n' "$out" | tail -1

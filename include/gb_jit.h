@@ -46,15 +46,19 @@ size_t gbrt_list_bytes(void);
 int gbrt_list_begin(GbList *l, AstStmtList *list);
 void gbrt_list_stmt(GbList *l, size_t index);
 long gbrt_list_after(GbList *l, size_t index);
-/* `if`: 1 the body, 0 the else body, -1 done with the result at `at`; then
+/* `if`: enter (0, or -1 done with the result at `at`), the condition
+ * evaluated (below), then truth: 1 the body, 0 the else body, -1 done; then
  * gbrt_if_done once the branch has run */
-int gbrt_if(AstStmt *stmt, void *at, int *saved);
+int gbrt_if_enter(AstStmt *stmt, void *at, int *saved);
+int gbrt_if_truth(void *at, const int *saved, int before_error, void *value);
 void gbrt_if_done(void *at, GbList *branch, const int *saved);
 /* `while`: enter (0, or -1 done), then test (1 the body, else done) and,
  * after each pass of the body, next (1 test again, else done) */
 int gbrt_while_enter(AstStmt *stmt, void *at, int *saved);
 int gbrt_while_test(AstStmt *stmt, void *at, const int *saved);
 int gbrt_while_next(void *at, GbList *body, const int *saved);
+/* the test with the condition evaluated by the compiled code */
+int gbrt_while_truth(void *at, const int *saved, int before_error, void *value);
 /* `for ... to`, over a GbFor of gbrt_for_bytes() bytes the compiled code
  * keeps: enter (0, or -1 done), then test (1 the body, the counter set, else
  * done) and, after each pass, next (1 test again, the counter stepped, else
@@ -64,6 +68,39 @@ size_t gbrt_for_bytes(void);
 int gbrt_for_enter(AstStmt *stmt, void *at, int *saved, GbFor *f);
 int gbrt_for_test(AstStmt *stmt, void *at, const int *saved, GbFor *f);
 int gbrt_for_next(AstStmt *stmt, void *at, GbList *body, const int *saved, GbFor *f);
+
+/* STEP 3: EXPRESSIONS. A lowered expression is evaluated into a value the
+ * compiled code keeps (gbrt_value_bytes() bytes, a Value only src/eval.c
+ * reads), one node at a time by its shape: a constant's bytes, made at
+ * compile time by gbrt_constant, stored as they are; an identifier by
+ * gbrt_ident; an operator by gbrt_binary_enter, its left operand,
+ * gbrt_binary_left (1: a raise, *out is the value, the right is skipped),
+ * its right, then gbrt_binary_apply, the calls the interpreted operator
+ * makes; anything else by gbrt_eval, which is the interpreter's. Each takes
+ * its operands' values. `before_error` for a condition or a return is read
+ * from gbrt_error_generation() just before the expression, as the
+ * interpreted statement reads it. */
+enum { GB_EXPR_OTHER, GB_EXPR_CONSTANT, GB_EXPR_IDENT, GB_EXPR_BINARY };
+size_t gbrt_value_bytes(void);
+int gbrt_expr_shape(AstExpr *x);
+void gbrt_constant(AstExpr *x, void *out);
+void gbrt_ident(AstExpr *x, void *out);
+void gbrt_eval(AstExpr *x, void *out);
+int *gbrt_error_generation(void);
+void gbrt_binary_enter(AstExpr *x, int *saved);
+int gbrt_binary_left(void *left, void *out, const int *saved);
+void gbrt_binary_apply(AstExpr *x, void *left, void *right, void *out, const int *saved);
+/* `name = expression` with no operator, modifier or lock (gbrt_assign_plain),
+ * over a GbAssign of gbrt_assign_bytes(): begin (0, or -1 done), the value,
+ * end. `return expression`: begin (0, or -1 done), the value, end. The
+ * interpreted statements end in the same functions end calls. */
+typedef struct GbAssign GbAssign;
+size_t gbrt_assign_bytes(void);
+int gbrt_assign_plain(AstStmt *stmt);
+int gbrt_assign_begin(AstStmt *stmt, void *at, int *saved, GbAssign *a);
+void gbrt_assign_end(AstStmt *stmt, void *at, const int *saved, GbAssign *a, void *value);
+int gbrt_return_begin(AstStmt *stmt, void *at, int *saved);
+void gbrt_return_end(AstStmt *stmt, void *at, const int *saved, int before_error, void *value);
 
 /* GBASIC_COMPILE, read once: 0 nothing compiled, 1 `all`, 2 `report`. */
 int gb_jit_mode(void);

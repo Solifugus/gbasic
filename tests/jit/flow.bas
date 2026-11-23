@@ -286,6 +286,76 @@ function leave_now()
     print "not reached"
 end function
 
+' --- step 3: expressions, plain assignments and returns lowered ---
+
+' a raise in an operator's left operand: the right is not evaluated (noisy
+' would print); one in the right operand; an undefined name
+function operands()
+    on error goto next
+    out = ""
+    a = 1 / 0 + noisy()
+    if error then
+        out = out + "left "
+    end if
+    b = 1 + 1 / 0
+    if error then
+        out = out + "right "
+    end if
+    c = nosuch + 1
+    if error then
+        out = out + "undefined"
+    end if
+    return out
+end function
+
+function noisy()
+    print "noisy ran"
+    return 1
+end function
+
+' a plain assignment to a locked name converts, or refuses naming the lock
+function locked()
+    on error goto next
+    n:number = 1
+    n = "41"
+    n = n + 1
+    out = string(n)
+    n = "forty"
+    if error then
+        out = out + " refused, still " + string(n)
+    end if
+    return out
+end function
+
+' a declared return type converts what a lowered return hands back
+function typed(x):text
+    return x * 2
+end function
+
+' a raise in a while's condition ends the loop, absorbed
+function cond_raise()
+    on error goto next
+    k = 0
+    while 10 / (2 - k) > 0
+        k = k + 1
+    end while
+    if error then
+        return "raised at " + string(k)
+    end if
+    return "not raised"
+end function
+
+' a raise in a lowered return's own expression: absorbed, so the function
+' goes on to its next statement
+function return_raise(x)
+    on error goto next
+    return 10 / x
+    if error then
+        return "absorbed: " + error.message
+    end if
+    return "not reached"
+end function
+
 program main()
     print fact(10)
     print count_to(5)
@@ -315,6 +385,12 @@ program main()
     print for_refusals()
     print refused()
     print loop_gosub()
+    print operands()
+    print locked()
+    print typed(21) + "!"
+    print cond_raise()
+    print return_raise(5)
+    print return_raise(0)
     leave_now()
     print "not reached"
 end program

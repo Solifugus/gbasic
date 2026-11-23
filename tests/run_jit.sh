@@ -119,16 +119,16 @@ else
 fi
 # the count is the body's, so it must be the number of calls: fact(10) is
 # ten, handled(2) and handled(0) two
-if grep -qx 'compile: fact: 3 statements, 1 lowered, ran 10 times' "$tmp/r.err" &&
-   grep -qx 'compile: handled: 5 statements, 0 lowered, ran 2 times' "$tmp/r.err"; then
+if grep -qx 'compile: fact: 3 statements, 3 lowered, 6 expressions, ran 10 times' "$tmp/r.err" &&
+   grep -qx 'compile: handled: 5 statements, 3 lowered, 5 expressions, ran 2 times' "$tmp/r.err"; then
     pass "fact ran 10 times compiled, handled 2"
 else
     fail "the compiled bodies' own counts: $(grep -E 'fact|handled' "$tmp/r.err")"
 fi
 # a program block and the top level are compiled as whole lists, each once
 GBASIC_COMPILE=report timeout 30 ./gbasic tests/jit/top.bas >/dev/null 2>"$tmp/tr.err" </dev/null
-if grep -qx 'compile: program main: 28 statements, 2 lowered, ran 1 time' "$tmp/r.err" &&
-   grep -qx 'compile: (top level): 25 statements, 6 lowered, ran 1 time' "$tmp/tr.err"; then
+if grep -qx 'compile: program main: 34 statements, 4 lowered, 2 expressions, ran 1 time' "$tmp/r.err" &&
+   grep -qx 'compile: (top level): 25 statements, 14 lowered, 24 expressions, ran 1 time' "$tmp/tr.err"; then
     pass "program main and the top level ran compiled, once each"
 else
     fail "the compiled lists: $(grep -E 'program|top level' "$tmp/r.err" "$tmp/tr.err")"

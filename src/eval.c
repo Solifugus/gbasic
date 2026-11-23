@@ -15609,9 +15609,7 @@ static void gbrt_restore(const int *saved) {
 
 /* A condition, as `if` and `while` read it: 1 true, 0 false, -1 a raise or
  * a refused truth (unknown), with *out the error result. */
-static int gbrt_truth(AstExpr *condition, EvalResult *out) {
-    int before_error = error_generation;
-    Value value = eval_expr(condition);
+static int truth_of(Value value, int before_error, EvalResult *out) {
     if (error_generation != before_error) {
         value_free(value);
         *out = eval_error_result();
@@ -15630,6 +15628,14 @@ static int gbrt_truth(AstExpr *condition, EvalResult *out) {
     return truth ? 1 : 0;
 }
 
+/* A condition evaluated and read. A compiled `if` or `while` evaluates its
+ * condition itself and hands the value to truth_of (gbrt_if_truth,
+ * gbrt_while_truth), `before_error` read just before, as here. */
+static int gbrt_truth(AstExpr *condition, EvalResult *out) {
+    int before_error = error_generation;
+    return truth_of(eval_expr(condition), before_error, out);
+}
+
 /* WHAT A BRANCH LEAVES: what the branch left if it leaves the block, else
  * nothing. The interpreted `if` ends here too (eval_stmt_case_if). */
 static void if_after_branch(EvalResult *out, EvalResult branch, const int *saved) {
@@ -15640,12 +15646,12 @@ static void if_after_branch(EvalResult *out, EvalResult branch, const int *saved
 /* `if`, LOWERED: 1 to run the body, 0 the else body, or -1 with the
  * statement's result at `at` (a raise, a refused condition, or the whole
  * `if` run under --profile). */
-int gbrt_if(AstStmt *stmt, void *at, int *saved) {
-    EvalResult *out = at;
-    if (gbrt_enter(stmt, out, saved) == 2) {
-        return -1;
-    }
-    int truth = gbrt_truth(stmt->as.if_stmt.condition, out);
+int gbrt_if_enter(AstStmt *stmt, void *at, int *saved) {
+    return gbrt_enter(stmt, at, saved) == 2 ? -1 : 0;
+}
+
+int gbrt_if_truth(void *at, const int *saved, int before_error, void *value) {
+    int truth = truth_of(*(Value *)value, before_error, at);
     if (truth < 0) {
         gbrt_restore(saved);
     }
@@ -15668,9 +15674,7 @@ int gbrt_while_enter(AstStmt *stmt, void *at, int *saved) {
 
 /* Each pass's test: 1 to run the body, else the loop has ended with its
  * result at `at`. The interpreted `while` makes this same call. */
-int gbrt_while_test(AstStmt *stmt, void *at, const int *saved) {
-    EvalResult *out = at;
-    int truth = gbrt_truth(stmt->as.while_stmt.condition, out);
+static int while_tested(int truth, EvalResult *out, const int *saved) {
     if (truth == 1) {
         return 1;
     }
@@ -15680,6 +15684,15 @@ int gbrt_while_test(AstStmt *stmt, void *at, const int *saved) {
     loop_depth--;
     gbrt_restore(saved);
     return truth;
+}
+
+int gbrt_while_test(AstStmt *stmt, void *at, const int *saved) {
+    return while_tested(gbrt_truth(stmt->as.while_stmt.condition, at), at, saved);
+}
+
+/* the compiled test: the condition's value, evaluated by the compiled code */
+int gbrt_while_truth(void *at, const int *saved, int before_error, void *value) {
+    return while_tested(truth_of(*(Value *)value, before_error, at), at, saved);
 }
 
 /* After a pass of a `while` body, interpreted or compiled: 1 to test again,
@@ -15894,6 +15907,95 @@ int gbrt_for_test(AstStmt *stmt, void *at, const int *saved, GbFor *f) {
 
 int gbrt_for_next(AstStmt *stmt, void *at, GbList *body, const int *saved, GbFor *f) {
     return for_after_pass(stmt, at, body->result, saved, f);
+}
+
+/* --- STEP 3: EXPRESSIONS LOWERED (docs/llvm_backend_design.md §4) ---------
+ *
+ * A lowered expression is evaluated into a Value the compiled code keeps on
+ * its own stack (gbrt_value_bytes() bytes), node by node, as gbrt_expr_shape
+ * says: a number literal is a constant, built at compile time by eval_expr
+ * itself; an identifier is gbrt_ident; an operator is gbrt_binary_enter, its
+ * left operand, gbrt_binary_left, its right, gbrt_binary_apply, the calls
+ * eval_binary makes; any other node is gbrt_eval, which is eval_expr.
+ * eval_expr's first lines reset g_path_keep, which is 0 whenever compiled
+ * code runs (it is set around one eval_expr call and reset after it), so a
+ * lowered node leaves it alone. */
+static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, int previous_line,
+                                      int previous_column);
+
+size_t gbrt_value_bytes(void) {
+    return sizeof(Value);
+}
+
+int gbrt_expr_shape(AstExpr *x) {
+    switch (x->kind) {
+    case AST_EXPR_NUMBER:
+        return GB_EXPR_CONSTANT;
+    case AST_EXPR_IDENT:
+        return GB_EXPR_IDENT;
+    case AST_EXPR_BINARY: {
+        /* and/or decide whether to evaluate the right; the set operators
+         * are a walk of their own (eval_binary) */
+        int opc = op_code(x->as.binary.op);
+        return opc == OP_AND || opc == OP_OR || opc == OP_EXCLUDING || opc == OP_INTERSECTING
+            ? GB_EXPR_OTHER : GB_EXPR_BINARY;
+    }
+    default:
+        return GB_EXPR_OTHER;
+    }
+}
+
+/* at compile time: a number literal's value, which owns nothing, so the
+ * compiled code may store its bytes as they are on every evaluation */
+void gbrt_constant(AstExpr *x, void *out) {
+    Value v;
+    memset(&v, 0, sizeof v);
+    v = eval_expr(x);
+    memcpy(out, &v, sizeof v);
+}
+
+void gbrt_ident(AstExpr *x, void *out) {
+    *(Value *)out = env_get_key(x->as.ident, ident_key(x));
+}
+
+void gbrt_eval(AstExpr *x, void *out) {
+    *(Value *)out = eval_expr(x);
+}
+
+int *gbrt_error_generation(void) {
+    return &error_generation;
+}
+
+void gbrt_binary_enter(AstExpr *x, int *saved) {
+    saved[0] = current_line;
+    saved[1] = current_column;
+    if (x->line > 0) {
+        current_line = x->line;
+        current_column = x->column > 0 ? x->column : saved[1];
+    }
+}
+
+/* after the left operand: 1 with *out the operator's value when a raise
+ * means the right is not evaluated */
+int gbrt_binary_left(void *left, void *out, const int *saved) {
+    if (error_action_pending()) {
+        value_free(*(Value *)left);
+        gbrt_restore(saved);
+        *(Value *)out = value_null();
+        return 1;
+    }
+    return 0;
+}
+
+void gbrt_binary_apply(AstExpr *x, void *left, void *right, void *out, const int *saved) {
+    if (error_action_pending()) {
+        value_free(*(Value *)left);
+        value_free(*(Value *)right);
+        gbrt_restore(saved);
+        *(Value *)out = value_null();
+        return;
+    }
+    *(Value *)out = binary_apply(x, *(Value *)left, *(Value *)right, saved[0], saved[1]);
 }
 
 static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *receiver) {
@@ -45233,12 +45335,13 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
 static Value eval_binary(AstExpr *expr) {
     const char *op = expr->as.binary.op;
     int opc = op_code(op);
-    int previous_line = current_line;
-    int previous_column = current_column;
-    if (expr->line > 0) {
-        current_line = expr->line;
-        current_column = expr->column > 0 ? expr->column : previous_column;
-    }
+    /* the compiled operator makes these calls too: gbrt_binary_enter, then
+     * gbrt_binary_left after the left operand and gbrt_binary_apply after
+     * the right (gb_jit.h) */
+    int saved[2];
+    gbrt_binary_enter(expr, saved);
+    int previous_line = saved[0];
+    int previous_column = saved[1];
 
     /* --- `a excluding b` / `a intersecting b` -------------------------------
      *
@@ -45319,22 +45422,14 @@ static Value eval_binary(AstExpr *expr) {
         return value_bool(is_and);
     }
 
+    Value out;
     Value left = eval_expr(expr->as.binary.left);
-    if (error_action_pending()) {
-        value_free(left);
-        current_line = previous_line;
-        current_column = previous_column;
-        return value_null();
+    if (gbrt_binary_left(&left, &out, saved)) {
+        return out;
     }
     Value right = eval_expr(expr->as.binary.right);
-    if (error_action_pending()) {
-        value_free(left);
-        value_free(right);
-        current_line = previous_line;
-        current_column = previous_column;
-        return value_null();
-    }
-    return binary_apply(expr, left, right, previous_line, previous_column);
+    gbrt_binary_apply(expr, &left, &right, &out, saved);
+    return out;
 }
 
 static int values_equal_for_consider(Value subject, Value candidate) {
@@ -49683,6 +49778,10 @@ static EvalResult eval_stmt_case_wait(AstStmt *stmt, int previous_line, int prev
 static EvalResult eval_stmt_case_while(AstStmt *stmt, int previous_line, int previous_column);
 static EvalResult eval_stmt_case_consider(AstStmt *stmt, int previous_line, int previous_column);
 
+static int assign_lock_of(AstStmt *stmt, TypeLock *lock, const char **lock_var);
+static EvalResult assign_finish(AstStmt *stmt, Value value, int before_error, TypeLock lock,
+                                const char *lock_var, int previous_line, int previous_column);
+
 static GB_NOINLINE EvalResult eval_stmt_case_assign(AstStmt *stmt, int previous_line, int previous_column) {
 
 #if GBASIC_GSQL
@@ -49694,30 +49793,19 @@ static GB_NOINLINE EvalResult eval_stmt_case_assign(AstStmt *stmt, int previous_
                 current_column = previous_column;
                 return eval_error_result();
             }
-            goto case_done;
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_no_result();
         }
 #endif
         int before_error = error_generation;
         Value value;
-        /* THE LOCK IN FORCE (docs/typed_variables_design.md): the one this
-         * statement declares, or the one the variable already carries in THIS
-         * frame. A function's local of the same name is a different variable
-         * and carries no lock of the caller's. */
         TypeLock lock = {0};
         const char *lock_var = NULL;
-        if (stmt->as.assign.lock.name) {
-            lock_var = stmt->as.assign.target->as.ident;
-            if (!type_lock_resolve(stmt->as.assign.lock, &lock)) {
-                current_line = previous_line;
-                current_column = previous_column;
-                return eval_error_result();
-            }
-        } else if (stmt->as.assign.target->kind == AST_EXPR_IDENT) {
-            Symbol *held = env_find_key(current_env, ident_key(stmt->as.assign.target));
-            if (held && held->lock.kind != LOCK_NONE) {
-                lock = held->lock;
-                lock_var = stmt->as.assign.target->as.ident;
-            }
+        if (!assign_lock_of(stmt, &lock, &lock_var)) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
         }
         if (stmt->as.assign.op && lock.kind != LOCK_NONE && lock.kind != LOCK_STRING) {
             /* A LOCKED compound assignment converts a TEXT operand first.
@@ -49779,6 +49867,35 @@ static GB_NOINLINE EvalResult eval_stmt_case_assign(AstStmt *stmt, int previous_
         } else {
             value = eval_expr(stmt->as.assign.value);
         }
+        return assign_finish(stmt, value, before_error, lock, lock_var, previous_line,
+                             previous_column);
+}
+
+/* THE LOCK IN FORCE (docs/typed_variables_design.md): the one this
+ * statement declares, or the one the variable already carries in THIS
+ * frame. A function's local of the same name is a different variable and
+ * carries no lock of the caller's. 0 when the declared lock is refused. */
+static int assign_lock_of(AstStmt *stmt, TypeLock *lock, const char **lock_var) {
+    if (stmt->as.assign.lock.name) {
+        *lock_var = stmt->as.assign.target->as.ident;
+        return type_lock_resolve(stmt->as.assign.lock, lock);
+    }
+    if (stmt->as.assign.target->kind == AST_EXPR_IDENT) {
+        Symbol *held = env_find_key(current_env, ident_key(stmt->as.assign.target));
+        if (held && held->lock.kind != LOCK_NONE) {
+            *lock = held->lock;
+            *lock_var = stmt->as.assign.target->as.ident;
+        }
+    }
+    return 1;
+}
+
+/* AN ASSIGNMENT ONCE ITS VALUE IS IN HAND: the modifier, the lock, the
+ * write and the watchers. The interpreted statement ends here, and so does
+ * a compiled one (gbrt_assign_end), whose value the compiled code
+ * evaluated. */
+static EvalResult assign_finish(AstStmt *stmt, Value value, int before_error, TypeLock lock,
+                                const char *lock_var, int previous_line, int previous_column) {
         if (error_generation != before_error) {
             value_free(value);
             current_line = previous_line;
@@ -49845,6 +49962,42 @@ case_done:
     current_line = previous_line;
     current_column = previous_column;
     return eval_no_result();
+}
+
+/* A PLAIN ASSIGNMENT COMPILED, `name = expression` with no operator,
+ * modifier or declared lock (gbrt_assign_plain): begin announces the
+ * statement and finds the lock in force, as the interpreted statement does
+ * before its value; the compiled code evaluates the value; end is
+ * assign_finish. begin answers 0, or -1 with the result at `at`. */
+struct GbAssign {
+    int before_error;
+    TypeLock lock;
+    const char *lock_var;
+};
+
+size_t gbrt_assign_bytes(void) {
+    return sizeof(GbAssign);
+}
+
+int gbrt_assign_plain(AstStmt *stmt) {
+    return stmt->kind == AST_STMT_ASSIGN && !stmt->as.assign.op && !stmt->as.assign.lock.name &&
+           !stmt->as.assign.modifier.name && stmt->as.assign.target->kind == AST_EXPR_IDENT;
+}
+
+int gbrt_assign_begin(AstStmt *stmt, void *at, int *saved, GbAssign *a) {
+    if (gbrt_enter(stmt, at, saved) == 2) {
+        return -1;
+    }
+    a->before_error = error_generation;
+    memset(&a->lock, 0, sizeof a->lock);
+    a->lock_var = NULL;
+    assign_lock_of(stmt, &a->lock, &a->lock_var);
+    return 0;
+}
+
+void gbrt_assign_end(AstStmt *stmt, void *at, const int *saved, GbAssign *a, void *value) {
+    *(EvalResult *)at = assign_finish(stmt, *(Value *)value, a->before_error, a->lock,
+                                      a->lock_var, saved[0], saved[1]);
 }
 
 static GB_NOINLINE EvalResult eval_stmt_case_print(AstStmt *stmt, int previous_line, int previous_column) {
@@ -50587,45 +50740,58 @@ case_done:
     return eval_no_result();
 }
 
-static GB_NOINLINE EvalResult eval_stmt_case_return(AstStmt *stmt, int previous_line, int previous_column) {
-
-        int before_error = error_generation;
-        Value value = stmt->as.return_expr ? eval_expr(stmt->as.return_expr) : value_null();
+/* A `return` ONCE ITS VALUE IS IN HAND: the declared return type, then the
+ * return. The interpreted statement ends here, and so does a compiled one
+ * (gbrt_return_end). */
+static EvalResult return_finish(AstStmt *stmt, Value value, int before_error, int previous_line,
+                                int previous_column) {
+    if (error_generation != before_error) {
+        value_free(value);
+        current_line = previous_line;
+        current_column = previous_column;
+        return eval_error_result();
+    }
+    /* A DECLARED RETURN TYPE converts what this `return` hands back, or
+     * refuses it HERE, at the line that says it, rather than three calls
+     * later where the value breaks something. `nothing`, `unknown`, a
+     * bare `return` and falling off the end are all allowed. */
+    if (stmt->as.return_expr && current_function_stmt &&
+        current_function_stmt->as.function.returns.name) {
+        TypeLock lock;
+        if (type_lock_resolve(current_function_stmt->as.function.returns, &lock)) {
+            lock.is_return = 1;
+            value = lock_convert(&lock, current_function_stmt->as.function.name, value);
+        } else {
+            value_free(value);
+            value = value_null();
+        }
         if (error_generation != before_error) {
             value_free(value);
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();
         }
-        /* A DECLARED RETURN TYPE converts what this `return` hands back, or
-         * refuses it HERE, at the line that says it, rather than three calls
-         * later where the value breaks something. `nothing`, `unknown`, a
-         * bare `return` and falling off the end are all allowed. */
-        if (stmt->as.return_expr && current_function_stmt &&
-            current_function_stmt->as.function.returns.name) {
-            TypeLock lock;
-            if (type_lock_resolve(current_function_stmt->as.function.returns, &lock)) {
-                lock.is_return = 1;
-                value = lock_convert(&lock, current_function_stmt->as.function.name, value);
-            } else {
-                value_free(value);
-                value = value_null();
-            }
-            if (error_generation != before_error) {
-                value_free(value);
-                current_line = previous_line;
-                current_column = previous_column;
-                return eval_error_result();
-            }
-        }
-        current_line = previous_line;
-        current_column = previous_column;
-        return eval_return(value, stmt->as.return_expr != NULL);
-    goto case_done;
-case_done:
+    }
     current_line = previous_line;
     current_column = previous_column;
-    return eval_no_result();
+    return eval_return(value, stmt->as.return_expr != NULL);
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_return(AstStmt *stmt, int previous_line, int previous_column) {
+    int before_error = error_generation;
+    Value value = stmt->as.return_expr ? eval_expr(stmt->as.return_expr) : value_null();
+    return return_finish(stmt, value, before_error, previous_line, previous_column);
+}
+
+/* `return expression` COMPILED: begin announces it (0, or -1 with the
+ * result at `at` under --profile), the compiled code evaluates the
+ * expression, and end is return_finish. */
+int gbrt_return_begin(AstStmt *stmt, void *at, int *saved) {
+    return gbrt_enter(stmt, at, saved) == 2 ? -1 : 0;
+}
+
+void gbrt_return_end(AstStmt *stmt, void *at, const int *saved, int before_error, void *value) {
+    *(EvalResult *)at = return_finish(stmt, *(Value *)value, before_error, saved[0], saved[1]);
 }
 
 static GB_NOINLINE EvalResult eval_stmt_case_goto(AstStmt *stmt, int previous_line, int previous_column) {

@@ -19,4 +19,10 @@ stray: break: no enclosing loop named 'nosuch'
 [for step cannot be zero][for bounds and step must be numbers][locked]
 refused
 1
+left right undefined
+42 refused, still 42
+42!
+raised at 2
+2
+absorbed: division by zero
 leaving
