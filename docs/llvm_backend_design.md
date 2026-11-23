@@ -422,6 +422,60 @@ expression` lowered.
   `error_generation` back to the frame's entry, which is 0 in every frame
   these programs reach.
 
+### Increment 3, its shape (a draft for Matthew; nothing of it is built)
+
+**What is left after step 3 is the value work.** A pass of `loop`'s
+`s = s + i * 2` was ~1,830 instructions under the interpreter, and step 3
+removed at most a quarter: the rest is `binary_apply` checking both
+operands' kinds and building a boxed result, the two variable reads, the
+write (`assign_lvalue`, `env_set_key`, the watcher check) and `value_free`.
+Increment 3 is a number held as a machine value, read and written with no
+call: `i * 2` one multiply and an overflow check, `s = s + ...` one add.
+
+**The rules it must keep (§3):** a number is exact as an integer (int64)
+until it overflows, which degrades to the double with warning 2112; exact
+as a written decimal (`0.1`), whose `+ - *` stay exact; a double from
+division and functions. So a held number is a tag and a payload, an exact
+int64 or a double; a decimal stays boxed, since its arithmetic is the
+runtime's. An overflow, or any operation the compiled code does not do
+itself, is a call to the runtime with the boxed values, the same function
+the interpreter calls, so the slow path cannot differ.
+
+**Where a held number lives.** In the compiled function's own slot, not
+its `Symbol`. Nothing else can read a local (there are no closures, and a
+call cannot see its caller's frame) except a statement of the same body
+the compiled code does not lower, which reads the `Symbol`, and a `watch`
+on it, which fires from the assignment. So, per function and per
+variable, all or nothing: held only when every statement naming it is
+lowered and nothing in the function watches it; written back to the
+`Symbol` when the function leaves (a trace or the prompt may read it
+after), otherwise never.
+
+**Questions to rule before it is built:**
+
+- **Q7. Which variables are held.** (a) Only those declared `x:number`
+  and parameters `a:number`: simplest, and exact by declaration, but no
+  `.bas` file in `stdlib` or `examples` declares one today, so it speeds
+  up only code written for it. (b) Also a `for` counter and an untyped
+  local whose every assignment in the function is a number by
+  construction (a number literal, a `for` counter, arithmetic of held
+  numbers, `len` and the other builtins answering a number). Anything
+  else assigned to it (a parameter, a call's result, text) leaves it
+  boxed. **Recommended: (b)**, decided once when the body is compiled,
+  never by guessing at run time; a parameter becomes a candidate by
+  declaring `:number`, which is what typed parameters were designed for.
+- **Q8. A held number that a value of another kind would meet** (`s =
+  s + name` where `name` is text) cannot happen under (b), since `name`
+  being unheld makes `s` unheld. Under (a) it is the lock's conversion,
+  already the rule. Nothing to rule unless (b) is extended to guess.
+- **Q9. Whether the report and the lane are enough proof.** The lane
+  compares every suite's output under the interpreter and compiled; the
+  exactness suites (`run_exact`, `run_exact_decimal`) are where a held
+  number would differ if it differed. Recommended: those two suites gain
+  a tier that runs their arithmetic inside functions, so the compiled lane
+  exercises held numbers on the same oracle (python3's integers and
+  decimal), rather than at the top level only.
+
 ## 5. Correctness
 
 - **The gate is the oracle.** Increment 2 adds a lane that runs every suite
