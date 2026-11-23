@@ -4,10 +4,12 @@
 # its first call (src/jit.c) and run as machine code. Step 1: that code calls
 # the runtime for every statement (gbrt_stmt) and for what follows it
 # (gbrt_after), the same two functions invoke_function's own loop calls.
-# Step 2: `if` and `while` are IR branches and loops, their conditions read
-# by the runtime, and the lists inside them unrolled the same way, each
-# statement followed by gbrt_list_after, which eval_stmt_list calls too. So
-# nothing may differ but the speed.
+# Step 2: `if`, `while` and `for ... to` are IR branches and loops, and the
+# lists inside them unrolled the same way, each statement followed by
+# gbrt_list_after, which eval_stmt_list calls too; a program block's body or
+# the top level is compiled as such a list. Step 3: expressions, plain
+# assignments and returns, each node a call the interpreted node makes too
+# (or, for a number literal, its bytes). So nothing may differ but the speed.
 #
 # This suite holds the switch and the paths through a body. The whole of the
 # behaviour is held by the gate's second lane, `GBASIC_COMPILE=all

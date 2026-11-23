@@ -5,9 +5,10 @@ on 2026-11-21. Increment 1 is built (§4, "Increment 1, as built"): builtins,
 module verbs, operators, variables and the function a call reaches are
 resolved, and the whole program makes no `strcmp` per pass in the three
 programs `tests/run_resolve.sh` measures. Increment 2, the baseline JIT, is
-under way: steps 1 and 2 are built (§4, "Increment 2, as built so far"),
-and step 2 measured no faster than the interpreter, which is what the
-finding in §3 predicts; its shape is in §4, "Increment 2, its shape". It follows his
+built in its three steps (§4, "Increment 2, as built so far"): step 2
+measured no faster than the interpreter, which is what the finding in §3
+predicts, and step 3 10-12% faster on loops; its shape is in §4,
+"Increment 2, its shape". It follows his
 direction of 2026-08-20 (an LLVM backend compiling gBASIC to machine code),
 sharpened 2026-11-03 to "actual code generation by gBASIC 1.0"; typed
 variables (`x:number`) were designed with that aim. The costs below were
@@ -354,9 +355,72 @@ saves nothing over `gbrt_stmt`.
   returns past the whole statement, and a body assigning its `for` counter
   does not change the next pass. Both are the interpreter's behaviour, so
   the compiled code keeps them; each is a language question.
-- **Not lowered yet:** `do ... until`, `for each`, `consider`, `with`; and a
-  `program` block's body, which is not a function. Compiling the `program`
-  block as a function body would bring most of the 72% into the lane.
+- **Not lowered yet:** `do ... until`, `for each`, `consider`, `with`.
+
+**The program block and the top level** (2026-11-23): compiled as whole
+lists (`gb_jit_list`), as step 2 compiles an `if`'s branch, so the 72% of
+the lane's processes that call no function run compiled code too. Not
+under `--profile` (every lowered statement is interpreted there, so it would
+add only LLVM's start-up to the profiled run), and not at the prompt (a
+compile per line typed). `tests/jit/top.bas` holds the top level and
+`tests/jit/stray.bas` a program block's result (a named `continue` escaping
+every loop, raised from the result: dropping the compiled list's result was
+green until it was added).
+
+- **What it costs every process now:** LLVM mapped and a list compiled. Peak
+  memory: about 80 MB more (`run_read_at`'s chunked reader, 95 MB against
+  14.8 MB interpreted), which is why that suite's memory ratio is now
+  counted interpreted in both lanes, as `run_profile`'s off tier is (its
+  instructions moved with the heap's layout once LLVM had shaped it). The
+  lane took 1,893 s against 1,829 s.
+
+**Step 3** (2026-11-23): expressions, a plain assignment and `return
+expression` lowered.
+
+- **Shape.** Each expression node by the shape `eval.c` gives it
+  (`gbrt_expr_shape`, so `jit.c` holds no rule of the language): a number
+  literal is a constant made at compile time by `eval_expr` itself and
+  stored word by word, with no call; an identifier is `gbrt_ident`; an
+  arithmetic or comparison operator is `gbrt_binary_enter`, its left,
+  `gbrt_binary_left` (a raise skips the right), its right,
+  `gbrt_binary_apply`, which are the calls `eval_binary` itself now makes;
+  `and`, `or`, the set operators and every other node are `gbrt_eval`. A
+  plain assignment (`name = e`: no operator, modifier or declared lock) is
+  `gbrt_assign_begin`, the value, `gbrt_assign_end`, and the interpreted
+  assignment ends in the same `assign_finish`; `return e` likewise ends in
+  `return_finish`. An `if`'s and a `while`'s condition is evaluated by the
+  compiled code and read by `truth_of`, as `gbrt_truth` reads it; the
+  error mark each compares against is read from `error_generation` just
+  before the expression, as the interpreted statement reads it.
+- **Measured, best of five, this machine:**
+
+  | | interpreted | compiled |
+  |---|---|---|
+  | `loop` (10,000,000 passes) | 1.20 s | 1.06 s |
+  | `while` with an `if`, 3,000,000 passes | 0.83 s | 0.75 s |
+  | `fib(30)` | 0.53 s | 0.51 s |
+
+  As predicted before it was built: a pass of `loop` was ~1,830
+  instructions, of which the walk itself (`eval_expr`, `op_code`, the
+  statement dispatch) was at most a quarter; `binary_apply`, the variable
+  reads and writes, `assign_lvalue` and `value_free` are the value work
+  that increment 3 removes. Calls are not lowered, so `fib` gains least.
+- **Report:** each body's line counts the expression nodes lowered too, the
+  only place lowering shows, since output may not differ.
+  `tests/jit/flow.report`: 25 bodies, 149 of 222 statements lowered, 251
+  expressions.
+- **Held by** flow.bas's step 3 functions (a raise in an operator's left
+  operand skipping the right, one in the right, an undefined name, a locked
+  name converting and refusing, a declared return type, a raise in a
+  `while` condition, a raise in a `return`'s own expression), the same under
+  the interpreter from before this step. Perturbations proven red: the
+  right operand evaluated after a raise in the left; a constant stored one
+  word short (hung, bounded); a `while` condition's error mark read after
+  it; a `return`'s mark read after it (green until the raising return was
+  added); constants not lowered (the report only). Passing a `return`'s
+  mark as 0 stayed green and is all but equivalent: absorbing a raise puts
+  `error_generation` back to the frame's entry, which is 0 in every frame
+  these programs reach.
 
 ## 5. Correctness
 
