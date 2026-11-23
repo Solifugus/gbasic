@@ -1,3 +1,4 @@
+compile: program main: 28 statements, 2 lowered, ran 1 time
 compile: fact: 3 statements, 1 lowered, ran 10 times
 compile: count_to: 9 statements, 1 lowered, ran 1 time
 compile: subs: 11 statements, 0 lowered, ran 1 time
@@ -17,4 +18,4 @@ compile: for_refusals: 16 statements, 6 lowered, ran 1 time
 compile: refused: 8 statements, 2 lowered, ran 1 time
 compile: loop_gosub: 7 statements, 1 lowered, ran 1 time
 compile: leave_now: 6 statements, 2 lowered, ran 1 time
-compile: 19 functions compiled, 154 statements, 40 lowered
+compile: 20 bodies compiled, 182 statements, 42 lowered

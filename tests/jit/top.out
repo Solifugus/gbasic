@@ -1,0 +1,6 @@
+absorbed: division by zero
+for: 22
+while: 3
+not yet: undefined function: later -- no function, library function or builtin of that name is in scope at this call (has_builtin("later") asks without raising)
+now: 2
+after the raise

@@ -204,8 +204,8 @@ static void jit_report(void) {
                     *r->runs, *r->runs == 1 ? "" : "s");
         }
     }
-    fprintf(stderr, "compile: %zu function%s compiled, %zu statement%s, %zu lowered\n",
-            built, built == 1 ? "" : "s", statements, statements == 1 ? "" : "s", lowered);
+    fprintf(stderr, "compile: %zu bod%s compiled, %zu statement%s, %zu lowered\n",
+            built, built == 1 ? "y" : "ies", statements, statements == 1 ? "" : "s", lowered);
 }
 
 static void jit_note(const char *name, size_t statements, size_t lowered,
@@ -542,8 +542,9 @@ static void jit_list(JitEmit *e, LLVMValueRef state, AstStmtList *list, int nest
     free(s);
 }
 
-/* The body's IR, in a module of its own named after it. */
-static LLVMModuleRef jit_build(LLVMContextRef c, const char *sym, AstStmt *fn_stmt,
+/* The IR of a body (a GbBodyLoop's, `nested` 0) or of a list compiled as a
+ * whole (a GbList's, `nested` 1), in a module of its own named after it. */
+static LLVMModuleRef jit_build(LLVMContextRef c, const char *sym, AstStmtList *list, int nested,
                                unsigned long *runs, size_t *statements, size_t *lowered) {
     JitEmit e = { 0 };
     e.c = c;
@@ -587,7 +588,7 @@ static LLVMModuleRef jit_build(LLVMContextRef c, const char *sym, AstStmt *fn_st
         llvm.LLVMBuildStore(e.entry, llvm.LLVMBuildAdd(e.entry, was, llvm.LLVMConstInt(ul, 1, 0), ""), at);
     }
     llvm.LLVMPositionBuilderAtEnd(e.b, start);
-    jit_list(&e, loop, &fn_stmt->as.function.body, 0);
+    jit_list(&e, loop, list, nested);
     llvm.LLVMBuildRetVoid(e.b);
     /* the entry block's allocas are all built: now it can end */
     llvm.LLVMBuildBr(e.entry, start);
@@ -598,18 +599,17 @@ static LLVMModuleRef jit_build(LLVMContextRef c, const char *sym, AstStmt *fn_st
     return e.m;
 }
 
-GbJitBody gb_jit_body(AstStmt *fn) {
-    void **slot = &fn->jit;
-    const char *name = fn->as.function.name;
-    size_t count = fn->as.function.body.count;
+/* Compiled once into *slot: the entry's address, or 0 to interpret. */
+static uintptr_t jit_compile(void **slot, const char *name, AstStmtList *list, int nested) {
+    size_t count = list->count;
     if (*slot) {
-        return *slot == (void *)&jit_interpreted ? NULL : (GbJitBody)(uintptr_t)*slot;
+        return *slot == (void *)&jit_interpreted ? 0 : (uintptr_t)*slot;
     }
     /* refused until it is compiled: a failure is tried once, not per call */
     *slot = &jit_interpreted;
     if (!jit_start()) {
         jit_note(name, count, 0, NULL);
-        return NULL;
+        return 0;
     }
     unsigned long *runs = NULL;
     if (gb_jit_mode() == 2) {
@@ -622,7 +622,7 @@ GbJitBody gb_jit_body(AstStmt *fn) {
     snprintf(sym, sizeof sym, "gb_body_%lu", ++jit_serial);
     LLVMContextRef c = llvm.LLVMOrcThreadSafeContextGetContext(jit_ctx);
     size_t statements = 0, lowered = 0;
-    LLVMModuleRef m = jit_build(c, sym, fn, runs, &statements, &lowered);
+    LLVMModuleRef m = jit_build(c, sym, list, nested, runs, &statements, &lowered);
     char *why = NULL;
     if (llvm.LLVMVerifyModule(m, LLVMReturnStatusAction, &why)) {
         if (gb_jit_mode() == 2) {
@@ -632,7 +632,7 @@ GbJitBody gb_jit_body(AstStmt *fn) {
         llvm.LLVMDisposeModule(m);
         free(runs);
         jit_note(name, count, 0, NULL);
-        return NULL;
+        return 0;
     }
     llvm.LLVMDisposeMessage(why);
     LLVMOrcThreadSafeModuleRef tsm = llvm.LLVMOrcCreateNewThreadSafeModule(m, jit_ctx);
@@ -642,7 +642,7 @@ GbJitBody gb_jit_body(AstStmt *fn) {
         jit_error(name, err);
         free(runs);
         jit_note(name, count, 0, NULL);
-        return NULL;
+        return 0;
     }
     LLVMOrcExecutorAddress addr = 0;
     err = llvm.LLVMOrcLLJITLookup(jit, &addr, sym);
@@ -652,24 +652,44 @@ GbJitBody gb_jit_body(AstStmt *fn) {
         }
         free(runs);
         jit_note(name, count, 0, NULL);
-        return NULL;
+        return 0;
     }
     jit_note(name, statements, lowered, runs);
     *slot = (void *)(uintptr_t)addr;
-    return (GbJitBody)(uintptr_t)addr;
+    return (uintptr_t)addr;
+}
+
+GbJitBody gb_jit_body(AstStmt *fn) {
+    return (GbJitBody)jit_compile(&fn->jit, fn->as.function.name, &fn->as.function.body, 0);
+}
+
+GbJitList gb_jit_list(AstStmtList *list, void **slot, const char *name) {
+    return (GbJitList)jit_compile(slot, name, list, 1);
 }
 
 #else /* !HAVE_LLVM */
 
 static int jit_report_armed;
 
-GbJitBody gb_jit_body(AstStmt *fn) {
-    fn->jit = &jit_interpreted;
+static void jit_unavailable(void) {
     if (gb_jit_mode() == 2 && !jit_report_armed) {
         jit_report_armed = 1;
         fprintf(stderr, "compile: not available in this build (needs LLVM 18 or later); "
                         "every function is interpreted\n");
     }
+}
+
+GbJitBody gb_jit_body(AstStmt *fn) {
+    fn->jit = &jit_interpreted;
+    jit_unavailable();
+    return NULL;
+}
+
+GbJitList gb_jit_list(AstStmtList *list, void **slot, const char *name) {
+    (void)list;
+    (void)name;
+    *slot = &jit_interpreted;
+    jit_unavailable();
     return NULL;
 }
 

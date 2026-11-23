@@ -73,4 +73,12 @@ int gb_jit_mode(void);
  * (the loop then runs as it always has). */
 GbJitBody gb_jit_body(AstStmt *fn);
 
+/* A LIST COMPILED AS A WHOLE: a `program` block's body, or the top level
+ * when there is none, which eval_stmt_list would otherwise run. The entry is
+ * handed a GbList and leaves the list's result in it, beginning with
+ * gbrt_list_begin as eval_stmt_list does. Kept in *slot as gb_jit_body keeps
+ * a function's; `name` is the report's. NULL as for gb_jit_body. */
+typedef void (*GbJitList)(GbList *l);
+GbJitList gb_jit_list(AstStmtList *list, void **slot, const char *name);
+
 #endif

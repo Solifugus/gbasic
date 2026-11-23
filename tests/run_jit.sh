@@ -85,6 +85,31 @@ else
     fail "compiled: status $crc against $irc; $(diff "$tmp/i.out" "$tmp/c.out" | head -5) $(diff "$tmp/i.err" "$tmp/c.err" | head -5)"
 fi
 
+# the top level, compiled as one list when there is no program block
+GBASIC_COMPILE=0 timeout 30 ./gbasic tests/jit/top.bas >"$tmp/ti.out" 2>"$tmp/ti.err" </dev/null; tirc=$?
+GBASIC_COMPILE=all timeout 30 ./gbasic tests/jit/top.bas >"$tmp/tc.out" 2>"$tmp/tc.err" </dev/null; tcrc=$?
+if cmp -s "$tmp/ti.out" tests/jit/top.out && cmp -s "$tmp/ti.err" tests/jit/top.err && [ "$tirc" = 1 ]; then
+    pass "top level interpreted: top.out, top.err, status 1"
+else
+    fail "top level interpreted: status $tirc; $(diff "$tmp/ti.out" tests/jit/top.out | head -5) $(diff "$tmp/ti.err" tests/jit/top.err | head -3)"
+fi
+if cmp -s "$tmp/tc.out" "$tmp/ti.out" && cmp -s "$tmp/tc.err" "$tmp/ti.err" && [ "$tcrc" = "$tirc" ]; then
+    pass "top level compiled: stdout, stderr and status $tcrc the interpreter's"
+else
+    compiled_ok=0
+    fail "top level compiled: status $tcrc against $tirc; $(diff "$tmp/ti.out" "$tmp/tc.out" | head -5) $(diff "$tmp/ti.err" "$tmp/tc.err" | head -5)"
+fi
+
+# a program block's result: a named continue escaping every loop
+GBASIC_COMPILE=0 timeout 30 ./gbasic tests/jit/stray.bas >"$tmp/si.out" 2>"$tmp/si.err" </dev/null; sirc=$?
+GBASIC_COMPILE=all timeout 30 ./gbasic tests/jit/stray.bas >"$tmp/sc.out" 2>"$tmp/sc.err" </dev/null; scrc=$?
+if cmp -s "$tmp/si.out" tests/jit/stray.out && cmp -s "$tmp/si.err" tests/jit/stray.err && [ "$sirc" = 1 ] &&
+   cmp -s "$tmp/sc.out" "$tmp/si.out" && cmp -s "$tmp/sc.err" "$tmp/si.err" && [ "$scrc" = "$sirc" ]; then
+    pass "a program block's escaping continue: raised, status 1, compiled as interpreted"
+else
+    fail "stray.bas: interpreted $sirc, compiled $scrc; $(cat "$tmp/sc.err" | head -2)"
+fi
+
 echo "--- TIER report ---"
 GBASIC_COMPILE=report timeout 30 ./gbasic tests/jit/flow.bas >"$tmp/r.out" 2>"$tmp/r.err" </dev/null
 if cmp -s "$tmp/r.err" tests/jit/flow.report && cmp -s "$tmp/r.out" tests/jit/flow.out; then
@@ -99,6 +124,14 @@ if grep -qx 'compile: fact: 3 statements, 1 lowered, ran 10 times' "$tmp/r.err" 
     pass "fact ran 10 times compiled, handled 2"
 else
     fail "the compiled bodies' own counts: $(grep -E 'fact|handled' "$tmp/r.err")"
+fi
+# a program block and the top level are compiled as whole lists, each once
+GBASIC_COMPILE=report timeout 30 ./gbasic tests/jit/top.bas >/dev/null 2>"$tmp/tr.err" </dev/null
+if grep -qx 'compile: program main: 28 statements, 2 lowered, ran 1 time' "$tmp/r.err" &&
+   grep -qx 'compile: (top level): 25 statements, 6 lowered, ran 1 time' "$tmp/tr.err"; then
+    pass "program main and the top level ran compiled, once each"
+else
+    fail "the compiled lists: $(grep -E 'program|top level' "$tmp/r.err" "$tmp/tr.err")"
 fi
 
 echo "--- TIER valgrind ---"

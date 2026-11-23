@@ -1,0 +1,1 @@
+runtime error at tests/jit/stray.bas:8:9: continue: no enclosing loop named 'nosuch'

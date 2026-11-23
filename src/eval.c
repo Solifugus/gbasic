@@ -51343,6 +51343,30 @@ static void gsql_blocks_unused(AstStmtList program) {
     }
 }
 
+/* WHAT A FILE RUNS: its `program` block's body, or the top level when it has
+ * none, compiled as a whole under GBASIC_COMPILE (gb_jit_list) and otherwise
+ * eval_stmt_list's. Either way each statement is gbrt_list_stmt and what
+ * follows it gbrt_list_after. */
+static EvalResult eval_program_list(AstStmt *program_block, AstStmtList *top) {
+    AstStmtList *list = program_block ? &program_block->as.program.body : top;
+    void *top_slot = NULL;
+    GbJitList compiled = NULL;
+    if (gb_jit_mode()) {
+        char name[160];
+        snprintf(name, sizeof name, "program %s",
+                 program_block && program_block->as.program.name ? program_block->as.program.name : "");
+        compiled = program_block
+            ? gb_jit_list(list, &program_block->jit, name)
+            : gb_jit_list(list, &top_slot, "(top level)");
+    }
+    if (!compiled) {
+        return eval_stmt_list(*list);
+    }
+    GbList l;
+    compiled(&l);
+    return l.result;
+}
+
 int eval_program(AstStmtList program) {
     active_root = program;
     AstStmt *program_block = program_block_prepare(program);
@@ -51369,7 +51393,7 @@ int eval_program(AstStmtList program) {
      * Nothing has executed yet, so nothing should. */
     EvalResult result = (runtime_stopped || raise_in_flight)
         ? eval_stop()
-        : eval_stmt_list(program_block ? program_block->as.program.body : program);
+        : eval_program_list(program_block, &program);
     if (program_block) {
         PROFILE_POP(main_depth);
     }
