@@ -400,6 +400,11 @@ ordinary variable, as do `loop` and `until`.
   the body does not move the finish line.
 - **The counter is an ordinary variable.** It keeps its last value after the
   loop — the last value the body actually saw, not one past it.
+- **Assigning the counter in the body moves the loop**, as in classic BASIC:
+  each step starts from the variable's value, so `i = i + 3` in
+  `for i = 1 to 10` gives passes 1, 5 and 9 (the body prints 4, 8, 12), and
+  `i = i - 1` repeats a pass. A counter the body leaves as anything but a
+  number is refused at the step.
 - `step 0` raises (`for step cannot be zero`) rather than looping forever, and
   non-numeric bounds raise rather than coercing.
 - `break` and `continue` work as they do in `while`, and may name this loop's
@@ -697,7 +702,12 @@ gosub label
 ```
 
 `goto` and `gosub` are supported only inside functions; using either at the top
-level is a runtime error.
+level is a runtime error. A `gosub` runs the subroutine at its label until a
+bare `return`, then carries on at the statement after the `gosub`, wherever
+that is: inside an `if`, a `while` or a `for`, the rest of the branch or the
+loop's pass runs. A `return value` in the subroutine returns from the
+function, and a `break` or `continue` there is refused (the subroutine is not
+inside the loop around the gosub).
 
 Watchers:
 

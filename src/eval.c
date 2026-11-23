@@ -936,8 +936,6 @@ typedef struct {
     int return_has_value;
     int did_goto;
     char *goto_label;
-    int did_gosub;
-    char *gosub_label;
     int did_stop;
     int did_break;
     int did_continue;
@@ -4859,14 +4857,6 @@ static EvalResult eval_goto(const char *label) {
     return result;
 }
 
-static EvalResult eval_gosub(const char *label) {
-    EvalResult result = {0};
-    result.did_gosub = 1;
-    result.gosub_label = copy_string(label);
-    result.value = value_null();
-    return result;
-}
-
 static EvalResult eval_stop(void) {
     EvalResult result = {0};
     result.did_stop = 1;
@@ -4939,7 +4929,7 @@ static int loop_claims_flow(EvalResult result, const char *loop_variable) {
 }
 
 static int eval_result_exits_block(EvalResult result) {
-    return result.did_return || result.did_goto || result.did_gosub ||
+    return result.did_return || result.did_goto ||
            result.did_stop || result.did_break || result.did_continue ||
            result.did_raise;
 }
@@ -9156,9 +9146,6 @@ static int watcher_drain(void) {
             }
             if (result.did_goto) {
                 free(result.goto_label);
-            }
-            if (result.did_gosub) {
-                free(result.gosub_label);
             }
             if (result.did_break || result.did_continue) {
                 value_free(result.value);
@@ -15382,15 +15369,22 @@ static Value invoke_function_profiled(AstStmt *stmt, Value *args, size_t argc, V
 #endif
 
 /* THE BODY LOOP'S STATE (include/gb_jit.h), shared by invoke_function's
- * loop and a compiled body: what the last statement left, and the gosub
- * stack. `result` is first here and in GbList, so a lowered statement writes
- * its result through the same pointer whichever list it is in. */
+ * loop and a compiled body: what the last statement left, and whether this
+ * run of the body is a gosub's (its bare `return` ends the run). `result` is
+ * first here and in GbList, so a lowered statement writes its result through
+ * the same pointer whichever list it is in. */
 struct GbBodyLoop {
     EvalResult result;
     AstStmt *fn;
-    size_t *gosub_stack;
-    size_t gosub_count;
+    int subroutine;
 };
+
+/* The body loop of the function running now, which a `gosub` runs its
+ * subroutine over; and set when a subroutine ran off the end of the body,
+ * so the bare return that ends the function is not taken for the end of an
+ * enclosing subroutine. */
+static GbBodyLoop *current_body_loop;
+static int gosub_ran_off;
 
 /* A NESTED STATEMENT LIST'S STATE (an `if`'s branch, a `while`'s body),
  * shared by eval_stmt_list and a compiled list the same way. */
@@ -15454,9 +15448,9 @@ long gbrt_after(GbBodyLoop *loop, size_t pc) {
         return -1;
     }
     if (result.did_return) {
-        if (!result.return_has_value && loop->gosub_count > 0) {
+        /* a bare `return` ends the subroutine a gosub is running */
+        if (loop->subroutine && !result.return_has_value && !gosub_ran_off) {
             loop->result = eval_no_result();
-            return (long)loop->gosub_stack[--loop->gosub_count];
         }
         return -1;
     }
@@ -15470,25 +15464,6 @@ long gbrt_after(GbBodyLoop *loop, size_t pc) {
             return -1;
         }
         free(result.goto_label);
-        loop->result = eval_no_result();
-        return (long)target + 1;
-    }
-    if (result.did_gosub) {
-        size_t target = 0;
-        if (!find_function_label(stmt->as.function.body, result.gosub_label, &target)) {
-            raise_fmt(1003, "invalid control flow", "unknown label in function %s: %s",
-                      stmt->as.function.name, result.gosub_label);
-            free(result.gosub_label);
-            loop->result = eval_error_result();
-            return -1;
-        }
-        free(result.gosub_label);
-        size_t *next = realloc(loop->gosub_stack, sizeof(size_t) * (loop->gosub_count + 1));
-        if (!next) {
-            abort();
-        }
-        loop->gosub_stack = next;
-        loop->gosub_stack[loop->gosub_count++] = pc + 1;
         loop->result = eval_no_result();
         return (long)target + 1;
     }
@@ -15574,7 +15549,7 @@ long gbrt_list_after(GbList *l, size_t pc) {
         }
         return -1;
     }
-    if (result.did_return || result.did_gosub || result.did_stop ||
+    if (result.did_return || result.did_stop ||
         result.did_break || result.did_continue) {
         return -1;
     }
@@ -15748,12 +15723,12 @@ static int for_begin(AstStmt *stmt, EvalResult *out, const int *saved, GbFor *f)
      * entry, which is the classic BASIC rule and the one that makes the loop
      * predictable: changing `b` inside the body does not move the finish
      * line. The counter is an ordinary variable, so it keeps its last value
-     * after the loop. Assigning to it inside the body is allowed but does
-     * NOT affect the next pass: the count is kept here (f->xi, f->i) and
-     * written to the variable at each test, so `i = i + 3` in the body of
-     * `for i = 1 to 10` runs ten passes. Classic BASIC would run three; this
-     * comment used to say so, and the code never did (DOGFOOD 2026-11-22,
-     * open item 11, for Matthew to rule on). */
+     * after the loop. ASSIGNING TO IT IN THE BODY MOVES THE LOOP, as in
+     * classic BASIC: each step starts from the variable's value, so
+     * `i = i + 3` in the body of `for i = 1 to 10` runs three passes
+     * (for_reread). Matthew's ruling, 2026-11-23: moving the counter ahead
+     * or back is a feature. The count used to be kept apart and the
+     * assignment lost (DOGFOOD 11). */
     int before_error = error_generation;
     Value start_v = eval_expr(stmt->as.for_range.start);
     Value limit_v = eval_expr(stmt->as.for_range.limit);
@@ -15855,6 +15830,46 @@ static int for_test(AstStmt *stmt, EvalResult *out, const int *saved, GbFor *f) 
     return 1;
 }
 
+/* THE COUNTER READ BACK before it is stepped, so the body may have moved
+ * it: 1, or 0 with the loop ended by a raise at *out when the body left
+ * something that is not a number. An exact counter stays exact at the finer
+ * of its scale and the value's, and becomes the double when either cannot
+ * be held (`i = i / 3`). */
+static int for_reread(AstStmt *stmt, EvalResult *out, const int *saved, GbFor *f) {
+    Value v = env_get_key(stmt->as.for_range.name, for_range_key(stmt));
+    if (v.kind != VALUE_NUMBER) {
+        raise_fmt(1003, "invalid operation",
+                  "the for counter %s must stay a number, and the loop's body made it %s",
+                  stmt->as.for_range.name, value_kind_name(v.kind));
+        value_free(v);
+        loop_depth--;
+        gbrt_restore(saved);
+        *out = eval_error_result();
+        return 0;
+    }
+    long long x = 0;
+    int scale = 0;
+    if (f->exact && value_exact_parts(v, &x, &scale)) {
+        if (scale > f->xscale) {
+            if (!decimal_rescale(f->xstep, scale - f->xscale, &f->xstep) ||
+                (f->xlimit_exact && !decimal_rescale(f->xlimit, scale - f->xscale, &f->xlimit))) {
+                f->exact = 0;
+            }
+            f->xscale = scale;
+        }
+        if (f->exact && decimal_rescale(x, f->xscale - scale, &x)) {
+            f->xi = x;
+        } else {
+            f->exact = 0;
+        }
+    } else {
+        f->exact = 0;
+    }
+    f->i = v.as.num.value;
+    value_free(v);
+    return 1;
+}
+
 /* After a pass of the body: 1 to test again (the counter stepped), else
  * ended with *out. */
 static int for_after_pass(AstStmt *stmt, EvalResult *out, EvalResult result,
@@ -15877,6 +15892,9 @@ static int for_after_pass(AstStmt *stmt, EvalResult *out, EvalResult result,
         loop_depth--;
         gbrt_restore(saved);
         *out = result;
+        return 0;
+    }
+    if (!for_reread(stmt, out, saved, f)) {
         return 0;
     }
     if (f->exact) {
@@ -16160,7 +16178,9 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     /* THE BODY'S STATEMENTS, compiled or by this loop: either way each
      * statement is gbrt_stmt and what follows it is gbrt_after, so the two
      * cannot differ in what they do between statements. */
-    GbBodyLoop loop = { eval_no_result(), stmt, NULL, 0 };
+    GbBodyLoop loop = { eval_no_result(), stmt, 0 };
+    GbBodyLoop *previous_body_loop = current_body_loop;
+    current_body_loop = &loop;
     GbJitBody compiled = gb_jit_mode() ? gb_jit_body(stmt) : NULL;
     if (compiled) {
         compiled(&loop);
@@ -16176,7 +16196,8 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
         }
     }
     EvalResult result = loop.result;
-    free(loop.gosub_stack);
+    current_body_loop = previous_body_loop;
+    gosub_ran_off = 0;
     function_depth--;
     current_function_stmt = previous_function_stmt;
 
@@ -50813,19 +50834,70 @@ case_done:
 
 static GB_NOINLINE EvalResult eval_stmt_case_gosub(AstStmt *stmt, int previous_line, int previous_column) {
 
-        if (function_depth == 0) {
+        if (function_depth == 0 || !current_body_loop) {
             runtime_error_raise("gosub is not supported at top level; supported inside functions",
                                 1003, "invalid control flow");
             current_line = previous_line;
             current_column = previous_column;
             return eval_error_result();
         }
-        return eval_gosub(stmt->as.gosub_label);
-    goto case_done;
-case_done:
-    current_line = previous_line;
-    current_column = previous_column;
-    return eval_no_result();
+    /* A GOSUB RUNS ITS SUBROUTINE HERE and is done when the subroutine's
+     * bare `return` is, so the statement after the gosub runs next wherever
+     * the gosub is. The body loop used to keep a stack of return points at
+     * its own level, which saw an `if`, `while` or `for` around the gosub as
+     * one statement: the return resumed after the whole of it, and a gosub
+     * in a `while` ended the loop (DOGFOOD 10, fixed 2026-11-23). The
+     * subroutine is run by the body's own loop calls, so a goto, a raise
+     * absorbed, a `return value` and a nested gosub behave as they did. */
+    {
+        GbBodyLoop *body = current_body_loop;
+        AstStmt *fn = body->fn;
+        size_t target = 0;
+        if (!find_function_label(fn->as.function.body, stmt->as.gosub_label, &target)) {
+            raise_fmt(1003, "invalid control flow", "unknown label in function %s: %s",
+                      fn->as.function.name, stmt->as.gosub_label);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        if (gb_stack_exhausted(CALL_STACK_RESERVE)) {
+            raise_fmt(1005, "recursion",
+                      "gosub %s nested too deeply: it would exhaust the stack "
+                      "(%ld KB, `ulimit -s`); does the subroutine reach its `return`?",
+                      stmt->as.gosub_label, gb_stack_limit_kb());
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        GbBodyLoop sub = { eval_no_result(), fn, 1 };
+        current_body_loop = &sub;
+        size_t pc = target + 1;
+        long next = 0;
+        while (pc < fn->as.function.body.count) {
+            gbrt_stmt(&sub, pc);
+            next = gbrt_after(&sub, pc);
+            if (next < 0) {
+                break;
+            }
+            pc = (size_t)next;
+        }
+        current_body_loop = body;
+        EvalResult result = sub.result;
+        if (next >= 0) {
+            /* off the end of the body: the function ends, as it did when
+               the subroutine ran in the body's own loop */
+            gosub_ran_off = 1;
+            result = eval_return(value_null(), 0);
+        } else if (result.did_break || result.did_continue) {
+            /* the subroutine is not inside the loop around the gosub */
+            raise_loop_flow(result);
+            value_free(result.value);
+            result = eval_error_result();
+        }
+        current_line = previous_line;
+        current_column = previous_column;
+        return result;
+    }
 }
 
 static GB_NOINLINE EvalResult eval_stmt_case_if(AstStmt *stmt, int previous_line, int previous_column) {
@@ -51597,9 +51669,6 @@ int eval_program(AstStmtList program) {
     if (result.did_goto) {
         free(result.goto_label);
     }
-    if (result.did_gosub) {
-        free(result.gosub_label);
-    }
     if (result.did_break || result.did_continue) {
         value_free(result.value);
         exit_status = 1;
@@ -51821,9 +51890,6 @@ int gb_session_run(AstStmtList chunk) {
     }
     if (result.did_goto) {
         free(result.goto_label);
-    }
-    if (result.did_gosub) {
-        free(result.gosub_label);
     }
     if (result.did_break || result.did_continue) {
         value_free(result.value);

@@ -259,9 +259,8 @@ function refused()
     return marks
 end function
 
-' a gosub from inside a while: its return resumes AFTER the while, not in
-' the loop (DOGFOOD 2026-11-22, open), so this answers 1; held here as the
-' interpreter does it, which is all the compiled code may do
+' a gosub from inside a while: its return resumes in the loop, at the next
+' statement, so this answers 3 (it answered 1 until DOGFOOD 10 was fixed)
 function loop_gosub()
     n = 0
     while n < 3

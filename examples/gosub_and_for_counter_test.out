@@ -1,0 +1,33 @@
+in s
+inside the if, after the gosub
+after the if
+pass 1
+pass 2
+pass 3
+3
+6
+42
+111
+in tail
+nothing
+pass 1 refused: break outside loop
+pass 2 refused: break outside loop
+2
+4
+8
+12
+12
+5
+10
+9
+3
+2
+1
+1
+0
+0.25
+0.625
+0.875
+true
+refused: the for counter i must stay a number, and the loop's body made it string
+0
