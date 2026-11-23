@@ -161,8 +161,9 @@ rm -f "$ex_deep"
 # bare `exit(70)` the function's next statements ran, and its caller's; and a
 # statement run under the stop printed a stray `nothing`. On the build before
 # the fix five of these seven carried on. Each must exit 70 having printed
-# only what came before the exit.
-for shape in bare2:before inif:before method:before "loopfn:before AFTER i=1" watchbody:before onerror:before; do
+# only what came before the exit. printcall (2026-11-23): `print f()` where f
+# exits printed the stopped call's `nothing` before the program ended.
+for shape in bare2:before inif:before method:before "loopfn:before AFTER i=1" watchbody:before onerror:before printcall:before; do
     name="${shape%%:*}"; want="${shape#*:}"
     got="$(./gbasic "tests/exit_shapes/$name.bas" 2>/dev/null | tr '\n' ' ' | sed 's/ $//')"
     rc="$(./gbasic "tests/exit_shapes/$name.bas" >/dev/null 2>&1; echo $?)"

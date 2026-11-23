@@ -50031,6 +50031,16 @@ static GB_NOINLINE EvalResult eval_stmt_case_print(AstStmt *stmt, int previous_l
             current_column = previous_column;
             return eval_error_result();
         }
+        /* `print f()` where f called exit(): the program has stopped, and the
+         * call's value is the `nothing` a stopped call answers, which this
+         * printed (G48 fixed the statements after the exit, not the one
+         * that called it). gbrt_after/gbrt_list_after end the program. */
+        if (runtime_stopped) {
+            value_free(value);
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_no_result();
+        }
         /* PLAT-STDERR: the destination is the only difference. stderr needs no
          * flush of its own -- C forbids it being fully buffered and glibc leaves
          * it unbuffered, so the line is already gone by the time this returns. */
