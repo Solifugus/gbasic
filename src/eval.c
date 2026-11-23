@@ -51351,7 +51351,14 @@ static EvalResult eval_program_list(AstStmt *program_block, AstStmtList *top) {
     AstStmtList *list = program_block ? &program_block->as.program.body : top;
     void *top_slot = NULL;
     GbJitList compiled = NULL;
-    if (gb_jit_mode()) {
+    /* not under --profile: every lowered statement runs interpreted there
+     * (gbrt_enter), so compiling the list would add only LLVM's start-up,
+     * inside main's time, to the run being profiled */
+    int profiled = 0;
+#ifndef GB_NO_PROFILER
+    profiled = gb_profiling;
+#endif
+    if (gb_jit_mode() && !profiled) {
         char name[160];
         snprintf(name, sizeof name, "program %s",
                  program_block && program_block->as.program.name ? program_block->as.program.name : "");

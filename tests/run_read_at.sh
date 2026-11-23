@@ -118,9 +118,12 @@ if premise_rss_meter; then
 # 50 MB with no 0x0a in it. The line loop's `break` fires only AFTER a line is
 # materialised, so there is no way to bound it from inside the language.
 head -c 52428800 /dev/zero > "$work/zeros.bin"
+# interpreted in the compiled lane too: compiling maps LLVM, about 80 MB of
+# peak (95 MB chunked against 14.8 MB, 2026-11-23), which is the compiler's
+# cost and not the reading loop's that this ratio is about
 set +e
-c_out=$(/usr/bin/time -f '%M' ./gbasic "$work/reader.bas" "$work/zeros.bin" chunked 2>"$work/c.rss"); c_rc=$?
-l_out=$(/usr/bin/time -f '%M' ./gbasic "$work/reader.bas" "$work/zeros.bin" lines 2>"$work/l.rss"); l_rc=$?
+c_out=$(GBASIC_COMPILE=0 /usr/bin/time -f '%M' ./gbasic "$work/reader.bas" "$work/zeros.bin" chunked 2>"$work/c.rss"); c_rc=$?
+l_out=$(GBASIC_COMPILE=0 /usr/bin/time -f '%M' ./gbasic "$work/reader.bas" "$work/zeros.bin" lines 2>"$work/l.rss"); l_rc=$?
 set -e
 c_rss=$(tail -1 "$work/c.rss"); l_rss=$(tail -1 "$work/l.rss")
 if [ "$c_rc" != "0" ] || [ "$l_rc" != "0" ]; then
