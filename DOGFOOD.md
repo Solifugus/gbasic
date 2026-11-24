@@ -14209,3 +14209,20 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   where it is; the stray line came from the print that called it.
 - **Workaround:** resolved: the print checks the stop after its value, as it
   checks a raise. `tests/exit_shapes/printcall.bas` in `tests/run_core.sh`.
+
+## 2026-11-24 — CC — while: the compiled gate lane timed out run_limitations' deep-teardown probe
+- **Type:** bug
+- **Severity:** medium
+- **What:** an assignment of a value the same (by the second equality) as the
+  one it replaced kept the OLD value and freed the new: `r = { a: 1, b: 2 }`
+  then `r = { b: 2, a: 1 }` printed `{"a":1,"b":2}`, through a name, a field,
+  a record key and an array element alike. The guard was there to spare the
+  watchers (2026-06), and ran with none. Its comparison is deep, so
+  `v = { inner: v }` walked all of v each time: building a value n deep was
+  quadratic, 12 s at 40,000, and the limitations probe at 140,000 took 200 s,
+  past its 600 s bound under the gate's load.
+- **Workaround:** resolved: an assignment always stores what it is given;
+  "the same value" decides only whether a watcher is told, and is not asked
+  when there is no watcher. 40,000 deep builds in 0.04 s.
+  `tests/same_value/assign_stores.bas` and a shape tier in
+  `tests/run_same_value.sh`.

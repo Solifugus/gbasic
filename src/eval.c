@@ -48925,6 +48925,17 @@ typedef enum {
     LVALUE_ASSIGN_CHANGED
 } LValueAssignResult;
 
+/* An assignment ALWAYS stores the value it is given; "unchanged" (the same
+ * value as the one it replaces) only spares the watchers a delivery. It
+ * used to keep the old value and free the new: `r = { b: 2, a: 1 }` over
+ * `{ a: 1, b: 2 }` left the old field order, and since the comparison is
+ * deep, `v = { inner: v }` walked all of v each time, so building a value
+ * n deep was quadratic (run_limitations' 140,000-deep probe took 200 s).
+ * With no watcher there is nothing to spare, so nothing is compared. */
+static int assign_same(const Value *old, const Value *value) {
+    return watcher_count > 0 && old && value_storage_equal(old, value);
+}
+
 static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
     switch (target->kind) {
     case AST_EXPR_IDENT: {
@@ -48936,12 +48947,9 @@ static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
         }
         const char *key = ident_key(target);
         Symbol *symbol = env_find_key(current_env, key);
-        if (symbol && value_storage_equal(&symbol->value, &value)) {
-            value_free(value);
-            return LVALUE_ASSIGN_UNCHANGED;
-        }
+        int same = assign_same(symbol ? &symbol->value : NULL, &value);
         env_set_key(key, value);
-        return LVALUE_ASSIGN_CHANGED;
+        return same ? LVALUE_ASSIGN_UNCHANGED : LVALUE_ASSIGN_CHANGED;
     }
     case AST_EXPR_FIELD: {
         Value *object = resolve_lvalue_ref(target->as.field.object);
@@ -48961,12 +48969,9 @@ static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
             return LVALUE_ASSIGN_ERROR;
         }
         RecordField *field = record_find(object, target->as.field.field);
-        if (field && value_storage_equal(field->value, &value)) {
-            value_free(value);
-            return LVALUE_ASSIGN_UNCHANGED;
-        }
+        int same = assign_same(field ? field->value : NULL, &value);
         record_set(object, target->as.field.field, value);
-        return LVALUE_ASSIGN_CHANGED;
+        return same ? LVALUE_ASSIGN_UNCHANGED : LVALUE_ASSIGN_CHANGED;
     }
     case AST_EXPR_INDEX: {
         Value *container = resolve_lvalue_ref(target->as.index.array);
@@ -48985,27 +48990,20 @@ static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
                 runtime_error_raise("array index out of range", 1003, "assignment");
                 return LVALUE_ASSIGN_ERROR;
             }
-            if (value_storage_equal(&container->as.array.store->items[position], &value)) {
-                value_free(value);
-                return LVALUE_ASSIGN_UNCHANGED;
-            }
-            /* A real element write: detach from any shared store first so the
-             * copy-on-write aliasing guarantee holds (b = a; b[i] = x). */
+            int same = assign_same(&container->as.array.store->items[position], &value);
+            /* detach from any shared store first so the copy-on-write
+             * aliasing guarantee holds (b = a; b[i] = x) */
             array_ensure_unique(container);
             value_free(container->as.array.store->items[position]);
             container->as.array.store->items[position] = value;
-            return LVALUE_ASSIGN_CHANGED;
+            return same ? LVALUE_ASSIGN_UNCHANGED : LVALUE_ASSIGN_CHANGED;
         }
         if (container->kind == VALUE_RECORD && index.kind == VALUE_STRING) {
             RecordField *field = record_find_n(container, index.as.string, string_length(index.as.string));
-            if (field && value_storage_equal(field->value, &value)) {
-                value_free(value);
-                value_free(index);
-                return LVALUE_ASSIGN_UNCHANGED;
-            }
+            int same = assign_same(field ? field->value : NULL, &value);
             record_set_n(container, index.as.string, string_length(index.as.string), value);
             value_free(index);
-            return LVALUE_ASSIGN_CHANGED;
+            return same ? LVALUE_ASSIGN_UNCHANGED : LVALUE_ASSIGN_CHANGED;
         }
         value_free(index);
         runtime_error_raise("assignment index expects array[number] or record[string]", 1003, "assignment");

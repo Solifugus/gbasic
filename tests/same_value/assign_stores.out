@@ -1,0 +1,13 @@
+-- no watcher --
+{"b":2,"a":1}
+{"k":{"b":2,"a":1}}
+{"k":{"a":1,"b":2}}
+[{"b":2,"a":1}]
+-- a watcher: told only of a change, the new value stored either way --
+  told: {"a":1,"b":2}
+{"b":2,"a":1}
+  told: {"b":3,"a":1}
+{"b":3,"a":1}
+-- an equal write to an array shared by copy leaves the other alone --
+[1,2]
+[1,5]

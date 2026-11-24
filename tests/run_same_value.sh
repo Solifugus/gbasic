@@ -52,6 +52,35 @@ if [ -s "$work/sem.err" ]; then
     head -3 "$work/sem.err"; fail "the fixture wrote to stderr"
 fi
 
+printf 'TIER assignment\n'
+# An assignment stores what it is given; the same value only spares a
+# watcher (tests/same_value/assign_stores.bas). The old build printed the
+# old field order in four of these lines.
+if timeout -k 5 60 ./gbasic tests/same_value/assign_stores.bas > "$work/as.out" 2> "$work/as.err" \
+   && diff -u tests/same_value/assign_stores.out "$work/as.out" && [ ! -s "$work/as.err" ]; then
+    pass "a record in another order, through a name, a field, a key and an element, is stored"
+else
+    head -3 "$work/as.err"; fail "assign_stores.bas differs from its golden"
+fi
+
+printf 'TIER shape\n'
+# `v = { inner: v }` 100,000 times: linear, well under a second here; while
+# the assignment compared the old value with the new one it walked all of v
+# each time, 12 s at 40,000 and about 75 s at this size. Releasing a value
+# this deep needs more than 8 MB of stack (run_limitations), so 64 MB.
+printf 'v = 1\ni = 0\nwhile i < 100000\n  v = { inner: v }\n  i = i + 1\nend while\nprint "built"\n' > "$work/deep.bas"
+if ( ulimit -s 65536 ) 2>/dev/null; then
+    ( ulimit -s 65536; timeout -k 5 20 ./gbasic "$work/deep.bas" > "$work/deep.out" 2>&1 )
+    drc=$?
+    if [ "$drc" = "0" ] && grep -qx built "$work/deep.out"; then
+        pass "a value 100,000 deep is built inside 20 s"
+    else
+        fail "building a value 100,000 deep exited $drc (124: over 20 s, so quadratic again)"
+    fi
+else
+    printf '  SKIP (this shell cannot raise ulimit -s to 64 MB -- the shape was NOT measured)\n'
+fi
+
 printf 'TIER valgrind\n'
 if ! command -v valgrind >/dev/null 2>&1; then
     printf '  SKIP (valgrind unavailable -- memory access was NOT measured)\n'

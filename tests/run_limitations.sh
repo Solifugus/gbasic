@@ -161,8 +161,10 @@ probe_deep_value_teardown() {
         printf '     CONTROL half is unavailable and the crash half alone proves nothing)\n'
         return
     fi
-    # A TIMEOUT IS NOT A FIX. Each run takes about 41 s on an idle machine
-    # (measured 2026-10-29), and inside the parallel gate the 8 MB run passed
+    # A TIMEOUT IS NOT A FIX. Each run took about 41 s on an idle machine
+    # (measured 2026-10-29) and 200 s by 2026-11-24 -- building the value was
+    # quadratic, each assignment comparing all of the old v with the new one;
+    # about 1 s since that was fixed -- and inside the parallel gate the 8 MB run passed
     # the old 180 s bound -- whereupon exit 124 fell into the "fixed" branch
     # below and the suite announced the limitation GONE, the opposite of what
     # was measured (twice in one day, once with the machine otherwise idle).
