@@ -15711,6 +15711,60 @@ size_t gbrt_for_bytes(void) {
     return sizeof(GbFor);
 }
 
+/* A NUMBER HELD IN A COMPILED FRAME (docs/llvm_backend_design.md, increment
+ * 3): a local's value kept on the compiled code's stack, read and written
+ * there with no call. `set` means the slot holds a number and the frame's
+ * variable exists with no lock or a number lock (which admits a number as
+ * it is, lock_admits), so the slot may stand for it; `dirty` that
+ * the variable is behind the slot, and is brought up to date (slot_spill)
+ * before anything that reads it by name runs. Unset, the variable is the
+ * value, as it is in an interpreted frame. */
+struct GbSlot {
+    Value value;
+    int set;
+    int dirty;
+};
+
+/* the slot takes the frame's variable when it may stand for it, else lets
+ * it go */
+static GB_NOINLINE void slot_take(GbSlot *s, const char *key) {
+    Symbol *held = env_find_key(current_env, key);
+    s->dirty = 0;
+    s->set = held && (held->lock.kind == LOCK_NONE || held->lock.kind == LOCK_NUMBER) &&
+             held->value.kind == VALUE_NUMBER;
+    if (s->set) {
+        s->value = held->value;
+    }
+}
+
+/* a number written to a variable the slot may hold (NULL: none) */
+static GB_NOINLINE void slot_set(const char *key, GbSlot *s, Value v) {
+    if (s && s->set) {
+        s->value = v;
+        s->dirty = 1;
+        return;
+    }
+    env_set_key(key, v);
+    if (s) {
+        slot_take(s, key);
+    }
+}
+
+/* the variable brought up to the slot */
+static void slot_spill(GbSlot *s, const char *key) {
+    if (!s->dirty) {
+        return;
+    }
+    s->dirty = 0;
+    Symbol *held = env_find_key(current_env, key);
+    if (held) {
+        value_free(held->value);
+        held->value = s->value;
+    } else {
+        env_set_key(key, s->value);
+    }
+}
+
 /* `for i = a to b [step c]` begun: 0 to test the first pass, or -1 with
  * the error result at *out. */
 static int for_begin(AstStmt *stmt, EvalResult *out, const int *saved, GbFor *f) {
@@ -15810,8 +15864,10 @@ static int for_end(EvalResult *out, const int *saved) {
     return 0;
 }
 
-/* Each pass's test: 1 with the counter set for the body, else ended. */
-static int for_test(AstStmt *stmt, EvalResult *out, const int *saved, GbFor *f) {
+/* Each pass's test: 1 with the counter set for the body, else ended. A
+ * compiled body holding the counter (GbSlot, increment 3) passes its slot,
+ * the interpreted loop NULL. */
+static int for_test(AstStmt *stmt, EvalResult *out, const int *saved, GbFor *f, GbSlot *s) {
     if (f->exact) {
         double xd = f->xscale ? gb_decimal_to_double(f->xi, f->xscale) : (double)f->xi;
         int in = f->xlimit_exact ? (f->xstep > 0 ? f->xi <= f->xlimit : f->xi >= f->xlimit)
@@ -15819,13 +15875,21 @@ static int for_test(AstStmt *stmt, EvalResult *out, const int *saved, GbFor *f) 
         if (!in) {
             return for_end(out, saved);
         }
-        env_set_key(for_range_key(stmt), f->xscale ? value_number_decimal(f->xi, f->xscale)
-                                                   : value_number_exact(f->xi));
+        Value v = f->xscale ? value_number_decimal(f->xi, f->xscale) : value_number_exact(f->xi);
+        if (s) {
+            slot_set(for_range_key(stmt), s, v);
+        } else {
+            env_set_key(for_range_key(stmt), v);
+        }
     } else {
         if (!(f->step > 0 ? f->i <= f->limit : f->i >= f->limit)) {
             return for_end(out, saved);
         }
-        env_set_key(for_range_key(stmt), value_number(f->i));
+        if (s) {
+            slot_set(for_range_key(stmt), s, value_number(f->i));
+        } else {
+            env_set_key(for_range_key(stmt), value_number(f->i));
+        }
     }
     return 1;
 }
@@ -15835,8 +15899,13 @@ static int for_test(AstStmt *stmt, EvalResult *out, const int *saved, GbFor *f) 
  * something that is not a number. An exact counter stays exact at the finer
  * of its scale and the value's, and becomes the double when either cannot
  * be held (`i = i / 3`). */
-static int for_reread(AstStmt *stmt, EvalResult *out, const int *saved, GbFor *f) {
-    Value v = env_get_key(stmt->as.for_range.name, for_range_key(stmt));
+static int for_reread(AstStmt *stmt, EvalResult *out, const int *saved, GbFor *f, GbSlot *s) {
+    Value v;
+    if (s && s->set) {
+        v = s->value;
+    } else {
+        v = env_get_key(stmt->as.for_range.name, for_range_key(stmt));
+    }
     if (v.kind != VALUE_NUMBER) {
         raise_fmt(1003, "invalid operation",
                   "the for counter %s must stay a number, and the loop's body made it %s",
@@ -15873,7 +15942,7 @@ static int for_reread(AstStmt *stmt, EvalResult *out, const int *saved, GbFor *f
 /* After a pass of the body: 1 to test again (the counter stepped), else
  * ended with *out. */
 static int for_after_pass(AstStmt *stmt, EvalResult *out, EvalResult result,
-                          const int *saved, GbFor *f) {
+                          const int *saved, GbFor *f, GbSlot *s) {
     if ((result.did_break || result.did_continue) &&
         !loop_claims_flow(result, stmt->as.for_range.name)) {
         /* Named a loop further out: keep travelling. */
@@ -15894,7 +15963,7 @@ static int for_after_pass(AstStmt *stmt, EvalResult *out, EvalResult result,
         *out = result;
         return 0;
     }
-    if (!for_reread(stmt, out, saved, f)) {
+    if (!for_reread(stmt, out, saved, f, s)) {
         return 0;
     }
     if (f->exact) {
@@ -15920,11 +15989,21 @@ int gbrt_for_enter(AstStmt *stmt, void *at, int *saved, GbFor *f) {
 }
 
 int gbrt_for_test(AstStmt *stmt, void *at, const int *saved, GbFor *f) {
-    return for_test(stmt, at, saved, f);
+    return for_test(stmt, at, saved, f, NULL);
 }
 
 int gbrt_for_next(AstStmt *stmt, void *at, GbList *body, const int *saved, GbFor *f) {
-    return for_after_pass(stmt, at, body->result, saved, f);
+    return for_after_pass(stmt, at, body->result, saved, f, NULL);
+}
+
+/* the same, the counter held in the compiled frame's slot */
+int gbrt_for_test_slot(AstStmt *stmt, void *at, const int *saved, GbFor *f, GbSlot *s) {
+    return for_test(stmt, at, saved, f, s);
+}
+
+int gbrt_for_next_slot(AstStmt *stmt, void *at, GbList *body, const int *saved, GbFor *f,
+                       GbSlot *s) {
+    return for_after_pass(stmt, at, body->result, saved, f, s);
 }
 
 /* --- STEP 3: EXPRESSIONS LOWERED (docs/llvm_backend_design.md §4) ---------
@@ -16014,6 +16093,323 @@ void gbrt_binary_apply(AstExpr *x, void *left, void *right, void *out, const int
         return;
     }
     *(Value *)out = binary_apply(x, *(Value *)left, *(Value *)right, saved[0], saved[1]);
+}
+
+/* --- INCREMENT 3: NUMBERS HELD IN THE COMPILED FRAME ----------------------
+ *
+ * WHICH LOCALS A COMPILED BODY HOLDS (Matthew's ruling Q7 (b), 2026-11-23):
+ * a name every assignment of which, in the whole body, is a plain one
+ * (gbrt_assign_plain) of a value that is a number by construction (a number
+ * literal, a held name, `+ - * /` or unary minus of those), a compound one
+ * (`s += e`) of such a value, a `name:number = ...`, or the counter of a
+ * `for ... to`. A statement the compiled code leaves to the interpreter may
+ * assign one (the first two, or anything in a `for each`'s body), so every
+ * slot takes its variable again after it (gbrt_slots_retake). Anything else
+ * assigning it
+ * (another lock, a modifier, a `for each`, an element or field written)
+ * leaves it to the frame. A body with a statement this walk does not know (a gosub runs the
+ * body's own statements interpreted; a watch sees the frame's writes) holds
+ * nothing. The slot is a cache the runtime checks at every read and write
+ * (GbSlot), so what is held decides the speed, never the answer. */
+static int assign_lock_of(AstStmt *stmt, TypeLock *lock, const char **lock_var);
+static EvalResult assign_finish(AstStmt *stmt, Value value, int before_error, TypeLock lock,
+                                const char *lock_var, int previous_line, int previous_column);
+
+typedef struct {
+    const char **names;      /* interned */
+    AstExpr **values;        /* the value assigned, or NULL for a counter */
+    size_t count;
+    const char **refused;
+    size_t refused_count;
+    int unknown;             /* a statement the walk does not know */
+} SlotScan;
+
+static void slot_scan_note(const char ***list, size_t *count, const char *key) {
+    const char **grown = realloc(*list, sizeof **list * (*count + 1));
+    if (!grown) {
+        abort();
+    }
+    grown[(*count)++] = key;
+    *list = grown;
+}
+
+static void slot_scan_list(SlotScan *sc, AstStmtList *list);
+
+static void slot_scan_stmt(SlotScan *sc, AstStmt *stmt) {
+    switch (stmt->kind) {
+    case AST_STMT_ASSIGN: {
+        AstExpr *target = stmt->as.assign.target;
+        while (target->kind == AST_EXPR_INDEX || target->kind == AST_EXPR_FIELD) {
+            target = target->kind == AST_EXPR_INDEX ? target->as.index.array
+                                                    : target->as.field.object;
+        }
+        if (target->kind != AST_EXPR_IDENT) {
+            return;
+        }
+        int op = stmt->as.assign.op;
+        int whole = target == stmt->as.assign.target && !stmt->as.assign.modifier.name;
+        int number_lock = whole && !op && stmt->as.assign.lock.name &&
+                          strcmp(stmt->as.assign.lock.name, "number") == 0;
+        int compound = whole && !stmt->as.assign.lock.name &&
+                       (op == '+' || op == '-' || op == '*' || op == '/');
+        if (gbrt_assign_plain(stmt) || number_lock || compound) {
+            size_t n = sc->count;
+            slot_scan_note(&sc->names, &sc->count, ident_key(target));
+            AstExpr **grown = realloc(sc->values, sizeof *grown * (n + 1));
+            if (!grown) {
+                abort();
+            }
+            /* a number lock makes a number or refuses */
+            grown[n] = number_lock ? NULL : stmt->as.assign.value;
+            sc->values = grown;
+        } else {
+            slot_scan_note(&sc->refused, &sc->refused_count, ident_key(target));
+        }
+        return;
+    }
+    case AST_STMT_FOR_RANGE: {
+        size_t n = sc->count;
+        slot_scan_note(&sc->names, &sc->count, for_range_key(stmt));
+        AstExpr **grown = realloc(sc->values, sizeof *grown * (n + 1));
+        if (!grown) {
+            abort();
+        }
+        grown[n] = NULL;
+        sc->values = grown;
+        slot_scan_list(sc, &stmt->as.for_range.body);
+        return;
+    }
+    case AST_STMT_FOR_EACH:
+        slot_scan_note(&sc->refused, &sc->refused_count, name_intern(stmt->as.for_each.name));
+        if (stmt->as.for_each.index_name) {
+            slot_scan_note(&sc->refused, &sc->refused_count,
+                           name_intern(stmt->as.for_each.index_name));
+        }
+        slot_scan_list(sc, &stmt->as.for_each.body);
+        return;
+    case AST_STMT_IF:
+        slot_scan_list(sc, &stmt->as.if_stmt.body);
+        slot_scan_list(sc, &stmt->as.if_stmt.else_body);
+        return;
+    case AST_STMT_WHILE:
+        slot_scan_list(sc, &stmt->as.while_stmt.body);
+        return;
+    case AST_STMT_DO_LOOP:
+        slot_scan_list(sc, &stmt->as.do_loop.body);
+        return;
+    case AST_STMT_PRINT:
+    case AST_STMT_EXPR:
+    case AST_STMT_RETURN:
+    case AST_STMT_LABEL:
+    case AST_STMT_GOTO:
+    case AST_STMT_BREAK:
+    case AST_STMT_CONTINUE:
+    case AST_STMT_ON_ERROR_GOTO:
+    case AST_STMT_ON_ERROR_GOTO_NEXT:
+    case AST_STMT_ON_ERROR_STOP:
+    case AST_STMT_ON_WARNING:
+    case AST_STMT_WARNING:
+    case AST_STMT_ERROR:
+        return;
+    default:
+        sc->unknown = 1;
+        return;
+    }
+}
+
+static void slot_scan_list(SlotScan *sc, AstStmtList *list) {
+    for (size_t i = 0; i < list->count && !sc->unknown; i++) {
+        slot_scan_stmt(sc, list->items[i]);
+    }
+}
+
+static int slot_listed(const char **list, size_t count, const char *key) {
+    for (size_t i = 0; i < count; i++) {
+        if (list[i] == key) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* a number by construction, the names in `held` being numbers */
+static int slot_numeric(AstExpr *x, const char **held, size_t count) {
+    switch (x->kind) {
+    case AST_EXPR_NUMBER:
+        return 1;
+    case AST_EXPR_IDENT:
+        return slot_listed(held, count, ident_key(x));
+    case AST_EXPR_UNARY:
+        return strcmp(x->as.unary.op, "-") == 0 && slot_numeric(x->as.unary.expr, held, count);
+    case AST_EXPR_BINARY: {
+        int opc = op_code(x->as.binary.op);
+        return !x->as.binary.modifier.name &&
+               (opc == OP_ADD || opc == OP_SUB || opc == OP_MUL || opc == OP_DIV) &&
+               slot_numeric(x->as.binary.left, held, count) &&
+               slot_numeric(x->as.binary.right, held, count);
+    }
+    default:
+        return 0;
+    }
+}
+
+size_t gbrt_slot_names(AstStmt *fn, const char ***out) {
+    SlotScan sc;
+    memset(&sc, 0, sizeof sc);
+    *out = NULL;
+    slot_scan_list(&sc, &fn->as.function.body);
+    const char **held = NULL;
+    size_t count = 0;
+    if (!sc.unknown) {
+        for (size_t i = 0; i < sc.count; i++) {
+            const char *key = sc.names[i];
+            if (key != key_this && key != key_error && !slot_listed(held, count, key) &&
+                !slot_listed(sc.refused, sc.refused_count, key)) {
+                slot_scan_note(&held, &count, key);
+            }
+        }
+        /* a name stays while every value assigned it is a number by
+         * construction of the names still held: dropping one can drop more */
+        for (int changed = 1; changed;) {
+            changed = 0;
+            for (size_t i = 0; i < sc.count; i++) {
+                if (sc.values[i] && slot_listed(held, count, sc.names[i]) &&
+                    !slot_numeric(sc.values[i], held, count)) {
+                    for (size_t k = 0; k < count; k++) {
+                        if (held[k] == sc.names[i]) {
+                            held[k] = held[--count];
+                            break;
+                        }
+                    }
+                    changed = 1;
+                }
+            }
+        }
+    }
+    free(sc.names);
+    free(sc.values);
+    free(sc.refused);
+    if (!count) {
+        free(held);
+        return 0;
+    }
+    *out = held;
+    return count;
+}
+
+size_t gbrt_slot_bytes(void) {
+    return sizeof(GbSlot);
+}
+
+const char *gbrt_ident_key(AstExpr *x) {
+    return ident_key(x);
+}
+
+const char *gbrt_for_key(AstStmt *stmt) {
+    return for_range_key(stmt);
+}
+
+/* nothing is held under --profile, which times the interpreted statements */
+int gbrt_slots_allowed(void) {
+    return !gb_profiling;
+}
+
+void gbrt_layout(GbLayout *l) {
+    l->kind = offsetof(Value, kind);
+    l->num_value = offsetof(Value, as.num.value);
+    l->num_exact = offsetof(Value, as.num.exact);
+    l->num_is_exact = offsetof(Value, as.num.is_exact);
+    l->num_scale = offsetof(Value, as.num.scale);
+    l->boolean = offsetof(Value, as.boolean);
+    l->slot_value = offsetof(GbSlot, value);
+    l->slot_set = offsetof(GbSlot, set);
+    l->slot_dirty = offsetof(GbSlot, dirty);
+    l->result_bytes = sizeof(EvalResult);
+    l->number_kind = VALUE_NUMBER;
+    l->bool_kind = VALUE_BOOL;
+    l->line = &current_line;
+    l->column = &current_column;
+    l->error_generation = &error_generation;
+    l->raise_in_flight = &raise_in_flight;
+    l->runtime_stopped = &runtime_stopped;
+    l->watcher_count = &watcher_count;
+}
+
+/* at compile time: the bytes of a statement's ordinary result, of an exact
+ * integer and of `true`, which the compiled code stores as they are and
+ * then writes the fields that differ */
+void gbrt_templates(void *no_result, void *number, void *boolean) {
+    EvalResult r = eval_no_result();
+    memcpy(no_result, &r, sizeof r);
+    Value n = value_number_exact(0);
+    memcpy(number, &n, sizeof n);
+    Value b = value_bool(1);
+    memcpy(boolean, &b, sizeof b);
+}
+
+/* An operator the compiled code does itself on two exact integers, with no
+ * modifier: `+ - *` (an overflow is binary_apply's, which degrades with
+ * 2112) and the comparisons, `!>` read as `<=` and so on, which for two
+ * integers is the same answer. */
+int gbrt_fast_op(AstExpr *x) {
+    if (x->kind != AST_EXPR_BINARY || x->as.binary.modifier.name) {
+        return GB_FAST_NONE;
+    }
+    switch (op_code(x->as.binary.op)) {
+    case OP_ADD: return GB_FAST_ADD;
+    case OP_SUB: return GB_FAST_SUB;
+    case OP_MUL: return GB_FAST_MUL;
+    case OP_EQ: return GB_FAST_EQ;
+    case OP_NE: return GB_FAST_NE;
+    case OP_LT: case OP_NGE: return GB_FAST_LT;
+    case OP_LE: case OP_NGT: return GB_FAST_LE;
+    case OP_GT: case OP_NLE: return GB_FAST_GT;
+    case OP_GE: case OP_NLT: return GB_FAST_GE;
+    default: return GB_FAST_NONE;
+    }
+}
+
+/* a held name read while its slot is unset: the frame's variable, as
+ * gbrt_ident reads it, which the slot then takes if it may */
+void gbrt_slot_read(AstExpr *x, GbSlot *s, void *out) {
+    *(Value *)out = env_get_key(x->as.ident, ident_key(x));
+    slot_take(s, ident_key(x));
+}
+
+/* after a statement the interpreter ran: it may have assigned a held name
+ * (a compound assignment, a `name:number = ...`, any plain one in the body
+ * of a `for each` or a `do`, which the interpreter runs whole), so every
+ * slot takes its variable again */
+void gbrt_slots_retake(GbSlot *slots, const char *const *keys, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        slot_take(&slots[i], keys[i]);
+    }
+}
+
+/* every held variable brought up to its slot, before something that may
+ * read it by name */
+void gbrt_slots_spill(GbSlot *slots, const char *const *keys, size_t count) {
+    for (size_t i = 0; i < count; i++) {
+        slot_spill(&slots[i], keys[i]);
+    }
+}
+
+/* a held name assigned when the compiled code cannot do it alone (the slot
+ * unset, a raise, not a number, a watch anywhere): the variable brought up
+ * to date, then the interpreted assignment's own end, then the slot takes
+ * the variable again. The statement was announced by the compiled code as
+ * gbrt_assign_begin announces it. */
+void gbrt_slot_assign(AstStmt *stmt, void *at, const int *saved, int before_error, void *value,
+                      GbSlot *s) {
+    const char *key = ident_key(stmt->as.assign.target);
+    slot_spill(s, key);
+    TypeLock lock;
+    memset(&lock, 0, sizeof lock);
+    const char *lock_var = NULL;
+    assign_lock_of(stmt, &lock, &lock_var);
+    *(EvalResult *)at = assign_finish(stmt, *(Value *)value, before_error, lock, lock_var,
+                                      saved[0], saved[1]);
+    slot_take(s, key);
 }
 
 static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *receiver) {
@@ -50266,8 +50662,8 @@ static GB_NOINLINE EvalResult eval_stmt_case_for_range(AstStmt *stmt, int previo
     EvalResult out;
     GbFor f;
     if (for_begin(stmt, &out, saved, &f) == 0) {
-        while (for_test(stmt, &out, saved, &f) == 1 &&
-               for_after_pass(stmt, &out, eval_stmt_list(stmt->as.for_range.body), saved, &f)) {
+        while (for_test(stmt, &out, saved, &f, NULL) == 1 &&
+               for_after_pass(stmt, &out, eval_stmt_list(stmt->as.for_range.body), saved, &f, NULL)) {
         }
     }
     return out;

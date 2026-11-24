@@ -422,7 +422,7 @@ expression` lowered.
   `error_generation` back to the frame's entry, which is 0 in every frame
   these programs reach.
 
-### Increment 3, its shape (a draft for Matthew; nothing of it is built)
+### Increment 3, its shape (drafted before it was built; Q7-Q9 ruled 2026-11-23)
 
 **What is left after step 3 is the value work.** A pass of `loop`'s
 `s = s + i * 2` was ~1,830 instructions under the interpreter, and step 3
@@ -451,7 +451,8 @@ lowered and nothing in the function watches it; written back to the
 `Symbol` when the function leaves (a trace or the prompt may read it
 after), otherwise never.
 
-**Questions to rule before it is built:**
+**Questions ruled before it was built** (2026-11-23: Q7 (b), as
+recommended; Q8 and Q9 as drafted):
 
 - **Q7. Which variables are held.** (a) Only those declared `x:number`
   and parameters `a:number`: simplest, and exact by declaration, but no
@@ -475,6 +476,75 @@ after), otherwise never.
   a tier that runs their arithmetic inside functions, so the compiled lane
   exercises held numbers on the same oracle (python3's integers and
   decimal), rather than at the top level only.
+
+### Increment 3, step 1, as built (2026-11-23)
+
+- **A held name is a cache, not the variable.** Each one has a slot on the
+  compiled frame's stack (`GbSlot`: a Value, `set`, `dirty`), unset at every
+  call. The slot is `set` only when the frame's variable exists, holds a
+  number and has no lock or a number lock, which admits a number as it is;
+  then the compiled code reads and writes the slot with no call. Anything
+  else (an unset slot, text, a raise, a watch anywhere in the program) is a
+  call to the runtime, which works on the frame's variable as the
+  interpreter does and lets the slot take it again. So what is held decides
+  the speed, never the answer, and Q8's case cannot be reached.
+- **The variable is brought up to date** (`gbrt_slots_spill`, only what is
+  `dirty`) before anything that reads it by name: a statement the
+  interpreter runs, an expression it evaluates (a call's argument), a
+  `for`'s bounds. After an interpreted statement every slot takes its
+  variable again (`gbrt_slots_retake`), since it may have assigned one: a
+  compound assignment, a `name:number = ...`, or a plain assignment inside
+  a `for each` or a `do`, whose bodies the interpreter runs whole. That
+  last one was found by the compiled lane (`stats.logrank`'s sums), not by
+  the first draft of the test.
+- **Which names (Q7 (b)), decided once per body in `eval.c`
+  (`gbrt_slot_names`):** a name every assignment of which is plain with a
+  value that is a number by construction, compound with one, a
+  `name:number = ...`, or a `for` counter. A body containing a statement
+  the walk does not know (`gosub`, `watch`, `consider`, `with`, ...) holds
+  nothing, and nothing is held under `--profile` or in a list compiled as
+  a whole (a program block, the top level), whose variables called
+  functions can read. `GBASIC_COMPILE=report` names each body's held names.
+- **Arithmetic in the compiled code.** `+ - *` and the comparisons
+  (`gbrt_fast_op`) on two exact integers with no modifier are done inline,
+  held names or not; an overflow goes to `binary_apply`, which degrades
+  with 2112, and anything else is `gbrt_binary_apply` as in step 3. An `if`
+  or `while` condition that is a boolean with no raise is read inline. A
+  `for` with a held counter calls `gbrt_for_test_slot` and
+  `gbrt_for_next_slot`, the interpreted `for`'s own functions given the
+  slot.
+- **Measured, best of five, this machine:**
+
+  | | interpreted | compiled |
+  |---|---|---|
+  | `loop` (10,000,000 passes) | 1.32 s | 0.45 s |
+  | `while` with an `if`, 3,000,000 passes | 1.14 s | 0.71 s |
+  | `fib(30)` | 0.53 s | 0.40 s |
+
+  The interpreted times are this machine's on the day; on the same
+  binaries' instruction counts, the interpreted `for` pays 13 instructions
+  a pass more than before (0.65%, the slot it is passed as NULL), and
+  nothing else moved. `fib` holds nothing (its only local is a parameter
+  it never assigns), and gains from the inline comparison and arithmetic.
+- **Held by** `tests/jit/held.bas` in `run_jit` (every way a held number
+  could part from its variable, compiled against interpreted byte for
+  byte; the names held, by the report), `run_exact_decimal`'s held tier
+  (the oracle's 2100 cases through variables in functions) and the gate's
+  compiled lane. Perturbations proven red: a fast write not marking the
+  slot dirty; no spill before an interpreted statement, an interpreted
+  expression, or a `for`'s bounds; an overflow ignored; `<` compiled as
+  `<=`; the counter reread from the variable rather than the slot; no
+  retake after an interpreted statement; a `while`'s false condition read
+  inline (its loop depth left raised). Left green, and why: the slot
+  taking a lock other than a number's (no such variable can hold a
+  number); the pending and raise checks before a fast operator and a fast
+  write (a raise leaves the value `nothing`, which takes the slow path
+  anyway; they mirror the runtime's own checks); and ignoring a watch
+  elsewhere, which only an event-loop delivery could reach (its first
+  assignment checks every frame's watches), not built as a test.
+- **Not yet:** calls (`fib`'s cost is now the call), `for each`, `do`,
+  unary minus and other expression shapes, and a parameter typed `:number`
+  that is only read (held when assigned).
 
 ## 5. Correctness
 

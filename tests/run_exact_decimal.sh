@@ -11,6 +11,12 @@
 #                   600 comparisons at random scales, digit for digit; nothing
 #                   gBASIC printed is read back as the answer. Skips without
 #                   python3.
+# TIER held      -- the same 2100 cases through variables inside functions
+#                   (`a = 1.25`, `b = 3`, `r = a * b`, `print string(r)`),
+#                   so the compiled lane (GBASIC_COMPILE=all) does them on
+#                   numbers held in the compiled frame and its own integer
+#                   arithmetic (docs/llvm_backend_design.md, increment 3, Q9),
+#                   against the same answers.
 # TIER control   -- the same cases done in doubles disagree with the oracle,
 #                   arithmetic and comparison each, so the oracle can tell
 #                   exact from approximate.
@@ -80,10 +86,11 @@ def show(d):
         return "0"
     t = format(d.normalize(), "f")
     return t
-bas, want, dbl = [], [], []
+bas, want, dbl, cases = [], [], [], []
 for i in range(1500):
     a, b = operand(), operand()
     op = rng.choice("+-*")
+    cases.append((a, op, b, "r"))
     da, db = Decimal(a), Decimal(b)
     r = da + db if op == "+" else da - db if op == "-" else da * db
     bas.append(f'print string({a} {op} {b})')
@@ -103,6 +110,7 @@ for i in range(600):
         a = "0." + str(m).rjust(18, "0")
         b = "0." + str(m + rng.choice([-1, 0, 1])).rjust(18, "0")
     op = rng.choice(["=", "<", ">", "!="])
+    cases.append((a, op, b, "c"))
     da, db = Decimal(a), Decimal(b)
     r = {"=": da == db, "<": da < db, ">": da > db, "!=": da != db}[op]
     bas.append(f'print string({a} {op} {b})')
@@ -111,6 +119,15 @@ for i in range(600):
     fr = {"=": fa == fb, "<": fa < fb, ">": fa > fb, "!=": fa != fb}[op]
     dbl.append("true" if fr else "false")
 open(f"{tmp}/oracle.bas", "w").write("\n".join(bas) + "\n")
+held = []
+for k in range(0, len(cases), 100):
+    held.append(f"function chunk_{k // 100}()")
+    held += ["    a = 0", "    b = 0", "    r = 0"]
+    for a, op, b, into in cases[k:k + 100]:
+        held += [f"    a = {a}", f"    b = {b}", f"    {into} = a {op} b", f"    print string({into})"]
+    held.append("end function")
+held += [f"chunk_{k}()" for k in range((len(cases) + 99) // 100)]
+open(f"{tmp}/held.bas", "w").write("\n".join(held) + "\n")
 open(f"{tmp}/oracle.want", "w").write("\n".join(want) + "\n")
 open(f"{tmp}/oracle.dbl", "w").write("\n".join(dbl) + "\n")
 PY
@@ -123,6 +140,17 @@ PY
         printf 'FAIL oracle (%s lines, %s disagree with python decimal)\n' "$lines" "$bad"; status=1
     else
         printf 'PASS oracle (2100 values agree with python decimal, digit for digit)\n'
+    fi
+    echo "--- TIER held ---"
+    timeout -k 5 120 ./gbasic "$tmp/held.bas" > "$tmp/held.got" 2> "$tmp/held.err"
+    bad="$(paste -d'|' "$tmp/held.got" "$tmp/oracle.want" | awk -F'|' '$1 != $2' | wc -l)"
+    lines="$(wc -l < "$tmp/held.got")"
+    if [ "$lines" != 2100 ] || [ "$bad" != 0 ] || [ -s "$tmp/held.err" ]; then
+        paste -d'|' "$tmp/held.got" "$tmp/oracle.want" | awk -F'|' '$1 != $2' | head -5 | sed 's/^/  /'
+        head -3 "$tmp/held.err" | sed 's/^/  /'
+        printf 'FAIL held (%s lines, %s disagree with python decimal)\n' "$lines" "$bad"; status=1
+    else
+        printf 'PASS held (the 2100 through variables in functions agree, digit for digit)\n'
     fi
     echo "--- TIER control ---"
     dbad="$(paste -d'|' "$tmp/oracle.dbl" "$tmp/oracle.want" | head -1500 | awk -F'|' '$1 != $2' | wc -l)"

@@ -182,8 +182,9 @@ end function
 
 ' `for ... to`: a decimal step ends on its limit exactly, a negative step,
 ' the counter kept after the loop, a counter assigned by the body (which
-' does not move the loop: DOGFOOD 2026-11-22, open item 11, so 4 to 13),
-' continue, a named continue to the outer loop, and a return from inside
+' moves the loop, as in classic BASIC: 4, 8, 12, Matthew's ruling of
+' 2026-11-23), continue, a named continue to the outer loop, and a return
+' from inside
 function counted()
     out = ""
     for x = 0 to 1 step 0.1

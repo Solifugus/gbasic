@@ -102,6 +102,48 @@ void gbrt_assign_end(AstStmt *stmt, void *at, const int *saved, GbAssign *a, voi
 int gbrt_return_begin(AstStmt *stmt, void *at, int *saved);
 void gbrt_return_end(AstStmt *stmt, void *at, const int *saved, int before_error, void *value);
 
+/* INCREMENT 3: NUMBERS HELD IN THE COMPILED FRAME. gbrt_slot_names lists
+ * the locals a body may hold (interned names; a malloc'd array the caller
+ * frees, or 0 and NULL), each in a GbSlot of gbrt_slot_bytes() on the
+ * compiled code's stack, which starts unset. The compiled code reads and
+ * writes a set slot's number itself (gbrt_layout's offsets), and calls the
+ * runtime for anything else: gbrt_slot_read for a read of an unset slot,
+ * gbrt_slot_assign for an assignment it cannot do alone (begun by the
+ * compiled code as gbrt_assign_begin begins one), gbrt_slots_spill before
+ * anything that may read a variable by name, gbrt_slots_retake after a
+ * statement the interpreter ran (which may have assigned one), and the `for`
+ * calls taking the counter's slot. An operator gbrt_fast_op names is done by the compiled
+ * code on two exact integers, and by gbrt_binary_apply otherwise. */
+typedef struct GbSlot GbSlot;
+typedef struct {
+    size_t kind, num_value, num_exact, num_is_exact, num_scale, boolean;
+    size_t slot_value, slot_set, slot_dirty;
+    size_t result_bytes;
+    int number_kind, bool_kind;
+    int *line, *column, *error_generation, *raise_in_flight, *runtime_stopped;
+    size_t *watcher_count;
+} GbLayout;
+enum {
+    GB_FAST_NONE, GB_FAST_ADD, GB_FAST_SUB, GB_FAST_MUL,
+    GB_FAST_EQ, GB_FAST_NE, GB_FAST_LT, GB_FAST_LE, GB_FAST_GT, GB_FAST_GE
+};
+size_t gbrt_slot_names(AstStmt *fn, const char ***out);
+size_t gbrt_slot_bytes(void);
+int gbrt_slots_allowed(void);
+const char *gbrt_ident_key(AstExpr *x);
+const char *gbrt_for_key(AstStmt *stmt);
+void gbrt_layout(GbLayout *l);
+void gbrt_templates(void *no_result, void *number, void *boolean);
+int gbrt_fast_op(AstExpr *x);
+void gbrt_slot_read(AstExpr *x, GbSlot *s, void *out);
+void gbrt_slots_spill(GbSlot *slots, const char *const *keys, size_t count);
+void gbrt_slots_retake(GbSlot *slots, const char *const *keys, size_t count);
+void gbrt_slot_assign(AstStmt *stmt, void *at, const int *saved, int before_error, void *value,
+                      GbSlot *s);
+int gbrt_for_test_slot(AstStmt *stmt, void *at, const int *saved, GbFor *f, GbSlot *s);
+int gbrt_for_next_slot(AstStmt *stmt, void *at, GbList *body, const int *saved, GbFor *f,
+                       GbSlot *s);
+
 /* GBASIC_COMPILE, read once: 0 nothing compiled, 1 `all`, 2 `report`. */
 int gb_jit_mode(void);
 

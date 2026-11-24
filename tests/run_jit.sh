@@ -10,6 +10,10 @@
 # the top level is compiled as such a list. Step 3: expressions, plain
 # assignments and returns, each node a call the interpreted node makes too
 # (or, for a number literal, its bytes). So nothing may differ but the speed.
+# Increment 3: a function's locals that are numbers by construction are held
+# in the compiled frame (GbSlot), and `+ - *` and the comparisons on two
+# exact integers are done by the compiled code; the frame's variable is
+# brought up to date before anything reads it by name.
 #
 # This suite holds the switch and the paths through a body. The whole of the
 # behaviour is held by the gate's second lane, `GBASIC_COMPILE=all
@@ -30,18 +34,26 @@
 #             break that names no loop, a gosub from a loop): interpreted, it
 #             prints flow.out and exits 3; compiled, stdout, stderr and the
 #             status are the interpreter's, byte for byte.
+#   held      tests/jit/held.bas takes every way a held number could part
+#             from its variable (read before set, from a global, undefined;
+#             read by name mid-loop; past int64 each way; a decimal; a
+#             division; a lock; compound and typed assignments; a watch
+#             elsewhere; a raise absorbed; goto; recursion; the counter
+#             moved; exit): interpreted, held.out and held.err, status 3;
+#             compiled, the same bytes.
 #   report    GBASIC_COMPILE=report's lines against tests/jit/flow.report:
 #             each function compiled once, in the order first called, with
-#             how many of its statements are lowered and how many times its
-#             body RAN. The count is kept by the compiled
+#             how many of its statements are lowered, the names it holds,
+#             and how many times its body RAN. The count is kept by the compiled
 #             body itself (its first instructions add one), so a body the
 #             interpreter ran instead would not be counted: fact(10) is 10.
 # Every run is bounded: a wrong jump in compiled code is as likely to loop as
 # to print something wrong (a gosub's return dispatched one statement early
 # re-ran the gosub, and the first perturbation of this suite hung it). The
 # valgrind tier runs only after the bounded compiled run has passed.
-#   valgrind  the compiled run under memcheck (the JIT is disposed at exit,
-#             or each body's unwinding tables read as definitely lost).
+#   valgrind  the compiled runs of flow.bas and held.bas under memcheck (the
+#             JIT is disposed at exit, or each body's unwinding tables read
+#             as definitely lost).
 set -u
 cd "$(dirname "$0")/.." || exit 1
 make -s >/dev/null || { echo "FAIL build"; exit 1; }
@@ -112,6 +124,33 @@ else
     fail "stray.bas: interpreted $sirc, compiled $scrc; $(cat "$tmp/sc.err" | head -2)"
 fi
 
+echo "--- TIER held ---"
+GBASIC_COMPILE=0 timeout 30 ./gbasic tests/jit/held.bas >"$tmp/hi.out" 2>"$tmp/hi.err" </dev/null; hirc=$?
+GBASIC_COMPILE=all timeout 30 ./gbasic tests/jit/held.bas >"$tmp/hc.out" 2>"$tmp/hc.err" </dev/null; hcrc=$?
+if cmp -s "$tmp/hi.out" tests/jit/held.out && cmp -s "$tmp/hi.err" tests/jit/held.err && [ "$hirc" = 3 ]; then
+    pass "interpreted: held.out, held.err, status 3"
+else
+    fail "held interpreted: status $hirc; $(diff "$tmp/hi.out" tests/jit/held.out | head -5) $(diff "$tmp/hi.err" tests/jit/held.err | head -3)"
+fi
+if cmp -s "$tmp/hc.out" "$tmp/hi.out" && cmp -s "$tmp/hc.err" "$tmp/hi.err" && [ "$hcrc" = "$hirc" ]; then
+    pass "compiled: stdout, stderr and status $hcrc the interpreter's"
+else
+    compiled_ok=0
+    fail "held compiled: status $hcrc against $hirc; $(diff "$tmp/hi.out" "$tmp/hc.out" | head -5) $(diff "$tmp/hi.err" "$tmp/hc.err" | head -5)"
+fi
+# what is held is decided once, when the body is compiled (Q7 (b)): a name
+# built from a parameter is not held, nor one assigned text; a body with a
+# gosub holds nothing (flow.report's `subs`, held by the report tier)
+GBASIC_COMPILE=report timeout 30 ./gbasic tests/jit/held.bas >/dev/null 2>"$tmp/hr.err" </dev/null
+if grep -qx 'compile: sum_loop: 4 statements, 4 lowered, 7 expressions, holds i s, ran 1 time' "$tmp/hr.err" &&
+   grep -qx 'compile: rec: 4 statements, 4 lowered, 7 expressions, ran 11 times' "$tmp/hr.err" &&
+   grep -qx 'compile: texty: 5 statements, 5 lowered, 8 expressions, holds n, ran 1 time' "$tmp/hr.err" &&
+   grep -qx 'compile: typed_local: 6 statements, 4 lowered, 7 expressions, holds k y, ran 1 time' "$tmp/hr.err"; then
+    pass "held: i and s in sum_loop, nothing in rec, n but not t in texty, y declared :number"
+else
+    fail "what is held: $(grep -E 'sum_loop|rec|texty|typed_local' "$tmp/hr.err")"
+fi
+
 echo "--- TIER report ---"
 GBASIC_COMPILE=report timeout 30 ./gbasic tests/jit/flow.bas >"$tmp/r.out" 2>"$tmp/r.err" </dev/null
 if cmp -s "$tmp/r.err" tests/jit/flow.report && cmp -s "$tmp/r.out" tests/jit/flow.out; then
@@ -147,6 +186,12 @@ elif vg_available; then
         sed 's/^/  /' "$tmp/vg.err" | tail -30; fail "valgrind: flow.bas compiled"
     else
         pass "valgrind: flow.bas compiled (no definite leak or invalid access)"
+    fi
+    GBASIC_COMPILE=all vg_run ./gbasic tests/jit/held.bas >/dev/null 2>"$tmp/vgh.err" </dev/null
+    if [ $? = "$VG_EXIT" ]; then
+        sed 's/^/  /' "$tmp/vgh.err" | tail -30; fail "valgrind: held.bas compiled"
+    else
+        pass "valgrind: held.bas compiled (no definite leak or invalid access)"
     fi
 else
     printf 'SKIP valgrind (unavailable)\n'

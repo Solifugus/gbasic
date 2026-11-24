@@ -1,0 +1,4 @@
+warning: 'g' was read from an enclosing scope, but this assignment creates a new function-local of that name; the outer variable is unchanged (functions cannot rebind outer scalars -- mutate a field of a shared record instead) at tests/jit/held.bas:40:5 [2104]
+warning: this sum of two exact integers does not fit a whole number the runtime can hold, so the answer is approximate from here on at tests/jit/held.bas:58:15 [2112]
+warning: this product of two exact integers does not fit a whole number the runtime can hold, so the answer is approximate from here on at tests/jit/held.bas:66:11 [2112]
+warning: this difference of two exact integers does not fit a whole number the runtime can hold, so the answer is approximate from here on at tests/jit/held.bas:68:11 [2112]

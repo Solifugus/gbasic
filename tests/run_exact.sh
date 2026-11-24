@@ -59,7 +59,10 @@ echo "--- TIER 2: THE ORACLE -- python3 computes the same integers exactly ---"
 # the number FORMATTER in run_numfmt.sh.
 #
 # The recipes are emitted by gBASIC and recomputed by python, which never reads
-# gBASIC's answer.
+# gBASIC's answer. They run inside functions, so under the gate's compiled
+# lane `_fact` and `_sum` hold every name in the compiled frame and do their
+# `*` and `+` there, overflow to 2112 included (docs/llvm_backend_design.md,
+# increment 3, Q9).
 if ! command -v python3 >/dev/null 2>&1; then
     printf 'SKIP oracle (python3 unavailable) -- NOTHING WAS CROSS-CHECKED, which is\n'
     printf '     weaker than it looks: tier 1 states values I wrote by hand\n'
