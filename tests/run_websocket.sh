@@ -97,8 +97,16 @@ fi
 # and with it a failure's FAIL line and reason: on s390x it exited 1 having
 # printed nothing but PASS lines (2026-11-15).
 peer_quiet=0
+# A SERVER UNDER VALGRIND IS A SLOWER MACHINE, so the valgrind tier sets
+# peer_scale and the peer's every bound (GATE_TIME_SCALE) grows by it. In the
+# compiled lane the first connection waits for its handlers to be compiled
+# under valgrind: 20.7 s idle at O1 (7.0 s at O0), and under the gate's load
+# the websockets library's 10 s open_timeout ran out (2026-11-24).
+peer_scale=1
 peer() {      # peer CHECK PORT [ARG]
-    if out=$(timeout 90 python3 -I tests/websocket/ws_peer.py "$@" 2>&1); then
+    local scale
+    scale=$(awk -v s="$(gb_time_scale)" -v p="$peer_scale" 'BEGIN { print s * p }')
+    if out=$(GATE_TIME_SCALE=$scale timeout $((90 * peer_scale)) python3 -I tests/websocket/ws_peer.py "$@" 2>&1); then
         [ "$peer_quiet" = 1 ] || printf '%s\n' "$out" | grep -v '^INFO'
     else
         printf '%s\n' "$out" | grep -E '^FAIL|Error' | head -3
@@ -198,11 +206,13 @@ if vg_available; then
     if [ "$have_ws" = 1 ]; then
         serve_ws tests/websocket/ws_server.bas env "VG_EXTRA=--log-file=$work/vgs.log" bash tests/net/vg_wrap.sh
         peer_quiet=1
+        peer_scale=10
         for c in echo fragments violations close_client; do
             peer "$c" "$wport"
         done
         peer_quiet=0
         peer quit "$wport"
+        peer_scale=1
         if wait "$wsp" && ! grep -q 'Invalid \(read\|write\)\|definitely lost: [1-9]' "$work/vgs.log"; then
             printf 'PASS valgrind the server through an echo, fragments, the violations and a close\n'
         else
