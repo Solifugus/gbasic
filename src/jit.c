@@ -338,8 +338,11 @@ static int jit_start(void) {
         jit_native[i]();
     }
 
-    /* O0 in step 1: the IR is calls and branches, and compile time is the
-     * gate's time. Measured before it is raised (§4). */
+    /* O1 (Matthew, 2026-11-24). At O0 the fast register allocator gives
+     * every value live across blocks a stack slot of its own: rules' _eval
+     * was 16 KB a level compiled against 5.8 KB interpreted, 480 levels
+     * against 1,097. At O1 it is 4.5 KB, 1,169 levels, for about three
+     * times run_rules' compile time (§4, increment 3 step 2). */
     char *triple = llvm.LLVMGetDefaultTargetTriple();
     LLVMTargetRef target;
     char *why = NULL;
@@ -354,7 +357,7 @@ static int jit_start(void) {
     char *cpu = llvm.LLVMGetHostCPUName();
     char *features = llvm.LLVMGetHostCPUFeatures();
     LLVMTargetMachineRef tm = llvm.LLVMCreateTargetMachine(target, triple, cpu, features,
-                                                      LLVMCodeGenLevelNone,
+                                                      LLVMCodeGenLevelLess,
                                                       LLVMRelocDefault,
                                                       LLVMCodeModelJITDefault);
     llvm.LLVMDisposeMessage(features);

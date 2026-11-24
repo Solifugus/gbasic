@@ -635,9 +635,13 @@ recommended; Q8 and Q9 as drafted):
   about 16 KB compiled against 5,776 bytes a level interpreted. At
   `LLVMCodeGenLevelLess` it is 4,496 (1,169 levels), but run_rules took
   127 s compiled against 44 s at `None`, and run_insight 66 s against
-  43 s: compile time, which the gate pays and a short program pays. Not
-  raised; a body compiled again at a higher level once it has run often
-  enough would have both.
+  43 s: compile time, which the gate pays and a short program pays.
+  **Raised to `Less` (Matthew, 2026-11-24: "worth the extra compile
+  time")**: `_eval` 1,188 levels compiled, `d(n)` 5,451 -> 5,759; run time
+  the same within noise (fib 0.32 s, loop 0.41, while 0.28 -> 0.26), a
+  short program on text 0.43 -> 0.46 s from compiling. A body compiled
+  first at `None` and again at `Less` once it has run often enough would
+  have both; not built.
 - **Not yet:** a call through a function value, a method or a qualified
   call (each `gbrt_eval`); `for each`, `do`; unary minus.
 
