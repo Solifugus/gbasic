@@ -3,7 +3,8 @@
 **Status:** Ruled 2026-11-18 (Matthew: "ok.. right. good point"). §5's
 order stands: bulk load (G2) in 0.13.0; the PostgreSQL wire protocol as a
 design note after parallel readers; the discovery estate parked for an
-outside author. Q5, message queues, is still open. Matthew, 2026-11-18, of
+outside author. Q5 ruled 2026-11-23: message queues stay off the list
+until a user needs one. Matthew, 2026-11-18, of
 cross-database work: "I am not sure the shape of this but we should at least
 go over it and make sure gbasic is facilitated for real enterprise data
 work." This review also takes in two earlier items:

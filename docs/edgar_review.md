@@ -7,6 +7,26 @@ claims wait for that book, and run against the live SEC then. Until then,
 the plan stays as it is. Matthew, 2026-11-18: "We should also take a review
 of EDGAR when we get a chance."
 
+**Live check run 2026-11-23** (Matthew: "go ahead and use my name and
+email"), with the identity the July captures used. Every URL in
+`examples/fixtures/edgar/MANIFEST.md` was fetched again, one a second (15
+requests, all 200), into a scratch directory; the fixtures were not touched.
+- The five XML filings are byte-identical to July's.
+- Every JSON file has July's shape (key paths and value types compared),
+  except that Apple's companyfacts gained a third taxonomy, `ffd` (filing-fee
+  disclosure), beside `dei` and `us-gaap`. `fundamentals.bas` reads `us-gaap`
+  then `dei` by name, so it is ignored.
+- The three 10-K pages are July's bytes plus one `<script>` the SEC now adds
+  before `</body>`. `mdna_sections_test` and `mdna_prepass_test`, fed the live
+  pages, give their goldens byte for byte.
+- `scorecard.bas` live runs clean; its figures differ from the golden only
+  because Apple's fiscal 2026 10-K (year to 2026-09-26) was filed since July.
+  `monitor.bas` (a copy with the identity set) completed its first poll and
+  raised its alerts.
+
+So the fixtures were not refreshed: nothing a library reads changed shape,
+and refreshing would move goldens for new filings, not for a new format.
+
 ## 1. What was planned, and what was claimed
 
 `docs/edgar_suite_development_plan.md` set out 33 work packages in seven
