@@ -8,7 +8,9 @@ programs `tests/run_resolve.sh` measures. Increment 2, the baseline JIT, is
 built in its three steps (§4, "Increment 2, as built so far"): step 2
 measured no faster than the interpreter, which is what the finding in §3
 predicts, and step 3 10-12% faster on loops; its shape is in §4,
-"Increment 2, its shape". It follows his
+"Increment 2, its shape". Increment 3 (held numbers) is built in two
+steps: step 1, `loop` 2.9x faster compiled; step 2, plain calls lowered,
+compiled `fib` 0.40 s to 0.32 s. It follows his
 direction of 2026-08-20 (an LLVM backend compiling gBASIC to machine code),
 sharpened 2026-11-03 to "actual code generation by gBASIC 1.0"; typed
 variables (`x:number`) were designed with that aim. The costs below were
@@ -544,7 +546,78 @@ recommended; Q8 and Q9 as drafted):
   assignment checks every frame's watches), not built as a test.
 - **Not yet:** calls (`fib`'s cost is now the call), `for each`, `do`,
   unary minus and other expression shapes, and a parameter typed `:number`
-  that is only read (held when assigned).
+  that is only read (held when assigned). Calls and parameters only read
+  are step 2, below.
+
+### Increment 3, step 2, as built (2026-11-24): calls
+
+- **Measured first.** A compiled `fib` call cost 1,982 instructions
+  (callgrind, the difference between `fib(24)` and `fib(20)` over the calls
+  between them, so LLVM's loading is not counted). The compiled body was
+  224 of them; the rest was the interpreter evaluating the call
+  expression: `eval_expr`, `eval_call`, `eval_user_function_bound`
+  evaluating `n - 1` through `eval_binary`, a malloc'd array of arguments,
+  and `invoke_function`'s frame.
+- **A plain call is lowered** (`GB_EXPR_CALL`: no receiver, no
+  qualifier). `eval_call`'s first branch and `eval_user_function_bound`
+  are split where the arguments are evaluated, and both halves are shared:
+  `call_plain_target` (the function a plain call reaches, with warning
+  2102) and `call_arity_refused` (the count's check) are what `eval_call`
+  calls too, inlined there, so the interpreter pays no call for sharing
+  them (measured: 2,617.6 instructions an interpreted `fib` call before,
+  2,617.7 after). The compiled code calls `gbrt_call_enter` (1: a gBASIC
+  function; 0: anything else, evaluated whole by `gbrt_eval` after a
+  spill, since a builtin's argument may read a held name by name; -1: the
+  count refused), then evaluates each argument by shape into an array on
+  its own stack, with `eval_user_function_bound`'s test for a raise after
+  each (`gbrt_call_abandon` frees what was evaluated), and then
+  `gbrt_call_invoke`, which is `invoke_function`'s frame (`invoke_frame`)
+  given that array: the frame no longer frees the array itself, and
+  `invoke_function`, inlined into its callers, frees a malloc'd one after
+  it. Nothing is spilled for the call itself, since the callee's frame
+  cannot see this one's variables. The refusal of the count builds its
+  message out of line (`call_arity_raise`), so its 256 bytes are on the C
+  stack only while it is built.
+- **A parameter the body never assigns is held** (untyped or `:number`;
+  `gbrt_slot_names` puts them last and says how many come before them).
+  Nothing the walk admits can write one after it is bound (a `for each`
+  over it puts it among the refused names, and a body with any statement
+  the walk does not know holds nothing), so its slot is taken at its first
+  read and never spilled or taken again: `gbrt_slots_spill` and
+  `gbrt_slots_retake` visit only the names before it. So a function taking
+  text that is mostly interpreted pays nothing per statement for its
+  parameters, and pays a frame search at each read of one that holds text.
+- **Measured**, best of five, this machine, the pushed build (cf4e38e6)
+  against this one:
+
+  | | interpreted, before | after | compiled, before | after |
+  |---|---|---|---|---|
+  | `fib(30)` | 0.53 s | 0.53 s | 0.40 s | 0.32 s |
+  | `loop` | 1.33 s | 1.34 s | 0.41 s | 0.41 s |
+  | `while` with an `if` | 0.86 s | 0.87 s | 0.29 s | 0.27 s |
+  | 200,000 calls of a function on text | 0.43 s | 0.42 s | 0.45 s | 0.44 s |
+
+  A compiled `fib` call is 1,490 instructions now. Of what is left,
+  `invoke_frame`'s own work is 225 (saving and restoring the interpreter's
+  globals, the error frame, the call stack's slot), the parameter's
+  binding and the frame's variable table about 140 (`env_set_key`, a
+  `realloc` and a `free` for a table of one), and the return about 120.
+  A table of a few variables held in the `Env` itself would remove the
+  allocation, but costs every level of recursion about 200 bytes of C
+  stack (two `Symbol`s), about a sixth of the depth; not done.
+- **Recursion goes deeper**: the deepest `d(n)` (`return 1 + d(n - 1)`)
+  under the default 8 MB stack was 3,647 interpreted and 3,449 compiled;
+  it is 4,187 and 4,737 (the message buffer out of line, and a lowered call
+  skipping `eval_expr` and `eval_call`'s frames).
+- **Held by** `tests/jit/calls.bas` in `run_jit`, compiled against
+  interpreted byte for byte and against its golden, and by the gate's
+  compiled lane. Perturbations proven red: no test for a raise after an
+  argument; the count not checked; no spill before a call reaching a
+  builtin (held.bas and flow.bas went red too); a parameter that a
+  `for each` assigns held as one only read; arguments evaluated right to
+  left.
+- **Not yet:** a call through a function value, a method or a qualified
+  call (each `gbrt_eval`); `for each`, `do`; unary minus.
 
 ## 5. Correctness
 

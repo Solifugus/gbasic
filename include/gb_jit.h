@@ -80,7 +80,7 @@ int gbrt_for_next(AstStmt *stmt, void *at, GbList *body, const int *saved, GbFor
  * its operands' values. `before_error` for a condition or a return is read
  * from gbrt_error_generation() just before the expression, as the
  * interpreted statement reads it. */
-enum { GB_EXPR_OTHER, GB_EXPR_CONSTANT, GB_EXPR_IDENT, GB_EXPR_BINARY };
+enum { GB_EXPR_OTHER, GB_EXPR_CONSTANT, GB_EXPR_IDENT, GB_EXPR_BINARY, GB_EXPR_CALL };
 size_t gbrt_value_bytes(void);
 int gbrt_expr_shape(AstExpr *x);
 void gbrt_constant(AstExpr *x, void *out);
@@ -90,6 +90,15 @@ int *gbrt_error_generation(void);
 void gbrt_binary_enter(AstExpr *x, int *saved);
 int gbrt_binary_left(void *left, void *out, const int *saved);
 void gbrt_binary_apply(AstExpr *x, void *left, void *right, void *out, const int *saved);
+/* A plain call (GB_EXPR_CALL): gbrt_call_enter answers 1 with the gBASIC
+ * function it reaches at *fn, 0 when it reaches none (gbrt_eval it whole),
+ * -1 with *out `nothing` when the count of arguments is refused; then each
+ * argument into the array `args`, gbrt_call_abandon(args, evaluated, out)
+ * at the first raise, else gbrt_call_invoke(fn, args, count, out), which
+ * takes the arguments. */
+int gbrt_call_enter(AstExpr *x, void **fn, void *out);
+void gbrt_call_abandon(void *args, size_t count, void *out);
+void gbrt_call_invoke(void *fn, void *args, size_t count, void *out);
 /* `name = expression` with no operator, modifier or lock (gbrt_assign_plain),
  * over a GbAssign of gbrt_assign_bytes(): begin (0, or -1 done), the value,
  * end. `return expression`: begin (0, or -1 done), the value, end. The
@@ -104,14 +113,16 @@ void gbrt_return_end(AstStmt *stmt, void *at, const int *saved, int before_error
 
 /* INCREMENT 3: NUMBERS HELD IN THE COMPILED FRAME. gbrt_slot_names lists
  * the locals a body may hold (interned names; a malloc'd array the caller
- * frees, or 0 and NULL), each in a GbSlot of gbrt_slot_bytes() on the
+ * frees, or 0 and NULL), the first *moving of them names the body may
+ * assign and the rest parameters it never does, each in a GbSlot of gbrt_slot_bytes() on the
  * compiled code's stack, which starts unset. The compiled code reads and
  * writes a set slot's number itself (gbrt_layout's offsets), and calls the
  * runtime for anything else: gbrt_slot_read for a read of an unset slot,
  * gbrt_slot_assign for an assignment it cannot do alone (begun by the
  * compiled code as gbrt_assign_begin begins one), gbrt_slots_spill before
  * anything that may read a variable by name, gbrt_slots_retake after a
- * statement the interpreter ran (which may have assigned one), and the `for`
+ * statement the interpreter ran (which may have assigned one), both over the
+ * first *moving only, and the `for`
  * calls taking the counter's slot. An operator gbrt_fast_op names is done by the compiled
  * code on two exact integers, and by gbrt_binary_apply otherwise. */
 typedef struct GbSlot GbSlot;
@@ -127,7 +138,7 @@ enum {
     GB_FAST_NONE, GB_FAST_ADD, GB_FAST_SUB, GB_FAST_MUL,
     GB_FAST_EQ, GB_FAST_NE, GB_FAST_LT, GB_FAST_LE, GB_FAST_GT, GB_FAST_GE
 };
-size_t gbrt_slot_names(AstStmt *fn, const char ***out);
+size_t gbrt_slot_names(AstStmt *fn, const char ***out, size_t *moving);
 size_t gbrt_slot_bytes(void);
 int gbrt_slots_allowed(void);
 const char *gbrt_ident_key(AstExpr *x);

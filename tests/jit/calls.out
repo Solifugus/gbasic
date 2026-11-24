@@ -1,0 +1,26 @@
+70
+few: add3 expects 3 arguments, got 2
+many: add3 expects 3 arguments, got 4
+0
+evaluated a
+abandoned: division by zero
+0
+evaluated first
+evaluated second
+evaluated third
+6
+11 3
+refused: n is locked to number by n:number at line 22, and this value does not convert: number modifier expects a valid number string
+42
+abab0.35 99 5
+11
+raised: division by zero
+  at fails line 138
+  at callee_raises line 189
+5
+deep: 1005
+survived
+30 15
+52
+7
+leaving with 1

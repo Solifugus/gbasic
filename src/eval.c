@@ -959,6 +959,13 @@ typedef struct {
 #else
 #define GB_NOINLINE
 #endif
+/* and inlined, for a small step on a hot path that is shared with the
+ * compiled code, so sharing it costs the interpreter no call */
+#if defined(__GNUC__)
+#define GB_INLINE inline __attribute__((always_inline))
+#else
+#define GB_INLINE inline
+#endif
 
 typedef struct Env {
     Symbol *items;
@@ -15351,7 +15358,8 @@ static Value eval_dir_call(AstExpr *expr) {
  * Refusing within this reserve leaves room to raise, report and unwind. */
 #define CALL_STACK_RESERVE (256 * 1024)
 
-static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *receiver);
+static GB_INLINE Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *receiver);
+static Value invoke_frame(AstStmt *stmt, Value *args, size_t argc, Value *receiver);
 
 #ifndef GB_NO_PROFILER
 /* The function on the profile's stack while it runs (§3), popped on every
@@ -16030,6 +16038,9 @@ int gbrt_expr_shape(AstExpr *x) {
         return GB_EXPR_CONSTANT;
     case AST_EXPR_IDENT:
         return GB_EXPR_IDENT;
+    case AST_EXPR_CALL:
+        /* a plain call, which may reach a gBASIC function (gbrt_call_enter) */
+        return x->as.call.receiver || x->as.call.library ? GB_EXPR_OTHER : GB_EXPR_CALL;
     case AST_EXPR_BINARY: {
         /* and/or decide whether to evaluate the right; the set operators
          * are a walk of their own (eval_binary) */
@@ -16057,6 +16068,45 @@ void gbrt_ident(AstExpr *x, void *out) {
 
 void gbrt_eval(AstExpr *x, void *out) {
     *(Value *)out = eval_expr(x);
+}
+
+/* INCREMENT 3, CALLS: a plain call of a gBASIC function, its arguments
+ * evaluated by the compiled code. eval_call's first branch and
+ * eval_user_function_bound, split where the arguments are evaluated:
+ * gbrt_call_enter answers 1 with the function at *fn (the shadowing warning
+ * given and the count checked, as eval_call gives and checks them), 0 for a
+ * call that is not one (the compiled code evaluates it whole, by gbrt_eval),
+ * or -1 with *out `nothing` when the count is refused. The compiled code
+ * then evaluates each argument into `args` and stops at a raise, as
+ * eval_user_function_bound's loop stops: gbrt_call_abandon frees the
+ * `count` evaluated. gbrt_call_invoke is invoke_function given the array
+ * on the compiled code's stack (invoke_frame, the frame without the
+ * profiler's entry: nothing is compiled under --profile). */
+static GB_INLINE FunctionDef *call_plain_target(AstExpr *expr);
+static GB_INLINE int call_arity_refused(AstExpr *expr, FunctionDef *function, Value *bound_ctx);
+
+int gbrt_call_enter(AstExpr *x, void **fn, void *out) {
+    FunctionDef *function = call_plain_target(x);
+    if (!function) {
+        return 0;
+    }
+    if (call_arity_refused(x, function, NULL)) {
+        *(Value *)out = value_null();
+        return -1;
+    }
+    *fn = function;
+    return 1;
+}
+
+void gbrt_call_abandon(void *args, size_t count, void *out) {
+    for (size_t i = 0; i < count; i++) {
+        value_free(((Value *)args)[i]);
+    }
+    *(Value *)out = value_null();
+}
+
+void gbrt_call_invoke(void *fn, void *args, size_t count, void *out) {
+    *(Value *)out = invoke_frame(((FunctionDef *)fn)->stmt, args, count, NULL);
 }
 
 int *gbrt_error_generation(void) {
@@ -16253,19 +16303,37 @@ static int slot_numeric(AstExpr *x, const char **held, size_t count) {
     }
 }
 
-size_t gbrt_slot_names(AstStmt *fn, const char ***out) {
+size_t gbrt_slot_names(AstStmt *fn, const char ***out, size_t *moving) {
     SlotScan sc;
     memset(&sc, 0, sizeof sc);
     *out = NULL;
+    *moving = 0;
     slot_scan_list(&sc, &fn->as.function.body);
     const char **held = NULL;
     size_t count = 0;
+    size_t fixed = 0;
     if (!sc.unknown) {
         for (size_t i = 0; i < sc.count; i++) {
             const char *key = sc.names[i];
             if (key != key_this && key != key_error && !slot_listed(held, count, key) &&
                 !slot_listed(sc.refused, sc.refused_count, key)) {
                 slot_scan_note(&held, &count, key);
+            }
+        }
+        /* A PARAMETER THE BODY NEVER ASSIGNS, untyped or `:number`, is held
+         * last: nothing the walk admits can write it after it is bound, so
+         * its slot, taken at its first read, never needs spilling or taking
+         * again (*moving counts the names before it, which do) */
+        AstNameList *params = &fn->as.function.params;
+        for (size_t i = 0; i < params->count; i++) {
+            const char *key = param_key(params, i);
+            const char *lock = params->locks ? params->locks[i].name : NULL;
+            if ((!lock || strcmp(lock, "number") == 0) && key != key_this && key != key_error &&
+                !slot_listed(sc.names, sc.count, key) &&
+                !slot_listed(sc.refused, sc.refused_count, key) &&
+                !slot_listed(held, count, key)) {
+                slot_scan_note(&held, &count, key);
+                fixed++;
             }
         }
         /* a name stays while every value assigned it is a number by
@@ -16277,7 +16345,9 @@ size_t gbrt_slot_names(AstStmt *fn, const char ***out) {
                     !slot_numeric(sc.values[i], held, count)) {
                     for (size_t k = 0; k < count; k++) {
                         if (held[k] == sc.names[i]) {
-                            held[k] = held[--count];
+                            /* in order, so the parameters stay last */
+                            memmove(&held[k], &held[k + 1], sizeof *held * (count - k - 1));
+                            count--;
                             break;
                         }
                     }
@@ -16294,6 +16364,7 @@ size_t gbrt_slot_names(AstStmt *fn, const char ***out) {
         return 0;
     }
     *out = held;
+    *moving = count - fixed;
     return count;
 }
 
@@ -16412,8 +16483,10 @@ void gbrt_slot_assign(AstStmt *stmt, void *at, const int *saved, int before_erro
     slot_take(s, key);
 }
 
-static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *receiver) {
-    PROFILE_ENTER_CALL(stmt, args, argc, receiver);
+/* A CALL'S FRAME, its arguments bound and its body run. The arguments'
+ * values are taken; the array holding them is the caller's (invoke_function
+ * frees a malloc'd one, the compiled code passes its own stack's). */
+static Value invoke_frame(AstStmt *stmt, Value *args, size_t argc, Value *receiver) {
     if (gb_stack_exhausted(CALL_STACK_RESERVE)) {
         for (size_t i = 0; i < argc; i++) {
             value_free(args[i]);
@@ -16484,7 +16557,6 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
         env_set_key(param_key(&stmt->as.function.params, i), args[i]);
     }
     if (bind_failed) {
-        free(args);
         current_env = previous_env;
         current_this = previous_this;
         current_import_path = previous_import_path;
@@ -16516,7 +16588,6 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
                 : (value_free(v), value_null());
             if (error_generation != before_bind) {
                 value_free(v);
-                free(args);
                 current_env = previous_env;
                 current_this = previous_this;
                 current_import_path = previous_import_path;
@@ -16530,7 +16601,6 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
         }
         env_set_key(param_key(&stmt->as.function.params, i), v);
     }
-    free(args);
     if (!bind_failed) {
         param_copy_check(stmt);
     }
@@ -16633,23 +16703,20 @@ static Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *rec
     return value_null();
 }
 
-/* Evaluate a user-function call. `receiver` is NULL for a plain call and a live
- * record pointer for a method call (binds `this` inside the body). */
-/* `bound_ctx`, when non-NULL, is a `bound(fn, ctx)` context: it is appended as
- * the LAST argument, so one function can serve bound and unbound use given a
- * literal default (`function f(x, ctx = nothing)`). Last rather than first is
- * the whole reason that works -- context-first would make the two signatures
- * incompatible. `webserver.on_request` passes its own context FIRST and is the
- * one bespoke precedent, left alone rather than churned. */
-static Value eval_user_function_bound(AstExpr *expr,
-                                      FunctionDef *function,
-                                      Value *receiver,
-                                      Value *bound_ctx) {
-    AstStmt *stmt = function->stmt;
-    size_t want_min = stmt->as.function.params.required;
-    size_t want_max = stmt->as.function.params.count;
-    size_t supplied = expr->as.call.args.count + (bound_ctx ? 1 : 0);
-    if (supplied < want_min || supplied > want_max) {
+/* inlined into each caller, so the array's free is the caller's and the
+ * frame costs no extra call */
+static GB_INLINE Value invoke_function(AstStmt *stmt, Value *args, size_t argc, Value *receiver) {
+    PROFILE_ENTER_CALL(stmt, args, argc, receiver);
+    Value result = invoke_frame(stmt, args, argc, receiver);
+    free(args);
+    return result;
+}
+
+/* the refusal call_arity_refused raises, out of line: its message is on
+ * the C stack only while it is built */
+static GB_NOINLINE int call_arity_raise(AstExpr *expr, size_t want_min, size_t want_max,
+                                        size_t supplied, Value *bound_ctx) {
+    {
         /* A real, located runtime error -- not a bare fprintf. The old behavior
          * printed one unlocated line and KEPT RUNNING with a null result, so the
          * caller's own return value looked fine and the failure surfaced frames
@@ -16678,9 +16745,39 @@ static Value eval_user_function_bound(AstExpr *expr,
                      bound_ctx ? " (including the bound context)" : "");
         }
         runtime_error_raise(message, 1003, "invalid function call");
+    }
+    return 1;
+}
+
+/* 1, raised, when a call supplies a count of arguments `function` does not
+ * take; `bound_ctx` counts as one (eval_user_function_bound). */
+static GB_INLINE int call_arity_refused(AstExpr *expr, FunctionDef *function, Value *bound_ctx) {
+    AstStmt *stmt = function->stmt;
+    size_t want_min = stmt->as.function.params.required;
+    size_t want_max = stmt->as.function.params.count;
+    size_t supplied = expr->as.call.args.count + (bound_ctx ? 1 : 0);
+    if (supplied < want_min || supplied > want_max) {
+        return call_arity_raise(expr, want_min, want_max, supplied, bound_ctx);
+    }
+    return 0;
+}
+
+/* Evaluate a user-function call. `receiver` is NULL for a plain call and a live
+ * record pointer for a method call (binds `this` inside the body). */
+/* `bound_ctx`, when non-NULL, is a `bound(fn, ctx)` context: it is appended as
+ * the LAST argument, so one function can serve bound and unbound use given a
+ * literal default (`function f(x, ctx = nothing)`). Last rather than first is
+ * the whole reason that works -- context-first would make the two signatures
+ * incompatible. `webserver.on_request` passes its own context FIRST and is the
+ * one bespoke precedent, left alone rather than churned. */
+static Value eval_user_function_bound(AstExpr *expr,
+                                      FunctionDef *function,
+                                      Value *receiver,
+                                      Value *bound_ctx) {
+    if (call_arity_refused(expr, function, bound_ctx)) {
         return value_null();
     }
-
+    size_t supplied = expr->as.call.args.count + (bound_ctx ? 1 : 0);
     Value *args = NULL;
     if (supplied > 0) {
         args = malloc(sizeof(Value) * supplied);
@@ -16727,7 +16824,7 @@ static Value eval_user_function_bound(AstExpr *expr,
     if (bound_ctx) {
         args[expr->as.call.args.count] = value_copy(*bound_ctx);
     }
-    return invoke_function(stmt, args, supplied, receiver);
+    return invoke_function(function->stmt, args, supplied, receiver);
 }
 
 static Value eval_user_function(AstExpr *expr, FunctionDef *function) {
@@ -37293,24 +37390,35 @@ static Value builtin_transcode(AstExpr *expr) {
  * function, then a function of the program. */
 static Value eval_call_rest(AstExpr *expr);
 
-static Value eval_call(AstExpr *expr) {
-    if (!expr->as.call.receiver && !expr->as.call.library &&
-        !CALL_IS(expr, warning) && !CALL_IS(expr, error_clear)) {
-        FunctionDef *function = call_function(expr);
-        if (function) {
-            /* the warning eval_call_rest gives a function value shadowed by a
-               builtin's name, given here too since this call never reaches it */
-            Symbol *shadowed = env_find_known(CALL_NAME_KEY(expr));
-            if (shadowed && shadowed->value.kind == VALUE_FUNCTION &&
-                call_has_builtin(expr) &&
-                warn_site_first_time(expr->line, expr->column)) {
-                warn_fmt(2102, "override",
-                         "'%s' holds a function value, but the call reaches the BUILT-IN of that name; "
-                         "rename the variable to call the function value",
-                         expr->as.call.name);
-            }
-            return eval_user_function(expr, function);
+/* The gBASIC function a plain call `f(...)` reaches, or NULL for anything
+ * else (a builtin, a method, a qualified call, a function value), with the
+ * warning eval_call_rest gives a function value shadowed by a builtin's
+ * name given here too, since this call never reaches it. Shared with the
+ * compiled code (gbrt_call_enter). */
+static GB_INLINE FunctionDef *call_plain_target(AstExpr *expr) {
+    if (expr->as.call.receiver || expr->as.call.library ||
+        CALL_IS(expr, warning) || CALL_IS(expr, error_clear)) {
+        return NULL;
+    }
+    FunctionDef *function = call_function(expr);
+    if (function) {
+        Symbol *shadowed = env_find_known(CALL_NAME_KEY(expr));
+        if (shadowed && shadowed->value.kind == VALUE_FUNCTION &&
+            call_has_builtin(expr) &&
+            warn_site_first_time(expr->line, expr->column)) {
+            warn_fmt(2102, "override",
+                     "'%s' holds a function value, but the call reaches the BUILT-IN of that name; "
+                     "rename the variable to call the function value",
+                     expr->as.call.name);
         }
+    }
+    return function;
+}
+
+static Value eval_call(AstExpr *expr) {
+    FunctionDef *function = call_plain_target(expr);
+    if (function) {
+        return eval_user_function(expr, function);
     }
     PROFILE_BUILTIN(expr);
     return eval_call_rest(expr);

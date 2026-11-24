@@ -218,7 +218,8 @@ function param_held(n)
     return n
 end function
 
-' a typed parameter keeps its lock: never held, every write converts
+' a typed parameter keeps its lock: held, since a number lock admits a number,
+' and a write the compiled code cannot do itself converts
 function typed_param(a:number)
     a = a + 1
     a = a * 2

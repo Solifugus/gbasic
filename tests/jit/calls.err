@@ -1,0 +1,1 @@
+warning: 'abs' holds a function value, but the call reaches the BUILT-IN of that name; rename the variable to call the function value at tests/jit/calls.bas:198:5 [2102]

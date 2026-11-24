@@ -400,6 +400,9 @@ static int jit_start(void) {
         JIT_RUNTIME(gbrt_binary_enter)
         JIT_RUNTIME(gbrt_binary_left)
         JIT_RUNTIME(gbrt_binary_apply)
+        JIT_RUNTIME(gbrt_call_enter)
+        JIT_RUNTIME(gbrt_call_abandon)
+        JIT_RUNTIME(gbrt_call_invoke)
         JIT_RUNTIME(gbrt_assign_begin)
         JIT_RUNTIME(gbrt_assign_end)
         JIT_RUNTIME(gbrt_return_begin)
@@ -439,6 +442,7 @@ typedef struct {
     JitCall if_enter, if_truth, if_done, while_enter, while_truth, while_next;
     JitCall for_enter, for_test, for_next;
     JitCall ident, eval, binary_enter, binary_left, binary_apply;
+    JitCall call_enter, call_abandon, call_invoke;
     JitCall assign_begin, assign_end, return_begin, return_end;
     JitCall slot_read, slots_spill, slot_assign, slots_retake, for_test_slot, for_next_slot;
     JitCall overflow[3];      /* llvm.s{add,sub,mul}.with.overflow.i64 */
@@ -448,6 +452,7 @@ typedef struct {
      * compiled as a whole, or under --profile) */
     const char **keys;
     size_t slot_count;
+    size_t moving;            /* the first `moving` slots, spilled and retaken */
     LLVMValueRef *slot_at;
     LLVMValueRef slots;
     /* bytes made by the runtime at compile time: a statement's ordinary
@@ -566,9 +571,9 @@ static LLVMValueRef jit_slot(JitEmit *e, const char *key) {
  * read one by name (an interpreted statement or expression, a `for`'s
  * bounds) */
 static void jit_spill(JitEmit *e) {
-    if (e->slot_count) {
+    if (e->moving) {
         LLVMValueRef args[] = { e->slots, jit_address(e, e->keys),
-                                llvm.LLVMConstInt(e->size, e->slot_count, 0) };
+                                llvm.LLVMConstInt(e->size, e->moving, 0) };
         jit_call(e, e->slots_spill, args, 3);
     }
 }
@@ -692,6 +697,56 @@ static void jit_binary(JitEmit *e, AstExpr *x, LLVMValueRef out) {
     llvm.LLVMPositionBuilderAtEnd(e->b, join);
 }
 
+/* the most arguments a lowered call evaluates itself; past it, gbrt_eval */
+#define JIT_CALL_ARGS 32
+
+/* A PLAIN CALL: gbrt_call_enter finds the gBASIC function and checks the
+ * count; its arguments evaluated here, by shape, into an array on the
+ * compiled code's stack, each followed by eval_user_function_bound's test
+ * for a raise; then gbrt_call_invoke. A call reaching no gBASIC function (a
+ * builtin) is gbrt_eval's, after a spill, since it may read a name. Nothing
+ * is spilled for the call itself: the callee's frame cannot see this one's
+ * variables. */
+static void jit_user_call(JitEmit *e, AstExpr *x, LLVMValueRef out) {
+    LLVMValueRef node = jit_address(e, x);
+    size_t n = x->as.call.args.count;
+    LLVMValueRef fn = jit_alloca(e, e->ptr);
+    LLVMValueRef enter_args[] = { node, fn, out };
+    LLVMValueRef found = jit_call(e, e->call_enter, enter_args, 3);
+    LLVMBasicBlockRef user = jit_block(e, "user");
+    LLVMBasicBlockRef other = jit_block(e, "other");
+    LLVMBasicBlockRef refused = jit_block(e, "refused");
+    LLVMBasicBlockRef join = jit_block(e, "called");
+    LLVMValueRef sw = llvm.LLVMBuildSwitch(e->b, found, refused, 2);
+    llvm.LLVMAddCase(sw, jit_i32(e, 1), user);
+    llvm.LLVMAddCase(sw, jit_i32(e, 0), other);
+    llvm.LLVMPositionBuilderAtEnd(e->b, refused);
+    llvm.LLVMBuildBr(e->b, join);
+    llvm.LLVMPositionBuilderAtEnd(e->b, other);
+    jit_spill(e);
+    LLVMValueRef eval_args[] = { node, out };
+    jit_call(e, e->eval, eval_args, 2);
+    llvm.LLVMBuildBr(e->b, join);
+    llvm.LLVMPositionBuilderAtEnd(e->b, user);
+    LLVMValueRef args = jit_bytes(e, e->value_bytes * (n ? n : 1));
+    for (size_t i = 0; i < n; i++) {
+        jit_expr(e, x->as.call.args.items[i], jit_at(e, args, e->value_bytes * i));
+        LLVMBasicBlockRef stop = jit_block(e, "abandoned");
+        LLVMBasicBlockRef next = jit_block(e, "argument");
+        llvm.LLVMBuildCondBr(e->b, jit_pending(e), stop, next);
+        llvm.LLVMPositionBuilderAtEnd(e->b, stop);
+        LLVMValueRef abandon[] = { args, llvm.LLVMConstInt(e->size, i + 1, 0), out };
+        jit_call(e, e->call_abandon, abandon, 3);
+        llvm.LLVMBuildBr(e->b, join);
+        llvm.LLVMPositionBuilderAtEnd(e->b, next);
+    }
+    LLVMValueRef fn_now = llvm.LLVMBuildLoad2(e->b, e->ptr, fn, "");
+    LLVMValueRef invoke[] = { fn_now, args, llvm.LLVMConstInt(e->size, n, 0), out };
+    jit_call(e, e->call_invoke, invoke, 4);
+    llvm.LLVMBuildBr(e->b, join);
+    llvm.LLVMPositionBuilderAtEnd(e->b, join);
+}
+
 /* STEP 3: `x` EVALUATED into the Value at `out`, a node at a time by the
  * shape eval.c gives it (gbrt_expr_shape, gb_jit.h). */
 static void jit_expr(JitEmit *e, AstExpr *x, LLVMValueRef out) {
@@ -723,6 +778,11 @@ static void jit_expr(JitEmit *e, AstExpr *x, LLVMValueRef out) {
     if (shape == GB_EXPR_BINARY) {
         e->expressions++;
         jit_binary(e, x, out);
+        return;
+    }
+    if (shape == GB_EXPR_CALL && x->as.call.args.count <= JIT_CALL_ARGS) {
+        e->expressions++;
+        jit_user_call(e, x, out);
         return;
     }
     jit_spill(e);
@@ -953,9 +1013,9 @@ static void jit_stmt(JitEmit *e, LLVMValueRef state, AstStmt *stmt, size_t index
     jit_call(e, nested ? e->list_stmt : e->stmt, args, 2);
     /* the interpreter may have assigned a held name (`s += 1`, anything in a
      * `for each`'s body): every slot takes its variable again */
-    if (e->slot_count) {
+    if (e->moving) {
         LLVMValueRef retake[] = { e->slots, jit_address(e, e->keys),
-                                  llvm.LLVMConstInt(e->size, e->slot_count, 0) };
+                                  llvm.LLVMConstInt(e->size, e->moving, 0) };
         jit_call(e, e->slots_retake, retake, 3);
     }
 }
@@ -1053,6 +1113,11 @@ static LLVMModuleRef jit_build(LLVMContextRef c, const char *sym, AstStmt *fn, A
     e.binary_enter = jit_declare(&e, "gbrt_binary_enter", vd, ptr2, 2);
     e.binary_left = jit_declare(&e, "gbrt_binary_left", e.i32, ptr3, 3);
     e.binary_apply = jit_declare(&e, "gbrt_binary_apply", vd, ptr5, 5);
+    e.call_enter = jit_declare(&e, "gbrt_call_enter", e.i32, ptr3, 3);
+    LLVMTypeRef call_params[] = { e.ptr, e.ptr, e.size, e.ptr };
+    LLVMTypeRef abandon_params[] = { e.ptr, e.size, e.ptr };
+    e.call_abandon = jit_declare(&e, "gbrt_call_abandon", vd, abandon_params, 3);
+    e.call_invoke = jit_declare(&e, "gbrt_call_invoke", vd, call_params, 4);
     e.assign_begin = jit_declare(&e, "gbrt_assign_begin", e.i32, ptr4, 4);
     e.assign_end = jit_declare(&e, "gbrt_assign_end", vd, ptr5, 5);
     e.return_begin = jit_declare(&e, "gbrt_return_begin", e.i32, ptr3, 3);
@@ -1086,7 +1151,7 @@ static LLVMModuleRef jit_build(LLVMContextRef c, const char *sym, AstStmt *fn, A
      * stack, unset at every call */
     *keys = NULL;
     if (fn && gbrt_slots_allowed() && e.value_bytes % 8 == 0 && e.L.result_bytes % 8 == 0) {
-        e.slot_count = gbrt_slot_names(fn, &e.keys);
+        e.slot_count = gbrt_slot_names(fn, &e.keys, &e.moving);
         *keys = e.keys;
     }
     *held = e.slot_count;

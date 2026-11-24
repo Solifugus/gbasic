@@ -41,6 +41,15 @@
 #             elsewhere; a raise absorbed; goto; recursion; the counter
 #             moved; exit): interpreted, held.out and held.err, status 3;
 #             compiled, the same bytes.
+#   calls     tests/jit/calls.bas takes every way a lowered call could part
+#             from eval_call (nested and as operands; the count refused both
+#             ways; an argument raising, the later ones and the body not run;
+#             left to right, each once; defaults; a lock converting or
+#             refusing at the call; parameters held only read, holding text,
+#             a decimal, an array changed by the callee; builtins and a
+#             function value; a raise in the callee with its trace; too deep;
+#             warning 2102; exit inside a callee): interpreted, calls.out
+#             and calls.err, status 4; compiled, the same bytes.
 #   report    GBASIC_COMPILE=report's lines against tests/jit/flow.report:
 #             each function compiled once, in the order first called, with
 #             how many of its statements are lowered, the names it holds,
@@ -51,7 +60,7 @@
 # to print something wrong (a gosub's return dispatched one statement early
 # re-ran the gosub, and the first perturbation of this suite hung it). The
 # valgrind tier runs only after the bounded compiled run has passed.
-#   valgrind  the compiled runs of flow.bas and held.bas under memcheck (the
+#   valgrind  the compiled runs of flow.bas, held.bas and calls.bas under memcheck (the
 #             JIT is disposed at exit, or each body's unwinding tables read
 #             as definitely lost).
 set -u
@@ -139,16 +148,31 @@ else
     fail "held compiled: status $hcrc against $hirc; $(diff "$tmp/hi.out" "$tmp/hc.out" | head -5) $(diff "$tmp/hi.err" "$tmp/hc.err" | head -5)"
 fi
 # what is held is decided once, when the body is compiled (Q7 (b)): a name
-# built from a parameter is not held, nor one assigned text; a body with a
+# built from a call is not held, nor one assigned text; a body with a
 # gosub holds nothing (flow.report's `subs`, held by the report tier)
 GBASIC_COMPILE=report timeout 30 ./gbasic tests/jit/held.bas >/dev/null 2>"$tmp/hr.err" </dev/null
-if grep -qx 'compile: sum_loop: 4 statements, 4 lowered, 7 expressions, holds i s, ran 1 time' "$tmp/hr.err" &&
-   grep -qx 'compile: rec: 4 statements, 4 lowered, 7 expressions, ran 11 times' "$tmp/hr.err" &&
-   grep -qx 'compile: texty: 5 statements, 5 lowered, 8 expressions, holds n, ran 1 time' "$tmp/hr.err" &&
+if grep -qx 'compile: sum_loop: 4 statements, 4 lowered, 7 expressions, holds i n s, ran 1 time' "$tmp/hr.err" &&
+   grep -qx 'compile: rec: 4 statements, 4 lowered, 11 expressions, holds n, ran 11 times' "$tmp/hr.err" &&
+   grep -qx 'compile: texty: 5 statements, 5 lowered, 10 expressions, holds n, ran 1 time' "$tmp/hr.err" &&
    grep -qx 'compile: typed_local: 6 statements, 4 lowered, 7 expressions, holds k y, ran 1 time' "$tmp/hr.err"; then
-    pass "held: i and s in sum_loop, nothing in rec, n but not t in texty, y declared :number"
+    pass "held: i, s and the parameter n in sum_loop, n alone in rec (acc is built from a call), n but not t in texty, y declared :number"
 else
     fail "what is held: $(grep -E 'sum_loop|rec|texty|typed_local' "$tmp/hr.err")"
+fi
+
+echo "--- TIER calls ---"
+GBASIC_COMPILE=0 timeout 60 ./gbasic tests/jit/calls.bas >"$tmp/ci.out" 2>"$tmp/ci.err" </dev/null; circ=$?
+GBASIC_COMPILE=all timeout 60 ./gbasic tests/jit/calls.bas >"$tmp/cc.out" 2>"$tmp/cc.err" </dev/null; ccrc=$?
+if cmp -s "$tmp/ci.out" tests/jit/calls.out && cmp -s "$tmp/ci.err" tests/jit/calls.err && [ "$circ" = 4 ]; then
+    pass "interpreted: calls.out, calls.err, status 4"
+else
+    fail "calls interpreted: status $circ; $(diff "$tmp/ci.out" tests/jit/calls.out | head -5) $(diff "$tmp/ci.err" tests/jit/calls.err | head -3)"
+fi
+if cmp -s "$tmp/cc.out" "$tmp/ci.out" && cmp -s "$tmp/cc.err" "$tmp/ci.err" && [ "$ccrc" = "$circ" ]; then
+    pass "compiled: stdout, stderr and status $ccrc the interpreter's"
+else
+    compiled_ok=0
+    fail "calls compiled: status $ccrc against $circ; $(diff "$tmp/ci.out" "$tmp/cc.out" | head -5) $(diff "$tmp/ci.err" "$tmp/cc.err" | head -5)"
 fi
 
 echo "--- TIER report ---"
@@ -160,16 +184,16 @@ else
 fi
 # the count is the body's, so it must be the number of calls: fact(10) is
 # ten, handled(2) and handled(0) two
-if grep -qx 'compile: fact: 3 statements, 3 lowered, 6 expressions, ran 10 times' "$tmp/r.err" &&
-   grep -qx 'compile: handled: 5 statements, 3 lowered, 5 expressions, ran 2 times' "$tmp/r.err"; then
+if grep -qx 'compile: fact: 3 statements, 3 lowered, 10 expressions, holds n, ran 10 times' "$tmp/r.err" &&
+   grep -qx 'compile: handled: 5 statements, 3 lowered, 5 expressions, holds x y, ran 2 times' "$tmp/r.err"; then
     pass "fact ran 10 times compiled, handled 2"
 else
     fail "the compiled bodies' own counts: $(grep -E 'fact|handled' "$tmp/r.err")"
 fi
 # a program block and the top level are compiled as whole lists, each once
 GBASIC_COMPILE=report timeout 30 ./gbasic tests/jit/top.bas >/dev/null 2>"$tmp/tr.err" </dev/null
-if grep -qx 'compile: program main: 34 statements, 4 lowered, 2 expressions, ran 1 time' "$tmp/r.err" &&
-   grep -qx 'compile: (top level): 25 statements, 14 lowered, 24 expressions, ran 1 time' "$tmp/tr.err"; then
+if grep -qx 'compile: program main: 34 statements, 4 lowered, 4 expressions, ran 1 time' "$tmp/r.err" &&
+   grep -qx 'compile: (top level): 25 statements, 14 lowered, 28 expressions, ran 1 time' "$tmp/tr.err"; then
     pass "program main and the top level ran compiled, once each"
 else
     fail "the compiled lists: $(grep -E 'program|top level' "$tmp/r.err" "$tmp/tr.err")"
@@ -192,6 +216,12 @@ elif vg_available; then
         sed 's/^/  /' "$tmp/vgh.err" | tail -30; fail "valgrind: held.bas compiled"
     else
         pass "valgrind: held.bas compiled (no definite leak or invalid access)"
+    fi
+    GBASIC_COMPILE=all vg_run ./gbasic tests/jit/calls.bas >/dev/null 2>"$tmp/vgc.err" </dev/null
+    if [ $? = "$VG_EXIT" ]; then
+        sed 's/^/  /' "$tmp/vgc.err" | tail -30; fail "valgrind: calls.bas compiled"
+    else
+        pass "valgrind: calls.bas compiled (no definite leak or invalid access)"
     fi
 else
     printf 'SKIP valgrind (unavailable)\n'
