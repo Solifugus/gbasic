@@ -16073,8 +16073,10 @@ void gbrt_eval(AstExpr *x, void *out) {
 /* INCREMENT 3, CALLS: a plain call of a gBASIC function, its arguments
  * evaluated by the compiled code. eval_call's first branch and
  * eval_user_function_bound, split where the arguments are evaluated:
- * gbrt_call_enter answers 1 with the function at *fn (the shadowing warning
- * given and the count checked, as eval_call gives and checks them), 0 for a
+ * gbrt_call_enter answers 1 with the function's statement at *fn, read
+ * before any argument runs as eval_user_function_bound reads it (the
+ * shadowing warning given and the count checked, as eval_call gives and
+ * checks them), 0 for a
  * call that is not one (the compiled code evaluates it whole, by gbrt_eval),
  * or -1 with *out `nothing` when the count is refused. The compiled code
  * then evaluates each argument into `args` and stops at a raise, as
@@ -16094,7 +16096,7 @@ int gbrt_call_enter(AstExpr *x, void **fn, void *out) {
         *(Value *)out = value_null();
         return -1;
     }
-    *fn = function;
+    *fn = function->stmt;
     return 1;
 }
 
@@ -16106,7 +16108,7 @@ void gbrt_call_abandon(void *args, size_t count, void *out) {
 }
 
 void gbrt_call_invoke(void *fn, void *args, size_t count, void *out) {
-    *(Value *)out = invoke_frame(((FunctionDef *)fn)->stmt, args, count, NULL);
+    *(Value *)out = invoke_frame(fn, args, count, NULL);
 }
 
 int *gbrt_error_generation(void) {
@@ -16777,6 +16779,10 @@ static Value eval_user_function_bound(AstExpr *expr,
     if (call_arity_refused(expr, function, bound_ctx)) {
         return value_null();
     }
+    /* The statement is read BEFORE the arguments run: `function` points into
+     * the `functions` table, which an argument registering a function (a
+     * dotted `function r.m()` in a callee) reallocates. */
+    AstStmt *stmt = function->stmt;
     size_t supplied = expr->as.call.args.count + (bound_ctx ? 1 : 0);
     Value *args = NULL;
     if (supplied > 0) {
@@ -16824,7 +16830,7 @@ static Value eval_user_function_bound(AstExpr *expr,
     if (bound_ctx) {
         args[expr->as.call.args.count] = value_copy(*bound_ctx);
     }
-    return invoke_function(function->stmt, args, supplied, receiver);
+    return invoke_function(stmt, args, supplied, receiver);
 }
 
 static Value eval_user_function(AstExpr *expr, FunctionDef *function) {

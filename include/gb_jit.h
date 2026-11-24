@@ -91,7 +91,8 @@ void gbrt_binary_enter(AstExpr *x, int *saved);
 int gbrt_binary_left(void *left, void *out, const int *saved);
 void gbrt_binary_apply(AstExpr *x, void *left, void *right, void *out, const int *saved);
 /* A plain call (GB_EXPR_CALL): gbrt_call_enter answers 1 with the gBASIC
- * function it reaches at *fn, 0 when it reaches none (gbrt_eval it whole),
+ * function it reaches at *fn (its statement, since an argument may move the
+ * function table), 0 when it reaches none (gbrt_eval it whole),
  * -1 with *out `nothing` when the count of arguments is refused; then each
  * argument into the array `args`, gbrt_call_abandon(args, evaluated, out)
  * at the first raise, else gbrt_call_invoke(fn, args, count, out), which

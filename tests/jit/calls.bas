@@ -178,7 +178,24 @@ function param_reused(p)
     return q + p
 end function
 
+' an argument registering a function moves the function table: the call
+' reads its function's statement before the arguments run
+function registers(n)
+    r = {}
+    function r.m()
+        return 1
+    end function
+    return n
+end function
+
+function table_moves()
+    t = add3(1, registers(2), 3)
+    return t + add3(registers(4), 0, 0)
+end function
+
 print nested()
+print table_moves()
+print add3(1, registers(5), 1)
 print counts()
 print argument_raises()
 print in_order()

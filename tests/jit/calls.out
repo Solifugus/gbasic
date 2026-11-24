@@ -1,4 +1,6 @@
 70
+10
+7
 few: add3 expects 3 arguments, got 2
 many: add3 expects 3 arguments, got 4
 0
@@ -16,7 +18,7 @@ abab0.35 99 5
 11
 raised: division by zero
   at fails line 138
-  at callee_raises line 189
+  at callee_raises line 206
 5
 deep: 1005
 survived
