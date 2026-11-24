@@ -616,6 +616,28 @@ recommended; Q8 and Q9 as drafted):
   builtin (held.bas and flow.bas went red too); a parameter that a
   `for each` assigns held as one only read; arguments evaluated right to
   left.
+- **Two defects the gate found, fixed before the push.** The call read
+  its function's statement AFTER the arguments, from a `FunctionDef`
+  in the `functions` table, which an argument registering a function (a
+  dotted `function r.m()` in a callee) reallocates: run_insight's recipes
+  segfaulted interpreted. It is read first again, and `gbrt_call_enter`
+  hands the compiled code the statement (calls.bas has the case). And the
+  compiled lane's run_rules refused `rules._eval` at 200 levels with its
+  cap lifted: compiled, it recursed 229 levels before this step and 151
+  after it (1,097 interpreted), because every temporary (a call's array
+  of arguments, a statement's states, an operator's operands) was an
+  alloca of its own, so a frame was the SUM of its statements' states.
+  They come from one area per body now (`jit_bytes`), taken while the
+  statement or expression is built and given back when it ends, so
+  siblings share: 480 levels, and `d(n)` 5,449 compiled. What is left is
+  codegen at `LLVMCodeGenLevelNone`, whose register allocator gives every
+  value live across blocks a stack slot of its own: `_eval`'s frame is
+  about 16 KB compiled against 5,776 bytes a level interpreted. At
+  `LLVMCodeGenLevelLess` it is 4,496 (1,169 levels), but run_rules took
+  127 s compiled against 44 s at `None`, and run_insight 66 s against
+  43 s: compile time, which the gate pays and a short program pays. Not
+  raised; a body compiled again at a higher level once it has run often
+  enough would have both.
 - **Not yet:** a call through a function value, a method or a qualified
   call (each `gbrt_eval`); `for each`, `do`; unary minus.
 
