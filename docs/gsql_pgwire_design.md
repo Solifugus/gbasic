@@ -4,7 +4,9 @@
 (§3 B, a front-end process). Q2, Q4 and Q6 ruled 2026-11-23 as proposed:
 catalog queries answered by shape, money as `numeric` with the currency in
 the column's comment, a duration as `interval`, a record as `jsonb`,
-increments 1-3 for 0.14.0. Q3 and Q5 open. §2's capture is real: it was
+increments 1-3 for 0.14.0. Q3 and Q5 ruled 2026-11-23 as proposed:
+`16.0 (G-SQL 0.x)` claimed, users as a file of SCRAM verifiers in the
+database directory managed by a `gsql` verb. All of §8 is ruled. §2's capture is real: it was
 run, and it can be run again (`research/pgwire/`). §8 holds the questions for
 Matthew. This note follows `enterprise_data_review.md` §3, which priced the
 protocol and recommended this note, starting from captured client traffic.
@@ -318,12 +320,14 @@ shape.
 - **Q3. What version to claim.** Drivers read `server_version`, and SQLAlchemy
   parses `version()`. I propose `16.0 (G-SQL 0.x)`: a real PostgreSQL major, so
   drivers pick their modern paths, with G-SQL named after it.
+  **Ruled 2026-11-23: as proposed.**
 - **Q4. `money`, `duration` and `record` (§4).** Should money be `numeric` with
   the currency in the column's comment, or text? Should a duration be
   `interval`? Should a record be `jsonb`, refused when it cannot be JSON?
   **Ruled 2026-11-23: yes to all three** (Matthew: "those are good ideas").
 - **Q5. Users.** A file of SCRAM verifiers in the database directory, managed
   by a `gsql` verb? Or users as G-SQL rows?
+  **Ruled 2026-11-23: the file, managed by a `gsql` verb.**
 - **Q6. Where it sits.** 0.13.0 already holds the terminal layer, the TUI,
   whisker and parallel readers. I propose increments 1-3 for 0.14.0.
   **Ruled 2026-11-23: 0.14.0.**
