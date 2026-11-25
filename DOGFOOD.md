@@ -14253,3 +14253,17 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Workaround:** resolved: the load is refused, naming the module and
   saying to rename the library. `tests/negative_alias_native_own_name.bas`,
   in `tests/run_alias.sh` and `tests/run_negative.sh`.
+
+## 2026-11-25 — CC — while: counting what compiled code hands back to the interpreter, for the increment 3 report
+- **Type:** bug
+- **Severity:** medium
+- **What:** `dates.days_between(a, b)` walks from one date to the other a day
+  at a time (`start_date = start_date + 1 day`, `goto forward`), so it costs
+  O(days) behind a name that reads O(1) -- the defect `dayname` had and lost
+  (its comment, stdlib/dates.bas). Counted over twenty suites compiled, that
+  loop's `goto` and `1 day` were 15.5 million of the 42.8 million statements
+  and 15.7 million of the 89.8 million expressions compiled code handed back,
+  nearly all from run_credit and run_fake. `b - a` on two days is already a
+  duration of whole days.
+- **Workaround:** none yet; listed in the report as a library fix that would
+  outweigh any compiler work for those suites.
