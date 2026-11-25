@@ -73,19 +73,22 @@ function v_bound()
     return string(s) + " " + string(price(5))
 end function
 
-' the count refused, plain and bound, the arguments never evaluated
+' the count refused, plain and bound, the arguments never evaluated; each
+' site twice, since a site's first run is the interpreter's
 function v_arity()
     on error goto next
     f = three
-    r = f(1, noisy("not run", 2))
-    if error then
-        print "refused: " + error.message
-    end if
     g = bound(three, 1)
-    r = g(1, 2, 3)
-    if error then
-        print "refused: " + error.message
-    end if
+    for pass = 1 to 2
+        r = f(1, noisy("not run", 2))
+        if error then
+            print "refused: " + error.message
+        end if
+        r = g(1, 2, 3)
+        if error then
+            print "refused: " + error.message
+        end if
+    end for
     return f(1, 2, 3) + g(1, 2)
 end function
 
@@ -123,10 +126,12 @@ end function
 function v_arg_raises()
     on error goto next
     f = noisy
-    r = f("never", 1 / 0 + undefined_name)
-    if error then
-        print "argument raised: " + error.message
-    end if
+    for pass = 1 to 2
+        r = f("never", 1 / 0 + undefined_name)
+        if error then
+            print "argument raised: " + error.message
+        end if
+    end for
     return f("then", 7)
 end function
 
@@ -145,17 +150,23 @@ end function
 ' a library's function as a value
 function v_library_value()
     f = callee.twice
-    return f(21)
+    s = 0
+    for pass = 1 to 2
+        s = s + f(21)
+    end for
+    return s
 end function
 
 ' a raise in the callee, caught by the caller's handler
 function v_callee_raises()
     on error goto next
     f = callee.refuses
-    r = f(1)
-    if error then
-        print "callee raised: " + error.message
-    end if
+    for pass = 1 to 2
+        r = f(1)
+        if error then
+            print "callee raised: " + error.message
+        end if
+    end for
     return "went on"
 end function
 
@@ -279,14 +290,21 @@ end function
 
 ' an alias, and the library's own name, reach one library
 function q_alias()
-    return cal.twice(4) + callee.twice(4)
+    s = 0
+    for pass = 1 to 2
+        s = s + cal.twice(4) + callee.twice(4)
+    end for
+    return s
 end function
 
 ' a record variable named as the library: its method wins; without one, the
 ' library is reached
 function q_record_named_callee()
     callee = { n: 5 }
-    first = callee.twice(1)
+    first = 0
+    for pass = 1 to 2
+        first = first + callee.twice(1)
+    end for
     function callee.twice(x)
         return this.n * x * 100
     end function
@@ -324,20 +342,24 @@ function q_refused()
             print "refused: " + error.message
         end if
     end for
-    r = callee.twice()
-    if error then
-        print "refused: " + error.message
-    end if
+    for pass = 1 to 2
+        r = callee.twice()
+        if error then
+            print "refused: " + error.message
+        end if
+    end for
     return csv.line(["a", "b,c"])
 end function
 
 ' `this` outside a method
 function q_this_outside()
     on error goto next
-    r = this.thing()
-    if error then
-        print "refused: " + error.message
-    end if
+    for pass = 1 to 2
+        r = this.thing()
+        if error then
+            print "refused: " + error.message
+        end if
+    end for
     return "went on"
 end function
 

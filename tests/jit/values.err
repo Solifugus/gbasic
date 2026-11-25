@@ -1,4 +1,4 @@
-warning: 'first' holds a function value, but the call reaches the BUILT-IN of that name; rename the variable to call the function value at tests/jit/values.bas:117:23 [2102]
-runtime error at tests/jit/values.bas:372:18: division by zero
-  in r.divide@371:5  tests/jit/values.bas:374:5
-  in never  tests/jit/values.bas:376:1
+warning: 'first' holds a function value, but the call reaches the BUILT-IN of that name; rename the variable to call the function value at tests/jit/values.bas:120:23 [2102]
+runtime error at tests/jit/values.bas:394:18: division by zero
+  in r.divide@393:5  tests/jit/values.bas:396:5
+  in never  tests/jit/values.bas:398:1

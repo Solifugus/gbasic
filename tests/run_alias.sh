@@ -98,6 +98,7 @@ fi
 printf 'TIER refusal: a name may answer for exactly one library\n'
 for name in negative_alias_native_target \
             negative_alias_native_name \
+            negative_alias_native_own_name \
             negative_alias_duplicate \
             negative_alias_shadows_library \
             negative_alias_shadowed_by_library \

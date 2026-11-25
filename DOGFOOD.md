@@ -14241,3 +14241,15 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   not loaded at all; otherwise the message is "'callee' does not define
   'nonesuch'". A check in `tests/run_alias.sh`'s coexistence tier, with the
   replaced name as its control.
+
+## 2026-11-24 — CC — while: proving the compiler's qualified calls reach what the interpreter's do (tests/jit/values.bas)
+- **Type:** bug
+- **Severity:** low
+- **What:** `load csv from "mine.bas"`, where mine.bas declares `library
+  csv`, loaded without a word, and every `csv.line(...)` went on reaching
+  the csv module: the library's functions could never be called. An alias
+  to a module's name, or of one, was already refused at the load for this
+  reason; a library's own name was not.
+- **Workaround:** resolved: the load is refused, naming the module and
+  saying to rename the library. `tests/negative_alias_native_own_name.bas`,
+  in `tests/run_alias.sh` and `tests/run_negative.sh`.

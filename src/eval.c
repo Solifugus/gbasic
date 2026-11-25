@@ -11497,6 +11497,18 @@ static void library_import(const char *name, const char *path, const char *alias
             runtime_error_raise(message, 1003, "use");
             return;
         }
+    } else if (path && library_is_native_qualifier(name)) {
+        /* The same problem by a file's own name: `load csv from "mine.bas"`
+         * loaded, and every `csv.` call went on reaching the module, so the
+         * library could never be called (found 2026-11-24). */
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "'%s' is a built-in module name, so a library loaded under it"
+                 " could never be called -- '%s.' calls reach the module; rename"
+                 " the library",
+                 name, name);
+        runtime_error_raise(message, 1003, "use");
+        return;
     }
 
     if (!path && strcmp(name, "pg") == 0) {

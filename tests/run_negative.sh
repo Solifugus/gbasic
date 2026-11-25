@@ -394,6 +394,7 @@ cases=(
     negative_unqualified_ambiguous
     negative_alias_native_target
     negative_alias_native_name
+    negative_alias_native_own_name
     negative_alias_duplicate
     negative_alias_shadows_library
     negative_alias_shadowed_by_library
