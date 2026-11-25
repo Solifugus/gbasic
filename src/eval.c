@@ -9585,7 +9585,7 @@ static const char *library_identity_of(const char *written);
 /* `lib.f(...)`'s function the same way: which library `lib` names depends on
  * the calling library's loads, so a change to the library-name table moves
  * function_generation too. */
-static FunctionDef *qualified_call_function(AstExpr *expr) {
+static GB_INLINE FunctionDef *qualified_call_function(AstExpr *expr) {
     if (expr->as.call.fn_generation == function_generation &&
         expr->as.call.fn_library == current_function_library) {
         return expr->as.call.fn_index ? &functions[expr->as.call.fn_index - 1] : NULL;
@@ -16136,10 +16136,10 @@ void gbrt_eval(AstExpr *x, void *out) {
 static GB_INLINE FunctionDef *call_plain_target(AstExpr *expr);
 static GB_INLINE int call_arity_refused(AstExpr *expr, FunctionDef *function, Value *bound_ctx);
 
-static void call_value_shadowed(AstExpr *expr);
-static int call_method_target(AstExpr *expr, Value **receiver, FunctionDef **method,
-                              Value **bound_ctx);
-static int call_value_target(AstExpr *expr, FunctionDef **target, Value **bound_ctx);
+static GB_INLINE void call_value_shadowed(AstExpr *expr);
+static GB_INLINE int call_method_target(AstExpr *expr, Value **receiver, FunctionDef **method,
+                                        Value **bound_ctx);
+static GB_INLINE int call_value_target(AstExpr *expr, FunctionDef **target, Value **bound_ctx);
 static const char *handle_method_module(const Value *v);
 
 /* The gBASIC function a call that is not plain reaches, as eval_call_rest
@@ -37497,7 +37497,7 @@ static Value eval_call_rest(AstExpr *expr);
 
 /* eval_call_rest's warning for `f(...)` naming a variable that holds a
  * function value where a builtin of that name is what the call reaches */
-static void call_value_shadowed(AstExpr *expr) {
+static GB_INLINE void call_value_shadowed(AstExpr *expr) {
     /* A VARIABLE holding a function value, whose name is also a builtin. The
      * precedence is deliberate and documented -- builtins win, and the
      * function-valued variable is the last fallback -- but it was SILENT, so
@@ -37527,8 +37527,8 @@ static void call_value_shadowed(AstExpr *expr) {
  * `bound` context or NULL), 0 when it is no record's method (*receiver still
  * set, for a handle's), -1 raised. Shared by eval_call_rest and the compiled
  * code (gbrt_call_enter). */
-static int call_method_target(AstExpr *expr, Value **receiver, FunctionDef **method,
-                              Value **bound_ctx) {
+static GB_INLINE int call_method_target(AstExpr *expr, Value **receiver, FunctionDef **method,
+                                        Value **bound_ctx) {
     /* Resolve the receiver of X.method(args). Normally X is a variable bound
      * to a record or native value; the special name `this` resolves to the
      * live method receiver (current_this) so a method can call a SIBLING method
@@ -37573,7 +37573,7 @@ static int call_method_target(AstExpr *expr, Value **receiver, FunctionDef **met
 /* `f(args)` where the variable f holds a function value, once nothing else
  * matched the name: 1 with *target and *bound_ctx, 0 when f holds none, -1
  * raised. Shared like call_method_target. */
-static int call_value_target(AstExpr *expr, FunctionDef **target, Value **bound_ctx) {
+static GB_INLINE int call_value_target(AstExpr *expr, FunctionDef **target, Value **bound_ctx) {
     Symbol *fn_symbol = env_find_known(CALL_NAME_KEY(expr));
     if (!fn_symbol || fn_symbol->value.kind != VALUE_FUNCTION) {
         return 0;

@@ -691,7 +691,71 @@ recommended; Q8 and Q9 as drafted):
   followed by its condition (it hangs); no spill before a `for each`; the
   least integer negated inline; the negated double left the operand's.
 - **Not yet:** a call through a function value, a method or a qualified
-  call (each `gbrt_eval`).
+  call (each `gbrt_eval`); step 4 below.
+
+### Increment 3, step 4, as built (2026-11-24): calls through values, methods, libraries
+
+- **One door, eval_call_rest's own steps.** `gbrt_call_enter` takes every
+  call by name (only a call on an expression, `a.b.m()`, is still
+  `gbrt_eval`'s). A plain call is found as in step 2; otherwise
+  `call_reached_target` follows eval_call_rest's order with the functions
+  eval_call_rest now calls itself: a record's method (`call_method_target`:
+  the receiver by name or `this`, the field, its function and `bound`
+  context), then a handle (its module's verb, left to `gbrt_eval`), then a
+  library's function (`qualified_call_function`); unqualified, a variable's
+  function value (`call_value_target`, with warning 2102's check). The
+  function value is read from its variable on every run, never kept.
+- **What lies between is passed by name, once.** A qualified call reaches a
+  library only after every native module's check, and a function value
+  only after every builtin's; both chains depend on the call's names alone.
+  So the interpreter marks the call when it gets past one (`reached`:
+  `CALL_REACHED_LIBRARY`, `CALL_REACHED_VALUE`), and until then the compiled
+  code evaluates the call whole. A site's FIRST run is therefore always the
+  interpreter's: tests/jit/values.bas runs each value and qualified site
+  twice, after two perturbations stayed green on a fixture that ran each
+  once.
+- **Compiled:** the arguments into an array with room for one more, then
+  `gbrt_call_invoke`, which appends a copy of the `bound` context (as
+  eval_user_function_bound does, after the arguments) and calls
+  `invoke_frame` with the receiver as `this`.
+- **Found on the way:** `load csv from "mine.bas"` loaded a library no call
+  could reach (every `csv.` call goes to the module); it is refused now, as
+  an alias to a module's name was. With a library loaded under its own name
+  and an alias, a missing function was reported as the name having been
+  replaced by the alias. Both in DOGFOOD, with tests in run_alias and
+  run_negative.
+- **Measured**, best of five, 3,000,000 calls of a one-line function, this
+  machine, the pushed build (c0312f15) against this one:
+
+  | | interpreted, before | after | compiled, before | after |
+  |---|---|---|---|---|
+  | plain `f(i)` (control) | 0.57 s | 0.57 s | 0.44 s | 0.45 s |
+  | function value `f(s, i)` | 1.42 s | 1.47 s | 1.52 s | 0.62 s |
+  | method `acc.add(i)` | 0.67 s | 0.65 s | 0.57 s | 0.55 s |
+  | qualified `callee.twice(i)` | 0.70 s | 0.69 s | 0.59 s | 0.48 s |
+
+  A function value was the dearest call there is, interpreted: it is found
+  after the whole builtin chain, which the compiled call no longer walks.
+  A method barely moves: its cost is finding the method, not the call
+  (`function_resolve` scans the function table by library and name with
+  `strcmp`, ~51 instructions a call here, before `this` is bound), and the
+  compiled call does the same finding. Counted interpreted (callgrind): a
+  function value +1 instruction a call, a method 0, a qualified call +5,
+  a plain call unchanged, once the four shared functions were inlined
+  (as separate calls they cost +25, +47 and +63).
+- **Held by** `tests/jit/values.bas` (with `tests/jit/callee.bas`) in
+  `run_jit`, compiled against interpreted byte for byte and against its
+  golden, under valgrind compiled, and by the gate's compiled lane.
+  Perturbations proven red: the receiver not passed; the context not
+  appended; a call taken as a function value's before the interpreter had
+  passed the builtins (the shadowed builtin `first`); a handle's verb not
+  preferred to a library's function of its name; the count checked without
+  the context. Equivalent, so green: the library mark ignored (no library
+  can take a module's name now, so a module's qualifier finds no gBASIC
+  function either way); a method value naming no function not stopping
+  the compiled call (the interpreter then raises the same, first).
+- **Not yet:** a call on an expression (`a.b.m()`, `make().m()`), and the
+  method's lookup itself.
 
 ## 5. Correctness
 

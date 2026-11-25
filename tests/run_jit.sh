@@ -13,7 +13,9 @@
 # Increment 3: a function's locals that are numbers by construction are held
 # in the compiled frame (GbSlot), and `+ - *` and the comparisons on two
 # exact integers are done by the compiled code; the frame's variable is
-# brought up to date before anything reads it by name.
+# brought up to date before anything reads it by name. Steps 2-4: calls
+# (plain, through a function value, a record's method, a library's
+# function), `do`, `for each` and `-x` lowered.
 #
 # This suite holds the switch and the paths through a body. The whole of the
 # behaviour is held by the gate's second lane, `GBASIC_COMPILE=all
