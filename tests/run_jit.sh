@@ -50,6 +50,17 @@
 #             function value; a raise in the callee with its trace; too deep;
 #             warning 2102; exit inside a callee): interpreted, calls.out
 #             and calls.err, status 4; compiled, the same bytes.
+#   loops     tests/jit/loops.bas takes every way a lowered `do`, `for each`
+#             or `-x` could part from the interpreted one (a `do`'s first
+#             pass, continue reaching the condition, break, return, named
+#             flow through it, a condition raising, unknown or text; a `for
+#             each`'s index, flow, named flow freeing the inner array, return
+#             twice deep, the snapshot, nothing to walk, its iterable read
+#             after a held name is written, refusals, a raise in the body, a
+#             file closed by a break, a csv source; `-x` on an exact integer,
+#             the least one, a decimal, a double, money, a duration, unknown,
+#             a call, text refused): interpreted, loops.out and loops.err,
+#             status 1; compiled, the same bytes.
 #   report    GBASIC_COMPILE=report's lines against tests/jit/flow.report:
 #             each function compiled once, in the order first called, with
 #             how many of its statements are lowered, the names it holds,
@@ -60,9 +71,10 @@
 # to print something wrong (a gosub's return dispatched one statement early
 # re-ran the gosub, and the first perturbation of this suite hung it). The
 # valgrind tier runs only after the bounded compiled run has passed.
-#   valgrind  the compiled runs of flow.bas, held.bas and calls.bas under memcheck (the
-#             JIT is disposed at exit, or each body's unwinding tables read
-#             as definitely lost).
+#   valgrind  the compiled runs of flow.bas, held.bas, calls.bas and
+#             loops.bas under memcheck (the JIT is disposed at exit, or each
+#             body's unwinding tables read as definitely lost), and
+#             loops.bas interpreted (its loops' state is the compiled ones').
 set -u
 cd "$(dirname "$0")/.." || exit 1
 make -s >/dev/null || { echo "FAIL build"; exit 1; }
@@ -175,6 +187,29 @@ else
     fail "calls compiled: status $ccrc against $circ; $(diff "$tmp/ci.out" "$tmp/cc.out" | head -5) $(diff "$tmp/ci.err" "$tmp/cc.err" | head -5)"
 fi
 
+echo "--- TIER loops ---"
+GBASIC_COMPILE=0 timeout 30 ./gbasic tests/jit/loops.bas >"$tmp/li.out" 2>"$tmp/li.err" </dev/null; lirc=$?
+GBASIC_COMPILE=all timeout 30 ./gbasic tests/jit/loops.bas >"$tmp/lc.out" 2>"$tmp/lc.err" </dev/null; lcrc=$?
+if cmp -s "$tmp/li.out" tests/jit/loops.out && cmp -s "$tmp/li.err" tests/jit/loops.err && [ "$lirc" = 1 ]; then
+    pass "interpreted: loops.out, loops.err, status 1"
+else
+    fail "loops interpreted: status $lirc; $(diff "$tmp/li.out" tests/jit/loops.out | head -5) $(diff "$tmp/li.err" tests/jit/loops.err | head -3)"
+fi
+if cmp -s "$tmp/lc.out" "$tmp/li.out" && cmp -s "$tmp/lc.err" "$tmp/li.err" && [ "$lcrc" = "$lirc" ]; then
+    pass "compiled: stdout, stderr and status $lcrc the interpreter's"
+else
+    compiled_ok=0
+    fail "loops compiled: status $lcrc against $lirc; $(diff "$tmp/li.out" "$tmp/lc.out" | head -5) $(diff "$tmp/li.err" "$tmp/lc.err" | head -5)"
+fi
+# the loops are lowered, not run whole by the interpreter
+GBASIC_COMPILE=report timeout 30 ./gbasic tests/jit/loops.bas >/dev/null 2>"$tmp/lr.err" </dev/null
+if grep -qx 'compile: do_counts: 6 statements, 6 lowered, 19 expressions, holds i s, ran 1 time' "$tmp/lr.err" &&
+   grep -qx 'compile: each_named: 9 statements, 7 lowered, 11 expressions, ran 1 time' "$tmp/lr.err"; then
+    pass "a do and a nested for each lowered, the do's names held"
+else
+    fail "what is lowered: $(grep -E 'do_counts|each_named' "$tmp/lr.err")"
+fi
+
 echo "--- TIER report ---"
 GBASIC_COMPILE=report timeout 30 ./gbasic tests/jit/flow.bas >"$tmp/r.out" 2>"$tmp/r.err" </dev/null
 if cmp -s "$tmp/r.err" tests/jit/flow.report && cmp -s "$tmp/r.out" tests/jit/flow.out; then
@@ -222,6 +257,18 @@ elif vg_available; then
         sed 's/^/  /' "$tmp/vgc.err" | tail -30; fail "valgrind: calls.bas compiled"
     else
         pass "valgrind: calls.bas compiled (no definite leak or invalid access)"
+    fi
+    GBASIC_COMPILE=all vg_run ./gbasic tests/jit/loops.bas >/dev/null 2>"$tmp/vgl.err" </dev/null
+    if [ $? = "$VG_EXIT" ]; then
+        sed 's/^/  /' "$tmp/vgl.err" | tail -30; fail "valgrind: loops.bas compiled"
+    else
+        pass "valgrind: loops.bas compiled (no definite leak or invalid access)"
+    fi
+    GBASIC_COMPILE=0 vg_run ./gbasic tests/jit/loops.bas >/dev/null 2>"$tmp/vgli.err" </dev/null
+    if [ $? = "$VG_EXIT" ]; then
+        sed 's/^/  /' "$tmp/vgli.err" | tail -30; fail "valgrind: loops.bas interpreted"
+    else
+        pass "valgrind: loops.bas interpreted (no definite leak or invalid access)"
     fi
 else
     printf 'SKIP valgrind (unavailable)\n'

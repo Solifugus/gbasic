@@ -250,9 +250,9 @@ function compound()
     return c
 end function
 
-' a `for each` and a `do` are run whole by the interpreter, plain
-' assignments in their bodies included: the held names they write are read
-' back after them (stats.logrank's sums, found by the compiled lane)
+' held names written in a `for each`'s and a `do`'s bodies, read back after
+' them: run whole by the interpreter until both were lowered, when they had
+' to be taken again (stats.logrank's sums, found by the compiled lane)
 function interpreted_bodies()
     total = 0
     count = 0

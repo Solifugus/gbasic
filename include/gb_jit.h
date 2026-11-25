@@ -68,6 +68,19 @@ size_t gbrt_for_bytes(void);
 int gbrt_for_enter(AstStmt *stmt, void *at, int *saved, GbFor *f);
 int gbrt_for_test(AstStmt *stmt, void *at, const int *saved, GbFor *f);
 int gbrt_for_next(AstStmt *stmt, void *at, GbList *body, const int *saved, GbFor *f);
+/* `do ... until`: gbrt_while_enter, the body, gbrt_while_next (a pass ends
+ * as a `while`'s does), then the stop condition evaluated by the compiled
+ * code and read by gbrt_do_truth: 0 to run the body again, else done.
+ * `for each`, over a GbEach of gbrt_each_bytes(): enter (0, or -1 done),
+ * then test (1 the body, the element assigned, else done) and, after each
+ * pass, next (1 test again, else done). The interpreted loops call the
+ * same functions. */
+int gbrt_do_truth(void *at, const int *saved, int before_error, void *value);
+typedef struct GbEach GbEach;
+size_t gbrt_each_bytes(void);
+int gbrt_each_enter(AstStmt *stmt, void *at, int *saved, GbEach *each);
+int gbrt_each_test(AstStmt *stmt, void *at, const int *saved, GbEach *each);
+int gbrt_each_next(AstStmt *stmt, void *at, GbList *body, const int *saved, GbEach *each);
 
 /* STEP 3: EXPRESSIONS. A lowered expression is evaluated into a value the
  * compiled code keeps (gbrt_value_bytes() bytes, a Value only src/eval.c
@@ -80,7 +93,8 @@ int gbrt_for_next(AstStmt *stmt, void *at, GbList *body, const int *saved, GbFor
  * its operands' values. `before_error` for a condition or a return is read
  * from gbrt_error_generation() just before the expression, as the
  * interpreted statement reads it. */
-enum { GB_EXPR_OTHER, GB_EXPR_CONSTANT, GB_EXPR_IDENT, GB_EXPR_BINARY, GB_EXPR_CALL };
+enum { GB_EXPR_OTHER, GB_EXPR_CONSTANT, GB_EXPR_IDENT, GB_EXPR_BINARY, GB_EXPR_CALL,
+       GB_EXPR_NEGATE };
 size_t gbrt_value_bytes(void);
 int gbrt_expr_shape(AstExpr *x);
 void gbrt_constant(AstExpr *x, void *out);
@@ -90,6 +104,10 @@ int *gbrt_error_generation(void);
 void gbrt_binary_enter(AstExpr *x, int *saved);
 int gbrt_binary_left(void *left, void *out, const int *saved);
 void gbrt_binary_apply(AstExpr *x, void *left, void *right, void *out, const int *saved);
+/* `-x` (GB_EXPR_NEGATE): the operand, then an exact integer other than the
+ * least negated by the compiled code, anything else by gbrt_negate, the
+ * interpreted operator's own end, which takes the operand */
+void gbrt_negate(AstExpr *x, void *value, void *out);
 /* A plain call (GB_EXPR_CALL): gbrt_call_enter answers 1 with the gBASIC
  * function it reaches at *fn (its statement, since an argument may move the
  * function table), 0 when it reaches none (gbrt_eval it whole),

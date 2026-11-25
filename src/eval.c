@@ -15705,6 +15705,29 @@ int gbrt_while_next(void *at, GbList *body, const int *saved) {
     return while_after_pass(at, body->result, saved);
 }
 
+/* A `do`'s stop condition after a pass (which ends as a `while`'s does):
+ * 1 to run the body again, else the loop has ended with *out. A condition
+ * that can never become true would hang, so a refused one (unknown) raises
+ * rather than reading as false. */
+static int do_tested(int truth, EvalResult *out, const int *saved) {
+    if (truth == 0) {
+        return 1;
+    }
+    if (truth == 1) {
+        *out = eval_no_result();
+    }
+    loop_depth--;
+    gbrt_restore(saved);
+    return 0;
+}
+
+/* `do ... until`, LOWERED: gbrt_while_enter, the body, gbrt_while_next,
+ * then the condition evaluated by the compiled code and read here: 0 to run
+ * the body again, as a false condition read inline answers, else done */
+int gbrt_do_truth(void *at, const int *saved, int before_error, void *value) {
+    return !do_tested(truth_of(*(Value *)value, before_error, at), at, saved);
+}
+
 /* A COUNTED `for`'s state across its passes, kept by the interpreted loop
  * on the C stack and by a compiled one on its own (gbrt_for_bytes()). */
 struct GbFor {
@@ -16041,6 +16064,9 @@ int gbrt_expr_shape(AstExpr *x) {
     case AST_EXPR_CALL:
         /* a plain call, which may reach a gBASIC function (gbrt_call_enter) */
         return x->as.call.receiver || x->as.call.library ? GB_EXPR_OTHER : GB_EXPR_CALL;
+    case AST_EXPR_UNARY:
+        /* `-x`; `not` and `try` are the interpreter's */
+        return op_code(x->as.unary.op) == OP_SUB ? GB_EXPR_NEGATE : GB_EXPR_OTHER;
     case AST_EXPR_BINARY: {
         /* and/or decide whether to evaluate the right; the set operators
          * are a walk of their own (eval_binary) */
@@ -47224,6 +47250,89 @@ static GB_NOINLINE Value eval_expr_case_conditional(AstExpr *expr) {
                            : expr->as.conditional.else_value);
 }
 
+/* `-x`: the operand's value negated, or the refusal. The interpreted
+ * operator ends here, and so does a compiled one that is not an exact
+ * integer (gbrt_negate). */
+static Value negate(AstExpr *expr, Value value) {
+    if (value.kind == VALUE_UNKNOWN) {
+        return value_unknown();   /* arithmetic propagates unknown */
+    }
+    int previous_line = current_line;
+    int previous_column = current_column;
+    if (expr->line > 0) {
+        current_line = expr->line;
+        current_column = expr->column > 0 ? expr->column : previous_column;
+    }
+    /* MONEY NEGATES TO MONEY, in its own currency (book gap G56): `-x`
+     * on money was refused while `zero - x` worked, so a negative line
+     * was written as a subtraction from a zero of the same currency.
+     * Its units are an integer, so this is exact; the one amount with
+     * no negative is refused as out of range, as an overflowing sum is. */
+    if (value.kind == VALUE_MONEY) {
+        current_line = previous_line;
+        current_column = previous_column;
+        if (value.as.money.units == LLONG_MIN) {
+            runtime_error_raise("money value is out of range", 1003, "money");
+            return value_null();
+        }
+        Value negated = value;
+        negated.as.money.units = -value.as.money.units;
+        return negated;
+    }
+    /* A DURATION NEGATES FIELD BY FIELD, as `0 seconds - d` would give
+     * on its totals (DOGFOOD row 13); it was refused as not a number.
+     * Each field negated keeps a literal's shape, so -(90 minutes)
+     * prints -90 minutes, as the literal 90 minutes keeps its form. */
+    if (value.kind == VALUE_DURATION) {
+        current_line = previous_line;
+        current_column = previous_column;
+        Duration d = value.as.duration;
+        if (d.years == INT_MIN || d.months == INT_MIN || d.weeks == INT_MIN || d.days == INT_MIN ||
+            d.hours == INT_MIN || d.minutes == INT_MIN || d.seconds == INT_MIN) {
+            runtime_error_raise("duration value is out of range", 1003, "duration");
+            return value_null();
+        }
+        d.years = -d.years; d.months = -d.months; d.weeks = -d.weeks; d.days = -d.days;
+        d.hours = -d.hours; d.minutes = -d.minutes; d.seconds = -d.seconds;
+        return value_duration(d);
+    }
+    double number = 0.0;
+    if (!value_number_for_arithmetic(value, expr->as.unary.op, &number)) {
+        value_free(value);
+        current_line = previous_line;
+        current_column = previous_column;
+        return value_null();
+    }
+    /* NEGATION PRESERVES EXACTNESS, or `-9007199254740993` would be exact
+     * in magnitude and inexact in sign -- which is how it first behaved,
+     * printing ...992 while its positive counterpart printed ...993.
+     * `LLONG_MIN` has no positive counterpart, so it is the one value that
+     * degrades, and it degrades the same way an overflowing sum does. */
+    if (value_is_exact(value) && value.as.num.exact != LLONG_MIN) {
+        long long negated = -value.as.num.exact;
+        value_free(value);
+        current_line = previous_line;
+        current_column = previous_column;
+        return value_number_exact(negated);
+    }
+    if (value_is_decimal(value)) {
+        /* a decimal's mantissa came from digits, so it is never LLONG_MIN */
+        Value negated = value_number_decimal(-value.as.num.exact, value.as.num.scale);
+        value_free(value);
+        current_line = previous_line;
+        current_column = previous_column;
+        return negated;
+    }
+    value_free(value);
+    current_line = previous_line;
+    current_column = previous_column;
+    return value_number(-number);
+}
+
+void gbrt_negate(AstExpr *x, void *value, void *out) {
+    *(Value *)out = negate(x, *(Value *)value);
+}
+
 static GB_NOINLINE Value eval_expr_case_unary(AstExpr *expr, int path_keep) {
 
         if (op_code(expr->as.unary.op) == OP_TRY) {
@@ -47240,79 +47349,7 @@ static GB_NOINLINE Value eval_expr_case_unary(AstExpr *expr, int path_keep) {
             return refused ? value_null() : value_bool(result);
         }
         if (op_code(expr->as.unary.op) == OP_SUB) {
-            if (value.kind == VALUE_UNKNOWN) {
-                return value_unknown();   /* arithmetic propagates unknown */
-            }
-            int previous_line = current_line;
-            int previous_column = current_column;
-            if (expr->line > 0) {
-                current_line = expr->line;
-                current_column = expr->column > 0 ? expr->column : previous_column;
-            }
-            /* MONEY NEGATES TO MONEY, in its own currency (book gap G56): `-x`
-             * on money was refused while `zero - x` worked, so a negative line
-             * was written as a subtraction from a zero of the same currency.
-             * Its units are an integer, so this is exact; the one amount with
-             * no negative is refused as out of range, as an overflowing sum is. */
-            if (value.kind == VALUE_MONEY) {
-                current_line = previous_line;
-                current_column = previous_column;
-                if (value.as.money.units == LLONG_MIN) {
-                    runtime_error_raise("money value is out of range", 1003, "money");
-                    return value_null();
-                }
-                Value negated = value;
-                negated.as.money.units = -value.as.money.units;
-                return negated;
-            }
-            /* A DURATION NEGATES FIELD BY FIELD, as `0 seconds - d` would give
-             * on its totals (DOGFOOD row 13); it was refused as not a number.
-             * Each field negated keeps a literal's shape, so -(90 minutes)
-             * prints -90 minutes, as the literal 90 minutes keeps its form. */
-            if (value.kind == VALUE_DURATION) {
-                current_line = previous_line;
-                current_column = previous_column;
-                Duration d = value.as.duration;
-                if (d.years == INT_MIN || d.months == INT_MIN || d.weeks == INT_MIN || d.days == INT_MIN ||
-                    d.hours == INT_MIN || d.minutes == INT_MIN || d.seconds == INT_MIN) {
-                    runtime_error_raise("duration value is out of range", 1003, "duration");
-                    return value_null();
-                }
-                d.years = -d.years; d.months = -d.months; d.weeks = -d.weeks; d.days = -d.days;
-                d.hours = -d.hours; d.minutes = -d.minutes; d.seconds = -d.seconds;
-                return value_duration(d);
-            }
-            double number = 0.0;
-            if (!value_number_for_arithmetic(value, expr->as.unary.op, &number)) {
-                value_free(value);
-                current_line = previous_line;
-                current_column = previous_column;
-                return value_null();
-            }
-            /* NEGATION PRESERVES EXACTNESS, or `-9007199254740993` would be exact
-             * in magnitude and inexact in sign -- which is how it first behaved,
-             * printing ...992 while its positive counterpart printed ...993.
-             * `LLONG_MIN` has no positive counterpart, so it is the one value that
-             * degrades, and it degrades the same way an overflowing sum does. */
-            if (value_is_exact(value) && value.as.num.exact != LLONG_MIN) {
-                long long negated = -value.as.num.exact;
-                value_free(value);
-                current_line = previous_line;
-                current_column = previous_column;
-                return value_number_exact(negated);
-            }
-            if (value_is_decimal(value)) {
-                /* a decimal's mantissa came from digits, so it is never LLONG_MIN */
-                Value negated = value_number_decimal(-value.as.num.exact, value.as.num.scale);
-                value_free(value);
-                current_line = previous_line;
-                current_column = previous_column;
-                return negated;
-            }
-            value_free(value);
-            current_line = previous_line;
-            current_column = previous_column;
-            return value_number(-number);
+            return negate(expr, value);
         }
         value_free(value);
         return value_null();
@@ -50703,69 +50740,23 @@ case_done:
 }
 
 static GB_NOINLINE EvalResult eval_stmt_case_do_loop(AstStmt *stmt, int previous_line, int previous_column) {
-
-        /* POST-test: the body runs, THEN the condition decides. `until` stops
-         * when the condition becomes true. `while ... end while` already covers
-         * the pre-test case, so this exists only for the "do it at least once"
-         * shape -- and it is the ONLY post-test form: a continue-condition
-         * spelling was removed on 2026-08-27 because it is `until not c` and
-         * because keeping it forced the redundant `loop` keyword (parser.y). */
-        loop_depth++;
-        for (;;) {
-            EvalResult result = eval_stmt_list(stmt->as.do_loop.body);
-            /* A NAMED break/continue can never mean this loop: `while` and
-             * `do` have no variable to name. Let it travel outward. */
-            if ((result.did_break || result.did_continue) && result.loop_target) {
-                loop_depth--;
-                current_line = previous_line;
-                current_column = previous_column;
-                return result;
-            }
-            if (result.did_break) {
-                value_free(result.value);
-                break;
-            }
-            int stop_for_control = 0;
-            if (!result.did_continue && eval_result_exits_block(result)) {
-                loop_depth--;
-                current_line = previous_line;
-                current_column = previous_column;
-                return result;
-            }
-            value_free(result.value);
-            (void)stop_for_control;
-
-            int before_error = error_generation;
-            Value cond = eval_expr(stmt->as.do_loop.condition);
-            if (error_generation != before_error) {
-                value_free(cond);
-                loop_depth--;
-                current_line = previous_line;
-                current_column = previous_column;
-                return eval_error_result();
-            }
-            int refused = 0;
-            int truth = value_truthy(cond, &refused);
-            value_free(cond);
-            if (refused) {
-                /* The site that did not merely continue but HUNG: a condition
-                 * that can never become true is an infinite loop. */
-                loop_depth--;
-                current_line = previous_line;
-                current_column = previous_column;
-                return eval_error_result();
-            }
-            if (truth) {
-                break;
-            }
-        }
-        loop_depth--;
-        goto case_done;
-    goto case_done;
-case_done:
-    current_line = previous_line;
-    current_column = previous_column;
-    return eval_no_result();
+    /* POST-test: the body runs, THEN the condition decides. `until` stops
+     * when the condition becomes true. `while ... end while` already covers
+     * the pre-test case, so this exists only for the "do it at least once"
+     * shape -- and it is the ONLY post-test form: a continue-condition
+     * spelling was removed on 2026-08-27 because it is `until not c` and
+     * because keeping it forced the redundant `loop` keyword (parser.y).
+     *
+     * A pass ends as a `while`'s does (while_after_pass), and the compiled
+     * `do` makes these calls too (gbrt_while_enter, gbrt_while_next,
+     * gbrt_do_truth). */
+    int saved[2] = { previous_line, previous_column };
+    EvalResult out;
+    loop_depth++;
+    while (while_after_pass(&out, eval_stmt_list(stmt->as.do_loop.body), saved) &&
+           do_tested(gbrt_truth(stmt->as.do_loop.condition, &out), &out, saved)) {
+    }
+    return out;
 }
 
 static GB_NOINLINE EvalResult eval_stmt_case_for_range(AstStmt *stmt, int previous_line, int previous_column) {
@@ -50781,325 +50772,317 @@ static GB_NOINLINE EvalResult eval_stmt_case_for_range(AstStmt *stmt, int previo
     return out;
 }
 
-static GB_NOINLINE EvalResult eval_stmt_case_for_each(AstStmt *stmt, int previous_line, int previous_column) {
+/* A `for each`'s state across its passes, kept by the interpreted loop on
+ * the C stack and by a compiled one on its own (gbrt_each_bytes()). Each
+ * kind of iterable has a begin, a next element and an end; the loop is
+ * each_begin, then each_test before every pass and each_after_pass after
+ * it, and every way out of it goes through each_end, which closes what the
+ * loop opened. */
+enum { EACH_ARRAY, EACH_FILE, EACH_CSV, EACH_ROWS };
 
-        if (loop_lock_refused(stmt->as.for_each.name, 0) ||
-            loop_lock_refused(stmt->as.for_each.index_name, 1)) {
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        int before_error = error_generation;
-        Value iterable = eval_expr(stmt->as.for_each.iterable);
-        if (error_generation != before_error) {
-            value_free(iterable);
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        if (iterable.kind == VALUE_FILE) {
-            /* --- STREAMING A FILE, LINE BY LINE ----------------------------
-             *
-             * `for each line in f` where `f` is a file reference. This PARSED
-             * before and raised here, measured -- one site, one diagnostic -- so
-             * no working program contained the shape and nothing can change
-             * meaning. The same proof the array-projection work rested on, and
-             * it is why this needed no grammar change and so cost no bison
-             * conflicts.
-             *
-             * THE LOOP OWNS THE HANDLE, which is the reason not to expose
-             * open/read_line/close instead: it is closed on normal end, on
-             * `break`, on a `break` or `continue` NAMING AN OUTER LOOP, on a
-             * `return`, and on a raise -- every exit below does it. An author
-             * cannot forget, and there is no EOF sentinel to misread, which
-             * `input()` already proves is a real trap (it answers "" for both a
-             * blank line and end of input).
-             *
-             * A READ ERROR RAISES. A short read that looked like end of input
-             * would be the file-reading form of "a directory that cannot be
-             * read is not an empty one", fixed two days before this.
-             *
-             * `for_each_check_dead_write` IS DELIBERATELY NOT CALLED HERE. Its
-             * message names the remedy `list[i] = item`, and a stream has no
-             * `list` to write back to -- so the advice would be impossible to
-             * follow. The policy this warning already carries settles it: a
-             * missed dead write costs nothing, a false one costs the channel its
-             * credibility. */
-            GbLineReader reader;
-            if (!gb_line_reader_open(&reader, iterable.as.file_path)) {
-                raise_fmt(1004, "file operation", "could not read file: %s (%s)", iterable.as.file_path,
-                          strerror(errno));
-                value_free(iterable);
-                current_line = previous_line;
-                current_column = previous_column;
-                return eval_error_result();
-            }
-            loop_depth++;
-            const char *line = NULL;
-            size_t line_len = 0;
-            size_t index = 0;
-            EvalResult out = eval_no_result();
-            int returning = 0;
-            while (gb_line_reader_next(&reader, &line, &line_len)) {
-                env_set(stmt->as.for_each.name, value_string_n(line, line_len));
-                if (stmt->as.for_each.index_name) {
-                    /* The LINE NUMBER, which is what an ETL job reports when a
-                     * row will not parse. Exact, like every other count. */
-                    env_set(stmt->as.for_each.index_name,
-                            value_number_exact((long long)index));
-                }
-                index++;
-                EvalResult result = eval_stmt_list(stmt->as.for_each.body);
-                if ((result.did_break || result.did_continue) &&
-                    !loop_claims_flow(result, stmt->as.for_each.name)) {
-                    out = result;
-                    returning = 1;
-                    break;
-                }
-                if (result.did_break) {
-                    value_free(result.value);
-                    break;
-                }
-                if (result.did_continue) {
-                    value_free(result.value);
-                    continue;
-                }
-                if (eval_result_exits_block(result)) {
-                    out = result;
-                    returning = 1;
-                    break;
-                }
-            }
-            int read_failed = reader.failed;
-            gb_line_reader_close(&reader);
-            loop_depth--;
-            if (read_failed && !returning) {
-                raise_fmt(1004, "file operation", "could not read file: %s (%s)", iterable.as.file_path,
-                          strerror(errno));
-                value_free(iterable);
-                current_line = previous_line;
-                current_column = previous_column;
-                return eval_error_result();
-            }
-            value_free(iterable);
-            current_line = previous_line;
-            current_column = previous_column;
-            if (returning) {
-                return out;
-            }
-            goto case_done;
-        }
-        if (iterable.kind == VALUE_CSV_SOURCE) {
-            /* --- A DELIMITED FILE, RECORD BY RECORD (docs/csv_design.md §2) --
-             *
-             * The shape of the file stream above and for its reasons: the loop
-             * opens the source and every exit below closes it, so a `break`, a
-             * `return` or a raise cannot leave a file open. The second name is
-             * WHERE the record came from, a record rather than a count, because
-             * a record can span lines and a reject report needs the line it
-             * started on. */
-            CsvCursor cursor;
-            if (!csv_cursor_open(&cursor, iterable.as.csv_source)) {
-                value_free(iterable);
-                current_line = previous_line;
-                current_column = previous_column;
-                return eval_error_result();
-            }
-            loop_depth++;
-            EvalResult out = eval_no_result();
-            int returning = 0;
-            int failed = 0;
-            Value element, where;
-            for (;;) {
-                int got = csv_cursor_next(&cursor, &element, &where);
-                if (got < 0) {
-                    failed = 1;
-                    break;
-                }
-                if (got == 0) {
-                    break;
-                }
-                env_set(stmt->as.for_each.name, element);
-                if (stmt->as.for_each.index_name) {
-                    env_set(stmt->as.for_each.index_name, where);
-                } else {
-                    value_free(where);
-                }
-                EvalResult result = eval_stmt_list(stmt->as.for_each.body);
-                if ((result.did_break || result.did_continue) &&
-                    !loop_claims_flow(result, stmt->as.for_each.name)) {
-                    out = result;
-                    returning = 1;
-                    break;
-                }
-                if (result.did_break) {
-                    value_free(result.value);
-                    break;
-                }
-                if (result.did_continue) {
-                    value_free(result.value);
-                    continue;
-                }
-                if (eval_result_exits_block(result)) {
-                    out = result;
-                    returning = 1;
-                    break;
-                }
-            }
-            csv_cursor_close(&cursor);
-            loop_depth--;
-            value_free(iterable);
-            current_line = previous_line;
-            current_column = previous_column;
-            if (returning) {
-                return out;
-            }
-            if (failed) {
-                return eval_error_result();
-            }
-            goto case_done;
-        }
-        if (iterable.kind == VALUE_GSQL_STATEMENT) {
-            /* --- AN `sql` BLOCK, ROW BY ROW (docs/gsql_module_design.md §7) --
-             *
-             * Each pass of the loop is one row, pulled from the batch in hand
-             * and the next batch fetched when it runs out, so a result is never
-             * held whole. THE LOOP OWNS THE CURSOR, the arrangement the file
-             * stream above has and for its reason: every exit below ends it, so
-             * an early `break`, a `return` or a raise closes it on the owner. A
-             * failure partway (the owner lost) raises after the rows already
-             * seen, which the loop has acted on -- what was done stays done. */
+struct GbEach {
+    Value iterable;
+    int kind;
+    int failed;              /* a csv source's record would not read */
+    size_t index;
+    GbLineReader reader;
+    CsvCursor cursor;
 #if GBASIC_GSQL
-            struct GsqlRows *rows = gsql_block_rows(iterable.as.gsql_statement);
-            if (!rows) {
-                value_free(iterable);
-                current_line = previous_line;
-                current_column = previous_column;
-                return eval_error_result();
-            }
-            loop_depth++;
-            size_t index = 0;
-            EvalResult out = eval_no_result();
-            int returning = 0;
-            Value row;
-            while (gsql_rows_next(rows, &row)) {
-                env_set(stmt->as.for_each.name, row);
-                if (stmt->as.for_each.index_name) {
-                    env_set(stmt->as.for_each.index_name,
-                            value_number_exact((long long)index));
-                }
-                index++;
-                EvalResult result = eval_stmt_list(stmt->as.for_each.body);
-                if ((result.did_break || result.did_continue) &&
-                    !loop_claims_flow(result, stmt->as.for_each.name)) {
-                    out = result;
-                    returning = 1;
-                    break;
-                }
-                if (result.did_break) {
-                    value_free(result.value);
-                    break;
-                }
-                if (result.did_continue) {
-                    value_free(result.value);
-                    continue;
-                }
-                if (eval_result_exits_block(result)) {
-                    out = result;
-                    returning = 1;
-                    break;
-                }
-            }
-            gsql_rows_end(rows);
-            loop_depth--;
-            value_free(iterable);
-            current_line = previous_line;
-            current_column = previous_column;
-            if (returning) {
-                return out;
-            }
-            if (error_action_pending()) {
-                return eval_error_result();
-            }
-            goto case_done;
-#else
-            runtime_error_raise("G-SQL is not yet available on this platform", GSQL_ERROR_CODE, "gsql");
-            value_free(iterable);
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
+    struct GsqlRows *rows;
 #endif
-        }
-        if (iterable.kind != VALUE_ARRAY) {
-            runtime_error_raise("for in expects an array, a file, an sql block or a csv source", 1003,
-                                "invalid operation");
-            value_free(iterable);
-            current_line = previous_line;
-            current_column = previous_column;
-            return eval_error_result();
-        }
-        for_each_check_dead_write(stmt);
-        loop_depth++;
-        for (size_t i = 0; i < iterable.as.array.store->count; i++) {
-            env_set(stmt->as.for_each.name, value_copy(iterable.as.array.store->items[i]));
-            /* `for each item, i in list`. The index is an ordinary number in
-             * the enclosing scope, and it is what makes a write-back
-             * expressible -- `list[i] = item` is an lvalue path and writes in
-             * place, where `item.x = 1` mutates a copy that is discarded.
-             * Iteration is over the snapshot taken above, so writing to the
-             * array here cannot disturb the walk. */
-            if (stmt->as.for_each.index_name) {
-                env_set(stmt->as.for_each.index_name, value_number_exact((long long)i));
-            }
-            EvalResult result = eval_stmt_list(stmt->as.for_each.body);
-            if ((result.did_break || result.did_continue) &&
-                !loop_claims_flow(result, stmt->as.for_each.name)) {
-                /* Named a loop further out: keep travelling -- and RELEASE THE
-                 * ITERABLE on the way, which this path did not. Measured
-                 * 2026-10-15: `break row` from a loop nested inside
-                 * `for each row in outer` leaked 112 bytes (32 direct, 80
-                 * indirect), definitely lost, once per occurrence.
-                 *
-                 * WHY IT SURVIVED, and it is the useful half: named break IS
-                 * covered, by examples/loop_syntax_test.bas under run_examples'
-                 * valgrind tier -- but only over COUNTED loops (`for x = 1 to
-                 * 3`), which hold no iterable and so cannot exhibit it. The one
-                 * loop form that can leak was the one form the coverage did not
-                 * use. A `for each` case is in that fixture now.
-                 *
-                 * Found by reading this function before adding a streaming file
-                 * to it, where the same path would have leaked an open FILE
-                 * handle rather than an array reference. */
-                loop_depth--;
-                value_free(iterable);
-                current_line = previous_line;
-                current_column = previous_column;
-                return result;
-            }
-            if (result.did_break) {
-                value_free(result.value);
-                break;
-            }
-            if (result.did_continue) {
-                value_free(result.value);
-                continue;
-            }
-            if (eval_result_exits_block(result)) {
-                loop_depth--;
-                value_free(iterable);
-                current_line = previous_line;
-                current_column = previous_column;
-                return result;
-            }
-        }
-        loop_depth--;
+};
+
+size_t gbrt_each_bytes(void) {
+    return sizeof(GbEach);
+}
+
+static int each_refused(EvalResult *out, const int *saved) {
+    *out = eval_error_result();
+    gbrt_restore(saved);
+    return -1;
+}
+
+/* 0 to test for the first element, or -1 with *out the error */
+static int each_begin(AstStmt *stmt, EvalResult *out, const int *saved, GbEach *each) {
+    if (loop_lock_refused(stmt->as.for_each.name, 0) ||
+        loop_lock_refused(stmt->as.for_each.index_name, 1)) {
+        return each_refused(out, saved);
+    }
+    int before_error = error_generation;
+    Value iterable = eval_expr(stmt->as.for_each.iterable);
+    if (error_generation != before_error) {
         value_free(iterable);
-        goto case_done;
-    goto case_done;
-case_done:
-    current_line = previous_line;
-    current_column = previous_column;
-    return eval_no_result();
+        return each_refused(out, saved);
+    }
+    each->iterable = iterable;
+    each->index = 0;
+    each->failed = 0;
+    if (iterable.kind == VALUE_FILE) {
+        /* --- STREAMING A FILE, LINE BY LINE ----------------------------
+         *
+         * `for each line in f` where `f` is a file reference. This PARSED
+         * before and raised here, measured -- one site, one diagnostic -- so
+         * no working program contained the shape and nothing can change
+         * meaning. The same proof the array-projection work rested on, and
+         * it is why this needed no grammar change and so cost no bison
+         * conflicts.
+         *
+         * THE LOOP OWNS THE HANDLE, which is the reason not to expose
+         * open/read_line/close instead: it is closed on normal end, on
+         * `break`, on a `break` or `continue` NAMING AN OUTER LOOP, on a
+         * `return`, and on a raise -- every exit goes through each_end. An
+         * author cannot forget, and there is no EOF sentinel to misread,
+         * which `input()` already proves is a real trap (it answers "" for
+         * both a blank line and end of input).
+         *
+         * A READ ERROR RAISES. A short read that looked like end of input
+         * would be the file-reading form of "a directory that cannot be
+         * read is not an empty one", fixed two days before this.
+         *
+         * `for_each_check_dead_write` IS DELIBERATELY NOT CALLED HERE. Its
+         * message names the remedy `list[i] = item`, and a stream has no
+         * `list` to write back to -- so the advice would be impossible to
+         * follow. The policy this warning already carries settles it: a
+         * missed dead write costs nothing, a false one costs the channel its
+         * credibility. */
+        each->kind = EACH_FILE;
+        if (!gb_line_reader_open(&each->reader, iterable.as.file_path)) {
+            raise_fmt(1004, "file operation", "could not read file: %s (%s)", iterable.as.file_path,
+                      strerror(errno));
+            value_free(iterable);
+            return each_refused(out, saved);
+        }
+        loop_depth++;
+        return 0;
+    }
+    if (iterable.kind == VALUE_CSV_SOURCE) {
+        /* --- A DELIMITED FILE, RECORD BY RECORD (docs/csv_design.md §2) --
+         *
+         * The shape of the file stream above and for its reasons: the loop
+         * opens the source and every exit closes it, so a `break`, a
+         * `return` or a raise cannot leave a file open. The second name is
+         * WHERE the record came from, a record rather than a count, because
+         * a record can span lines and a reject report needs the line it
+         * started on. */
+        each->kind = EACH_CSV;
+        if (!csv_cursor_open(&each->cursor, iterable.as.csv_source)) {
+            value_free(iterable);
+            return each_refused(out, saved);
+        }
+        loop_depth++;
+        return 0;
+    }
+    if (iterable.kind == VALUE_GSQL_STATEMENT) {
+        /* --- AN `sql` BLOCK, ROW BY ROW (docs/gsql_module_design.md §7) --
+         *
+         * Each pass of the loop is one row, pulled from the batch in hand
+         * and the next batch fetched when it runs out, so a result is never
+         * held whole. THE LOOP OWNS THE CURSOR, the arrangement the file
+         * stream above has and for its reason: every exit ends it, so an
+         * early `break`, a `return` or a raise closes it on the owner. A
+         * failure partway (the owner lost) raises after the rows already
+         * seen, which the loop has acted on -- what was done stays done. */
+#if GBASIC_GSQL
+        each->kind = EACH_ROWS;
+        each->rows = gsql_block_rows(iterable.as.gsql_statement);
+        if (!each->rows) {
+            value_free(iterable);
+            return each_refused(out, saved);
+        }
+        loop_depth++;
+        return 0;
+#else
+        runtime_error_raise("G-SQL is not yet available on this platform", GSQL_ERROR_CODE, "gsql");
+        value_free(iterable);
+        return each_refused(out, saved);
+#endif
+    }
+    if (iterable.kind != VALUE_ARRAY) {
+        runtime_error_raise("for in expects an array, a file, an sql block or a csv source", 1003,
+                            "invalid operation");
+        value_free(iterable);
+        return each_refused(out, saved);
+    }
+    each->kind = EACH_ARRAY;
+    for_each_check_dead_write(stmt);
+    loop_depth++;
+    return 0;
+}
+
+/* EVERY WAY OUT OF A BEGUN `for each`: what the loop opened is closed, and
+ * *out is what leaves (`returning`: a result the body left, already at
+ * *out). Always 0, the loop done. */
+static int each_end(GbEach *each, EvalResult *out, const int *saved, int returning) {
+    Value iterable = each->iterable;
+    int failed = 0;
+    if (each->kind == EACH_FILE) {
+        int read_failed = each->reader.failed;
+        gb_line_reader_close(&each->reader);
+        loop_depth--;
+        if (read_failed && !returning) {
+            raise_fmt(1004, "file operation", "could not read file: %s (%s)", iterable.as.file_path,
+                      strerror(errno));
+            failed = 1;
+        }
+    } else if (each->kind == EACH_CSV) {
+        csv_cursor_close(&each->cursor);
+        loop_depth--;
+        failed = each->failed;
+    } else if (each->kind == EACH_ROWS) {
+#if GBASIC_GSQL
+        gsql_rows_end(each->rows);
+#endif
+        loop_depth--;
+    } else {
+        loop_depth--;
+    }
+    value_free(iterable);
+    if (each->kind == EACH_ROWS) {
+        failed = !returning && error_action_pending();
+    }
+    gbrt_restore(saved);
+    if (!returning) {
+        *out = failed ? eval_error_result() : eval_no_result();
+    }
+    return 0;
+}
+
+/* Before each pass: 1 with the next element (and its index or place)
+ * assigned, else the loop has ended with *out */
+static int each_test(AstStmt *stmt, EvalResult *out, const int *saved, GbEach *each) {
+    const char *name = stmt->as.for_each.name;
+    const char *index_name = stmt->as.for_each.index_name;
+    if (each->kind == EACH_FILE) {
+        const char *line = NULL;
+        size_t line_len = 0;
+        if (!gb_line_reader_next(&each->reader, &line, &line_len)) {
+            return each_end(each, out, saved, 0);
+        }
+        env_set(name, value_string_n(line, line_len));
+        if (index_name) {
+            /* The LINE NUMBER, which is what an ETL job reports when a
+             * row will not parse. Exact, like every other count. */
+            env_set(index_name, value_number_exact((long long)each->index));
+        }
+        each->index++;
+        return 1;
+    }
+    if (each->kind == EACH_CSV) {
+        Value element, where;
+        int got = csv_cursor_next(&each->cursor, &element, &where);
+        if (got <= 0) {
+            each->failed = got < 0;
+            return each_end(each, out, saved, 0);
+        }
+        env_set(name, element);
+        if (index_name) {
+            env_set(index_name, where);
+        } else {
+            value_free(where);
+        }
+        return 1;
+    }
+#if GBASIC_GSQL
+    if (each->kind == EACH_ROWS) {
+        Value row;
+        if (!gsql_rows_next(each->rows, &row)) {
+            return each_end(each, out, saved, 0);
+        }
+        env_set(name, row);
+        if (index_name) {
+            env_set(index_name, value_number_exact((long long)each->index));
+        }
+        each->index++;
+        return 1;
+    }
+#endif
+    if (each->index >= each->iterable.as.array.store->count) {
+        return each_end(each, out, saved, 0);
+    }
+    env_set(name, value_copy(each->iterable.as.array.store->items[each->index]));
+    /* `for each item, i in list`. The index is an ordinary number in the
+     * enclosing scope, and it is what makes a write-back expressible --
+     * `list[i] = item` is an lvalue path and writes in place, where
+     * `item.x = 1` mutates a copy that is discarded. Iteration is over the
+     * snapshot taken when the loop began, so writing to the array here
+     * cannot disturb the walk. */
+    if (index_name) {
+        env_set(index_name, value_number_exact((long long)each->index));
+    }
+    each->index++;
+    return 1;
+}
+
+/* After a pass of the body, interpreted or compiled: 1 to test again, else
+ * the loop has ended with *out. */
+static int each_after_pass(AstStmt *stmt, EvalResult *out, EvalResult result, const int *saved,
+                           GbEach *each) {
+    if ((result.did_break || result.did_continue) &&
+        !loop_claims_flow(result, stmt->as.for_each.name)) {
+        /* Named a loop further out: keep travelling -- and RELEASE THE
+         * ITERABLE on the way (each_end), which this path once did not.
+         * Measured 2026-10-15: `break row` from a loop nested inside
+         * `for each row in outer` leaked 112 bytes (32 direct, 80
+         * indirect), definitely lost, once per occurrence.
+         *
+         * WHY IT SURVIVED, and it is the useful half: named break IS
+         * covered, by examples/loop_syntax_test.bas under run_examples'
+         * valgrind tier -- but only over COUNTED loops (`for x = 1 to
+         * 3`), which hold no iterable and so cannot exhibit it. The one
+         * loop form that can leak was the one form the coverage did not
+         * use. A `for each` case is in that fixture now.
+         *
+         * Found by reading this loop before adding a streaming file to
+         * it, where the same path would have leaked an open FILE handle
+         * rather than an array reference. */
+        *out = result;
+        return each_end(each, out, saved, 1);
+    }
+    if (result.did_break) {
+        value_free(result.value);
+        return each_end(each, out, saved, 0);
+    }
+    if (result.did_continue) {
+        value_free(result.value);
+        return 1;
+    }
+    if (eval_result_exits_block(result)) {
+        *out = result;
+        return each_end(each, out, saved, 1);
+    }
+    return 1;
+}
+
+/* `for each`, LOWERED: enter (0 to test, -1 done: an error, or the whole
+ * loop run under --profile), then test (1 the body, the element assigned,
+ * else done) and, after each pass of the body, next (1 test again, else
+ * done). */
+int gbrt_each_enter(AstStmt *stmt, void *at, int *saved, GbEach *each) {
+    if (gbrt_enter(stmt, at, saved) == 2) {
+        return -1;
+    }
+    return each_begin(stmt, at, saved, each);
+}
+
+int gbrt_each_test(AstStmt *stmt, void *at, const int *saved, GbEach *each) {
+    return each_test(stmt, at, saved, each);
+}
+
+int gbrt_each_next(AstStmt *stmt, void *at, GbList *body, const int *saved, GbEach *each) {
+    return each_after_pass(stmt, at, body->result, saved, each);
+}
+
+static GB_NOINLINE EvalResult eval_stmt_case_for_each(AstStmt *stmt, int previous_line, int previous_column) {
+    /* the compiled `for each` makes these calls too (gbrt_each_*) */
+    int saved[2] = { previous_line, previous_column };
+    EvalResult out;
+    GbEach each;
+    if (each_begin(stmt, &out, saved, &each) == 0) {
+        while (each_test(stmt, &out, saved, &each) == 1 &&
+               each_after_pass(stmt, &out, eval_stmt_list(stmt->as.for_each.body), saved, &each)) {
+        }
+    }
+    return out;
 }
 
 static GB_NOINLINE EvalResult eval_stmt_case_unwatch(AstStmt *stmt, int previous_line, int previous_column) {

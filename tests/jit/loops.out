@@ -1,0 +1,43 @@
+5 30
+11
+evaluated until 1
+evaluated until 2
+evaluated until 3
+evaluated until 4
+134 at 5
+returned at 9
+11 12 31 after 3
+condition raised: division by zero
+unknown refused: unknown cannot be used as a condition
+1 1
+xxx
+12
+a0c2
+134
+found 3
+none
+3 6
+0
+9
+refused: for in expects an array, a file, an sql block or a csv source
+refused: z is locked to string by z:text at line 206, and a loop cannot bind a locked variable; use another name for the loop
+went on
+body raised: division by zero
+15
+0:one 1:two 2:three [one]
+12@2 34@3 
+-7
+7
+-21
+9.223372036854776e+18
+true
+-0.5
+-2.5
+-2.50
+-90 minutes
+true
+evaluated operand
+-4
+-6
+refused: arithmetic operator '-' expected number but got string
+0
