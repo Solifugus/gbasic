@@ -15592,7 +15592,7 @@ static void gbrt_restore(const int *saved) {
 
 /* A condition, as `if` and `while` read it: 1 true, 0 false, -1 a raise or
  * a refused truth (unknown), with *out the error result. */
-static int truth_of(Value value, int before_error, EvalResult *out) {
+static GB_INLINE int truth_of(Value value, int before_error, EvalResult *out) {
     if (error_generation != before_error) {
         value_free(value);
         *out = eval_error_result();
@@ -15709,7 +15709,7 @@ int gbrt_while_next(void *at, GbList *body, const int *saved) {
  * 1 to run the body again, else the loop has ended with *out. A condition
  * that can never become true would hang, so a refused one (unknown) raises
  * rather than reading as false. */
-static int do_tested(int truth, EvalResult *out, const int *saved) {
+static GB_INLINE int do_tested(int truth, EvalResult *out, const int *saved) {
     if (truth == 0) {
         return 1;
     }
@@ -47253,7 +47253,7 @@ static GB_NOINLINE Value eval_expr_case_conditional(AstExpr *expr) {
 /* `-x`: the operand's value negated, or the refusal. The interpreted
  * operator ends here, and so does a compiled one that is not an exact
  * integer (gbrt_negate). */
-static Value negate(AstExpr *expr, Value value) {
+static GB_INLINE Value negate(AstExpr *expr, Value value) {
     if (value.kind == VALUE_UNKNOWN) {
         return value_unknown();   /* arithmetic propagates unknown */
     }
@@ -50949,7 +50949,7 @@ static int each_end(GbEach *each, EvalResult *out, const int *saved, int returni
 
 /* Before each pass: 1 with the next element (and its index or place)
  * assigned, else the loop has ended with *out */
-static int each_test(AstStmt *stmt, EvalResult *out, const int *saved, GbEach *each) {
+static GB_INLINE int each_test(AstStmt *stmt, EvalResult *out, const int *saved, GbEach *each) {
     const char *name = stmt->as.for_each.name;
     const char *index_name = stmt->as.for_each.index_name;
     if (each->kind == EACH_FILE) {
@@ -51015,7 +51015,7 @@ static int each_test(AstStmt *stmt, EvalResult *out, const int *saved, GbEach *e
 
 /* After a pass of the body, interpreted or compiled: 1 to test again, else
  * the loop has ended with *out. */
-static int each_after_pass(AstStmt *stmt, EvalResult *out, EvalResult result, const int *saved,
+static GB_INLINE int each_after_pass(AstStmt *stmt, EvalResult *out, EvalResult result, const int *saved,
                            GbEach *each) {
     if ((result.did_break || result.did_continue) &&
         !loop_claims_flow(result, stmt->as.for_each.name)) {

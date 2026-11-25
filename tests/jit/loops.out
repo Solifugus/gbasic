@@ -10,6 +10,8 @@ returned at 9
 condition raised: division by zero
 unknown refused: unknown cannot be used as a condition
 1 1
+after the do: break outside loop or consider block
+2
 xxx
 12
 a0c2
@@ -20,7 +22,7 @@ none
 0
 9
 refused: for in expects an array, a file, an sql block or a csv source
-refused: z is locked to string by z:text at line 206, and a loop cannot bind a locked variable; use another name for the loop
+refused: z is locked to string by z:text at line 221, and a loop cannot bind a locked variable; use another name for the loop
 went on
 body raised: division by zero
 15

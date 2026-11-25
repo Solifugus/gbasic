@@ -101,6 +101,21 @@ function do_refused()
     return string(a) + " " + string(b)
 end function
 
+' a `do` ended by its condition leaves no loop open behind it: a `break`
+' after it is outside any loop
+function do_depth()
+    on error goto next
+    i = 0
+    do
+        i = i + 1
+    until i = 2
+    break
+    if error then
+        print "after the do: " + error.message
+    end if
+    return i
+end function
+
 ' a condition that is text, read as truth by the runtime
 function do_text()
     t = ""
@@ -287,6 +302,7 @@ print do_flow()
 print do_returns()
 print do_named()
 print do_refused()
+print do_depth()
 print do_text()
 print each_sum()
 print each_flow()

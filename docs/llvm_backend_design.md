@@ -643,7 +643,55 @@ recommended; Q8 and Q9 as drafted):
   first at `None` and again at `Less` once it has run often enough would
   have both; not built.
 - **Not yet:** a call through a function value, a method or a qualified
-  call (each `gbrt_eval`); `for each`, `do`; unary minus.
+  call (each `gbrt_eval`); `for each`, `do`; unary minus. The last three
+  are step 3.
+
+### Increment 3, step 3, as built (2026-11-24): `do`, `for each`, `-x`
+
+- **The interpreted statements are split where the compiled ones call
+  them**, as `while` and `for` were in increment 2. A `do` pass ends as a
+  `while`'s does (`while_after_pass`; the two had the same rules written
+  twice), then `do_tested` reads the stop condition. A `for each` is
+  `each_begin` (the locks, the iterable, opening a file, a csv source or an
+  `sql` block's rows), `each_test` before each pass (the next element and
+  its index or place assigned by name), `each_after_pass`, and `each_end`,
+  which every way out goes through and which closes what the loop opened;
+  its state is a `GbEach`, on the C stack interpreted and in the compiled
+  body's temporary area compiled. `-x` is `negate`, the interpreted
+  operator's tail.
+- **Compiled:** a `do` calls `gbrt_while_enter`, its body, `gbrt_while_next`,
+  then evaluates the condition by shape and reads it inline when it is a
+  boolean `false` with no raise (the body runs again with nothing else to
+  do), otherwise `gbrt_do_truth`. A `for each` spills (what it walks is
+  evaluated by name), then `gbrt_each_enter`, `gbrt_each_test` and
+  `gbrt_each_next` around its compiled body; its element and index are
+  never held (the walk refuses them), so the body's held names are written
+  in their slots and nothing is retaken after the loop. `-x` evaluates its
+  operand by shape and negates an exact integer other than the least one
+  itself; anything else is `gbrt_negate`.
+- **Measured**, best of five, this machine, the pushed build (b935019a)
+  against this one:
+
+  | | interpreted, before | after | compiled, before | after |
+  |---|---|---|---|---|
+  | `do`, 10,000,000 passes | 2.25 s | 2.25 s | 2.24 s | 0.47 s |
+  | `for each` over 1,000,000, three times | 0.88 s | 0.91 s | 0.93 s | 0.62 s |
+  | `s = s + -i`, 10,000,000 times | 1.17 s | 1.17 s | 0.62 s | 0.43 s |
+
+  Counted interpreted (callgrind): a `do` pass costs 30 instructions more
+  (0.9%), a `for each` pass 13, a negation 6, and a `while` pass 36 fewer,
+  since `truth_of` is inlined now; `fib` and `for` did not move. Inlining
+  `while_after_pass` too made both loops dearer (`do` +63, `while` +28), so
+  it is a call.
+- **Held by** `tests/jit/loops.bas` in `run_jit`, compiled against
+  interpreted byte for byte and against its golden, under valgrind both
+  ways, and by the gate's compiled lane. Perturbations proven red: a `do`'s
+  condition read inline when true (which leaves its loop open: green until
+  `do_depth`'s `break` after the loop was added); a pass of a `do` not
+  followed by its condition (it hangs); no spill before a `for each`; the
+  least integer negated inline; the negated double left the operand's.
+- **Not yet:** a call through a function value, a method or a qualified
+  call (each `gbrt_eval`).
 
 ## 5. Correctness
 
