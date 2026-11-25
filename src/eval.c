@@ -11426,6 +11426,13 @@ static int library_alias_hint(const char *written, char *buf, size_t size) {
     char names[256];
     size_t used = 0;
     names[0] = '\0';
+    /* loaded under its own name as well, the name was not replaced: what is
+     * missing is the function */
+    for (size_t i = 0; i < library_name_count; i++) {
+        if (strcmp(library_names[i].written, written) == 0) {
+            return 0;
+        }
+    }
     for (size_t i = 0; i < library_name_count; i++) {
         LibraryName *held = &library_names[i];
         if (strcmp(held->declared, written) != 0 ||
@@ -16062,8 +16069,8 @@ int gbrt_expr_shape(AstExpr *x) {
     case AST_EXPR_IDENT:
         return GB_EXPR_IDENT;
     case AST_EXPR_CALL:
-        /* a plain call, which may reach a gBASIC function (gbrt_call_enter) */
-        return x->as.call.receiver || x->as.call.library ? GB_EXPR_OTHER : GB_EXPR_CALL;
+        /* a call by name, which may reach a gBASIC function (gbrt_call_enter) */
+        return x->as.call.receiver ? GB_EXPR_OTHER : GB_EXPR_CALL;
     case AST_EXPR_UNARY:
         /* `-x`; `not` and `try` are the interpreter's */
         return op_code(x->as.unary.op) == OP_SUB ? GB_EXPR_NEGATE : GB_EXPR_OTHER;
@@ -16096,33 +16103,83 @@ void gbrt_eval(AstExpr *x, void *out) {
     *(Value *)out = eval_expr(x);
 }
 
-/* INCREMENT 3, CALLS: a plain call of a gBASIC function, its arguments
- * evaluated by the compiled code. eval_call's first branch and
+/* INCREMENT 3, CALLS: a call of a gBASIC function, its arguments evaluated
+ * by the compiled code. eval_call's first branch (or eval_call_rest's way
+ * to a method, a library's function or a function value) and
  * eval_user_function_bound, split where the arguments are evaluated:
- * gbrt_call_enter answers 1 with the function's statement at *fn, read
- * before any argument runs as eval_user_function_bound reads it (the
- * shadowing warning given and the count checked, as eval_call gives and
- * checks them), 0 for a
- * call that is not one (the compiled code evaluates it whole, by gbrt_eval),
- * or -1 with *out `nothing` when the count is refused. The compiled code
- * then evaluates each argument into `args` and stops at a raise, as
- * eval_user_function_bound's loop stops: gbrt_call_abandon frees the
- * `count` evaluated. gbrt_call_invoke is invoke_function given the array
- * on the compiled code's stack (invoke_frame, the frame without the
- * profiler's entry: nothing is compiled under --profile). */
+ * gbrt_call_enter answers 1 with target[0] the function's statement, read
+ * before any argument runs as eval_user_function_bound reads it,
+ * target[1] the method's receiver and target[2] a function value's `bound`
+ * context, each or NULL (the shadowing warning given and the count checked,
+ * as eval_call gives and checks them), 0 for a call that is not one (the
+ * compiled code evaluates it whole, by gbrt_eval), or -1 with *out
+ * `nothing` when the count is refused or the method is unknown. The
+ * compiled code then evaluates each argument into `args` and stops at a
+ * raise, as eval_user_function_bound's loop stops: gbrt_call_abandon frees
+ * the `count` evaluated. gbrt_call_invoke appends a copy of the context, as
+ * eval_user_function_bound does after the arguments, and is
+ * invoke_function given the array on the compiled code's stack
+ * (invoke_frame, the frame without the profiler's entry: nothing is
+ * compiled under --profile). */
 static GB_INLINE FunctionDef *call_plain_target(AstExpr *expr);
 static GB_INLINE int call_arity_refused(AstExpr *expr, FunctionDef *function, Value *bound_ctx);
 
-int gbrt_call_enter(AstExpr *x, void **fn, void *out) {
-    FunctionDef *function = call_plain_target(x);
-    if (!function) {
+static void call_value_shadowed(AstExpr *expr);
+static int call_method_target(AstExpr *expr, Value **receiver, FunctionDef **method,
+                              Value **bound_ctx);
+static int call_value_target(AstExpr *expr, FunctionDef **target, Value **bound_ctx);
+static const char *handle_method_module(const Value *v);
+
+/* The gBASIC function a call that is not plain reaches, as eval_call_rest
+ * reaches it: a record's method, then (once a run has found the qualifier
+ * is no native module's) a library's function; or (once a run has found the
+ * name is no builtin's) a variable's function value. 1 found, 0 anything
+ * else, -1 raised. */
+static int call_reached_target(AstExpr *x, FunctionDef **function, Value **receiver,
+                               Value **bound_ctx) {
+    if (x->as.call.receiver) {
         return 0;
     }
-    if (call_arity_refused(x, function, NULL)) {
+    if (x->as.call.library) {
+        int found = call_method_target(x, receiver, function, bound_ctx);
+        if (found) {
+            return found;
+        }
+        if ((*receiver && handle_method_module(*receiver)) ||
+            x->as.call.reached != CALL_REACHED_LIBRARY) {
+            return 0;
+        }
+        *receiver = NULL;
+        *function = qualified_call_function(x);
+        return *function ? 1 : 0;
+    }
+    if (x->as.call.reached != CALL_REACHED_VALUE) {
+        return 0;
+    }
+    call_value_shadowed(x);
+    return call_value_target(x, function, bound_ctx);
+}
+
+int gbrt_call_enter(AstExpr *x, void **target, void *out) {
+    FunctionDef *function = call_plain_target(x);
+    Value *receiver = NULL;
+    Value *bound_ctx = NULL;
+    if (!function) {
+        int found = call_reached_target(x, &function, &receiver, &bound_ctx);
+        if (found <= 0) {
+            if (found < 0) {
+                *(Value *)out = value_null();
+            }
+            return found;
+        }
+    }
+    if (call_arity_refused(x, function, bound_ctx)) {
         *(Value *)out = value_null();
         return -1;
     }
-    *fn = function->stmt;
+    target[0] = function->stmt;
+    target[1] = receiver;
+    target[2] = bound_ctx;
     return 1;
 }
 
@@ -16133,8 +16190,11 @@ void gbrt_call_abandon(void *args, size_t count, void *out) {
     *(Value *)out = value_null();
 }
 
-void gbrt_call_invoke(void *fn, void *args, size_t count, void *out) {
-    *(Value *)out = invoke_frame(fn, args, count, NULL);
+void gbrt_call_invoke(void **target, void *args, size_t count, void *out) {
+    if (target[2]) {
+        ((Value *)args)[count++] = value_copy(*(Value *)target[2]);
+    }
+    *(Value *)out = invoke_frame(target[0], args, count, target[1]);
 }
 
 int *gbrt_error_generation(void) {
@@ -35394,6 +35454,7 @@ static Value handle_method_call(AstExpr *expr, const char *module, Value *receiv
     call.as.call.library_key = NULL;
     call.as.call.library_key_generation = 0;
     call.as.call.fn_generation = 0;   /* resolved afresh for the module */
+    call.as.call.reached = 0;
     call.as.call.receiver = NULL;
     call.as.call.args.items = items;
     call.as.call.args.count = n + 1;
@@ -37422,6 +37483,103 @@ static Value builtin_transcode(AstExpr *expr) {
  * function, then a function of the program. */
 static Value eval_call_rest(AstExpr *expr);
 
+/* eval_call_rest's warning for `f(...)` naming a variable that holds a
+ * function value where a builtin of that name is what the call reaches */
+static void call_value_shadowed(AstExpr *expr) {
+    /* A VARIABLE holding a function value, whose name is also a builtin. The
+     * precedence is deliberate and documented -- builtins win, and the
+     * function-valued variable is the last fallback -- but it was SILENT, so
+     * `first = my_fn` followed by `first(xs)` quietly ran the builtin `first`
+     * and returned an element of xs. No error, a plausible value, and nothing
+     * to see.
+     *
+     * The library form of this has warned for a long time ("has same name as a
+     * built-in"); the variable form had nothing. Warned HERE rather than at
+     * assignment, because `list = [1, 2]` is a perfectly good variable and only
+     * CALLING it is the mistake -- which also means this cannot fire on the
+     * common harmless case. Once per call site: the trap lives in loops and
+     * handlers, and advice repeated ten thousand times is advice nobody reads. */
+    Symbol *shadowed = env_find_known(CALL_NAME_KEY(expr));
+    if (shadowed && shadowed->value.kind == VALUE_FUNCTION &&
+        call_has_builtin(expr) &&
+        warn_site_first_time(expr->line, expr->column)) {
+        warn_fmt(2102, "override",
+                 "'%s' holds a function value, but the call reaches the BUILT-IN of that name; "
+                 "rename the variable to call the function value",
+                 expr->as.call.name);
+    }
+}
+
+/* `X.y(args)`'s receiver and, when X is a record whose field y holds a
+ * function value, the method: 1 with *method and *bound_ctx (the value's
+ * `bound` context or NULL), 0 when it is no record's method (*receiver still
+ * set, for a handle's), -1 raised. Shared by eval_call_rest and the compiled
+ * code (gbrt_call_enter). */
+static int call_method_target(AstExpr *expr, Value **receiver, FunctionDef **method,
+                              Value **bound_ctx) {
+    /* Resolve the receiver of X.method(args). Normally X is a variable bound
+     * to a record or native value; the special name `this` resolves to the
+     * live method receiver (current_this) so a method can call a SIBLING method
+     * on its own object (`this.other()`). Method-call resolution otherwise binds
+     * the receiver by variable name, and `this` is not an environment symbol. */
+    Value *receiver_value = NULL;
+    if (CALL_LIB_IS(expr, this)) {
+        receiver_value = current_this;   /* NULL outside a method → falls through */
+    } else {
+        Symbol *receiver_symbol = env_find_known(CALL_LIBRARY_KEY(expr));
+        if (receiver_symbol) {
+            receiver_value = &receiver_symbol->value;
+        }
+    }
+    *receiver = receiver_value;
+
+    /* §5 disambiguation: X.y(args) where X is bound to a record whose field y
+     * holds a function value is a METHOD call (this = that record), not a
+     * qualified library call. Checked first, so a record variable wins over a
+     * library of the same name. */
+    if (receiver_value && receiver_value->kind == VALUE_RECORD) {
+        RecordField *method_field =
+            record_find(receiver_value, expr->as.call.name);
+        if (method_field && method_field->value->kind == VALUE_FUNCTION) {
+            *method = function_resolve(method_field->value->as.function.library,
+                                       method_field->value->as.function.name);
+            if (!*method) {
+                char message[256];
+                snprintf(message, sizeof(message),
+                         "method value references unknown function: %s",
+                         method_field->value->as.function.name);
+                runtime_error_raise(message, 1003, "invalid function call");
+                return -1;
+            }
+            *bound_ctx = method_field->value->as.function.context;
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* `f(args)` where the variable f holds a function value, once nothing else
+ * matched the name: 1 with *target and *bound_ctx, 0 when f holds none, -1
+ * raised. Shared like call_method_target. */
+static int call_value_target(AstExpr *expr, FunctionDef **target, Value **bound_ctx) {
+    Symbol *fn_symbol = env_find_known(CALL_NAME_KEY(expr));
+    if (!fn_symbol || fn_symbol->value.kind != VALUE_FUNCTION) {
+        return 0;
+    }
+    *target = function_resolve(fn_symbol->value.as.function.library,
+                               fn_symbol->value.as.function.name);
+    if (!*target) {
+        char message[256];
+        snprintf(message, sizeof(message),
+                 "function value references unknown function: %s",
+                 fn_symbol->value.as.function.name);
+        runtime_error_raise(message, 1003, "invalid function call");
+        return -1;
+    }
+    *bound_ctx = fn_symbol->value.as.function.context;
+    return 1;
+}
+
 /* The gBASIC function a plain call `f(...)` reaches, or NULL for anything
  * else (a builtin, a method, a qualified call, a function value), with the
  * warning eval_call_rest gives a function value shadowed by a builtin's
@@ -37479,68 +37637,20 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     if (expr->as.call.receiver) {
         return eval_method_call(expr);
     }
-    /* A VARIABLE holding a function value, whose name is also a builtin. The
-     * precedence is deliberate and documented -- builtins win, and the
-     * function-valued variable is the last fallback -- but it was SILENT, so
-     * `first = my_fn` followed by `first(xs)` quietly ran the builtin `first`
-     * and returned an element of xs. No error, a plausible value, and nothing
-     * to see.
-     *
-     * The library form of this has warned for a long time ("has same name as a
-     * built-in"); the variable form had nothing. Warned HERE rather than at
-     * assignment, because `list = [1, 2]` is a perfectly good variable and only
-     * CALLING it is the mistake -- which also means this cannot fire on the
-     * common harmless case. Once per call site: the trap lives in loops and
-     * handlers, and advice repeated ten thousand times is advice nobody reads. */
+    /* builtins win over a variable holding a function value, and say so */
     if (!expr->as.call.library) {
-        Symbol *shadowed = env_find_known(CALL_NAME_KEY(expr));
-        if (shadowed && shadowed->value.kind == VALUE_FUNCTION &&
-            call_has_builtin(expr) &&
-            warn_site_first_time(expr->line, expr->column)) {
-            warn_fmt(2102, "override",
-                     "'%s' holds a function value, but the call reaches the BUILT-IN of that name; "
-                     "rename the variable to call the function value",
-                     expr->as.call.name);
-        }
+        call_value_shadowed(expr);
     }
     if (expr->as.call.library) {
-        /* Resolve the receiver of X.method(args). Normally X is a variable bound
-         * to a record or native value; the special name `this` resolves to the
-         * live method receiver (current_this) so a method can call a SIBLING method
-         * on its own object (`this.other()`). Method-call resolution otherwise binds
-         * the receiver by variable name, and `this` is not an environment symbol. */
         Value *receiver_value = NULL;
-        if (CALL_LIB_IS(expr, this)) {
-            receiver_value = current_this;   /* NULL outside a method → falls through */
-        } else {
-            Symbol *receiver_symbol = env_find_known(CALL_LIBRARY_KEY(expr));
-            if (receiver_symbol) {
-                receiver_value = &receiver_symbol->value;
-            }
+        Value *bound_ctx = NULL;
+        FunctionDef *method = NULL;
+        int found = call_method_target(expr, &receiver_value, &method, &bound_ctx);
+        if (found < 0) {
+            return value_null();
         }
-
-        /* §5 disambiguation: X.y(args) where X is bound to a record whose field y
-         * holds a function value is a METHOD call (this = that record), not a
-         * qualified library call. Checked first, so a record variable wins over a
-         * library of the same name. */
-        if (receiver_value && receiver_value->kind == VALUE_RECORD) {
-            RecordField *method_field =
-                record_find(receiver_value, expr->as.call.name);
-            if (method_field && method_field->value->kind == VALUE_FUNCTION) {
-                FunctionDef *method =
-                    function_resolve(method_field->value->as.function.library,
-                                     method_field->value->as.function.name);
-                if (!method) {
-                    char message[256];
-                    snprintf(message, sizeof(message),
-                             "method value references unknown function: %s",
-                             method_field->value->as.function.name);
-                    runtime_error_raise(message, 1003, "invalid function call");
-                    return value_null();
-                }
-                return eval_user_function_bound(expr, method, receiver_value,
-                                                method_field->value->as.function.context);
-            }
+        if (found) {
+            return eval_user_function_bound(expr, method, receiver_value, bound_ctx);
         }
 
         /* A handle's methods are its module's verbs (handle_method_module):
@@ -37802,6 +37912,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
 
         /* the written qualifier means what the CALLING library loaded under
            that name, else the program-wide one (private loads) */
+        expr->as.call.reached = CALL_REACHED_LIBRARY;
         FunctionDef *function = qualified_call_function(expr);
         if (function) {
             return eval_user_function(expr, function);
@@ -44101,20 +44212,17 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     /* A variable bound to a function value, called like `f(args)`. Functions and
      * builtins above take precedence; this is the fallback once nothing else
      * matched the name (first_class_functions_design.md §3). */
-    Symbol *fn_symbol = env_find_known(CALL_NAME_KEY(expr));
-    if (fn_symbol && fn_symbol->value.kind == VALUE_FUNCTION) {
-        FunctionDef *target = function_resolve(fn_symbol->value.as.function.library,
-                                               fn_symbol->value.as.function.name);
-        if (!target) {
-            char message[256];
-            snprintf(message, sizeof(message),
-                     "function value references unknown function: %s",
-                     fn_symbol->value.as.function.name);
-            runtime_error_raise(message, 1003, "invalid function call");
+    expr->as.call.reached = CALL_REACHED_VALUE;
+    {
+        FunctionDef *target = NULL;
+        Value *bound_ctx = NULL;
+        int found = call_value_target(expr, &target, &bound_ctx);
+        if (found < 0) {
             return value_null();
         }
-        return eval_user_function_bound(expr, target, NULL,
-                                        fn_symbol->value.as.function.context);
+        if (found) {
+            return eval_user_function_bound(expr, target, NULL, bound_ctx);
+        }
     }
 
     char message[512];

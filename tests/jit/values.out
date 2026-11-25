@@ -1,0 +1,35 @@
+30
+2 3 6 5 
+18 5
+refused: f expects 3 arguments, got 2
+refused: g expects 3 arguments, got 4 (including the bound context)
+10
+[undefined function: h -- no function, library function or builtin of that name is in scope at this call (has_builtin("h") asks without raising)] 4 [undefined function: h -- no function, library function or builtin of that name is in scope at this call (has_builtin("h") asks without raising)] 
+20
+argument raised: division by zero
+evaluated then
+7
+32 4
+42
+callee raised: division by zero
+went on
+10 10
+24
+11 101 {"cost":1000} 
+PBP
+refused: scale expects 1 argument, got 2
+method raised: division by zero
+went on
+[undefined function: r.get -- 'r' does not define 'get'] [undefined function: r.get -- 'r' does not define 'get'] 7 
+0 0 
+45
+16
+2 500
+the library's poll; handle running false; the library's poll; 
+refused: undefined function: callee.nonesuch -- 'callee' does not define 'nonesuch'
+refused: undefined function: callee.nonesuch -- 'callee' does not define 'nonesuch'
+refused: twice expects 1 argument, got 0
+a,"b,c"
+
+refused: undefined function: this.thing -- 'this' does not define 'thing'
+went on

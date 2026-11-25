@@ -108,16 +108,18 @@ void gbrt_binary_apply(AstExpr *x, void *left, void *right, void *out, const int
  * least negated by the compiled code, anything else by gbrt_negate, the
  * interpreted operator's own end, which takes the operand */
 void gbrt_negate(AstExpr *x, void *value, void *out);
-/* A plain call (GB_EXPR_CALL): gbrt_call_enter answers 1 with the gBASIC
- * function it reaches at *fn (its statement, since an argument may move the
- * function table), 0 when it reaches none (gbrt_eval it whole),
- * -1 with *out `nothing` when the count of arguments is refused; then each
- * argument into the array `args`, gbrt_call_abandon(args, evaluated, out)
- * at the first raise, else gbrt_call_invoke(fn, args, count, out), which
- * takes the arguments. */
-int gbrt_call_enter(AstExpr *x, void **fn, void *out);
+/* A call by name (GB_EXPR_CALL): gbrt_call_enter answers 1 with the gBASIC
+ * function it reaches at target[0] (its statement, since an argument may
+ * move the function table), a method's receiver at target[1] and a function
+ * value's `bound` context at target[2], 0 when it reaches none (gbrt_eval it
+ * whole), -1 with *out `nothing` when the count of arguments is refused or
+ * the method is unknown; then each argument into the array `args`,
+ * gbrt_call_abandon(args, evaluated, out) at the first raise, else
+ * gbrt_call_invoke(target, args, count, out), which takes the arguments and
+ * appends the context, so `args` has room for one past `count`. */
+int gbrt_call_enter(AstExpr *x, void **target, void *out);
 void gbrt_call_abandon(void *args, size_t count, void *out);
-void gbrt_call_invoke(void *fn, void *args, size_t count, void *out);
+void gbrt_call_invoke(void **target, void *args, size_t count, void *out);
 /* `name = expression` with no operator, modifier or lock (gbrt_assign_plain),
  * over a GbAssign of gbrt_assign_bytes(): begin (0, or -1 done), the value,
  * end. `return expression`: begin (0, or -1 done), the value, end. The

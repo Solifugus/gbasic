@@ -61,6 +61,17 @@
 #             the least one, a decimal, a double, money, a duration, unknown,
 #             a call, text refused): interpreted, loops.out and loops.err,
 #             status 1; compiled, the same bytes.
+#   values    tests/jit/values.bas takes every way a lowered call through a
+#             function value, a record's method or a qualified call into a
+#             gBASIC library could part from eval_call_rest (a value
+#             reassigned, changing kind, bound, its count refused, shadowed
+#             by a builtin, passed as a parameter, from a library; a method
+#             changing `this`, calling a sibling, replaced, inherited,
+#             refused, gained by a record at one site; a handle's verb; a
+#             library's function in a loop, by its alias, behind a record
+#             of its name and behind a handle of its name, missing; `this`
+#             outside a method): interpreted, values.out and values.err,
+#             status 1; compiled, the same bytes.
 #   report    GBASIC_COMPILE=report's lines against tests/jit/flow.report:
 #             each function compiled once, in the order first called, with
 #             how many of its statements are lowered, the names it holds,
@@ -71,8 +82,8 @@
 # to print something wrong (a gosub's return dispatched one statement early
 # re-ran the gosub, and the first perturbation of this suite hung it). The
 # valgrind tier runs only after the bounded compiled run has passed.
-#   valgrind  the compiled runs of flow.bas, held.bas, calls.bas and
-#             loops.bas under memcheck (the JIT is disposed at exit, or each
+#   valgrind  the compiled runs of flow.bas, held.bas, calls.bas,
+#             loops.bas and values.bas under memcheck (the JIT is disposed at exit, or each
 #             body's unwinding tables read as definitely lost), and
 #             loops.bas interpreted (its loops' state is the compiled ones').
 set -u
@@ -210,6 +221,21 @@ else
     fail "what is lowered: $(grep -E 'do_counts|each_named' "$tmp/lr.err")"
 fi
 
+echo "--- TIER values ---"
+GBASIC_COMPILE=0 timeout 30 ./gbasic tests/jit/values.bas >"$tmp/vi.out" 2>"$tmp/vi.err" </dev/null; virc=$?
+GBASIC_COMPILE=all timeout 60 ./gbasic tests/jit/values.bas >"$tmp/vc.out" 2>"$tmp/vc.err" </dev/null; vcrc=$?
+if cmp -s "$tmp/vi.out" tests/jit/values.out && cmp -s "$tmp/vi.err" tests/jit/values.err && [ "$virc" = 1 ]; then
+    pass "interpreted: values.out, values.err, status 1"
+else
+    fail "values interpreted: status $virc; $(diff "$tmp/vi.out" tests/jit/values.out | head -5) $(diff "$tmp/vi.err" tests/jit/values.err | head -3)"
+fi
+if cmp -s "$tmp/vc.out" "$tmp/vi.out" && cmp -s "$tmp/vc.err" "$tmp/vi.err" && [ "$vcrc" = "$virc" ]; then
+    pass "compiled: stdout, stderr and status $vcrc the interpreter's"
+else
+    compiled_ok=0
+    fail "values compiled: status $vcrc against $virc; $(diff "$tmp/vi.out" "$tmp/vc.out" | head -5) $(diff "$tmp/vi.err" "$tmp/vc.err" | head -5)"
+fi
+
 echo "--- TIER report ---"
 GBASIC_COMPILE=report timeout 30 ./gbasic tests/jit/flow.bas >"$tmp/r.out" 2>"$tmp/r.err" </dev/null
 if cmp -s "$tmp/r.err" tests/jit/flow.report && cmp -s "$tmp/r.out" tests/jit/flow.out; then
@@ -263,6 +289,12 @@ elif vg_available; then
         sed 's/^/  /' "$tmp/vgl.err" | tail -30; fail "valgrind: loops.bas compiled"
     else
         pass "valgrind: loops.bas compiled (no definite leak or invalid access)"
+    fi
+    GBASIC_COMPILE=all vg_run ./gbasic tests/jit/values.bas >/dev/null 2>"$tmp/vgv.err" </dev/null
+    if [ $? = "$VG_EXIT" ]; then
+        sed 's/^/  /' "$tmp/vgv.err" | tail -30; fail "valgrind: values.bas compiled"
+    else
+        pass "valgrind: values.bas compiled (no definite leak or invalid access)"
     fi
     GBASIC_COMPILE=0 vg_run ./gbasic tests/jit/loops.bas >/dev/null 2>"$tmp/vgli.err" </dev/null
     if [ $? = "$VG_EXIT" ]; then

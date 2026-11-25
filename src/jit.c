@@ -757,18 +757,21 @@ static void jit_negate(JitEmit *e, AstExpr *x, LLVMValueRef out) {
 /* the most arguments a lowered call evaluates itself; past it, gbrt_eval */
 #define JIT_CALL_ARGS 32
 
-/* A PLAIN CALL: gbrt_call_enter finds the gBASIC function and checks the
- * count; its arguments evaluated here, by shape, into an array on the
- * compiled code's stack, each followed by eval_user_function_bound's test
- * for a raise; then gbrt_call_invoke. A call reaching no gBASIC function (a
- * builtin) is gbrt_eval's, after a spill, since it may read a name. Nothing
- * is spilled for the call itself: the callee's frame cannot see this one's
- * variables. */
+/* A CALL BY NAME: gbrt_call_enter finds the gBASIC function (a plain
+ * call's, a record's method, a library's or a function value's) and checks
+ * the count; its arguments evaluated here, by shape, into an array on the
+ * compiled code's stack with room for a bound context, each followed by
+ * eval_user_function_bound's test for a raise; then gbrt_call_invoke. A call
+ * reaching no gBASIC function (a builtin, a module's verb) is gbrt_eval's,
+ * after a spill, since it may read a name. Nothing is spilled for the call
+ * itself: the callee's frame cannot see this one's variables, and the names
+ * gbrt_call_enter reads (a receiver, a function value) are never held, since
+ * neither is a number. */
 static void jit_user_call(JitEmit *e, AstExpr *x, LLVMValueRef out) {
     LLVMValueRef node = jit_address(e, x);
     size_t n = x->as.call.args.count;
-    LLVMValueRef fn = jit_bytes(e, sizeof(void *));
-    LLVMValueRef enter_args[] = { node, fn, out };
+    LLVMValueRef target = jit_bytes(e, 3 * sizeof(void *));
+    LLVMValueRef enter_args[] = { node, target, out };
     LLVMValueRef found = jit_call(e, e->call_enter, enter_args, 3);
     LLVMBasicBlockRef user = jit_block(e, "user");
     LLVMBasicBlockRef other = jit_block(e, "other");
@@ -785,7 +788,7 @@ static void jit_user_call(JitEmit *e, AstExpr *x, LLVMValueRef out) {
     jit_call(e, e->eval, eval_args, 2);
     llvm.LLVMBuildBr(e->b, join);
     llvm.LLVMPositionBuilderAtEnd(e->b, user);
-    LLVMValueRef args = jit_bytes(e, e->value_bytes * (n ? n : 1));
+    LLVMValueRef args = jit_bytes(e, e->value_bytes * (n + 1));
     for (size_t i = 0; i < n; i++) {
         jit_expr(e, x->as.call.args.items[i], jit_at(e, args, e->value_bytes * i));
         LLVMBasicBlockRef stop = jit_block(e, "abandoned");
@@ -797,8 +800,7 @@ static void jit_user_call(JitEmit *e, AstExpr *x, LLVMValueRef out) {
         llvm.LLVMBuildBr(e->b, join);
         llvm.LLVMPositionBuilderAtEnd(e->b, next);
     }
-    LLVMValueRef fn_now = llvm.LLVMBuildLoad2(e->b, e->ptr, fn, "");
-    LLVMValueRef invoke[] = { fn_now, args, llvm.LLVMConstInt(e->size, n, 0), out };
+    LLVMValueRef invoke[] = { target, args, llvm.LLVMConstInt(e->size, n, 0), out };
     jit_call(e, e->call_invoke, invoke, 4);
     llvm.LLVMBuildBr(e->b, join);
     llvm.LLVMPositionBuilderAtEnd(e->b, join);

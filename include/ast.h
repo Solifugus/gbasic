@@ -310,6 +310,9 @@ typedef struct {
     int cells_mixed;        /* more than one term with a size among them */
 } AstDuration;
 
+/* a call's `reached` */
+enum { CALL_REACHED_LIBRARY = 1, CALL_REACHED_VALUE = 2 };
+
 struct AstExpr {
     AstExprKind kind;
     int line;
@@ -385,6 +388,12 @@ struct AstExpr {
             unsigned long fn_generation;
             const char *fn_library;
             int has_builtin;   /* gbasic_has_builtin(name): 2 yes, 1 no, 0 not yet */
+            /* how far eval_call_rest has gone: CALL_REACHED_LIBRARY past
+             * every native module to a qualified call, CALL_REACHED_VALUE
+             * past every builtin to a function value; 0 not yet. What it
+             * passed depends only on the names, so the compiled code
+             * (gbrt_call_enter) skips it from then on. */
+            int reached;
         } call;
         struct {
             char *op;

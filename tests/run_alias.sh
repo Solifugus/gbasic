@@ -202,6 +202,33 @@ if [ "$(grep -c '^\[\[1\],\[2\]\]$' "$scratch/dual.out")" = 2 ]; then
 else
     fail "matrix reached through stats AND through the alias, same answer ($(head -1 "$scratch/err"))"
 fi
+# AND A FUNCTION MISSING THERE IS SAID TO BE MISSING. With the name loaded too,
+# the hint that an alias replaced it was false (tests/jit/values.bas found it,
+# 2026-11-24); the control is the replaced name, which keeps the hint.
+cat >"$scratch/dual_missing.bas" <<'EOF'
+load stats
+load matrix as m
+on error goto next
+r = matrix.nonesuch(1)
+print error.message
+r = m.nonesuch(1)
+print error.message
+EOF
+cat >"$scratch/only_alias.bas" <<'EOF'
+load matrix as m
+on error goto next
+r = matrix.nonesuch(1)
+print error.message
+EOF
+GBASIC_PATH=stdlib timeout -k 5 30 ./gbasic "$scratch/dual_missing.bas" >"$scratch/dual_missing.out" 2>&1
+GBASIC_PATH=stdlib timeout -k 5 30 ./gbasic "$scratch/only_alias.bas" >"$scratch/only_alias.out" 2>&1
+if [ "$(grep -c "does not define 'nonesuch'" "$scratch/dual_missing.out")" = 2 ] && \
+   ! grep -q "was loaded as" "$scratch/dual_missing.out" && \
+   grep -q "was loaded as 'm'" "$scratch/only_alias.out"; then
+    pass "a function missing from a name in force is missing; a replaced name still names the alias"
+else
+    fail "missing function under a name in force: $(cat "$scratch/dual_missing.out") / $(cat "$scratch/only_alias.out")"
+fi
 
 # ONE FILE BY TWO SPELLINGS IS ONE LIBRARY. Transward's layout, in shape: the
 # program loads `util.bas`, and a library in `web/` loads the same file as

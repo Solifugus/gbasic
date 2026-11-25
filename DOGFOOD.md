@@ -14226,3 +14226,18 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   when there is no watcher. 40,000 deep builds in 0.04 s.
   `tests/same_value/assign_stores.bas` and a shape tier in
   `tests/run_same_value.sh`.
+
+## 2026-11-24 — CC — while: writing tests/jit/values.bas for the compiler's calls through values, methods and libraries
+- **Type:** bug
+- **Severity:** low
+- **What:** with a library loaded under its own name and under an alias
+  (`load callee from "callee.bas"` and `... as cal`), `callee.twice(4)`
+  worked, but `callee.nonesuch(1)` said "library 'callee' was loaded as
+  'cal', and an alias replaces the library's own name rather than adding to
+  it", which is false there: the name was in force and only the function was
+  missing. The hint asked whether the library had other names, not whether
+  the one written was one of them.
+- **Workaround:** resolved: the hint is given only when the name written is
+  not loaded at all; otherwise the message is "'callee' does not define
+  'nonesuch'". A check in `tests/run_alias.sh`'s coexistence tier, with the
+  replaced name as its control.
