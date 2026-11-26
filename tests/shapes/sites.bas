@@ -4,7 +4,9 @@
 ' wrong when ONE site meets records of DIFFERENT layouts. Every check here
 ' does that, and states its own expected value: a cache that skipped its
 ' check reads the wrong field and prints a MISMATCH. run_shapes.sh's sites
-' tier runs this interpreted and compiled, under valgrind too.
+' tier runs this interpreted and compiled, under valgrind too. The field a
+' cached slot would wrongly give is of ANOTHER type wherever it can be (flip's
+' first field is a number, pair's b is), or a wrong conversion passes.
 program main(args)
     ' one read site, `r.b`, over every layout
     rows = [{ a: 1, b: 2 }, { b: 3, a: 4 }, { x: 0, y: 0, z: 0, b: 5 }, new pair, new flip, wide(20, 6), { a: 1, b: 2 }]
@@ -98,8 +100,8 @@ shape pair
 end shape
 
 shape flip
-    a:text = "first"
     n:number = 5
+    a:text = "first"
     b:text = "20"
     function twice()
         return this.b + this.b
