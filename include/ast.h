@@ -492,6 +492,10 @@ struct AstStmt {
              * a loop body writes back into the array it is walking
              * (`list[i] = item`), which is an in-place path assignment. */
             char *index_name;
+            /* `for each x:number in xs`: each element bound as `x:number =
+             * element` binds it (docs/typed_variables_design.md). Unset (name
+             * NULL) for a loop that names no type. */
+            AstTypeLock lock;
             AstExpr *iterable;
             AstStmtList body;
             /* PLAT-WARN 2107: the dead-write analysis, computed ONCE on first
@@ -739,6 +743,8 @@ AstStmt *ast_with_lock(AstExpr *file, AstStmtList body);
 AstStmt *ast_with_principal(AstExpr *value, AstStmtList body);
 AstStmt *ast_for_each(char *name, char *index_name, AstExpr *iterable,
                       AstStmtList body);
+AstStmt *ast_for_each_locked(char *name, AstTypeLock lock, char *index_name,
+                             AstExpr *iterable, AstStmtList body);
 AstStmt *ast_for_range(char *name, AstExpr *start, AstExpr *limit,
                        AstExpr *step, AstStmtList body);
 AstStmt *ast_do_loop(AstStmtList body, AstExpr *condition);

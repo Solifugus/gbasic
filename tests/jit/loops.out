@@ -22,12 +22,13 @@ none
 0
 9
 refused: for in expects an array, a file, an sql block or a csv source
-refused: z is locked to string by z:text at line 221, and a loop cannot bind a locked variable; use another name for the loop
+refused: z is locked to string by z:text at line 221, so the loop must name the type: write `for each z:text in ...`, or use another name for the loop
 went on
 body raised: division by zero
 15
 0:one 1:two 2:three [one]
 12@2 34@3 
+14
 -7
 7
 -21

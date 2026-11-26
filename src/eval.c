@@ -820,6 +820,7 @@ typedef struct {
     char spelled[24];    /* the type as written: "number", "text", "money(USD)" */
     int line;            /* where the lock was declared */
     int is_return;       /* a function's return type, not a variable's lock */
+    size_t element;      /* a `for each x:T` binding its Nth element, or 0 */
 } TypeLock;
 
 typedef struct {
@@ -15420,7 +15421,7 @@ struct GbList {
     AstStmtList *list;
 };
 
-static int loop_lock_refused(const char *name, int binds_numbers);
+static int loop_lock_refused(const char *name, int binds_numbers, int element);
 
 size_t gbrt_list_bytes(void) {
     return sizeof(GbList);
@@ -15818,7 +15819,7 @@ static void slot_spill(GbSlot *s, const char *key) {
 /* `for i = a to b [step c]` begun: 0 to test the first pass, or -1 with
  * the error result at *out. */
 static int for_begin(AstStmt *stmt, EvalResult *out, const int *saved, GbFor *f) {
-    if (loop_lock_refused(stmt->as.for_range.name, 1)) {
+    if (loop_lock_refused(stmt->as.for_range.name, 1, 0)) {
         gbrt_restore(saved);
         *out = eval_error_result();
         return -1;
@@ -16329,14 +16330,34 @@ static void slot_scan_stmt(SlotScan *sc, AstStmt *stmt) {
         slot_scan_list(sc, &stmt->as.for_range.body);
         return;
     }
-    case AST_STMT_FOR_EACH:
-        slot_scan_note(&sc->refused, &sc->refused_count, name_intern(stmt->as.for_each.name));
-        if (stmt->as.for_each.index_name) {
-            slot_scan_note(&sc->refused, &sc->refused_count,
-                           name_intern(stmt->as.for_each.index_name));
+    case AST_STMT_FOR_EACH: {
+        /* `for each x:number` makes its element a number or refuses, as a
+         * `x:number =` does; the index counts (a csv source's is the place a
+         * record began, which the slot, checking what it is given, leaves to
+         * the frame). Both are bound by name each pass, and the compiled
+         * loop has each slot take its variable again after the binding. */
+        const char *lock = stmt->as.for_each.lock.name;
+        const char *bound[2] = { lock && strcmp(lock, "number") == 0 ? name_intern(stmt->as.for_each.name) : NULL,
+                                 stmt->as.for_each.index_name ? name_intern(stmt->as.for_each.index_name) : NULL };
+        if (!bound[0]) {
+            slot_scan_note(&sc->refused, &sc->refused_count, name_intern(stmt->as.for_each.name));
+        }
+        for (int i = 0; i < 2; i++) {
+            if (!bound[i]) {
+                continue;
+            }
+            size_t n = sc->count;
+            slot_scan_note(&sc->names, &sc->count, bound[i]);
+            AstExpr **grown = realloc(sc->values, sizeof *grown * (n + 1));
+            if (!grown) {
+                abort();
+            }
+            grown[n] = NULL;
+            sc->values = grown;
         }
         slot_scan_list(sc, &stmt->as.for_each.body);
         return;
+    }
     case AST_STMT_IF:
         slot_scan_list(sc, &stmt->as.if_stmt.body);
         slot_scan_list(sc, &stmt->as.if_stmt.else_body);
@@ -16470,6 +16491,10 @@ size_t gbrt_slot_names(AstStmt *fn, const char ***out, size_t *moving) {
 
 size_t gbrt_slot_bytes(void) {
     return sizeof(GbSlot);
+}
+
+const char *gbrt_name_key(const char *name) {
+    return name ? name_intern(name) : NULL;
 }
 
 const char *gbrt_ident_key(AstExpr *x) {
@@ -47682,6 +47707,11 @@ static void lock_refuse(const TypeLock *lock, const char *var, const char *cause
         snprintf(message, sizeof message,
                  "%s returns %s, declared by %s(...):%s at line %d, and this value does not convert: %s",
                  var, lock_kind_word(lock->kind), var, lock->spelled, lock->line, cause);
+    } else if (lock->element) {
+        snprintf(message, sizeof message,
+                 "%s is locked to %s by %s:%s at line %d, and element %zu does not convert: %s",
+                 var, lock_kind_word(lock->kind), var, lock->spelled, lock->line, lock->element,
+                 cause);
     } else {
         snprintf(message, sizeof message,
                  "%s is locked to %s by %s:%s at line %d, and this value does not convert: %s",
@@ -47799,12 +47829,14 @@ static Value lock_convert(const TypeLock *lock, const char *var, Value value) {
     return out;
 }
 
-/* A LOOP DOES NOT BIND A LOCKED VARIABLE in the first version of locks
- * (docs/typed_variables_design.md rule 6), except a number lock on a
- * counter or index, which only ever holds numbers. Refused at the top rather
- * than per element: the loop never starts, so no element half-converts.
- * Returns 1 when it refused. */
-static int loop_lock_refused(const char *name, int binds_numbers) {
+/* A LOOP DOES NOT BIND A LOCKED VARIABLE (docs/typed_variables_design.md
+ * rule 6) unless it names the type itself (`for each x:number in xs`, which
+ * relocks as `x:number = e` does), except a number lock on a counter or
+ * index, which only ever holds numbers. Refused at the top rather than per
+ * element: the loop never starts, so no element half-converts. `element`:
+ * the name is a `for each`'s element, which may name its type. Returns 1
+ * when it refused. */
+static int loop_lock_refused(const char *name, int binds_numbers, int element) {
     if (!name) {
         return 0;
     }
@@ -47813,11 +47845,19 @@ static int loop_lock_refused(const char *name, int binds_numbers) {
         (binds_numbers && held->lock.kind == LOCK_NUMBER)) {
         return 0;
     }
-    char message[320];
-    snprintf(message, sizeof message,
-             "%s is locked to %s by %s:%s at line %d, and a loop cannot bind a locked "
-             "variable; use another name for the loop",
-             name, lock_kind_word(held->lock.kind), name, held->lock.spelled, held->lock.line);
+    char message[400];
+    if (element) {
+        snprintf(message, sizeof message,
+                 "%s is locked to %s by %s:%s at line %d, so the loop must name the type: "
+                 "write `for each %s:%s in ...`, or use another name for the loop",
+                 name, lock_kind_word(held->lock.kind), name, held->lock.spelled, held->lock.line,
+                 name, held->lock.spelled);
+    } else {
+        snprintf(message, sizeof message,
+                 "%s is locked to %s by %s:%s at line %d, and a loop cannot bind a locked "
+                 "variable; use another name for the loop",
+                 name, lock_kind_word(held->lock.kind), name, held->lock.spelled, held->lock.line);
+    }
     runtime_error_raise(message, 1003, "lock");
     return 1;
 }
@@ -50905,6 +50945,8 @@ struct GbEach {
     int kind;
     int failed;              /* a csv source's record would not read */
     size_t index;
+    TypeLock lock;           /* `for each x:T`: what each element converts to */
+    size_t bound;            /* elements bound so far, for a refusal */
     GbLineReader reader;
     CsvCursor cursor;
 #if GBASIC_GSQL
@@ -50924,8 +50966,16 @@ static int each_refused(EvalResult *out, const int *saved) {
 
 /* 0 to test for the first element, or -1 with *out the error */
 static int each_begin(AstStmt *stmt, EvalResult *out, const int *saved, GbEach *each) {
-    if (loop_lock_refused(stmt->as.for_each.name, 0) ||
-        loop_lock_refused(stmt->as.for_each.index_name, 1)) {
+    each->lock.kind = LOCK_NONE;
+    each->bound = 0;
+    if (stmt->as.for_each.lock.name) {
+        if (!type_lock_resolve(stmt->as.for_each.lock, &each->lock)) {
+            return each_refused(out, saved);
+        }
+    } else if (loop_lock_refused(stmt->as.for_each.name, 0, 1)) {
+        return each_refused(out, saved);
+    }
+    if (loop_lock_refused(stmt->as.for_each.index_name, 1, 0)) {
         return each_refused(out, saved);
     }
     int before_error = error_generation;
@@ -51067,6 +51117,38 @@ static int each_end(GbEach *each, EvalResult *out, const int *saved, int returni
     return 0;
 }
 
+/* The element bound to the loop's name: as it is, or, for `for each x:T`,
+ * converted as `x:T = element` converts it, the lock then the variable's.
+ * 0 when it does not convert: the loop has ended with the error at *out. */
+static GB_NOINLINE int each_bind_locked(const char *name, Value element, EvalResult *out,
+                                        const int *saved, GbEach *each) {
+    TypeLock lock = each->lock;
+    lock.element = ++each->bound;
+    int before_error = error_generation;
+    element = lock_convert(&lock, name, element);
+    if (error_generation != before_error) {
+        value_free(element);
+        each_end(each, out, saved, 0);
+        *out = eval_error_result();
+        return 0;
+    }
+    env_set(name, element);
+    Symbol *held = env_find_in_frame(current_env, name);
+    if (held) {
+        held->lock = each->lock;
+    }
+    return 1;
+}
+
+static GB_INLINE int each_bind(const char *name, Value element, EvalResult *out, const int *saved,
+                               GbEach *each) {
+    if (each->lock.kind == LOCK_NONE) {
+        env_set(name, element);
+        return 1;
+    }
+    return each_bind_locked(name, element, out, saved, each);
+}
+
 /* Before each pass: 1 with the next element (and its index or place)
  * assigned, else the loop has ended with *out */
 static GB_INLINE int each_test(AstStmt *stmt, EvalResult *out, const int *saved, GbEach *each) {
@@ -51078,7 +51160,9 @@ static GB_INLINE int each_test(AstStmt *stmt, EvalResult *out, const int *saved,
         if (!gb_line_reader_next(&each->reader, &line, &line_len)) {
             return each_end(each, out, saved, 0);
         }
-        env_set(name, value_string_n(line, line_len));
+        if (!each_bind(name, value_string_n(line, line_len), out, saved, each)) {
+            return 0;
+        }
         if (index_name) {
             /* The LINE NUMBER, which is what an ETL job reports when a
              * row will not parse. Exact, like every other count. */
@@ -51094,7 +51178,10 @@ static GB_INLINE int each_test(AstStmt *stmt, EvalResult *out, const int *saved,
             each->failed = got < 0;
             return each_end(each, out, saved, 0);
         }
-        env_set(name, element);
+        if (!each_bind(name, element, out, saved, each)) {
+            value_free(where);
+            return 0;
+        }
         if (index_name) {
             env_set(index_name, where);
         } else {
@@ -51108,7 +51195,9 @@ static GB_INLINE int each_test(AstStmt *stmt, EvalResult *out, const int *saved,
         if (!gsql_rows_next(each->rows, &row)) {
             return each_end(each, out, saved, 0);
         }
-        env_set(name, row);
+        if (!each_bind(name, row, out, saved, each)) {
+            return 0;
+        }
         if (index_name) {
             env_set(index_name, value_number_exact((long long)each->index));
         }
@@ -51119,7 +51208,10 @@ static GB_INLINE int each_test(AstStmt *stmt, EvalResult *out, const int *saved,
     if (each->index >= each->iterable.as.array.store->count) {
         return each_end(each, out, saved, 0);
     }
-    env_set(name, value_copy(each->iterable.as.array.store->items[each->index]));
+    if (!each_bind(name, value_copy(each->iterable.as.array.store->items[each->index]), out,
+                   saved, each)) {
+        return 0;
+    }
     /* `for each item, i in list`. The index is an ordinary number in the
      * enclosing scope, and it is what makes a write-back expressible --
      * `list[i] = item` is an lvalue path and writes in place, where

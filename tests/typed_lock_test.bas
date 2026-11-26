@@ -250,8 +250,8 @@ function bad_loop()
     end for
     return y
 end function
-check("a loop cannot bind a locked variable", refusal(bad_loop),
-      "y is locked to string by y:string, and a loop cannot bind a locked variable; use another name for the loop")
+check("a loop cannot bind a locked variable unless it names the type", refusal(bad_loop),
+      "y is locked to string by y:string, so the loop must name the type: write `for each y:string in ...`, or use another name for the loop")
 
 i:number = 0
 for i = 1 to 3

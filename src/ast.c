@@ -412,11 +412,19 @@ AstStmt *ast_for_each(char *name, char *index_name, AstExpr *iterable,
     stmt->kind = AST_STMT_FOR_EACH;
     stmt->as.for_each.name = name;
     stmt->as.for_each.index_name = index_name;
+    stmt->as.for_each.lock = ast_type_lock_none();
     stmt->as.for_each.dead_checked = 0;
     stmt->as.for_each.dead_line = 0;
     stmt->as.for_each.dead_column = 0;
     stmt->as.for_each.iterable = iterable;
     stmt->as.for_each.body = body;
+    return stmt;
+}
+
+AstStmt *ast_for_each_locked(char *name, AstTypeLock lock, char *index_name,
+                             AstExpr *iterable, AstStmtList body) {
+    AstStmt *stmt = ast_for_each(name, index_name, iterable, body);
+    stmt->as.for_each.lock = lock;
     return stmt;
 }
 
@@ -1244,12 +1252,18 @@ static void dump_stmt(AstStmt *stmt, int indent) {
         }
         break;
     case AST_STMT_FOR_EACH:
-        if (stmt->as.for_each.index_name) {
-            printf("ForEach %s index %s\n", stmt->as.for_each.name,
-                   stmt->as.for_each.index_name);
-        } else {
-            printf("ForEach %s\n", stmt->as.for_each.name);
+        printf("ForEach %s", stmt->as.for_each.name);
+        if (stmt->as.for_each.lock.name) {
+            if (stmt->as.for_each.lock.arg) {
+                printf(" lock(%s(%s))", stmt->as.for_each.lock.name, stmt->as.for_each.lock.arg);
+            } else {
+                printf(" lock(%s)", stmt->as.for_each.lock.name);
+            }
         }
+        if (stmt->as.for_each.index_name) {
+            printf(" index %s", stmt->as.for_each.index_name);
+        }
+        printf("\n");
         dump_indent(indent + 1);
         printf("Iterable\n");
         dump_expr(stmt->as.for_each.iterable, indent + 2);
@@ -1643,6 +1657,7 @@ static void free_stmt(AstStmt *stmt) {
     case AST_STMT_FOR_EACH:
         free(stmt->as.for_each.name);
         free(stmt->as.for_each.index_name);
+        ast_type_lock_free(stmt->as.for_each.lock);
         free_expr(stmt->as.for_each.iterable);
         ast_free_program(stmt->as.for_each.body);
         break;

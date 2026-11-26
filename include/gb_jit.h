@@ -163,6 +163,8 @@ size_t gbrt_slot_names(AstStmt *fn, const char ***out, size_t *moving);
 size_t gbrt_slot_bytes(void);
 int gbrt_slots_allowed(void);
 const char *gbrt_ident_key(AstExpr *x);
+/* a name as held slots are keyed (interned), or NULL for NULL */
+const char *gbrt_name_key(const char *name);
 const char *gbrt_for_key(AstStmt *stmt);
 void gbrt_layout(GbLayout *l);
 void gbrt_templates(void *no_result, void *number, void *boolean);

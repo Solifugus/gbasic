@@ -61,7 +61,9 @@
 #             after a held name is written, refusals, a raise in the body, a
 #             file closed by a break, a csv source; `-x` on an exact integer,
 #             the least one, a decimal, a double, money, a duration, unknown,
-#             a call, text refused): interpreted, loops.out and loops.err,
+#             a call, text refused; `for each x:number, i` holding the
+#             element, the index and the total they feed): interpreted,
+#             loops.out and loops.err,
 #             status 1; compiled, the same bytes.
 #   values    tests/jit/values.bas takes every way a lowered call through a
 #             function value, a record's method or a qualified call into a
@@ -221,6 +223,14 @@ if grep -qx 'compile: do_counts: 6 statements, 6 lowered, 19 expressions, holds 
     pass "a do and a nested for each lowered, the do's names held"
 else
     fail "what is lowered: $(grep -E 'do_counts|each_named' "$tmp/lr.err")"
+fi
+# `for each x:number, i`: the element, the index and the total they feed held
+# (an untyped element holds none of them: each_sum above)
+if grep -qx 'compile: each_typed: 4 statements, 4 lowered, 7 expressions, holds i total x, ran 1 time' "$tmp/lr.err" &&
+   grep -q 'compile: each_sum: .*expressions, ran 1 time$' "$tmp/lr.err"; then
+    pass "a typed element and its index held, and the total; untyped, none"
+else
+    fail "typed element: $(grep -E 'each_typed|each_sum' "$tmp/lr.err")"
 fi
 
 echo "--- TIER values ---"

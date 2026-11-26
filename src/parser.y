@@ -1192,6 +1192,36 @@ for_each_statement
         if (!for_end_matches(ctx, $3, $10, @10.first_line, @10.first_column)) { YYERROR; }
         $$ = ast_for_each($3, $5, $7, $9);
       }
+    /* `for each x:number in xs` (Matthew, 2026-11-25): each element bound as
+     * `x:number = element` binds it, the lock checked here as an
+     * assignment's is. COLON after the name is the one lookahead that tells
+     * these from the forms above, so no conflicts. */
+    | FOR IDENT COLON type_lock IN expression NEWLINE statement_list for_end {
+        if (!type_lock_check(ctx, $2, $4.name, $4.arg, @4.first_line, @4.first_column,
+                             @4.last_line, @4.last_column)) { YYERROR; }
+        if (!for_end_matches(ctx, $2, $9, @9.first_line, @9.first_column)) { YYERROR; }
+        $$ = ast_for_each_locked($2, $4, NULL, $6, $8);
+      }
+    | FOR EACH IDENT COLON type_lock IN expression NEWLINE statement_list for_end {
+        if (!type_lock_check(ctx, $3, $5.name, $5.arg, @5.first_line, @5.first_column,
+                             @5.last_line, @5.last_column)) { YYERROR; }
+        if (!for_end_matches(ctx, $3, $10, @10.first_line, @10.first_column)) { YYERROR; }
+        $$ = ast_for_each_locked($3, $5, NULL, $7, $9);
+      }
+    | FOR IDENT COLON type_lock COMMA IDENT IN expression NEWLINE statement_list for_end {
+        if (!type_lock_check(ctx, $2, $4.name, $4.arg, @4.first_line, @4.first_column,
+                             @4.last_line, @4.last_column)) { YYERROR; }
+        if (!for_each_index_distinct(ctx, $2, $6, @6.first_line, @6.first_column)) { YYERROR; }
+        if (!for_end_matches(ctx, $2, $11, @11.first_line, @11.first_column)) { YYERROR; }
+        $$ = ast_for_each_locked($2, $4, $6, $8, $10);
+      }
+    | FOR EACH IDENT COLON type_lock COMMA IDENT IN expression NEWLINE statement_list for_end {
+        if (!type_lock_check(ctx, $3, $5.name, $5.arg, @5.first_line, @5.first_column,
+                             @5.last_line, @5.last_column)) { YYERROR; }
+        if (!for_each_index_distinct(ctx, $3, $7, @7.first_line, @7.first_column)) { YYERROR; }
+        if (!for_end_matches(ctx, $3, $12, @12.first_line, @12.first_column)) { YYERROR; }
+        $$ = ast_for_each_locked($3, $5, $7, $9, $11);
+      }
     /* Counted loop. `to` is INCLUSIVE, as every BASIC has had it, and `step`
      * defaults to 1. Distinguished from `for each`/`for ... in` by the token
      * after the name -- OP_EQ here, IN there -- so one lookahead settles it. */

@@ -1,2 +1,2 @@
-runtime error at tests/jit/loops.bas:330:13: division by zero
-  in never  tests/jit/loops.bas:333:1
+runtime error at tests/jit/loops.bas:340:13: division by zero
+  in never  tests/jit/loops.bas:343:1

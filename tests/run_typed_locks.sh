@@ -17,6 +17,11 @@
 #      refuses at the call; `function f(...):number` converts every `return`
 #      and refuses at the return. A modifier used inside a typed function
 #      keeps its own return.
+#   1c. LOOP ELEMENTS -- tests/typed_for_each_test.bas, the same shape:
+#      `for each x:number in xs` converts each element as `x:number = e`
+#      would, keeps absence, refuses at the `for each` naming the element's
+#      place (stopping the loop), and the lock outlives the loop; a bare loop
+#      over the locked name is told to name the type (Matthew, 2026-11-25).
 #   2. PARSE-TIME REFUSALS -- a name that is not a data type is refused before
 #      anything runs, and a foreign spelling (int, str, bool, USD) is answered
 #      with the gBASIC one. Exact messages, nonzero exit, no output.
@@ -82,6 +87,23 @@ else
     status=1
 fi
 
+# --- Tier 1c: loop elements ------------------------------------------------------
+if timeout 120 ./gbasic tests/typed_for_each_test.bas >"$work/eout" 2>"$work/eerr" </dev/null; then
+    checks=$(sed -n 's/^checks: //p' "$work/eout")
+    if grep -q '^mismatches: 0$' "$work/eout" && [ "${checks:-0}" -ge 16 ] && [ ! -s "$work/eerr" ]; then
+        printf 'PASS tests/typed_for_each_test.bas (%s checks)\n' "$checks"
+    else
+        printf 'FAIL tests/typed_for_each_test.bas -- typed loop elements moved\n'
+        grep -E '^MISMATCH|^checks|^mismatches' "$work/eout"
+        cat "$work/eerr"
+        status=1
+    fi
+else
+    printf 'FAIL tests/typed_for_each_test.bas (exit)\n'
+    cat "$work/eerr"
+    status=1
+fi
+
 # --- Tier 2: parse-time refusals ----------------------------------------------
 refuse() {
     local src=$1 want=$2
@@ -112,6 +134,12 @@ refuse 'x:number(2) = 1'    "syntax error"
 refuse 'x:date(ISO) = 1'    "date takes no argument; only money does, as in money(USD)"
 refuse 'x:array = 1'        "'array' cannot be a lock: a lock is for a data type"
 refuse 'x:trimmed = 1'      "A lens such as {trimmed} is written in braces"
+refuse 'for each x:int in [1]
+    print x
+end for'                    "p.bas:1:12: 'int' is not a gBASIC type; write x:number"
+refuse 'for x:bool, i in [true]
+    print x
+end for'                    "'bool' is not a gBASIC type; write x:boolean"
 refuse 'function f(a:int)
 end function'                "p.bas:1:14: 'int' is not a gBASIC type; write a:number"
 refuse 'function f(a, b:bool = true)
@@ -160,10 +188,11 @@ else
 fi
 
 # --- Tier 4: --ast ------------------------------------------------------------
-printf 'm:money(USD) = 1\nn:number = 2\nfunction f(a, b:money(EUR)):date\n    return 1\nend function\n' >"$work/a.bas"
+printf 'm:money(USD) = 1\nn:number = 2\nfunction f(a, b:money(EUR)):date\n    return 1\nend function\nfor each x:money(USD), i in [1]\n    print x\nend for\n' >"$work/a.bas"
 ./gbasic --ast "$work/a.bas" >"$work/a.out" 2>&1
 if grep -q 'Assign lock(money(USD))' "$work/a.out" && grep -q 'Assign lock(number)' "$work/a.out" \
-   && grep -q 'Parameters a b:money(EUR)$' "$work/a.out" && grep -q 'Returns date$' "$work/a.out"; then
+   && grep -q 'Parameters a b:money(EUR)$' "$work/a.out" && grep -q 'Returns date$' "$work/a.out" \
+   && grep -q 'ForEach x lock(money(USD)) index i$' "$work/a.out"; then
     printf 'PASS --ast shows each lock\n'
 else
     printf 'FAIL --ast does not show the lock:\n'
@@ -187,6 +216,14 @@ if vg_available; then
     else
         printf 'FAIL valgrind tests/typed_function_test.bas\n'
         tail -30 "$work/vgf.err"
+        status=1
+    fi
+    if vg_run ./gbasic tests/typed_for_each_test.bas >"$work/vge.out" 2>"$work/vge.err" </dev/null \
+       && grep -q '^mismatches: 0$' "$work/vge.out"; then
+        printf 'PASS valgrind tests/typed_for_each_test.bas\n'
+    else
+        printf 'FAIL valgrind tests/typed_for_each_test.bas\n'
+        tail -30 "$work/vge.err"
         status=1
     fi
 else

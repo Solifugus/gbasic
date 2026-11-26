@@ -1032,8 +1032,9 @@ static void jit_stmt_in(JitEmit *e, LLVMValueRef state, AstStmt *stmt, size_t in
         return;
     }
     if (stmt->kind == AST_STMT_FOR_EACH) {
-        /* the element (and its index) assigned by the runtime, by name: a
-         * name the walk never holds */
+        /* the element (and its index) assigned by the runtime, by name; a
+         * held one (an element declared `:number`, an index) takes its
+         * variable again after each binding */
         e->lowered++;
         LLVMValueRef saved = jit_bytes(e, 2 * sizeof(int));
         LLVMValueRef l = jit_bytes(e, gbrt_list_bytes());
@@ -1051,6 +1052,17 @@ static void jit_stmt_in(JitEmit *e, LLVMValueRef state, AstStmt *stmt, size_t in
         LLVMValueRef truth = jit_call(e, e->each_test, args, 4);
         llvm.LLVMBuildCondBr(e->b, llvm.LLVMBuildICmp(e->b, LLVMIntEQ, truth, one, ""), body, join);
         llvm.LLVMPositionBuilderAtEnd(e->b, body);
+        const char *bound[2] = { gbrt_name_key(stmt->as.for_each.name),
+                                 gbrt_name_key(stmt->as.for_each.index_name) };
+        for (int i = 0; i < 2; i++) {
+            for (size_t k = 0; bound[i] && k < e->slot_count; k++) {
+                if (e->keys[k] == bound[i]) {
+                    LLVMValueRef retake[] = { e->slot_at[k], jit_address(e, &e->keys[k]),
+                                              llvm.LLVMConstInt(e->size, 1, 0) };
+                    jit_call(e, e->slots_retake, retake, 3);
+                }
+            }
+        }
         jit_nested(e, l, &stmt->as.for_each.body);
         LLVMValueRef next_args[] = { node, state, l, saved, each };
         LLVMValueRef again = jit_call(e, e->each_next, next_args, 5);

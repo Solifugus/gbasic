@@ -266,6 +266,15 @@ function each_csv()
     return out
 end function
 
+' a typed element and the index held, and the total they feed
+function each_typed()
+    total = 0
+    for each x:number, i in [3, "4", 5]
+        total = total + x * i
+    end for
+    return total
+end function
+
 ' `-x` on every kind it takes
 function negations()
     n = 7
@@ -319,6 +328,7 @@ write(p, "one" + chr(10) + "two" + chr(10) + "three" + chr(10))
 print each_file(p)
 delete(p)
 print each_csv()
+print each_typed()
 print negations()
 print negation_refused()
 
