@@ -4157,8 +4157,98 @@ static Value gsql_eval_sql(AstExpr *expr) {
     return text;
 }
 
+/* gsql.expect(db, table, shape) (docs/shapes_design.md §6.3, Q5 ruled): the
+ * table is described from its plan, nothing run, and each of the shape's
+ * fields must have a column of its name and kind. Every problem is named at
+ * once, at the line that states the expectation, rather than at the first
+ * write that would have found one. Shapes do not create tables. */
+static Value gsql_eval_expect(AstExpr *expr) {
+    if (expr->as.call.args.count != 3) {
+        gsql_module_refuse("gsql.expect expects a connection, a table's name and a shape, such as "
+                           "gsql.expect(db, \"customer\", customer)");
+        return value_null();
+    }
+    GsqlConnectionValue *c = gsql_connection_arg(expr, "expect");
+    if (!c) {
+        return value_null();
+    }
+    char *table = gsql_text_arg(expr, 1, "expect", "the table's name");
+    if (!table) {
+        return value_null();
+    }
+    Value shaped = eval_expr(expr->as.call.args.items[2]);
+    const struct GbShape *shape = !error_action_pending() && shaped.kind == VALUE_RECORD
+                                      ? record_shape(&shaped) : NULL;
+    value_free(shaped);
+    if (error_action_pending()) {
+        free(table);
+        return value_null();
+    }
+    if (!shape) {
+        free(table);
+        gsql_module_refuse("gsql.expect: the third argument is a shape, such as customer from `shape customer`");
+        return value_null();
+    }
+    size_t cap = 64, len = 0;
+    char *sql = malloc(cap);
+    if (!sql) {
+        abort();
+    }
+    sql[0] = 0;
+    gsql_insert_put(&sql, &len, &cap, "select * from ");
+    gsql_insert_quote(&sql, &len, &cap, table);
+    Value body = value_record(NULL, 0);
+    record_set(&body, "statement", value_string(sql));
+    record_set(&body, "batch", value_number_exact(GSQL_MODULE_BATCH));
+    record_set(&body, "describe", value_bool(1));
+    Value reply;
+    unsigned type;
+    if (!gsql_request(c, GSQL_M_QUERY, body, "expect", sql, &reply, &type)) {
+        free(sql);
+        free(table);
+        return value_null();
+    }
+    free(sql);
+    Value *cols = gsql_field(&reply, "columns");
+    Value problems = shape_table_problems(shape, cols, table);
+    value_free(reply);
+    size_t n = problems.as.array.store->count;
+    if (n > 0) {
+        size_t mcap = 256, mlen = 0;
+        char *msg = malloc(mcap);
+        if (!msg) {
+            abort();
+        }
+        msg[0] = 0;
+        char head[300];
+        snprintf(head, sizeof head, "gsql.expect: table %.100s does not hold shape %s (%s is declared at line %d): ",
+                 table, shape_name_of(shape), shape_name_of(shape), shape_line_of(shape));
+        gsql_insert_put(&msg, &mlen, &mcap, head);
+        for (size_t i = 0; i < n; i++) {
+            if (i) {
+                gsql_insert_put(&msg, &mlen, &mcap, "; ");
+            }
+            gsql_insert_put(&msg, &mlen, &mcap, problems.as.array.store->items[i].as.string);
+        }
+        Value details = value_record(NULL, 0);
+        record_set(&details, "table", value_string(table));
+        record_set(&details, "shape", value_string(shape_name_of(shape)));
+        record_set(&details, "problems", problems);
+        error_set_state_full(msg, GSQL_ERROR_CODE, "gsql", details, value_null(), 0, 0);
+        error_generation++;
+        raise_in_flight = 1;
+        free(msg);
+        free(table);
+        return value_null();
+    }
+    value_free(problems);
+    free(table);
+    return value_null();
+}
+
 static Value gsql_eval_call(AstExpr *expr) {
     const char *fn = expr->as.call.name;
+    if (CALL_IS(expr, expect)) return gsql_eval_expect(expr);
     if (CALL_IS(expr, connect)) return gsql_eval_connect(expr);
     if (CALL_IS(expr, query)) return gsql_eval_query(expr);
     if (CALL_IS(expr, exec)) return gsql_eval_exec(expr);

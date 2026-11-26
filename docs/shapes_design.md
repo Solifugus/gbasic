@@ -1,9 +1,11 @@
 # Shapes: a record's declared form
 
-Status: **ruled 2026-11-26; increments 0, 1 and 2 built 2026-11-26**
+Status: **ruled 2026-11-26; increments 0 to 3 built 2026-11-26**
 (tests/run_reserved_forms.sh, tests/run_shapes.sh): the block, instances,
-fixed fields, writes, methods and shaped fields, and the shape as a lock
-(§5). Increment 3, the boundaries (§6), is next. The concept
+fixed fields, writes, methods and shaped fields, the shape as a lock (§5),
+and the boundaries (§6.1-§6.3: CSV, `json_schema`, G-SQL rows and
+`gsql.expect`). `llm.ask` with a shape (§6.5) goes with the AI-engineering
+work; the compiler (§7) is increment 4. The concept
 was agreed by Matthew on 2026-11-25 ("It feels like a more intuitive and
 higher level C struct"), with three rulings: the word is worth having (as a
 contextual keyword, ruled the same day), fixed means fixed (§4.2), and a shape
@@ -306,9 +308,11 @@ not two).
 - **Shapes do not create tables.** Keys, indexes, foreign keys and required
   columns are storage, not form. Matthew (2026-11-25): schema from gBASIC is
   where this may grow, later; nothing here forecloses it.
-- The kinds map one to one: number, text, boolean, date, datetime, duration,
-  money. A field of a kind G-SQL lacks (`file`, `dir`, `time`) cannot describe
-  a column, and `expect` says so.
+- The kinds map one to one: number (an `integer` column too), text, boolean,
+  date, time, datetime, duration, money, and a shaped field a `record`
+  column. A field of a kind G-SQL lacks (`file`, `dir`) cannot describe a
+  column, and `expect` says so. (This list first left out `time`, which G-SQL
+  has: corrected when building it.)
 
 ### 6.4 Frames
 
@@ -323,6 +327,42 @@ the core.
 format and converts the reply into the shape, each field that does not fit
 refused by name: the most common thing an AI engineer checks by hand. This is
 the reason shapes come before the AI-engineering increments in the 1.0 order.
+
+**What building increment 3 settled** (2026-11-26):
+
+- **A shape is passed as a value.** A shape's name is bound to its prototype,
+  a shaped record, so `csv.records(f, invoice)` needs no new grammar: a verb
+  reads a shaped record in the argument after the data as the shape, and a
+  plain record there as the options. An instance names its shape too.
+- **CSV's warnings are said at open**, from the header, once however many
+  records follow: per record they would be the same sentence a million times.
+  A cell refused names its line, record and column (`error.details` too), the
+  field's own words after; under `problems: "deliver"` it is the record's
+  problem and its field `nothing`. An empty cell is `nothing` outside a text
+  field, so what csv.write writes for `nothing` reads back as `nothing`.
+  Ambiguity is refused at open: two columns for one field, one column for two
+  fields, a column for a shaped field (a record in one cell).
+- **WHAT THE SCHEMA ADMITS, THE LOCK CONVERTS.** That is the property
+  `json_schema` is held to, by 3000 generated documents judged against the
+  schema from the JSON Schema and RFC 3339 specs. Measuring it moved three
+  things: RFC 3339's `date-time` admits fractional seconds and a lowercase
+  `t`, its `time` requires an offset, and gBASIC's locks refuse all three, so
+  `date` and `datetime` carry a pattern beside their format and `time` a
+  pattern alone; and the duration lock refused all text, though `{duration}`
+  has read it since abbbd3bb, a stale rule now gone (DOGFOOD 2026-11-26). The
+  control reads the same schema without its patterns and must find answers
+  the locks refuse; it finds dozens.
+- **"One generator, not two" is not yet true.** `tools.param_schema` writes
+  its own schema from a tool's `params` list, which is not a shape; the two
+  agree on the keys' order and on JSON Schema's type words (`tools` wrote
+  `"record"`, no JSON Schema type, until this increment). They become one when
+  `tools` takes a shape for its parameters, with `llm.ask` (§6.5).
+- **`gsql.expect` names every problem at once** and does not stop at the
+  first: a schema mismatch is a list to fix, and a field with a default still
+  needs its column (a default is for a record missing a field, not a table
+  missing a column). A column the shape does not name is no problem, since a
+  shape may read part of a row, but reading `select *` into such a shape
+  warns 2126 at each site, as any extra field does.
 
 ## 7. The compiler
 

@@ -1,0 +1,9 @@
+customer holds its shape
+1 Ann 12.50 2026-01-05 true
+2 Bo 3.00 2026-02-01 false
+3 Cy 0.00 2026-03-01 true
+Ann 25.00
+Cy 0.00
+gsql.expect: table customer does not hold shape wrong (wrong is declared at line 72): wrong.name is number, and column name is text; wrong.balance is money(EUR), and column balance is money(USD); wrong.gone has no column in customer; wrong.opened is a note, held in a record column, and column opened is date; wrong.spot has no column in customer; wrong.anything has no column in customer
+["wrong.name is number, and column name is text","wrong.balance is money(EUR), and column balance is money(USD)","wrong.gone has no column in customer","wrong.opened is a note, held in a record column, and column opened is date","wrong.spot has no column in customer","wrong.anything has no column in customer"]
+vip Di

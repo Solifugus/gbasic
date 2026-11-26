@@ -574,6 +574,10 @@ end for
   break. `csv.write(f, rows, options)` writes a header (the first record's names,
   or `names:`) and the rows; a record with different names is refused naming its
   row. Options: `delimiter`, `quote`, `names`, `line_end` (`"\n"` or `"\r\n"`).
+- **Through a shape** (*after 0.12.0*): `csv.records(f, shape, options)`,
+  `csv.parse(text, shape, options)` and `csv.write(f, rows, shape, options)`
+  read each record into the shape and write the shape's header; see
+  [Shapes](#shapes).
   `unknown` and `nothing` are written as an empty field. Money keeps every digit
   it holds (`1250.7512`), where `print` and `string()` show the currency's
   places (`1250.75`).
@@ -1589,9 +1593,11 @@ The types are `number`, `string` (or `text`), `boolean`, `date`, `time`,
 One type, no chain: a lens such as `{trimmed}` stays in braces and applies
 once. The conversion **is** the brace modifier of the same name, so `x:number`
 and `{number}` cannot disagree. `boolean` takes `true`, `false`, or the text
-`"true"`/`"false"` in any case; `duration` takes only a duration; a
-`money(USD)` lock refuses money in another currency, since that conversion
-needs a rate.
+`"true"`/`"false"` in any case; `duration` takes a duration, its text as
+gBASIC prints it, or a whole number of seconds, as `{duration}` does (*after
+0.12.0*; it used to refuse everything but a duration, so a file or a JSON
+answer could never fill one); a `money(USD)` lock refuses money in another
+currency, since that conversion needs a rate.
 
 - **A refusal names the lock:** `qty is locked to number by qty:number at line
   1, and this value does not convert: ...`. The old value is kept.
@@ -1659,7 +1665,7 @@ print line_total("3", "1.25")     ' 3.75: each argument converts
 ## Shapes
 
 A **shape** is a record whose fields are declared (docs/shapes_design.md;
-increments 1 and 2, 2026-11-26). Each field line is written as a typed variable is,
+increments 1 to 3, 2026-11-26). Each field line is written as a typed variable is,
 and a write converts into the field's type or is refused, exactly as a lock
 does:
 
@@ -1732,6 +1738,42 @@ for each r:account in rows          ' each element; refused by its number
   the nearest type or shape offered (`x:nubmer`: "did you mean number?").
   Without a `program` block a shape is declared when its line is reached, as
   a function is, so a lock above it is refused when it runs.
+
+**A shape at the edges** (increment 3, 2026-11-26): where data comes in and
+goes out.
+
+<!--fragment: four uses, each needing a file, a database or a shape declared elsewhere-->
+```basic
+for each inv, at in csv.records(f, invoice)   ' each record an invoice
+csv.write(f, invoices, invoice)               ' the header from the shape
+spec = json_schema(invoice)                   ' what a model is told to answer
+gsql.expect(db, "invoice", invoice)           ' the table checked, nothing run
+```
+
+- **CSV**: the header is matched to the fields once, when the file opens: by
+  name, then with case, spaces and `_` ignored (`Invoice Date` finds
+  `invoice_date`). A column no field matches is dropped and a field no column
+  matches takes its default, or is `nothing`, each warned once (2126, 2127)
+  however many records follow. Each cell converts into its field; one that
+  does not is refused naming its line, record and column, and with
+  `problems: "deliver"` it is the record's `at.problem` instead, its field
+  `nothing`. An empty cell is `nothing` in a field typed other than `text`.
+  Two columns for one field, a column for two, or a column for a shaped field
+  are refused at open, and so is a shape with `header: false` and no `names:`.
+  A column named nothing like its field is not matched (aliases wait on a
+  broader renaming decision). `csv.write(f, rows, shape)` writes the shape's
+  fields in declared order as the header, even for no rows, and converts each
+  row into the shape first.
+- **JSON**: `x:invoice = json_decode(text)` converts (§5's rules), and
+  `json_schema(invoice)` is the shape's JSON Schema. What it admits, the
+  shape's locks convert: a kind JSON has no type for is a string held by a
+  pattern no wider than its lock reads, so a model that answers within the
+  schema is never refused.
+- **G-SQL**: a row converts into a shape as any record does
+  (`for each c:customer in db.customer[.active]`), and
+  `gsql.expect(db, table, shape)` checks the table against the shape when the
+  program states it, naming every field with no column of its name or a
+  column of another kind at once. Shapes do not create tables.
 
 ## Modifiers
 
@@ -2983,6 +3025,16 @@ The module provides:
   `money(USD)`, `date`, ...), `any` for an expression the planner cannot type.
   A table's columns are `db.columns("select * from t")`. A statement that
   returns no rows is refused as `STATE`.
+- `connection.expect(table, shape)` (`gsql.expect`) *(after 0.12.0)* — the
+  table checked against a shape (docs/shapes_design.md §6.3), described from
+  its plan with nothing run: each field must have a column of its name whose
+  kind holds it (`number` takes an `integer` column, `text` a `string`, a
+  shaped field a `record`). Every problem is named at once, `gsql.expect: table
+  customer does not hold shape customer (customer is declared at line 4):
+  customer.email has no column in customer; customer.balance is money(EUR),
+  and column balance is money(USD)`, with `error.details.problems` holding
+  each. A column the shape does not name is no problem, and a field with a
+  default still needs its column. Shapes do not create tables.
 - `connection.insert(table, rows)` (`gsql.insert`) *(after 0.10.0)* — many rows
   in one call. `rows` is an array of records keyed by column name, as a frame's
   rows are; a column a row leaves out takes its default, and each value is
@@ -8623,6 +8675,20 @@ count({})                      ' 0
 - `json_encode(value)` - **standards-compliant JSON (RFC 8259)** for external
   interchange: HTTP APIs, LLM providers, anything outside gBASIC
 - `json_encodable(value)` - preflight predicate: would `json_encode` succeed?
+- `json_schema(shape)` *(after 0.12.0)* - a shape's JSON Schema, as a record:
+  `{ type: "object", properties, required, additionalProperties: false }`,
+  the keys in the order `tools` writes a tool's parameters. A field with no
+  default is required. `number` and `boolean` are JSON's own; `text`, `file`
+  and `dir` a string; `date` and `datetime` a string with RFC 3339's format
+  AND a pattern, since RFC 3339 also allows fractional seconds and a
+  lowercase `t`, which gBASIC's locks refuse; `time` a pattern only (RFC 3339's
+  time requires an offset, which a time lock refuses); `duration` a pattern of
+  its printed text; `money(USD)` a decimal string of at most the digits the
+  currency stores (a JSON number would round it); a shaped field its shape's
+  object; an untyped field `{}`. Anything the schema admits converts into the
+  shape with nothing refused: `tests/run_shapes.sh`'s schema tier holds 3000
+  generated documents to it. A shape inside itself is refused, since the
+  schema is written out in full.
 - `quote(value)` - gBASIC source code literal with escaping
 - `serialize(value)` - exact binary round-trip serialization (see below).
   Every type survives and, since version 3, so does every digit: a `number`

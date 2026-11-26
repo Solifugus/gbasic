@@ -1302,6 +1302,22 @@ static void webserver_clear(void);
 static FunctionDef *function_resolve(const char *library, const char *name);
 static FunctionDef *shape_method_find(const Value *record, const char *name);
 static int shape_write(const Value *record, const char *name, size_t length, Value *value);
+/* the csv module's way to a shape (§6.1), defined with the shapes */
+static void csv_raise_at(const char *message, uint64_t line, uint64_t offset, uint64_t record);
+static int shape_columns(const struct GbShape *shape, const char *label, char *const *names,
+                         const size_t *lens, size_t n, const char *where, uint64_t line,
+                         uint64_t offset, int *field_of);
+static Value shape_blank(const struct GbShape *shape);
+static int shape_cell(const struct GbShape *shape, Value *record, int field, const char *cell,
+                      size_t len);
+static Value shape_field_names(const struct GbShape *shape);
+static const char *shape_name_of(const struct GbShape *shape);
+static Value shape_convert(const struct GbShape *shape, Value record);
+static Value shape_json_schema(const struct GbShape *shape, const struct GbShape **seen, size_t depth);
+#if GBASIC_GSQL
+static Value shape_table_problems(const struct GbShape *shape, const Value *columns, const char *table);
+static int shape_line_of(const struct GbShape *shape);
+#endif
 /* private loads (docs/library_private_loads_design.md): a written qualifier's
    identity in the calling scope, and an identity as a user reads it */
 static const char *library_identity_of(const char *written);
@@ -41110,6 +41126,30 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return value_bool(ok);
     }
 
+    if (CALL_IS(expr, json_schema)) {
+        /* a shape's JSON Schema (docs/shapes_design.md §6.2): what a model is
+           told to answer, and what the shape's lock then checks */
+        if (expr->as.call.args.count != 1) {
+            runtime_error_raise("json_schema expects one argument: a shape, such as invoice from `shape invoice`",
+                                1003, "shape");
+            return value_null();
+        }
+        Value arg = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(arg);
+            return value_null();
+        }
+        const struct GbShape *shape = arg.kind == VALUE_RECORD ? record_shape(&arg) : NULL;
+        value_free(arg);
+        if (!shape) {
+            runtime_error_raise("json_schema expects a shape, such as invoice from `shape invoice`; "
+                                "a plain record has no declared form to describe", 1003, "shape");
+            return value_null();
+        }
+        const struct GbShape *seen[64];
+        return shape_json_schema(shape, seen, 0);
+    }
+
     if (CALL_IS(expr, decode)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("decode expects one argument", 1003, "serialization");
@@ -47946,11 +47986,6 @@ static Value lock_convert(const TypeLock *lock, const char *var, Value value) {
         lock_refuse(lock, var, "a boolean is true or false, or the text \"true\" or \"false\"");
         return value_null();
     }
-    if (lock->kind == LOCK_DURATION) {
-        value_free(value);
-        lock_refuse(lock, var, "only a duration converts to a duration (write 3 days, 90 minutes)");
-        return value_null();
-    }
     if (lock->kind == LOCK_MONEY && value.kind == VALUE_MONEY) {
         /* Another currency is a conversion at a RATE, which a lock cannot know. */
         value_free(value);
@@ -48453,6 +48488,415 @@ static int shape_register(AstStmt *stmt) {
     gb_parse_shape_known = shape_known_to_runtime;
     env_set(name, value_copy(shape->proto));
     return 1;
+}
+
+/* ---- A shape at a file's edge (§6.1): the csv module's half ----------------
+ *
+ * csv.c is included above the shapes, so it reaches them through these. */
+
+/* a column's name as the header is matched the second time: case, spaces and
+   `_` ignored, so "Invoice Date" finds invoice_date */
+static int shape_column_like(const char *a, size_t alen, const char *b, size_t blen) {
+    size_t i = 0, j = 0;
+    for (;;) {
+        while (i < alen && (a[i] == ' ' || a[i] == '_')) {
+            i++;
+        }
+        while (j < blen && (b[j] == ' ' || b[j] == '_')) {
+            j++;
+        }
+        if (i == alen || j == blen) {
+            return i == alen && j == blen;
+        }
+        if (tolower((unsigned char)a[i]) != tolower((unsigned char)b[j])) {
+            return 0;
+        }
+        i++;
+        j++;
+    }
+}
+
+/* Match a header's columns to the shape's fields, once, at open: by name,
+ * then by shape_column_like. field_of[c] is the field column c fills, or -1.
+ * A column no field matches is dropped and warned (2126); a field no column
+ * matches takes its default silently, or is nothing and warned (2127). Two
+ * columns for one field, a column for two fields and a column for a shaped
+ * field (a record in one cell) are refused. Answers 0 having raised. */
+static int shape_columns(const struct GbShape *shape, const char *label, char *const *names,
+                         const size_t *lens, size_t n, const char *where, uint64_t line,
+                         uint64_t offset, int *field_of) {
+    char message[700];
+    int *column_of = malloc(sizeof(int) * (shape->count ? shape->count : 1));
+    if (!column_of) {
+        abort();
+    }
+    for (size_t c = 0; c < n; c++) {
+        field_of[c] = -1;
+    }
+    for (size_t k = 0; k < shape->count; k++) {
+        column_of[k] = -1;
+        for (size_t c = 0; c < n; c++) {
+            if (lens[c] == strlen(shape->fields[k].name) &&
+                memcmp(names[c], shape->fields[k].name, lens[c]) == 0) {
+                column_of[k] = (int)c;
+                field_of[c] = (int)k;
+            }
+        }
+    }
+    int ok = 1;
+    for (size_t k = 0; k < shape->count && ok; k++) {
+        if (column_of[k] >= 0) {
+            continue;
+        }
+        const char *fname = shape->fields[k].name;
+        for (size_t c = 0; c < n && ok; c++) {
+            if (field_of[c] >= 0 || !shape_column_like(names[c], lens[c], fname, strlen(fname))) {
+                continue;
+            }
+            if (column_of[k] >= 0) {
+                snprintf(message, sizeof message,
+                         "%s: columns '%.60s' and '%.60s' of %s both match %s.%s; rename one, or "
+                         "name the columns with names: and header: false",
+                         label, names[column_of[k]], names[c], where, shape->name, fname);
+                csv_raise_at(message, line, offset, 0);
+                ok = 0;
+                break;
+            }
+            for (size_t other = k + 1; other < shape->count; other++) {
+                const char *oname = shape->fields[other].name;
+                if (column_of[other] < 0 &&
+                    shape_column_like(names[c], lens[c], oname, strlen(oname))) {
+                    snprintf(message, sizeof message,
+                             "%s: column '%.60s' of %s matches both %s.%s and %s.%s; name the "
+                             "columns with names: and header: false",
+                             label, names[c], where, shape->name, fname, shape->name, oname);
+                    csv_raise_at(message, line, offset, 0);
+                    ok = 0;
+                    break;
+                }
+            }
+            if (ok) {
+                column_of[k] = (int)c;
+            }
+        }
+        if (ok && column_of[k] >= 0) {
+            field_of[column_of[k]] = (int)k;
+        }
+    }
+    for (size_t k = 0; k < shape->count && ok; k++) {
+        if (column_of[k] >= 0 && shape->fields[k].kind == SHAPE_FIELD_SHAPED) {
+            snprintf(message, sizeof message,
+                     "%s: column '%.60s' of %s matches %s.%s, which is %s %s, and one field of "
+                     "a file cannot hold a record (%s is declared at line %d)",
+                     label, names[column_of[k]], where, shape->name, shape->fields[k].name,
+                     strchr("aeiou", shape->fields[k].shape->name[0]) ? "an" : "a",
+                     shape->fields[k].shape->name, shape->name, shape->line);
+            csv_raise_at(message, line, offset, 0);
+            ok = 0;
+        }
+    }
+    for (size_t c = 0; c < n && ok; c++) {
+        if (field_of[c] >= 0) {
+            continue;
+        }
+        snprintf(message, sizeof message,
+                 "%s: column '%.60s' of %s matches no field of %s, so it was dropped "
+                 "(%s is declared at line %d)",
+                 label, names[c], where, shape->name, shape->name, shape->line);
+        runtime_warn_distinct(message, 2126, "shape", value_null());
+        ok = !error_action_pending();
+    }
+    for (size_t k = 0; k < shape->count && ok; k++) {
+        if (column_of[k] >= 0 || shape->fields[k].has_default) {
+            continue;
+        }
+        snprintf(message, sizeof message,
+                 "%s: no column of %s matches %s.%s, which has no default, so it is nothing "
+                 "(%s is declared at line %d)",
+                 label, where, shape->name, shape->fields[k].name, shape->name, shape->line);
+        runtime_warn_distinct(message, 2127, "shape", value_null());
+        ok = !error_action_pending();
+    }
+    free(column_of);
+    return ok;
+}
+
+/* a new instance holding the defaults, as `new` makes one */
+static Value shape_blank(const struct GbShape *shape) {
+    return derive_record(shape->proto);
+}
+
+/* One cell written into its field, converting as a write does. An empty cell
+ * in a field typed other than text is nothing: a file has no other spelling
+ * of absence, and csv.write writes nothing as an empty field. Answers 0
+ * having raised. */
+static int shape_cell(const struct GbShape *shape, Value *record, int field, const char *cell,
+                      size_t len) {
+    const GbShapeField *f = &shape->fields[field];
+    Value v = (len == 0 && f->kind == SHAPE_FIELD_TYPED && f->lock.kind != LOCK_STRING)
+                  ? value_null() : value_string_n(cell, len);
+    if (!shape_write(record, f->name, strlen(f->name), &v)) {
+        value_free(v);
+        return 0;
+    }
+    record_ensure_unique(record);
+    RecordField *slot = record_find_n(record, f->name, strlen(f->name));
+    cell_release(slot->value);
+    slot->value = cell_alloc();
+    *slot->value = v;
+    return 1;
+}
+
+/* A shape's JSON Schema (§6.2): an object of exactly its fields
+ * (additionalProperties false, since a shape's fields are fixed), each field
+ * no default covers required, a shaped field as the object its shape
+ * describes, an untyped one as anything ({}). Keys in the order
+ * tools.param_schema writes them.
+ *
+ * WHAT THE SCHEMA ADMITS, THE LOCK CONVERTS: a model told this schema answers
+ * within it, and its answer must then go into the shape with nothing refused.
+ * So each kind JSON has no type for is a string held by a pattern no wider
+ * than what its lock reads, measured, not assumed: RFC 3339's date-time also
+ * allows fractional seconds and a lowercase t, and its time requires an
+ * offset, and gBASIC's locks refuse all three, so `format` alone would
+ * promise answers the lock refuses. Money is a decimal string (a JSON number
+ * would round it) of at most the digits its currency stores. A shape reached
+ * again inside itself is refused: the schema is written out in full. */
+static void schema_pattern_unit(char *buf, size_t cap, const char *unit) {
+    size_t n = strlen(buf);
+    snprintf(buf + n, cap - n, "-?[0-9]{1,9} %ss?", unit);
+}
+
+static Value schema_duration_pattern(void) {
+    /* each unit at most once and in the order a duration prints them, as
+       duration_text_read requires, one space apart */
+    static const char *const units[] = { "year", "month", "week", "day", "hour", "minute", "second" };
+    char buf[2048] = "^(";
+    for (int k = 0; k < 7; k++) {
+        if (k) {
+            strcat(buf, "|");
+        }
+        schema_pattern_unit(buf, sizeof buf, units[k]);
+        for (int j = k + 1; j < 7; j++) {
+            strcat(buf, "( ");
+            schema_pattern_unit(buf, sizeof buf, units[j]);
+            strcat(buf, ")?");
+        }
+    }
+    strcat(buf, ")$");
+    return value_string(buf);
+}
+
+static Value schema_money_pattern(const char *currency) {
+    unsigned char exponent = 2;
+    currency_find_alpha(currency, NULL, &exponent, NULL);
+    int scale = (int)exponent + MONEY_GUARD_DIGITS;
+    /* the most whole digits w for which every w-digit amount at full scale
+       fits the int64 money holds: 10^(w + scale) - 1 <= INT64_MAX */
+    int w = 18 - scale;
+    char buf[96];
+    if (exponent == 0 && MONEY_GUARD_DIGITS == 0) {
+        snprintf(buf, sizeof buf, "^-?[0-9]{1,%d}$", w);
+    } else {
+        snprintf(buf, sizeof buf, "^-?[0-9]{1,%d}(\\.[0-9]{1,%d})?$", w, scale);
+    }
+    return value_string(buf);
+}
+
+#define SCHEMA_DATE "[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])"
+#define SCHEMA_HMS "([01][0-9]|2[0-3]):[0-5][0-9]"
+
+static Value shape_json_schema(const struct GbShape *shape, const struct GbShape **seen, size_t depth) {
+    seen[depth] = shape;
+    Value props = value_record(NULL, 0);
+    Value *required = malloc(sizeof(Value) * shape->count);
+    if (!required) {
+        abort();
+    }
+    size_t nreq = 0;
+    for (size_t i = 0; i < shape->count; i++) {
+        const GbShapeField *f = &shape->fields[i];
+        Value spec;
+        if (f->kind == SHAPE_FIELD_SHAPED) {
+            const char *problem = NULL;
+            for (size_t k = 0; k <= depth; k++) {
+                if (seen[k] == f->shape) {
+                    problem = "holds";
+                }
+            }
+            if (!problem && depth + 1 >= 64) {
+                problem = "nests";
+            }
+            if (problem) {
+                char message[400];
+                if (problem[0] == 'h') {
+                    snprintf(message, sizeof message,
+                             "json_schema: %s.%s is %s %s, a shape this schema is already describing, "
+                             "so written out in full it would never end (%s is declared at line %d)",
+                             shape->name, f->name, strchr("aeiou", f->shape->name[0]) ? "an" : "a",
+                             f->shape->name, shape->name, shape->line);
+                } else {
+                    snprintf(message, sizeof message, "json_schema: %s.%s nests shapes more than 64 deep",
+                             shape->name, f->name);
+                }
+                runtime_error_raise(message, 1003, "shape");
+            } else {
+                spec = shape_json_schema(f->shape, seen, depth + 1);
+            }
+            if (error_action_pending()) {
+                if (!problem) {
+                    value_free(spec);
+                }
+                for (size_t k = 0; k < nreq; k++) {
+                    value_free(required[k]);
+                }
+                free(required);
+                value_free(props);
+                return value_null();
+            }
+        } else {
+            spec = value_record(NULL, 0);
+            if (f->kind == SHAPE_FIELD_TYPED) {
+                switch (f->lock.kind) {
+                case LOCK_NUMBER:
+                    record_set(&spec, "type", value_string("number"));
+                    break;
+                case LOCK_BOOLEAN:
+                    record_set(&spec, "type", value_string("boolean"));
+                    break;
+                case LOCK_DATE:
+                    record_set(&spec, "type", value_string("string"));
+                    record_set(&spec, "format", value_string("date"));
+                    record_set(&spec, "pattern", value_string("^" SCHEMA_DATE "$"));
+                    break;
+                case LOCK_DATETIME:
+                    record_set(&spec, "type", value_string("string"));
+                    record_set(&spec, "format", value_string("date-time"));
+                    record_set(&spec, "pattern", value_string("^" SCHEMA_DATE "T" SCHEMA_HMS ":[0-5][0-9]"
+                                                              "(Z|[+-]" SCHEMA_HMS ")$"));
+                    break;
+                case LOCK_TIME:
+                    record_set(&spec, "type", value_string("string"));
+                    record_set(&spec, "pattern", value_string("^" SCHEMA_HMS "(:[0-5][0-9])?$"));
+                    break;
+                case LOCK_DURATION:
+                    record_set(&spec, "type", value_string("string"));
+                    record_set(&spec, "pattern", schema_duration_pattern());
+                    break;
+                case LOCK_MONEY:
+                    record_set(&spec, "type", value_string("string"));
+                    record_set(&spec, "pattern", schema_money_pattern(f->lock.currency));
+                    break;
+                default:
+                    record_set(&spec, "type", value_string("string"));
+                    break;
+                }
+            }
+        }
+        record_set(&props, f->name, spec);
+        if (!f->has_default) {
+            required[nreq++] = value_string(f->name);
+        }
+    }
+    Value out = value_record(NULL, 0);
+    record_set(&out, "type", value_string("object"));
+    record_set(&out, "properties", props);
+    record_set(&out, "required", value_array(required, nreq));
+    record_set(&out, "additionalProperties", value_bool(0));
+    return out;
+}
+
+#if GBASIC_GSQL
+/* A shape held against a table's columns ([{ name, kind }], gsql.columns'
+ * answer) for gsql.expect (§6.3): each field must have a column of its own
+ * name whose kind holds it. Text a sentence a problem, in declared order; an
+ * empty array when the table holds the shape. A column the shape does not
+ * name is no problem: a shape may read part of a row. */
+static Value shape_table_problems(const struct GbShape *shape, const Value *columns, const char *table) {
+    Value *items = malloc(sizeof(Value) * shape->count);
+    if (!items) {
+        abort();
+    }
+    size_t n = 0;
+    for (size_t i = 0; i < shape->count; i++) {
+        const GbShapeField *f = &shape->fields[i];
+        const char *kind = NULL;
+        if (columns->kind == VALUE_ARRAY) {
+            for (size_t c = 0; c < columns->as.array.store->count; c++) {
+                const Value *col = &columns->as.array.store->items[c];
+                const RecordField *name = col->kind == VALUE_RECORD ? record_find_const_n(col, "name", 4) : NULL;
+                const RecordField *k = col->kind == VALUE_RECORD ? record_find_const_n(col, "kind", 4) : NULL;
+                if (name && k && name->value->kind == VALUE_STRING && k->value->kind == VALUE_STRING &&
+                    strcmp(name->value->as.string, f->name) == 0) {
+                    kind = k->value->as.string;
+                }
+            }
+        }
+        char problem[400];
+        problem[0] = '\0';
+        if (!kind) {
+            snprintf(problem, sizeof problem, "%s.%s has no column in %s", shape->name, f->name, table);
+        } else if (f->kind == SHAPE_FIELD_SHAPED) {
+            if (strcmp(kind, "record") != 0) {
+                snprintf(problem, sizeof problem,
+                         "%s.%s is %s %s, held in a record column, and column %s is %s",
+                         shape->name, f->name, strchr("aeiou", f->shape->name[0]) ? "an" : "a",
+                         f->shape->name, f->name, kind);
+            }
+        } else if (f->kind == SHAPE_FIELD_TYPED) {
+            const char *want = NULL;
+            int ok;
+            char money[16];
+            switch (f->lock.kind) {
+            case LOCK_NUMBER:
+                ok = strcmp(kind, "number") == 0 || strcmp(kind, "integer") == 0;
+                want = "number";
+                break;
+            case LOCK_STRING: ok = strcmp(kind, "string") == 0; want = "text"; break;
+            case LOCK_BOOLEAN: ok = strcmp(kind, "boolean") == 0; want = "boolean"; break;
+            case LOCK_DATE: ok = strcmp(kind, "date") == 0; want = "date"; break;
+            case LOCK_TIME: ok = strcmp(kind, "time") == 0; want = "time"; break;
+            case LOCK_DATETIME: ok = strcmp(kind, "datetime") == 0; want = "datetime"; break;
+            case LOCK_DURATION: ok = strcmp(kind, "duration") == 0; want = "duration"; break;
+            case LOCK_MONEY:
+                snprintf(money, sizeof money, "money(%s)", f->lock.currency);
+                ok = strcmp(kind, money) == 0;
+                want = money;
+                break;
+            default:
+                ok = 0;
+                break;
+            }
+            if (!want) {
+                snprintf(problem, sizeof problem, "%s.%s is a %s, which no column holds", shape->name,
+                         f->name, lock_kind_word(f->lock.kind));
+            } else if (!ok) {
+                snprintf(problem, sizeof problem, "%s.%s is %s, and column %s is %s", shape->name, f->name,
+                         want, f->name, strcmp(kind, "string") == 0 ? "text" : kind);
+            }
+        }
+        if (problem[0]) {
+            items[n++] = value_string(problem);
+        }
+    }
+    return value_array(items, n);
+}
+
+static int shape_line_of(const struct GbShape *shape) {
+    return shape->line;
+}
+#endif
+
+/* the fields' names in declared order, as an array of text: a header */
+static Value shape_field_names(const struct GbShape *shape) {
+    Value *items = malloc(sizeof(Value) * shape->count);
+    if (!items) {
+        abort();
+    }
+    for (size_t i = 0; i < shape->count; i++) {
+        items[i] = value_string(shape->fields[i].name);
+    }
+    return value_array(items, shape->count);
 }
 
 /* A LOOP DOES NOT BIND A LOCKED VARIABLE (docs/typed_variables_design.md

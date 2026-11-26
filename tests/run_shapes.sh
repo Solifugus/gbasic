@@ -32,6 +32,36 @@
 #             hoisted, and the hoist runs no user code), the wrong `end`, a
 #             dotted method; --ast; zero grammar conflicts.
 #   hoist     a shape beside `program main` used inside it, and under --check.
+#   csv       increment 3 (§6.1): tests/shapes/csv.bas against csv.out (worked
+#             by hand, both lanes): the header matched once by name, then with
+#             case, spaces and _ ignored; each cell converted into its field; an
+#             empty cell nothing outside text; names:, options after the shape,
+#             problems: "deliver"; csv.write's header from the shape even for no
+#             rows, each row converted first; and a round trip read back equal.
+#             Then the warnings, said once at open however many records follow,
+#             and the refusals, each beside its working neighbour: a cell naming
+#             its line, record and column (error.details too), two columns for a
+#             field, a column for two fields, a column for a shaped field, a
+#             shape with header: false and no names, `on warning stop`.
+#   schema    json_schema (§6.2): a schema written out by hand, keys in the order
+#             tools.param_schema writes; refusals (a plain record, a shape inside
+#             itself). Then WHAT THE SCHEMA ADMITS, THE LOCK CONVERTS:
+#             tests/shapes/schema_oracle.py writes 3000 documents for
+#             schema_check.bas's shape of every kind, near misses among them,
+#             judges each against the schema gBASIC printed (JSON Schema and RFC
+#             3339 read from their specs, not from gBASIC), and every one it
+#             admits must convert under `on warning stop`, at least 1000 of them.
+#             The control reads the same schema with its patterns ignored and
+#             must find admitted documents the locks refuse: RFC 3339 allows
+#             fractional seconds and a lowercase t, and its time an offset.
+#             Skips without python3.
+#   gsql      §6.3: tests/shapes/gsql.bas against gsql.out (worked by hand, both
+#             lanes): rows read into a shape (a query and a path, the element an
+#             instance with its methods), a shape in a record column, and
+#             gsql.expect naming every problem at once, in error.details too.
+#             Then a file field beside a column of its name, a table that is not
+#             there, a plain record for a shape, and a handle's method beside
+#             the module's. Skips when the build has no G-SQL.
 #   valgrind  the golden and every refusal.
 . "$(dirname "$0")/portable.sh"
 set -u
@@ -65,6 +95,17 @@ if GBASIC_COMPILE=all "$G" tests/shapes/locks.bas 2>/dev/null | cmp -s - tests/s
     pass "and compiled, the same bytes"
 else
     fail "locks.bas compiled differs"
+fi
+
+if "$G" tests/shapes/csv.bas "$work" 2>"$work/err" | cmp -s - tests/shapes/csv.out && [ ! -s "$work/err" ]; then
+    pass "csv.bas prints the hand-worked golden, nothing on stderr"
+else
+    fail "csv.bas: $(diff <("$G" tests/shapes/csv.bas "$work" 2>&1) tests/shapes/csv.out | head -5)"
+fi
+if GBASIC_COMPILE=all "$G" tests/shapes/csv.bas "$work" 2>/dev/null | cmp -s - tests/shapes/csv.out; then
+    pass "and compiled, the same bytes"
+else
+    fail "csv.bas compiled differs"
 fi
 
 HEAD='shape account\n    owner:text = "unnamed"\n    balance:money(USD) = "0.00"\n    opened:date\n    function deposit(n)\n        this.balance += n\n        return this.balance\n    end function\nend shape\n'
@@ -195,13 +236,101 @@ runs "a shape beside program main, used inside it" 'shape s\n    n:number = 1\ne
 printf 'shape s\n    n:number = 1\nend shape\nprogram main(args)\n    print new s\nend program\n' >"$work/h2.bas"
 out=$("$G" --check "$work/h2.bas"); [ $? = 0 ] && [ -z "$out" ] && pass "--check: clean" || fail "--check: $out"
 
+echo "--- TIER csv ---"
+CH='shape inv\n    day:date\n    amount:money(USD)\n    who:text = "?"\nend shape\n'
+printf '%b' "${CH}for each r in csv.parse(\"day,amount,Notes\\\\n2026-01-01,1,x\\\\n2026-01-02,2,y\\\\n2026-01-03,3,z\\\\n\", inv)\n    print r.amount\nend for\nfor each r in csv.parse(\"Day\\\\n2026-01-01\\\\n2026-01-02\\\\n\", inv)\n    print r.amount\nend for\n" >"$work/cw.bas"
+out=$(cd "$work" && "$G" cw.bas 2>"$work/cw.err"); rc=$?
+if [ $rc = 0 ] && [ "$out" = "$(printf '1.00\n2.00\n3.00\nnothing\nnothing')" ] &&
+   grep -q "csv.parse: column 'Notes' of the header on line 1 matches no field of inv, so it was dropped (inv is declared at line 1) at .*cw.bas:6:1 \[2126\]" "$work/cw.err" &&
+   grep -q "csv.parse: no column of the header on line 1 matches inv.amount, which has no default, so it is nothing (inv is declared at line 1) at .*cw.bas:9:1 \[2127\]" "$work/cw.err" &&
+   ! grep -q 'inv.who\|inv.day' "$work/cw.err" && [ "$(wc -l <"$work/cw.err")" = 2 ]; then
+    pass "a column no field matches, and a field no column matches, each said once at open for three records; a default silent"
+else
+    fail "csv warnings: exit $rc, out [$out], stderr: $(cat "$work/cw.err")"
+fi
+runs "the working neighbour: every column a field" "${CH}for each r in csv.parse(\"day,AMOUNT\\\\n2026-01-01,4\\\\n\", inv)\n    print r.amount\nend for\n" '4.00'
+refuse "a cell that does not convert, by line, record and column" c1.bas "${CH}for each r in csv.parse(\"day,amount\\\\n2026-01-01,1\\\\n2026-01-02,lots\\\\n\", inv)\n    print r.amount\nend for\n" "c1.bas:6:1: csv.parse: line 3 (record 2), column 'amount': amount is locked to money by amount:money(USD) at line 3, and this value does not convert"
+runs "and its details: line, offset, record" "${CH}on error goto next\nfor each r in csv.parse(\"day,amount\\\\n2026-01-01,lots\\\\n\", inv)\nend for\ne = error\nprint e.details\n" '{"line":2,"offset":11,"record":1}'
+refuse "two columns for one field" c2.bas "${CH}for each r in csv.parse(\"Day,DAY,amount\\\\n2026-01-01,1,2\\\\n\", inv)\nend for\n" "csv.parse: columns 'Day' and 'DAY' of the header on line 1 both match inv.day"
+runs "the working neighbour: an exact name beside a near one takes the exact, the other dropped" "${CH}on warning ignore\nfor each r in csv.parse(\"Day,day,amount\\\\n2026-01-01,2026-02-02,2\\\\n\", inv)\n    print r.day\nend for\n" '2026-02-02'
+refuse "a column for two fields" c3.bas 'shape ab\n    a_b:number = 0\n    ab_:number = 0\nend shape\nfor each r in csv.parse("A B\\n1\\n", ab)\nend for\n' "column 'A B' of the header on line 1 matches both ab.a_b and ab.ab_"
+refuse "a column for a shaped field" c4.bas "${CH}shape h\n    i:inv\nend shape\nfor each r in csv.parse(\"i\\\\n1\\\\n\", h)\nend for\n" "column 'i' of the header on line 1 matches h.i, which is an inv, and one field of a file cannot hold a record"
+refuse "a shape with header: false and no names" c5.bas "${CH}for each r in csv.parse(\"1,2\\\\n\", inv, { header: false })\nend for\n" 'a shape is matched to the columns by name, and with header: false they have none; give them with names:'
+refuse "three arguments, the second no shape" c6.bas "${CH}for each r in csv.parse(\"a\\\\n1\\\\n\", { x: 1 }, {})\nend for\n" 'csv.parse: the second of three arguments is a shape'
+printf '%b' "on warning stop\n${CH}for each r in csv.parse(\"day,amount,z\\\\n2026-01-01,1,2\\\\n\", inv)\n    print \"ran\"\nend for\n" >"$work/c7.bas"
+out=$(cd "$work" && "$G" c7.bas 2>&1)
+case "$out" in *ran*) fail "on warning stop let a column drop: $out" ;; *"column 'z' of the header on line 1 matches no field of inv, so it was dropped"*) pass "on warning stop: a dropped column refused at open, before a record, in the warning's words" ;; *) fail "csv strict: $out" ;; esac
+refuse "csv.write: a row that is not a record" c8.bas "${CH}csv.write(\"o.csv\", [[1]], inv)\n" 'csv.write: row 1 is an array, and only a record converts into shape inv'
+refuse "csv.write: a row that does not convert, by its number" c9.bas "${CH}csv.write(\"o.csv\", [{ day: \"2026-01-01\" }, { day: \"soon\" }], inv)\n" 'csv.write: row 2: day is locked to date by day:date at line 2'
+[ ! -e "$work/o.csv" ] && pass "and it wrote nothing" || fail "csv.write refused but wrote o.csv"
+refuse "csv.write: names: beside a shape" c10.bas "${CH}csv.write(\"o.csv\", [], inv, { names: [\"a\"] })\n" 'csv.write: a shape gives the header, so names: cannot go with one'
+
+echo "--- TIER schema ---"
+runs "a schema by hand: types, a format and pattern, required where no default" 'shape p\n    name:text\n    age:number = 0\n    born:date\n    note = nothing\nend shape\nprint json_encode(json_schema(p))\n' '{"type":"object","properties":{"name":{"type":"string"},"age":{"type":"number"},"born":{"type":"string","format":"date","pattern":"^[0-9]{4}-(0[1-9]|1[0-2])-(0[1-9]|[12][0-9]|3[01])$"},"note":{}},"required":["name","born"],"additionalProperties":false}'
+runs "a shaped field is its shape's object; money a decimal string of the digits USD stores" 'shape q\n    amt:money(USD)\nend shape\nshape p\n    q:q\n    ok:boolean = true\nend shape\nprint json_encode(json_schema(p))\n' '{"type":"object","properties":{"q":{"type":"object","properties":{"amt":{"type":"string","pattern":"^-?[0-9]{1,12}(\\\\.[0-9]{1,6})?$"}},"required":["amt"],"additionalProperties":false},"ok":{"type":"boolean"}},"required":["q"],"additionalProperties":false}'
+printf 'load tools\nshape p\n    n:number\nend shape\nprint join(keys(json_schema(p)), ",")\nprint join(keys(tools.param_schema({ params: [{ name: "n", type: "number", describe: "", required: true }] })), ",")\nprint json_schema(new p with { n: 1 }) = json_schema(p)\n' >"$work/s0.bas"
+out=$(cd "$work" && GBASIC_PATH="$OLDPWD/stdlib" "$G" s0.bas 2>&1)
+[ "$out" = "$(printf 'type,properties,required,additionalProperties\ntype,properties,required\ntrue')" ] && pass "its keys begin as tools.param_schema's do; an instance describes its shape" || fail "schema keys: $out"
+refuse "a plain record has no declared form" s1.bas 'print json_schema({ a: 1 })\n' 'json_schema expects a shape, such as invoice from `shape invoice`; a plain record has no declared form to describe'
+refuse "a shape inside itself" s2.bas 'shape node\n    v:number = 0\n    next:node = nothing\nend shape\nprint json_schema(node)\n' 'json_schema: node.next is a node, a shape this schema is already describing, so written out in full it would never end (node is declared at line 1)'
+B='{"type":"object","properties":{"x":{"type":"object","properties":{"n":{"type":"number"}},"required":[],"additionalProperties":false}},"required":["x"],"additionalProperties":false}'
+runs "the working neighbour: one shape held twice, not inside itself, is written twice" 'shape a\n    n:number = 0\nend shape\nshape b\n    x:a\nend shape\nshape c\n    y:b\n    z:b\nend shape\nprint json_encode(json_schema(c))\n' "{\"type\":\"object\",\"properties\":{\"y\":$B,\"z\":$B},\"required\":[\"y\",\"z\"],\"additionalProperties\":false}"
+refuse "a value that is no record" s3.bas 'print json_schema(5)\n' 'json_schema expects a shape'
+if command -v python3 >/dev/null 2>&1; then
+    "$G" tests/shapes/schema_check.bas schema >"$work/schema.json" &&
+        python3 tests/shapes/schema_oracle.py generate "$work/schema.json" "$work/docs.jsonl" &&
+        "$G" tests/shapes/schema_check.bas convert "$work/docs.jsonl" >"$work/verdicts.txt"
+    if out=$(python3 tests/shapes/schema_oracle.py judge "$work/schema.json" "$work/docs.jsonl" "$work/verdicts.txt"); then
+        pass "every document the schema admits converts: $(printf '%s' "$out" | head -1)"
+    else
+        fail "the schema admits what the locks refuse: $out"
+    fi
+    if out=$(python3 tests/shapes/schema_oracle.py judge "$work/schema.json" "$work/docs.jsonl" "$work/verdicts.txt" --formats-only); then
+        pass "control: formats without the patterns admit what the locks refuse: $(printf '%s' "$out" | grep '^documents')"
+    else
+        fail "control: without its patterns the schema still admitted nothing the locks refuse, so the tier proves nothing: $out"
+    fi
+else
+    printf 'SKIP schema oracle (no python3): nothing measured about what the schema admits\n'
+fi
+
+echo "--- TIER gsql ---"
+printf 'load gsql\nprint "loaded"\n' >"$work/gprobe.bas"
+if [ "$("$G" "$work/gprobe.bas" 2>&1)" = loaded ]; then
+    mkdir -p "$work/g1" "$work/g2"
+    if GSQL_DIR="$work/g1" timeout -k 5 60 "$G" tests/shapes/gsql.bas 2>"$work/err" | cmp -s - tests/shapes/gsql.out && [ ! -s "$work/err" ]; then
+        pass "gsql.bas prints the hand-worked golden, nothing on stderr"
+    else
+        fail "gsql.bas: $(diff <(GSQL_DIR="$work/g1b" timeout -k 5 60 "$G" tests/shapes/gsql.bas 2>&1) tests/shapes/gsql.out | head -5)"
+    fi
+    if GSQL_DIR="$work/g2" GBASIC_COMPILE=all timeout -k 5 60 "$G" tests/shapes/gsql.bas 2>/dev/null | cmp -s - tests/shapes/gsql.out; then
+        pass "and compiled, the same bytes"
+    else
+        fail "gsql.bas compiled differs"
+    fi
+    GQ="load gsql\ndb = gsql.connect(\"$work/g3\", { create: true, linger: 0 })\ndb.exec(\"drop table if exists t\")\ndb.exec(\"create table t (n number, spot text)\")\n"
+    refuse "a file field beside a column of its name" g1.bas "${GQ}shape s\n    n:number\n    spot:file\nend shape\ngsql.expect(db, \"t\", s)\n" 'gsql.expect: table t does not hold shape s (s is declared at line 5): s.spot is a file, which no column holds'
+    runs "the working neighbour: the same table and a shape it holds" "${GQ}shape s\n    n:number\n    spot:text\nend shape\ngsql.expect(db, \"t\", s)\nprint \"held\"\n" 'held'
+    refuse "a text field beside a number column, and a number beside text" g4.bas "${GQ}shape s\n    n:text\n    spot:number\nend shape\ngsql.expect(db, \"t\", s)\n" 's.n is text, and column n is number; s.spot is number, and column spot is text'
+    refuse "a table that is not there" g2.bas "${GQ}shape s\n    n:number\nend shape\ngsql.expect(db, \"nope\", s)\n" 'gsql.expect: there is no table `nope`'
+    refuse "a plain record for a shape" g3.bas "${GQ}gsql.expect(db, \"t\", { n: 1 })\n" 'gsql.expect: the third argument is a shape, such as customer from `shape customer`'
+else
+    printf 'SKIP gsql (this build has no G-SQL): rows into a shape and gsql.expect were NOT measured\n'
+fi
+
 echo "--- TIER valgrind ---"
 . tests/valgrind_tier.sh
 if vg_available; then
     bad=""
     vg_run -q "$G" tests/shapes/instances.bas >/dev/null 2>"$work/vg" || bad="$bad instances.bas"
     vg_run -q "$G" tests/shapes/locks.bas >/dev/null 2>"$work/vg" || bad="$bad locks.bas"
-    for f in "$work"/f*.bas "$work"/w*.bas "$work"/p*.bas "$work"/l*.bas; do
+    vg_run -q "$G" tests/shapes/csv.bas "$work" >/dev/null 2>"$work/vg" || bad="$bad csv.bas"
+    vg_run -q "$G" tests/shapes/schema_check.bas schema >/dev/null 2>"$work/vg" || bad="$bad schema_check.bas"
+    if [ "$("$G" "$work/gprobe.bas" 2>&1)" = loaded ]; then
+        mkdir -p "$work/gv"
+        GSQL_DIR="$work/gv" vg_run -q "$G" tests/shapes/gsql.bas >/dev/null 2>"$work/vg" || bad="$bad gsql.bas"
+    fi
+    for f in "$work"/f*.bas "$work"/w*.bas "$work"/p*.bas "$work"/l*.bas "$work"/c*.bas "$work"/s[1-9]*.bas "$work"/g[1-9]*.bas; do
         (cd "$work" && vg_run -q "$G" "$(basename "$f")" >/dev/null 2>"$work/vg.$(basename "$f")")
         [ $? = "$VG_EXIT" ] && bad="$bad $(basename "$f")"
     done

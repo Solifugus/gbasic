@@ -214,11 +214,19 @@ check("a number is not a boolean", refusal(bad_boolean),
       "y is locked to boolean by y:boolean, and this value does not convert: a boolean is true or false, or the text \"true\" or \"false\"")
 
 function bad_duration()
-    y:duration = "3 days"
+    y:duration = "soon"
     return y
 end function
-check("text is not a duration", refusal(bad_duration),
-      "y is locked to duration by y:duration, and this value does not convert: only a duration converts to a duration (write 3 days, 90 minutes)")
+check("text a duration cannot read", refusal(bad_duration),
+      "y is locked to duration by y:duration, and this value does not convert: `{duration}` could not read 'soon': expected a whole number at 'soon'")
+
+' a duration's text and a number of seconds convert, as {duration} reads them
+function good_duration()
+    y:duration = "2 hours 30 minutes"
+    z:duration = 90
+    return string(y) + " / " + string(z)
+end function
+check("text and seconds convert into a duration", good_duration(), "2 hours 30 minutes / 1 minute 30 seconds")
 
 function bad_unknown_currency()
     y:money(XQZ) = 1

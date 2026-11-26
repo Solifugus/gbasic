@@ -1,0 +1,21 @@
+2 Ann 2026-01-05 12.50 false
+3 Bo 2026-01-06 3.00 false
+15.50
+nothing
+0
+Cy 7.25 true
+true
+Di 4.00
+false
+Ed
+nothing
+true
+true
+Flo
+4.00
+false
+"invoice_date,amount,customer,paid\n"
+"invoice_date,amount,customer,paid\n2026-05-01,1.00,Gil,false\n"
+"invoice_date,amount,customer,paid\n2026-01-05,12.50,Ann,false\n2026-01-06,3.00,Bo,false\n"
+true
+true

@@ -253,7 +253,8 @@ library tools
         req = []
         for each p in e.params
             spec = {}
-            spec["type"] = p.type
+            ' JSON Schema's word for a record is "object"; "record" is no type there
+            spec["type"] = "object" if p.type = "record" else p.type
             spec["description"] = p.describe
             props[p.name] = spec
             if p.required then

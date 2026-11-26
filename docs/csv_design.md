@@ -150,7 +150,10 @@ For a file too large to build in memory, a program writes the header with
 ## 7. Not done, and why
 
 - **No type guessing.** Every field is text. Typing is the program's decision,
-  or G-SQL's on store (`gsql_store_conversion_design.md`). `frame.read_csv`
+  or G-SQL's on store (`gsql_store_conversion_design.md`), or a shape's: since
+  2026-11-26 `csv.records(f, shape)` converts each cell into its field, the
+  header matched once at open (docs/shapes_design.md §6.1). That is declared,
+  not guessed. `frame.read_csv`
   keeps its documented inference, now over correctly split fields.
 - **No formula-injection escaping** (`=cmd` in a cell a spreadsheet will open).
   It changes the data, and only a program knows whether its reader is a

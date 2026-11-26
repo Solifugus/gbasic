@@ -22,6 +22,7 @@ struct CsvSourceValue {
     int header;
     int deliver;         /* problems: "deliver" */
     Value names;         /* given names: an array of text, or nothing */
+    const struct GbShape *shape;  /* each record read into it (shapes §6.1), or NULL */
 };
 
 static void csv_source_retain(CsvSourceValue *source) {
@@ -208,14 +209,29 @@ static int csv_read_options(const char *verb, Value *options, int writing, CsvOp
     return 1;
 }
 
-/* csv.records(f, options) and csv.parse(text, options): a source. */
+/* A shape given to a verb, read from the argument after the data: a shaped
+ * record names its shape (a shape's name is its prototype, so `invoice` is
+ * one). *shape is NULL when the argument is something else, the options. */
+static Value csv_shape_argument(AstExpr *expr, size_t at, const struct GbShape **shape) {
+    *shape = NULL;
+    if (expr->as.call.args.count <= at) {
+        return value_null();
+    }
+    Value v = eval_expr(expr->as.call.args.items[at]);
+    if (!error_action_pending() && v.kind == VALUE_RECORD) {
+        *shape = record_shape(&v);
+    }
+    return v;
+}
+
+/* csv.records(f, [shape,] options) and csv.parse(text, [shape,] options): a source. */
 static Value csv_make_source(AstExpr *expr, int from_text) {
     const char *verb = from_text ? "csv.parse" : "csv.records";
     char message[256];
     size_t argc = expr->as.call.args.count;
-    if (argc < 1 || argc > 2) {
-        snprintf(message, sizeof message, "%s expects %s and an optional options record", verb,
-                 from_text ? "the text" : "a file");
+    if (argc < 1 || argc > 3) {
+        snprintf(message, sizeof message, "%s expects %s, an optional shape and an optional options record",
+                 verb, from_text ? "the text" : "a file");
         return csv_raise(message);
     }
     Value src = eval_expr(expr->as.call.args.items[0]);
@@ -223,20 +239,38 @@ static Value csv_make_source(AstExpr *expr, int from_text) {
         value_free(src);
         return value_null();
     }
-    Value opts = value_null();
-    if (argc == 2) {
-        opts = eval_expr(expr->as.call.args.items[1]);
-        if (error_action_pending()) {
-            value_free(src);
-            value_free(opts);
-            return value_null();
-        }
+    const struct GbShape *shape = NULL;
+    Value opts = csv_shape_argument(expr, 1, &shape);
+    if (!error_action_pending() && shape) {
+        value_free(opts);
+        opts = argc == 3 ? eval_expr(expr->as.call.args.items[2]) : value_null();
+    } else if (!error_action_pending() && argc == 3) {
+        value_free(src);
+        value_free(opts);
+        snprintf(message, sizeof message,
+                 "%s: the second of three arguments is a shape, such as invoice from `shape invoice`",
+                 verb);
+        return csv_raise(message);
     }
-    CsvOptions o;
-    if (!csv_read_options(verb, argc == 2 ? &opts : NULL, 0, &o)) {
+    if (error_action_pending()) {
         value_free(src);
         value_free(opts);
         return value_null();
+    }
+    int has_options = shape ? argc == 3 : argc == 2;
+    CsvOptions o;
+    if (!csv_read_options(verb, has_options ? &opts : NULL, 0, &o)) {
+        value_free(src);
+        value_free(opts);
+        return value_null();
+    }
+    if (shape && !o.header && o.names.kind == VALUE_NULL) {
+        value_free(src);
+        value_free(opts);
+        snprintf(message, sizeof message,
+                 "%s: a shape is matched to the columns by name, and with header: false they have "
+                 "none; give them with names:", verb);
+        return csv_raise(message);
     }
     CsvSourceValue *s = calloc(1, sizeof *s);
     if (!s) {
@@ -249,6 +283,7 @@ static Value csv_make_source(AstExpr *expr, int from_text) {
     s->quote = o.quote;
     s->header = o.header;
     s->deliver = o.deliver;
+    s->shape = shape;
     value_free(opts);
     if (from_text) {
         if (src.kind != VALUE_STRING) {
@@ -505,20 +540,29 @@ static Value csv_line(AstExpr *expr) {
     return out;
 }
 
-/* csv.write(f, rows, options): a header and the rows, replacing the file. */
+/* csv.write(f, rows, [shape,] options): a header and the rows, replacing the
+ * file. With a shape the header is its fields in declared order, written even
+ * for no rows, and each row is converted into it first, as a lock would. */
 static Value csv_write(AstExpr *expr) {
     size_t argc = expr->as.call.args.count;
-    if (argc < 2 || argc > 3) {
-        return csv_raise("csv.write expects a file, the rows and an optional options record");
+    if (argc < 2 || argc > 4) {
+        return csv_raise("csv.write expects a file, the rows, an optional shape and an optional options record");
     }
     Value target = eval_expr(expr->as.call.args.items[0]);
     Value rows = value_null();
     Value opts = value_null();
+    const struct GbShape *shape = NULL;
     if (!error_action_pending()) {
         rows = eval_expr(expr->as.call.args.items[1]);
     }
-    if (!error_action_pending() && argc == 3) {
-        opts = eval_expr(expr->as.call.args.items[2]);
+    if (!error_action_pending()) {
+        opts = csv_shape_argument(expr, 2, &shape);
+    }
+    if (!error_action_pending() && shape) {
+        value_free(opts);
+        opts = argc == 4 ? eval_expr(expr->as.call.args.items[3]) : value_null();
+    } else if (!error_action_pending() && argc == 4) {
+        csv_raise("csv.write: the third of four arguments is a shape, such as invoice from `shape invoice`");
     }
     if (error_action_pending()) {
         value_free(target);
@@ -530,7 +574,11 @@ static Value csv_write(AstExpr *expr) {
     char *buf = NULL;
     size_t len = 0, cap = 0;
     Value names = value_null();
-    int ok = csv_read_options("csv.write", argc == 3 ? &opts : NULL, 1, &o);
+    int ok = csv_read_options("csv.write", (shape ? argc == 4 : argc == 3) ? &opts : NULL, 1, &o);
+    if (ok && shape && o.names.kind == VALUE_ARRAY) {
+        csv_raise("csv.write: a shape gives the header, so names: cannot go with one");
+        ok = 0;
+    }
     const char *path = ok ? file_target_path(target) : NULL;
     if (ok && (target.kind != VALUE_FILE && target.kind != VALUE_STRING)) {
         csv_raise("csv.write expects a file, such as {file}\"out.csv\"");
@@ -542,7 +590,9 @@ static Value csv_write(AstExpr *expr) {
     }
     if (ok) {
         ArrayStorage *a = rows.as.array.store;
-        if (o.names.kind == VALUE_ARRAY) {
+        if (shape) {
+            names = shape_field_names(shape);
+        } else if (o.names.kind == VALUE_ARRAY) {
             names = value_copy(o.names);
         } else if (a->count > 0 && a->items[0].kind == VALUE_RECORD) {
             Value first = a->items[0];
@@ -563,6 +613,32 @@ static Value csv_write(AstExpr *expr) {
         }
         for (size_t i = 0; ok && i < a->count; i++) {
             Value row = a->items[i];
+            Value converted = value_null();
+            if (shape && row.kind != VALUE_RECORD) {
+                char message[200];
+                snprintf(message, sizeof message, "csv.write: row %zu is %s, and only a record converts into shape %s",
+                         i + 1, row.kind == VALUE_ARRAY ? "an array" : "not a record", shape_name_of(shape));
+                csv_raise(message);
+                ok = 0;
+                break;
+            }
+            if (shape && record_shape(&row) != shape) {
+                /* refused in the lock's own words, after which row */
+                int before = error_generation;
+                converted = shape_convert(shape, value_copy(row));
+                if (error_generation != before) {
+                    value_free(converted);
+                    if (current_error.message && current_error.code != 2126 && current_error.code != 2127) {
+                        char message[800];
+                        snprintf(message, sizeof message, "csv.write: row %zu: %s", i + 1, current_error.message);
+                        free(current_error.message);
+                        current_error.message = copy_string(message);
+                    }
+                    ok = 0;
+                    break;
+                }
+                row = converted;
+            }
             if (row.kind == VALUE_RECORD && names.kind != VALUE_ARRAY) {
                 csv_raise("csv.write: a record row needs a header; the first row is an array, so give names:");
                 ok = 0;
@@ -570,6 +646,7 @@ static Value csv_write(AstExpr *expr) {
             }
             ok = csv_put_record("csv.write", row, row.kind == VALUE_RECORD ? names : value_null(),
                                 &o, &buf, &len, &cap, i + 1);
+            value_free(converted);
             if (ok) {
                 csv_put(&buf, &len, &cap, o.line_end, o.line_end_len);
             }
@@ -622,6 +699,7 @@ typedef struct {
     size_t *name_lens;
     size_t nnames;
     uint64_t record;
+    int *field_of;       /* with a shape: the field each column fills, or -1 */
 } CsvCursor;
 
 static void csv_cursor_close(CsvCursor *c) {
@@ -631,6 +709,7 @@ static void csv_cursor_close(CsvCursor *c) {
     }
     free(c->names);
     free(c->name_lens);
+    free(c->field_of);
     memset(c, 0, sizeof *c);
 }
 
@@ -656,6 +735,25 @@ static void csv_raise_reader(CsvCursor *c, const char *label) {
     runtime_error_raise(message, CSV_ERROR_CODE, "csv");
 }
 
+/* With a shape, match the columns to its fields, once. Answers 0 having
+ * raised (and closed the cursor). */
+static int csv_cursor_shape(CsvCursor *c, const char *label, const char *where, uint64_t line,
+                            uint64_t offset) {
+    if (!c->source->shape) {
+        return 1;
+    }
+    c->field_of = malloc(sizeof(int) * (c->nnames ? c->nnames : 1));
+    if (!c->field_of) {
+        abort();
+    }
+    if (!shape_columns(c->source->shape, label, c->names, c->name_lens, c->nnames, where, line,
+                       offset, c->field_of)) {
+        csv_cursor_close(c);
+        return 0;
+    }
+    return 1;
+}
+
 /* Open the source and read its header. Answers 0 having raised. */
 static int csv_cursor_open(CsvCursor *c, CsvSourceValue *s) {
     memset(c, 0, sizeof *c);
@@ -678,7 +776,7 @@ static int csv_cursor_open(CsvCursor *c, CsvSourceValue *s) {
         for (size_t i = 0; i < a->count; i++) {
             csv_cursor_add_name(c, a->items[i].as.string, string_length(a->items[i].as.string));
         }
-        return 1;
+        return csv_cursor_shape(c, label, "the names", 0, 0);
     }
     if (!s->header) {
         return 1;
@@ -724,6 +822,65 @@ static int csv_cursor_open(CsvCursor *c, CsvSourceValue *s) {
         }
         csv_cursor_add_name(c, name, len);
     }
+    char where[64];
+    snprintf(where, sizeof where, "the header on line %llu", (unsigned long long)gb_csv_line(c->reader));
+    return csv_cursor_shape(c, label, where, gb_csv_line(c->reader), gb_csv_offset(c->reader));
+}
+
+/* The record read into the source's shape: each named column's cell into its
+ * field, a field no column fills keeping its default. A cell that does not
+ * convert is refused naming the line, the record and the column; with
+ * problems: "deliver" it becomes the record's problem instead (when it has
+ * none already), its field left nothing, and the record is handed over.
+ * Answers 0 having raised. */
+static int csv_cursor_shaped(CsvCursor *c, Value *element, char *problem, size_t size) {
+    GbCsvReader *r = c->reader;
+    const struct GbShape *shape = c->source->shape;
+    size_t n = gb_csv_field_count(r);
+    size_t k = n < c->nnames ? n : c->nnames;
+    *element = shape_blank(shape);
+    if (error_action_pending()) {
+        value_free(*element);
+        return 0;
+    }
+    for (size_t i = 0; i < k; i++) {
+        if (c->field_of[i] < 0) {
+            continue;
+        }
+        size_t len;
+        const char *bytes = gb_csv_field(r, i, &len);
+        int before = error_generation;
+        if (shape_cell(shape, element, c->field_of[i], bytes, len)) {
+            continue;
+        }
+        /* the field's own refusal, after where it is; an escalated warning
+           (on warning stop) and a stopped run keep their own words */
+        if (runtime_stopped || current_error.code == 2126 || current_error.code == 2127) {
+            value_free(*element);
+            return 0;
+        }
+        char said[700];
+        snprintf(said, sizeof said, "line %llu (record %llu), column '%.60s': %s",
+                 (unsigned long long)gb_csv_line(r), (unsigned long long)c->record, c->names[i],
+                 current_error.message ? current_error.message : "it does not convert");
+        if (c->source->deliver) {
+            raise_in_flight = 0;
+            error_clear_state();
+            error_generation = before;
+            if (!problem[0]) {
+                snprintf(problem, size, "%s", said);
+            }
+            continue;
+        }
+        char message[800];
+        snprintf(message, sizeof message, "%s: %s", c->source->path ? "csv.records" : "csv.parse", said);
+        raise_in_flight = 0;
+        error_clear_state();
+        error_generation = before;
+        csv_raise_at(message, gb_csv_line(r), gb_csv_offset(r), c->record);
+        value_free(*element);
+        return 0;
+    }
     return 1;
 }
 
@@ -742,7 +899,7 @@ static int csv_cursor_next(CsvCursor *c, Value *element, Value *where) {
     c->record++;
     GbCsvReader *r = c->reader;
     size_t n = gb_csv_field_count(r);
-    char problem[300];
+    char problem[800];
     problem[0] = '\0';
     if (gb_csv_problem(r) == GB_CSV_TEXT_AFTER_QUOTE) {
         snprintf(problem, sizeof problem, "line %llu (record %llu) has text after a closing quote",
@@ -758,7 +915,11 @@ static int csv_cursor_next(CsvCursor *c, Value *element, Value *where) {
         csv_raise_at(message, gb_csv_line(r), gb_csv_offset(r), c->record);
         return -1;
     }
-    if (c->nnames > 0) {
+    if (c->source->shape) {
+        if (!csv_cursor_shaped(c, element, problem, sizeof problem)) {
+            return -1;
+        }
+    } else if (c->nnames > 0) {
         *element = value_record(NULL, 0);
         size_t k = n < c->nnames ? n : c->nnames;
         for (size_t i = 0; i < k; i++) {

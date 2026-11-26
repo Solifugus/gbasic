@@ -166,6 +166,21 @@ end function
 published = tools.schema(ts)
 check("the schema publishes every tool", count(published), 5)
 
+' Every published type is one JSON Schema has (RFC draft 2020-12, 6.1.1): a
+' record parameter was published as "record", which is no type there, and a
+' provider checking the schema refuses the whole tool.
+json_types = ["string", "number", "integer", "boolean", "array", "object", "null"]
+bad_types = []
+for each pub in published
+    for each pname in keys(pub.parameters.properties)
+        t = pub.parameters.properties[pname].type
+        if not contains(json_types, t) then
+            append(bad_types, pub.name + "." + pname + ": " + t)
+        end if
+    end for
+end for
+check("every published parameter type is a JSON Schema type", join(bad_types, ", "), "")
+
 oracle_checks = 0
 for each pub in published
     props = pub.parameters.properties
@@ -214,8 +229,10 @@ for each pub in published
         bad[pname] = wrong(props[pname].type)
         got2 = tools.dispatch(ts, pub.name, bad)
         oracle_checks = oracle_checks + 1
+        ' the schema says JSON's word, dispatch the declaration's
+        said = "record" if props[pname].type = "object" else props[pname].type
         check("a wrong " + props[pname].type + " for '" + pname + "' in " + pub.name + " is refused",
-              got2.content, "parameter '" + pname + "' should be a " + props[pname].type)
+              got2.content, "parameter '" + pname + "' should be a " + said)
     end for
 end for
 
