@@ -1189,6 +1189,17 @@ void eval_set_json_diagnostics(int on) {
     trace_json_mode = on;
 }
 
+/* `gbasic --check` (2026-11-26, an AI aid): eval_program registers what the
+ * program declares and imports what it loads -- the pass a program block's
+ * run starts with, which runs no user code -- and then stops, running nothing.
+ * So a library that does not parse, a load that resolves nowhere or a
+ * function defined twice is reported as the run would report it. */
+static int check_only = 0;
+
+void eval_set_check_only(int on) {
+    check_only = on;
+}
+
 void eval_set_full_trace(int on) {
     trace_full = on;
 }
@@ -5619,6 +5630,13 @@ static void runtime_note_at(const char *message, int code, const char *source,
     }
     if (!warn_site_first_time(line, column)) {
         return;
+    }
+    /* in JSON mode the sink takes it, as runtime_warn_at's warnings */
+    if (trace_json_mode) {
+        gb_span span = { line, column, line, column };
+        if (gb_report_note(code, runtime_error_path(), span, message)) {
+            return;
+        }
     }
     fprintf(stderr, "note: %s at %s:%d:%d [%d]\n", message,
             runtime_error_path() ? runtime_error_path() : "?",
@@ -52336,6 +52354,11 @@ int eval_program(AstStmtList program) {
         PROFILE_CALL(program_block);
         main_depth = PROFILE_PUSH(&program_block->prof_fn);
     }
+    /* with no program block the top level registers on reach, so --check
+       does here what the block's run did in program_block_prepare */
+    if (check_only && !program_block && !raise_in_flight && !runtime_stopped) {
+        register_hoistable_declarations(program);
+    }
     if (!raise_in_flight) {
         gsql_blocks_need_load(program);
     }
@@ -52349,9 +52372,13 @@ int eval_program(AstStmtList program) {
      * would print its output beneath a reported error, which is the
      * "diagnostic without consequence" shape run_parse_exit.sh exists for.
      * Nothing has executed yet, so nothing should. */
-    EvalResult result = (runtime_stopped || raise_in_flight)
-        ? eval_stop()
-        : eval_program_list(program_block, &program);
+    EvalResult result = {0};
+    result.value = value_null();
+    if (runtime_stopped || raise_in_flight) {
+        result = eval_stop();
+    } else if (!check_only) {
+        result = eval_program_list(program_block, &program);
+    }
     if (program_block) {
         PROFILE_POP(main_depth);
     }

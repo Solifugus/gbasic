@@ -142,6 +142,9 @@ void            gb_report(gb_diag_code code, int subcode, const char *path,
  * sink took it, 0 if there is no sink and the caller must print it itself. */
 int             gb_report_warning(int subcode, const char *path, gb_span span,
                                   const char *message);
+/* The same for a NOTE (GB_SEVERITY_NOTE): a rule followed, not a hazard. */
+int             gb_report_note(int subcode, const char *path, gb_span span,
+                               const char *message);
 
 /* Same as gb_report, but to an explicit sink instead of the process-global one
  * (NULL sink => immediate stderr, byte-identical to gb_report's fallback). The

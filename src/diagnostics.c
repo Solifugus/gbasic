@@ -285,3 +285,16 @@ int gb_report_warning(int subcode, const char *path, gb_span span,
                        subcode, path, span, message);
     return 1;
 }
+
+/* A NOTE, the same way and for the same reason: note 2102 under
+ * --json-diagnostics printed its plain line into the JSON stream until
+ * 2026-11-26, found by `gbasic --check`, whose whole output is that stream. */
+int gb_report_note(int subcode, const char *path, gb_span span,
+                   const char *message) {
+    if (!g_active_sink) {
+        return 0;
+    }
+    gb_diagnostics_add(g_active_sink, GB_SEVERITY_NOTE, GB_DIAG_RUNTIME_ERROR,
+                       subcode, path, span, message);
+    return 1;
+}

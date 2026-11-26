@@ -30,6 +30,7 @@ static void print_help(const char *argv0) {
     printf("  %s --add-loads FILE\n", argv0);
     printf("  %s --add-uses FILE\n", argv0);
     printf("  %s --json-diagnostics FILE [args...]\n", argv0);
+    printf("  %s --check FILE\n", argv0);
     printf("  %s --line-buffered FILE [args...]\n", argv0);
     printf("\n");
     printf("flags:\n");
@@ -44,6 +45,9 @@ static void print_help(const char *argv0) {
     printf("  --doc NAME       what a builtin, module verb or library function takes and does, from this build\n");
     printf("  --explain CODE   what a diagnostic, error or warning code means\n");
     printf("  --add-uses FILE  compatibility alias; emits use statements\n");
+    printf("  --check FILE     parse FILE and every library it loads, and run every check\n");
+    printf("                   made before a statement runs; RUN NOTHING. Each diagnostic\n");
+    printf("                   is a JSON line on stdout (none: clean); exits 1 on an error\n");
     printf("  --json-diagnostics FILE [args...]  run FILE, emitting diagnostics as JSON\n");
     printf("                   lines to stderr. Runs the program, so it takes program\n");
     printf("                   arguments; the inspect-only modes above do not.\n");
@@ -991,15 +995,19 @@ static int run_actor_mode(int argc, char **argv) {
  * shared gb_diag_format guarantees these bytes match what the no-sink fallback
  * would have emitted immediately; with `as_json` set (--json-diagnostics) each is
  * emitted as one JSON line instead. */
-static void drain_diagnostics(gb_diagnostics *diags, int as_json) {
+static void drain_diagnostics_to(gb_diagnostics *diags, int as_json, FILE *out) {
     for (size_t i = 0; i < gb_diagnostics_count(diags); i++) {
         const gb_diag *d = gb_diagnostics_at(diags, i);
         if (as_json) {
-            gb_diag_write_json(stderr, d);
+            gb_diag_write_json(out, d);
         } else {
-            gb_diag_format(stderr, d);
+            gb_diag_format(out, d);
         }
     }
+}
+
+static void drain_diagnostics(gb_diagnostics *diags, int as_json) {
+    drain_diagnostics_to(diags, as_json, stderr);
 }
 
 /* PLAT-STREAM: pull a standalone, mode-independent flag out of argv so the mode
@@ -1041,6 +1049,7 @@ int main(int argc, char **argv) {
     int ast_only = 0;
     int tokens_only = 0;
     int json_diagnostics = 0;
+    int check_only = 0;
     const char *add_loads_keyword = NULL;
     const char *path = NULL;
     char *const *program_args = NULL;
@@ -1181,6 +1190,11 @@ int main(int argc, char **argv) {
     } else if (argc == 3 && strcmp(argv[1], "--add-uses") == 0) {
         add_loads_keyword = "use";
         path = argv[2];
+    } else if (argc == 3 && strcmp(argv[1], "--check") == 0) {
+        /* --check runs nothing, so there are no program arguments to take */
+        check_only = 1;
+        json_diagnostics = 1;
+        path = argv[2];
     } else if (argc >= 3 && strcmp(argv[1], "--json-diagnostics") == 0) {
         /* This mode RUNS the program (it falls through to eval_program below,
          * unlike --ast/--tokens/--add-loads which only inspect it), so program
@@ -1228,14 +1242,27 @@ int main(int argc, char **argv) {
          * back the parsed AST; a failed parse hands back an empty list. Free
          * either, so a refused program is not also a leaked one. */
         ast_free_program(program);
-        drain_diagnostics(&diags, json_diagnostics);
+        drain_diagnostics_to(&diags, json_diagnostics, check_only ? stdout : stderr);
         gb_diagnostics_free(&diags);
         free(source);
         return 1;
     }
 
     int exit_status = 0;
-    if (ast_only) {
+    if (check_only) {
+        eval_set_source_path(path);
+        eval_set_json_diagnostics(1);
+        eval_set_check_only(1);
+        gb_set_active_sink(&diags);
+        exit_status = eval_program(program);
+        gb_set_active_sink(NULL);
+        drain_diagnostics_to(&diags, 1, stdout);
+        for (size_t i = 0; i < gb_diagnostics_count(&diags); i++) {
+            if (gb_diagnostics_at(&diags, i)->severity == GB_SEVERITY_ERROR) {
+                exit_status = 1;
+            }
+        }
+    } else if (ast_only) {
         ast_dump(program);
     } else if (add_loads_keyword) {
         exit_status = add_loads_mode(path, source, program, add_loads_keyword);

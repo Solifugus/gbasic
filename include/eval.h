@@ -22,6 +22,9 @@ void eval_profile_report(void);
 /* Frames are omitted from the diagnostic message in JSON mode, so an editor's
  * `message` field keeps meaning one sentence. */
 void eval_set_json_diagnostics(int on);
+/* --check: eval_program registers declarations and imports loads, then
+ * returns without running a statement. */
+void eval_set_check_only(int on);
 
 /* The file a child process re-execs to BE this program -- what `spawn` hands an
  * actor, and what `process.self` reports as the script. Defaults to the source
