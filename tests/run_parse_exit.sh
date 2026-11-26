@@ -18,6 +18,11 @@
 #   nothing_ran a truncated program does not half-execute
 #   one_cause   one diagnostic per cause; no follow-on blaming "end of file",
 #               which is not what stopped the parse
+#
+# And a fifth (2026-11-26): a refusal leaks nothing. tests/refusals holds one
+# program per kind of rule that refuses from its own action (GB_REFUSE in
+# src/parser.y); bison's YYERROR popped those rules' symbols without their
+# destructors, and 16 of the 31 leaked, measured, before GB_REFUSE.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -117,5 +122,30 @@ ok clean
 grep -n 'fprintf(stderr, "unexpected token' src/parser.y \
     && fail "parser.y still prints a token diagnostic outside the sink"
 ok no_raw_stderr
+
+# --- a refusal leaks nothing --------------------------------------------------
+# Every program in tests/refusals is a syntax error refused by a rule's own
+# action; each must stay one, and valgrind must find nothing lost or misfreed.
+. tests/valgrind_tier.sh
+n=0
+for f in tests/refusals/*.bas; do
+    n=$((n + 1))
+    out=$(./gbasic "$f" 2>&1 || true)
+    case "$out" in "syntax error at $f:"*) ;; *) fail "refusals: $f is no longer a syntax error: $out" ;; esac
+done
+[ "$n" -ge 30 ] || fail "refusals: only $n programs in tests/refusals"
+ok refusals_refused
+if vg_available; then
+    for f in tests/refusals/*.bas; do
+        set +e
+        vg_run -q ./gbasic "$f" >/dev/null 2>"$scratch/vg"
+        rc=$?
+        set -e
+        [ "$rc" != "$VG_EXIT" ] || fail "refusals: valgrind on $f: $(grep -m3 -E 'lost|Invalid' "$scratch/vg")"
+    done
+    ok refusals_leak_nothing
+else
+    printf 'SKIP refusals_leak_nothing (no valgrind)\n'
+fi
 
 printf 'run_parse_exit: %d cases passed\n' "$cases"

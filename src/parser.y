@@ -65,6 +65,7 @@ static int for_end_matches(gb_parse_ctx *ctx, const char *loop_variable,
                  closer, loop_variable ? loop_variable : "another variable",
                  loop_variable ? loop_variable : "");
         report_syntax_error(ctx, line, column, line, column, message);
+        return 0;       /* the closer is the refusing rule's, freed by GB_REFUSE */
     }
     free(closer);
     return ok;
@@ -750,6 +751,16 @@ static void yyerror(YYLTYPE *llocp, gb_parse_ctx *ctx, const char *message);
 static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
                                 int end_line, int end_column, const char *message);
 
+/* A RULE'S OWN REFUSAL, WITHOUT A LEAK (2026-11-26). Bison's YYERROR pops
+ * the refusing rule's symbols WITHOUT their %destructor ("Do not reclaim the
+ * symbols of the rule whose action triggered this YYERROR", yyerrorlab), so
+ * every refusal leaked what it had read: `x:int = 5` lost the name, the type
+ * and the expression, and gbasic-lsp parses on every keystroke. Setting
+ * yylen to 0 leaves them on the stack, where error recovery pops each through
+ * its destructor. So an action that has freed or moved a symbol sets it to
+ * NULL before refusing, and every destructor takes NULL. */
+#define GB_REFUSE do { yylen = 0; YYERROR; } while (0)
+
 /* A FIX, MACHINE-APPLICABLE (2026-11-26, the second AI aid): an advice
  * function that knows the rewrite FOR CERTAIN offers it here, and
  * report_syntax_error puts it on the diagnostic, where --json-diagnostics
@@ -1023,7 +1034,7 @@ statement
         report_syntax_error(ctx, @1.first_line, @1.first_column,
                             @1.last_line, @1.last_column,
                             "`dim` is not a gBASIC statement; assign to create a variable (x = 0)");
-        YYERROR;
+        GB_REFUSE;
       }
     ;
 
@@ -1039,7 +1050,7 @@ assignment
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
                                 ctx->la_end_line, ctx->la_end_column,
                                 "modifier target must be a variable, field, or index");
-            YYERROR;
+            GB_REFUSE;
         }
         $$ = ast_assign_op($1, $2, $4, $3);
       }
@@ -1053,7 +1064,7 @@ assignment
     | variable_name COLON type_lock OP_EQ expression {
         if (!type_lock_check(ctx, $1, $3.name, $3.arg, @3.first_line, @3.first_column,
                              @3.last_line, @3.last_column)) {
-            YYERROR;
+            GB_REFUSE;
         }
         $$ = ast_assign_locked(expr_at(ast_ident($1), @1.first_line, @1.first_column), $3, $5);
       }
@@ -1062,7 +1073,7 @@ assignment
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
                                 ctx->la_end_line, ctx->la_end_column,
                                 "modifier target must be a variable, field, or index");
-            YYERROR;
+            GB_REFUSE;
         }
         $$ = ast_assign($1, $2, $4);
       }
@@ -1197,7 +1208,7 @@ with_lock_statement
                                 "expected lock or principal in a with block");
             free($2);
             $2 = NULL;
-            YYERROR;
+            GB_REFUSE;
         }
         free($2);
         $$ = is_lock ? ast_with_lock($4, $7) : ast_with_principal($4, $7);
@@ -1220,11 +1231,11 @@ for_end
 
 for_each_statement
     : FOR IDENT IN expression NEWLINE statement_list for_end {
-        if (!for_end_matches(ctx, $2, $7, @7.first_line, @7.first_column)) { YYERROR; }
+        if (!for_end_matches(ctx, $2, $7, @7.first_line, @7.first_column)) { GB_REFUSE; }
         $$ = ast_for_each($2, NULL, $4, $6);
       }
     | FOR EACH IDENT IN expression NEWLINE statement_list for_end {
-        if (!for_end_matches(ctx, $3, $8, @8.first_line, @8.first_column)) { YYERROR; }
+        if (!for_end_matches(ctx, $3, $8, @8.first_line, @8.first_column)) { GB_REFUSE; }
         $$ = ast_for_each($3, NULL, $5, $7);
       }
     /* `for each item, i in list` -- the element AND its position.
@@ -1240,13 +1251,13 @@ for_each_statement
      * One lookahead past the name settles which form this is: COMMA here, IN
      * for the plain element form, OP_EQ for the counted loop. No conflicts. */
     | FOR IDENT COMMA IDENT IN expression NEWLINE statement_list for_end {
-        if (!for_each_index_distinct(ctx, $2, $4, @4.first_line, @4.first_column)) { YYERROR; }
-        if (!for_end_matches(ctx, $2, $9, @9.first_line, @9.first_column)) { YYERROR; }
+        if (!for_each_index_distinct(ctx, $2, $4, @4.first_line, @4.first_column)) { GB_REFUSE; }
+        if (!for_end_matches(ctx, $2, $9, @9.first_line, @9.first_column)) { GB_REFUSE; }
         $$ = ast_for_each($2, $4, $6, $8);
       }
     | FOR EACH IDENT COMMA IDENT IN expression NEWLINE statement_list for_end {
-        if (!for_each_index_distinct(ctx, $3, $5, @5.first_line, @5.first_column)) { YYERROR; }
-        if (!for_end_matches(ctx, $3, $10, @10.first_line, @10.first_column)) { YYERROR; }
+        if (!for_each_index_distinct(ctx, $3, $5, @5.first_line, @5.first_column)) { GB_REFUSE; }
+        if (!for_end_matches(ctx, $3, $10, @10.first_line, @10.first_column)) { GB_REFUSE; }
         $$ = ast_for_each($3, $5, $7, $9);
       }
     /* `for each x:number in xs` (Matthew, 2026-11-25): each element bound as
@@ -1255,39 +1266,39 @@ for_each_statement
      * these from the forms above, so no conflicts. */
     | FOR IDENT COLON type_lock IN expression NEWLINE statement_list for_end {
         if (!type_lock_check(ctx, $2, $4.name, $4.arg, @4.first_line, @4.first_column,
-                             @4.last_line, @4.last_column)) { YYERROR; }
-        if (!for_end_matches(ctx, $2, $9, @9.first_line, @9.first_column)) { YYERROR; }
+                             @4.last_line, @4.last_column)) { GB_REFUSE; }
+        if (!for_end_matches(ctx, $2, $9, @9.first_line, @9.first_column)) { GB_REFUSE; }
         $$ = ast_for_each_locked($2, $4, NULL, $6, $8);
       }
     | FOR EACH IDENT COLON type_lock IN expression NEWLINE statement_list for_end {
         if (!type_lock_check(ctx, $3, $5.name, $5.arg, @5.first_line, @5.first_column,
-                             @5.last_line, @5.last_column)) { YYERROR; }
-        if (!for_end_matches(ctx, $3, $10, @10.first_line, @10.first_column)) { YYERROR; }
+                             @5.last_line, @5.last_column)) { GB_REFUSE; }
+        if (!for_end_matches(ctx, $3, $10, @10.first_line, @10.first_column)) { GB_REFUSE; }
         $$ = ast_for_each_locked($3, $5, NULL, $7, $9);
       }
     | FOR IDENT COLON type_lock COMMA IDENT IN expression NEWLINE statement_list for_end {
         if (!type_lock_check(ctx, $2, $4.name, $4.arg, @4.first_line, @4.first_column,
-                             @4.last_line, @4.last_column)) { YYERROR; }
-        if (!for_each_index_distinct(ctx, $2, $6, @6.first_line, @6.first_column)) { YYERROR; }
-        if (!for_end_matches(ctx, $2, $11, @11.first_line, @11.first_column)) { YYERROR; }
+                             @4.last_line, @4.last_column)) { GB_REFUSE; }
+        if (!for_each_index_distinct(ctx, $2, $6, @6.first_line, @6.first_column)) { GB_REFUSE; }
+        if (!for_end_matches(ctx, $2, $11, @11.first_line, @11.first_column)) { GB_REFUSE; }
         $$ = ast_for_each_locked($2, $4, $6, $8, $10);
       }
     | FOR EACH IDENT COLON type_lock COMMA IDENT IN expression NEWLINE statement_list for_end {
         if (!type_lock_check(ctx, $3, $5.name, $5.arg, @5.first_line, @5.first_column,
-                             @5.last_line, @5.last_column)) { YYERROR; }
-        if (!for_each_index_distinct(ctx, $3, $7, @7.first_line, @7.first_column)) { YYERROR; }
-        if (!for_end_matches(ctx, $3, $12, @12.first_line, @12.first_column)) { YYERROR; }
+                             @5.last_line, @5.last_column)) { GB_REFUSE; }
+        if (!for_each_index_distinct(ctx, $3, $7, @7.first_line, @7.first_column)) { GB_REFUSE; }
+        if (!for_end_matches(ctx, $3, $12, @12.first_line, @12.first_column)) { GB_REFUSE; }
         $$ = ast_for_each_locked($3, $5, $7, $9, $11);
       }
     /* Counted loop. `to` is INCLUSIVE, as every BASIC has had it, and `step`
      * defaults to 1. Distinguished from `for each`/`for ... in` by the token
      * after the name -- OP_EQ here, IN there -- so one lookahead settles it. */
     | FOR IDENT OP_EQ expression TO expression NEWLINE statement_list for_end {
-        if (!for_end_matches(ctx, $2, $9, @9.first_line, @9.first_column)) { YYERROR; }
+        if (!for_end_matches(ctx, $2, $9, @9.first_line, @9.first_column)) { GB_REFUSE; }
         $$ = ast_for_range($2, $4, $6, NULL, $8);
       }
     | FOR IDENT OP_EQ expression TO expression STEP expression NEWLINE statement_list for_end {
-        if (!for_end_matches(ctx, $2, $11, @11.first_line, @11.first_column)) { YYERROR; }
+        if (!for_end_matches(ctx, $2, $11, @11.first_line, @11.first_column)) { GB_REFUSE; }
         $$ = ast_for_range($2, $4, $6, $8, $10);
       }
     ;
@@ -1383,7 +1394,7 @@ consider_body_statement
         report_syntax_error(ctx, @1.first_line, @1.first_column,
                             @1.last_line, @1.last_column,
                             "`dim` is not a gBASIC statement; assign to create a variable (x = 0)");
-        YYERROR;
+        GB_REFUSE;
       }
     ;
 
@@ -1403,7 +1414,7 @@ function_statement
         snprintf(who, sizeof who, "%s(...)", $2);
         if (!type_lock_check(ctx, who, $7.name, $7.arg, @7.first_line, @7.first_column,
                              @7.last_line, @7.last_column)) {
-            YYERROR;
+            GB_REFUSE;
         }
         $$ = ast_function_returning($2, $4, $7, $9);
       }
@@ -1412,7 +1423,7 @@ function_statement
         snprintf(who, sizeof who, "%s(...)", $2);
         if (!type_lock_check(ctx, who, $7.name, $7.arg, @7.first_line, @7.first_column,
                              @7.last_line, @7.last_column)) {
-            YYERROR;
+            GB_REFUSE;
         }
         $$ = ast_function_returning($2, $4, $7, $9);
       }
@@ -1456,7 +1467,7 @@ use_statement
             $2 = NULL;
             $3 = NULL;
             $4 = NULL;
-            YYERROR;
+            GB_REFUSE;
         }
         free($3);
         $$ = ast_use($2, $4, NULL);
@@ -1472,7 +1483,7 @@ use_statement
             $2 = NULL;
             $3 = NULL;
             $4 = NULL;
-            YYERROR;
+            GB_REFUSE;
         }
         free($3);
         $$ = ast_use($2, $4, NULL);
@@ -1490,7 +1501,7 @@ use_statement
             $3 = NULL;
             $4 = NULL;
             $6 = NULL;
-            YYERROR;
+            GB_REFUSE;
         }
         free($3);
         $$ = ast_use($2, $4, $6);
@@ -1776,7 +1787,7 @@ on_error_statement
     | ON ERROR_VALUE GOTO NEXT { $$ = ast_on_error_goto_next(); }
     | ON ERROR_VALUE STOP { $$ = ast_on_error_stop(); }
     | ON IDENT GOTO NEXT {
-        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { YYERROR; }
+        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { GB_REFUSE; }
         free($2);
         $$ = ast_on_warning(WARN_MODE_NEXT);
       }
@@ -1784,30 +1795,31 @@ on_error_statement
         /* A warning fires from a statement that SUCCEEDED, so a label jump
          * would mean leaving successful code on an advisory signal. Refused
          * BY NAME rather than as a bare syntax error. */
-        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { YYERROR; }
+        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { GB_REFUSE; }
         report_diag(ctx, GB_DIAG_PARSE_ERROR, @3.first_line, @3.first_column,
                     @3.first_line, @3.first_column,
                     "on warning has no goto-label form: a warning does not abandon "
                     "its statement, so there is nothing to jump away from "
                     "(use goto next, stop, ignore or print)");
         free($2); free($4);
+        $2 = NULL; $4 = NULL;
         $$ = NULL;   /* never used: YYERROR discards it, but bison asks every rule to set one */
-        YYERROR;
+        GB_REFUSE;
       }
     | ON IDENT STOP {
-        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { YYERROR; }
+        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { GB_REFUSE; }
         free($2);
         $$ = ast_on_warning(WARN_MODE_STOP);
       }
     | ON IDENT PRINT {
-        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { YYERROR; }
+        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { GB_REFUSE; }
         free($2);
         $$ = ast_on_warning(WARN_MODE_PRINT);
       }
     | ON IDENT IDENT {
-        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { YYERROR; }
+        if (!warn_channel_ok(ctx, $2, @2.first_line, @2.first_column)) { GB_REFUSE; }
         int mode = warn_mode_word(ctx, $3, @3.first_line, @3.first_column);
-        if (mode < 0) { free($2); free($3); YYERROR; }
+        if (mode < 0) { free($2); free($3); $2 = NULL; $3 = NULL; GB_REFUSE; }
         free($2); free($3);
         $$ = ast_on_warning(mode);
       }
@@ -2092,7 +2104,7 @@ primary
                                 "(`x {USD}= 19.99`)");
             free($1);
             $1 = NULL;
-            YYERROR;
+            GB_REFUSE;
         }
         $$ = expr_at(ast_string($1), @1.first_line, @1.first_column);
       }
@@ -2110,12 +2122,12 @@ primary
                 report_syntax_error(ctx, @1.first_line, @1.first_column, @1.last_line, @1.last_column,
                                     "a size in columns or rows is one term on its own, "
                                     "as `40 columns` or `12 rows`: it cannot join a duration or another size");
-                YYERROR;
+                GB_REFUSE;
             }
             if ($1.cells_amount < 1 || $1.cells_amount != floor($1.cells_amount) || $1.cells_amount > 100000) {
                 report_syntax_error(ctx, @1.first_line, @1.first_column, @1.last_line, @1.last_column,
                                     "a size in columns or rows is a whole number from 1, as `40 columns`");
-                YYERROR;
+                GB_REFUSE;
             }
             AstRecordFieldList f = ast_record_field_list_empty();
             f = ast_record_field_list_append(f, copy_const($1.cells == 1 ? "columns" : "rows"),
@@ -2215,7 +2227,8 @@ duration_terms
         if (bad) {
             duration_unit_error(ctx, bad, @2.first_line, @2.first_column,
                                 @2.last_line, @2.last_column);
-            YYERROR;
+            $2 = NULL;      /* duration_add_unit took the unit */
+            GB_REFUSE;
         }
       }
     | duration_terms NUMBER IDENT {
@@ -2224,7 +2237,8 @@ duration_terms
         if (bad) {
             duration_unit_error(ctx, bad, @3.first_line, @3.first_column,
                                 @3.last_line, @3.last_column);
-            YYERROR;
+            $3 = NULL;      /* duration_add_unit took the unit */
+            GB_REFUSE;
         }
       }
     ;
@@ -2289,28 +2303,28 @@ parameter_list
     | IDENT COLON type_lock {
         if (!type_lock_check(ctx, $1, $3.name, $3.arg, @3.first_line, @3.first_column,
                              @3.last_line, @3.last_column)) {
-            YYERROR;
+            GB_REFUSE;
         }
         $$ = ast_name_list_lock_last(ast_name_list_append(ast_name_list_empty(), $1), $3);
       }
     | IDENT COLON type_lock OP_EQ parameter_default {
         if (!type_lock_check(ctx, $1, $3.name, $3.arg, @3.first_line, @3.first_column,
                              @3.last_line, @3.last_column)) {
-            YYERROR;
+            GB_REFUSE;
         }
         $$ = ast_name_list_lock_last(ast_name_list_append_default(ast_name_list_empty(), $1, $5), $3);
       }
     | parameter_list COMMA IDENT COLON type_lock {
         if (!type_lock_check(ctx, $3, $5.name, $5.arg, @5.first_line, @5.first_column,
                              @5.last_line, @5.last_column)) {
-            YYERROR;
+            GB_REFUSE;
         }
         $$ = ast_name_list_lock_last(ast_name_list_append($1, $3), $5);
       }
     | parameter_list COMMA IDENT COLON type_lock OP_EQ parameter_default {
         if (!type_lock_check(ctx, $3, $5.name, $5.arg, @5.first_line, @5.first_column,
                              @5.last_line, @5.last_column)) {
-            YYERROR;
+            GB_REFUSE;
         }
         $$ = ast_name_list_lock_last(ast_name_list_append_default($1, $3, $7), $5);
       }
@@ -2429,14 +2443,14 @@ field_policy
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
                                 ctx->la_end_line, ctx->la_end_column,
                                 "reset policy requires a value, e.g. (reset 0)");
-            YYERROR;
+            GB_REFUSE;
         } else {
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
                                 ctx->la_end_line, ctx->la_end_column,
                                 "unknown field policy (expected copy, link, reset, or exclude)");
             free($1);
             $1 = NULL;
-            YYERROR;
+            GB_REFUSE;
         }
         free($1);
         $$ = spec;
@@ -2452,7 +2466,7 @@ field_policy
             report_syntax_error(ctx, ctx->la_line, ctx->la_column,
                                 ctx->la_end_line, ctx->la_end_column,
                                 "only the reset policy takes a value");
-            YYERROR;
+            GB_REFUSE;
         }
         free($1);
         $$ = spec;
