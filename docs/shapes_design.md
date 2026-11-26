@@ -1,9 +1,9 @@
 # Shapes: a record's declared form
 
-Status: **ruled 2026-11-26; increments 0 and 1 built 2026-11-26**
+Status: **ruled 2026-11-26; increments 0, 1 and 2 built 2026-11-26**
 (tests/run_reserved_forms.sh, tests/run_shapes.sh): the block, instances,
-fixed fields, writes, methods and shaped fields. Increment 2, the shape as a
-lock, is next. The concept
+fixed fields, writes, methods and shaped fields, and the shape as a lock
+(§5). Increment 3, the boundaries (§6), is next. The concept
 was agreed by Matthew on 2026-11-25 ("It feels like a more intuitive and
 higher level C struct"), with three rulings: the word is worth having (as a
 contextual keyword, ruled the same day), fixed means fixed (§4.2), and a shape
@@ -243,6 +243,26 @@ strict, and `on warning ignore` silences it.
 
 An instance of the shape passes through a lock unchanged; an instance of a
 DIFFERENT shape is converted as a plain record would be.
+
+**What building increment 2 settled** (2026-11-26):
+
+- The lock is a lock: `LOCK_SHAPE` beside the data types in the variable's
+  `TypeLock`, so a parameter, a return, a `for each` element and a later
+  plain `=` all go through the one `lock_convert`, and messages name it as
+  they name a type (`a is locked to account by a:account at line 5`).
+- **Unknown names are refused at parse time, not at run time.** A shape may
+  be declared below its first use, so the parser keeps each lock name that is
+  no data type and checks it once the file is parsed, against the shapes the
+  file declares (and, at the prompt, those the runtime already has, through
+  `gb_parse_shape_known`). `x:nubmer` therefore stays a syntax error, now
+  with "did you mean number?" -- the one thing a shape lock could have cost.
+- Without a `program` block nothing is hoisted, functions included, so a
+  script locking above its shape is refused when the line runs, saying so.
+- Under `on warning stop`, an escalated 2126/2127 keeps its own words rather
+  than being wrapped as "does not convert".
+- The prompt could not take a multi-line shape: the body's own message
+  replaced bison's "unexpected end of file", which is what the prompt reads
+  as "ask for more". Fixed by leaving the end of input to bison.
 
 ## 6. Where data enters and leaves
 

@@ -720,7 +720,12 @@ end's existing yylloc convention).
 
 Block kinds (`flags.block = true`, may have children):
 `program`, `library`, `function`, `modifier`, `if`, `while`, `for_each`,
-`consider`, `watch`, `with_lock`, `without_watchers`.
+`consider`, `watch`, `with_lock`, `without_watchers`, `with_principal`,
+`window`, `database`, `sql`, `server` (its items as `handler` and `web`), and
+`shape` (2026-11-26, asked for by Studio, which hoists by kind: named, its
+methods its `function` children; its fields are not nodes). This list was
+behind the walker until then; `outline_walk_stmt` in src/eval.c is the
+authority.
 
 Non-block kind (`flags.block = false`, leaf):
 `statement` — every top-level or nested executable statement that is not one of the

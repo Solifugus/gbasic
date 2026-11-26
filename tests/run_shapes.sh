@@ -1,12 +1,22 @@
 #!/usr/bin/env bash
 # Shapes, a record's declared form (docs/shapes_design.md), increment 1: the
-# block, instances, fixed fields, writes, methods and shaped fields.
+# block, instances, fixed fields, writes, methods and shaped fields; and
+# increment 2: a shape's name as a lock (§5).
 #
 # Tiers:
-#   golden    tests/shapes/instances.bas against instances.out, every line of
-#             which was worked out by hand from the design before the
-#             implementation existed; interpreted and compiled
-#             (GBASIC_COMPILE=all) both.
+#   golden    tests/shapes/instances.bas against instances.out, and
+#             tests/shapes/locks.bas against locks.out, every line of which was
+#             worked out by hand from the design before the implementation ran;
+#             interpreted and compiled (GBASIC_COMPILE=all) both.
+#   locks     a lock naming a shape refusing: a value that is not a record (a
+#             variable, a parameter, a return, an element by its number), a
+#             field that does not convert (named in its own words after whose
+#             lock refused), a lock naming no declared shape refused BEFORE
+#             anything runs (with "did you mean" for a type or a shape), a
+#             script locking above its shape, --check, the prompt.
+#   lockwarn  the two warnings through a variable, a parameter and an element:
+#             once per field, a default silent; `on warning stop` refuses in
+#             the warning's own words.
 #   refusals  each refusal by its message: a field the shape does not declare
 #             (written, by brackets, in `with`), a value its type refuses, a
 #             method written as a field or attached outside, a shape declared
@@ -45,6 +55,16 @@ if GBASIC_COMPILE=all "$G" tests/shapes/instances.bas 2>/dev/null | cmp -s - tes
     pass "and compiled, the same bytes"
 else
     fail "instances.bas compiled differs"
+fi
+if "$G" tests/shapes/locks.bas 2>"$work/err" | cmp -s - tests/shapes/locks.out && [ ! -s "$work/err" ]; then
+    pass "locks.bas prints the hand-worked golden, nothing on stderr"
+else
+    fail "locks.bas: $(diff <("$G" tests/shapes/locks.bas 2>&1) tests/shapes/locks.out | head -5)"
+fi
+if GBASIC_COMPILE=all "$G" tests/shapes/locks.bas 2>/dev/null | cmp -s - tests/shapes/locks.out; then
+    pass "and compiled, the same bytes"
+else
+    fail "locks.bas compiled differs"
 fi
 
 HEAD='shape account\n    owner:text = "unnamed"\n    balance:money(USD) = "0.00"\n    opened:date\n    function deposit(n)\n        this.balance += n\n        return this.balance\n    end function\nend shape\n'
@@ -86,6 +106,50 @@ refuse "a default its type refuses, at the field's line" f15.bas 'shape s\n    l
 refuse "a field declared twice" f16.bas 'shape s\n    n:number\n    n:text\nend shape\n' 'shape s declares n twice (lines 2 and 3)'
 runs "a method's += converts text, as a lock does" "${HEAD}a = new account\nprint a.deposit(\"2.50\")\nprint a.deposit(\"1.25\")\n" '2.50\n3.75'
 runs "a shape naming itself (a linked list), and a keyword field name" 'shape node\n    value:number = 0\n    next:node = nothing\nend shape\na = new node with { value: 1 }\na.next = { value: "2" }\nprint a.next.value + 1\n' '3'
+
+echo "--- TIER locks ---"
+LH='shape account\n    owner:text = "unnamed"\n    balance:money(USD) = "0.00"\nend shape\n'
+runs "the working neighbour: a record converts through the lock" "${LH}a:account = { owner: \"A\", balance: \"1\" }\nprint a.balance\n" '1.00'
+refuse "a variable given a number" l1.bas "${LH}a:account = 5\n" 'a is locked to account by a:account at line 5, and this value does not convert: a number is not a record, and only a record converts into shape account'
+refuse "a field that does not convert, in its own words" l2.bas "${LH}a:account = { balance: \"lots\" }\n" 'a:account at line 5, and this value does not convert: balance is locked to money by balance:money(USD) at line 3'
+refuse "a parameter, refused at the call" l3.bas "${LH}function f(e:account)\n    return e\nend function\nprint f([1])\n" 'l3.bas:8:1: e is locked to account by e:account at line 5, and this value does not convert: an array is not a record'
+refuse "a return, refused at its return" l4.bas "${LH}function f():account\n    return \"x\"\nend function\nprint f()\n" 'l4.bas:6:5: f returns account, declared by f(...):account at line 5'
+refuse "an element, by its number" l5.bas "${LH}for each r:account in [{ owner: \"a\" }, 7]\n    print r.owner\nend for\n" 'r is locked to account by r:account at line 5, and element 2 does not convert'
+refuse "a plain = later, as any lock" l6.bas "${LH}a:account = {}\na = \"x\"\n" 'a is locked to account by a:account at line 5, and this value does not convert: a string is not a record'
+refuse "a field the shape lacks, written through the lock" l7.bas "${LH}a:account = {}\na.nick = 1\n" 'account has no field nick'
+refuse "a misspelled type, before anything runs" l8.bas "print 1\nx:nubmer = 1\n" "l8.bas:2:3: 'nubmer' is neither a data type nor a shape this file declares; did you mean number?"
+refuse "a misspelled shape" l9.bas "print 1\n${LH}x:acount = {}\n" "did you mean account?"
+refuse "no such type or shape" l10.bas "print 1\nfunction f(x:zebra)\nend function\n" "'zebra' is neither a data type nor a shape this file declares. The types are number"
+refuse "a script locking above its shape" l11.bas "a:account = {}\n${LH}" 'account is not a shape yet: without a `program` block a shape is declared when its line is reached'
+for f in l8 l9 l10; do
+    if [ -s "$work/$f.bas" ] && (cd "$work" && "$G" "$f.bas" 2>/dev/null) | grep -q .; then
+        fail "$f.bas printed before its refusal"
+    fi
+done
+pass "a lock naming no shape is refused before the first statement runs"
+printf 'program main(args)\n    a:acount = {}\nend program\nshape account\n    n:number = 1\nend shape\n' >"$work/c1.bas"
+out=$("$G" --check "$work/c1.bas"); rc=$?
+case "$out" in *'"code":"GB_DIAG_PARSE_ERROR"'*'did you mean account?'*) [ $rc = 1 ] && pass "--check reports it, a shape declared below" || fail "--check exit $rc" ;; *) fail "--check: $out" ;; esac
+out=$(printf 'shape s\n    n:number = 1\nend shape\na:s = { n: "4" }\nprint a.n + 1\nfunction f(x:s)\n    return x.n\nend function\nprint f({})\n' | "$G" --repl 2>&1)
+[ "$out" = "$(printf '5\n1')" ] && pass "the prompt: a later line locks to a shape an earlier one declared" || fail "prompt: $out"
+
+echo "--- TIER lockwarn ---"
+WH='shape p\n    name:text\n    age:number = 0\n    born:date\nend shape\n'
+printf '%b' "${WH}a:p = { name: \"A\", extra: 1 }\nfunction f(e:p)\n    return e.age\nend function\nprint f({ name: \"B\", born: \"2001-01-01\", more: 2 })\nfor each r:p in [{ name: \"C\" }, { name: \"D\" }]\n    print r.age\nend for\n" >"$work/lw.bas"
+out=$(cd "$work" && "$G" lw.bas 2>"$work/lw.err"); rc=$?
+if [ $rc = 0 ] && [ "$out" = "$(printf '0\n0\n0')" ] &&
+   grep -q 'p has no field extra, so it was dropped.* at .*lw.bas:6:1 \[2126\]' "$work/lw.err" &&
+   grep -q 'p.born was not given and has no default, so it is nothing.* at .*lw.bas:6:1 \[2127\]' "$work/lw.err" &&
+   grep -q 'p has no field more, so it was dropped.* at .*lw.bas:10:1 \[2126\]' "$work/lw.err" &&
+   grep -q 'p.born was not given.* at .*lw.bas:11:1 \[2127\]' "$work/lw.err" &&
+   ! grep -q 'p.age\|p.name' "$work/lw.err" && [ "$(wc -l <"$work/lw.err")" = 4 ]; then
+    pass "a variable, a parameter (at the call) and an element: dropped and missing said once each, defaults silent"
+else
+    fail "lockwarn: exit $rc, out [$out], stderr: $(cat "$work/lw.err")"
+fi
+printf '%b' "on warning stop\n${WH}a:p = { name: \"A\", born: \"2001-01-01\", extra: 1 }\nprint \"ran on\"\n" >"$work/lw2.bas"
+out=$(cd "$work" && "$G" lw2.bas 2>&1)
+case "$out" in *"ran on"*) fail "on warning stop let a lock drop a field: $out" ;; *"p has no field extra, so it was dropped"*) pass "on warning stop: a lock's drop refused in the warning's own words" ;; *) fail "lock strict: $out" ;; esac
 
 echo "--- TIER warnings ---"
 SHP='shape p\n    name:text\n    age:number = 0\n    born:date\nend shape\nshape s\n    h:p\nend shape\nx = new s\n'
@@ -136,7 +200,8 @@ echo "--- TIER valgrind ---"
 if vg_available; then
     bad=""
     vg_run -q "$G" tests/shapes/instances.bas >/dev/null 2>"$work/vg" || bad="$bad instances.bas"
-    for f in "$work"/f*.bas "$work"/w*.bas "$work"/p*.bas; do
+    vg_run -q "$G" tests/shapes/locks.bas >/dev/null 2>"$work/vg" || bad="$bad locks.bas"
+    for f in "$work"/f*.bas "$work"/w*.bas "$work"/p*.bas "$work"/l*.bas; do
         (cd "$work" && vg_run -q "$G" "$(basename "$f")" >/dev/null 2>"$work/vg.$(basename "$f")")
         [ $? = "$VG_EXIT" ] && bad="$bad $(basename "$f")"
     done

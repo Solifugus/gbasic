@@ -1659,7 +1659,7 @@ print line_total("3", "1.25")     ' 3.75: each argument converts
 ## Shapes
 
 A **shape** is a record whose fields are declared (docs/shapes_design.md;
-increment 1, 2026-11-26). Each field line is written as a typed variable is,
+increments 1 and 2, 2026-11-26). Each field line is written as a typed variable is,
 and a write converts into the field's type or is refused, exactly as a lock
 does:
 
@@ -1708,8 +1708,30 @@ print a.deposit("2.00")             ' 3.25
 - `shape` is a keyword only at the start of a statement, followed by a name
   and the end of the line; `frame.shape(df)` and `shape` as a variable are
   unchanged. Shapes are declared at the top level of a program, not in a
-  function or (yet) a library. A shape as a lock (`a:account = decode(...)`)
-  is the next increment.
+  function or (yet) a library.
+
+**A shape's name is a lock** (increment 2, 2026-11-26) wherever a data type
+is one: a variable, a parameter, a return type, a `for each` element.
+
+<!--fragment: three heads, each without its body-->
+```basic
+a:account = decode(body)            ' converts, as a shaped field does
+function post(e:account):receipt    ' the argument and every return convert
+for each r:account in rows          ' each element; refused by its number
+```
+
+- A record converts field by field, with the same two warnings (2126, 2127)
+  and a default silent; an instance of the shape passes unchanged, one of
+  another shape converts as a plain record. Anything that is not a record is
+  refused, naming the lock, and a field that does not convert is refused in
+  its own words after the lock's.
+- The lock stays, as any lock does: a later `a = {...}` converts too, and
+  `a:text = ...` relocks.
+- A lock's name that is neither a data type nor a shape the file declares
+  (anywhere in it: shapes are hoisted) is refused before anything runs, with
+  the nearest type or shape offered (`x:nubmer`: "did you mean number?").
+  Without a `program` block a shape is declared when its line is reached, as
+  a function is, so a lock above it is refused when it runs.
 
 ## Modifiers
 

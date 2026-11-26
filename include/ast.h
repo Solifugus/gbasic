@@ -851,4 +851,9 @@ void ast_free_modifier_signature(AstModifierSignature sig);
  * they cannot drift apart. */
 void gb_format_unknown_block(char *out, size_t size, const char *word);
 
+/* Is `name` a shape the RUNTIME already has? Set by the evaluator when it
+ * declares its first shape, so a prompt line can lock to a shape an earlier
+ * line declared; NULL until then, and then the parse asks only its own file. */
+extern int (*gb_parse_shape_known)(const char *name);
+
 #endif

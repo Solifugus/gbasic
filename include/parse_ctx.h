@@ -109,6 +109,19 @@ typedef struct {
      * holds, rather than bison's sentence about the word it tripped on. */
     int             shape_open;
     int             shape_fn_depth;
+
+    /* A LOCK NAMING A SHAPE (docs/shapes_design.md §5): a lock's name that is
+     * not a data type may name a shape declared anywhere in the file, even
+     * below it (shapes are hoisted), so each is kept here and checked once the
+     * parse is done against the shapes it declared (or, at the prompt, those
+     * already declared: gb_parse_shape_known). Owned by the ctx. */
+    struct gb_shape_ref {
+        char *name;
+        int   line, column, end_line, end_column;
+    }              *shape_refs;
+    size_t          shape_ref_count;
+    char          **shape_decls;
+    size_t          shape_decl_count;
 } gb_parse_ctx;
 
 #endif

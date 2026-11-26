@@ -655,7 +655,7 @@ src/platform_win32.o: src/platform_win32.c include/platform.h .buildswitch-stamp
 src/lexer.o: src/lexer.c include/lexer.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/gb_decimal.h include/lexer.h include/diagnostics.h include/parse_ctx.h .buildswitch-stamp
+src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/gb_decimal.h include/lexer.h include/diagnostics.h include/parse_ctx.h include/window_check.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c src/parser.tab.c -o $@
 
 src/ast.o: src/ast.c include/ast.h .buildswitch-stamp

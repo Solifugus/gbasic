@@ -3,7 +3,7 @@
 # PLAT-OUTLINE platform suite: the general in-process source_outline(text) builtin.
 #
 # Tiers (all headless, GI-independent, path-free goldens):
-#   1. golden cases        — 12 inline fixtures dumped canonically (kind/name/
+#   1. golden cases        — 13 inline fixtures (a shape and its method since 2026-11-26) dumped canonically (kind/name/
 #                            half-open byte range/line:col/flags + BYTE-exact slice
 #                            of every node + containment self-check + diagnostics).
 #   2. large-file / perf   — 5000-function generated source: exact node count and a
@@ -32,7 +32,7 @@ TMP="$(mktemp -d)"
 trap 'rm -rf "$TMP"' EXIT
 
 # ---- Tier 1: golden fixtures -------------------------------------------------
-MODES="empty one program functions modifiers nested consider multiline comments invalid unmatched unicode"
+MODES="empty one program functions modifiers nested consider multiline comments invalid unmatched unicode shape"
 for m in $MODES; do
     gold="tests/outline/$m.out"
     got="$(./gbasic "$DUMP" "$m" 2>&1)"

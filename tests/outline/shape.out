@@ -1,0 +1,8 @@
+schema_version=1 ok=true nodes=6 diagnostics=0
+#1 parent=- program name=main [0,78) 1:1..4:12 block=true exp=false att=false slice=<program main(args)\n  p = new point with { x: 3 }\n  print p.x + p.y\nend program>
+#2 parent=1 statement name=- [21,48) 2:3..2:30 block=false exp=false att=false slice=<p = new point with { x: 3 }>
+#3 parent=1 statement name=- [51,66) 3:3..3:18 block=false exp=false att=false slice=<print p.x + p.y>
+#4 parent=- shape name=point [80,190) 6:1..12:10 block=true exp=false att=false slice=<shape point\n  x:number = 0\n  y:number = 4\n  function sum()\n    return this.x + this.y\n  end function\nend shape>
+#5 parent=4 function name=sum [124,180) 9:3..11:15 block=true exp=false att=false slice=<function sum()\n    return this.x + this.y\n  end function>
+#6 parent=5 statement name=- [143,165) 10:5..10:27 block=false exp=false att=false slice=<return this.x + this.y>
+containment_violations=0

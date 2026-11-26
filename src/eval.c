@@ -810,11 +810,15 @@ typedef enum {
     LOCK_DURATION,
     LOCK_MONEY,
     LOCK_FILE,
-    LOCK_DIR
+    LOCK_DIR,
+    LOCK_SHAPE           /* a shape's name (docs/shapes_design.md §5) */
 } LockKind;
+
+struct GbShape;
 
 typedef struct {
     LockKind kind;
+    const struct GbShape *shape;   /* LOCK_SHAPE: lives until runtime_teardown */
     char currency[4];    /* LOCK_MONEY: the alphabetic code */
     unsigned short currency_code;   /* and its numeric one */
     char spelled[24];    /* the type as written: "number", "text", "money(USD)" */
@@ -7296,6 +7300,7 @@ static int lock_admits(const TypeLock *lock, const Value *v) {
         return v->kind == VALUE_MONEY && v->as.money.currency == lock->currency_code;
     case LOCK_FILE: return v->kind == VALUE_FILE;
     case LOCK_DIR: return v->kind == VALUE_DIR;
+    case LOCK_SHAPE: return v->kind == VALUE_RECORD && record_shape(v) == lock->shape;
     default: return 0;
     }
 }
@@ -35909,6 +35914,15 @@ static void outline_walk_stmt(OutlineCtx *c, AstStmt *stmt, int parent_id) {
         (void)id;
         break;
     }
+    /* A shape is a declaration (Studio hoists by this kind); its methods
+     * are its children, each a function. Fields are not statements. */
+    case AST_STMT_SHAPE: {
+        int id = outline_emit(c, stmt, "shape", stmt->as.shape.name, 1, 0, 0, parent_id);
+        for (size_t i = 0; i < stmt->as.shape.method_count; i++) {
+            outline_walk_stmt(c, stmt->as.shape.methods[i], id);
+        }
+        break;
+    }
     case AST_STMT_DATABASE:
         outline_emit(c, stmt, "database", stmt->as.database.name, 1, 0, 0, parent_id);
         break;
@@ -45080,7 +45094,8 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
             }
             /* The variable the operand READ, wherever it resolved. */
             Symbol *held = env_find(named->as.ident);
-            if (!held || held->lock.kind == LOCK_NONE || held->lock.kind == LOCK_STRING) {
+            if (!held || held->lock.kind == LOCK_NONE || held->lock.kind == LOCK_STRING ||
+                held->lock.kind == LOCK_SHAPE) {
                 continue;
             }
             TypeLock lock = held->lock;
@@ -47728,6 +47743,8 @@ static Value apply_assignment_modifier(AstModifierUse modifier, Value value) {
  * modifier cannot disagree about what converting to a number means. Boolean
  * and duration have no modifier and are written out here. */
 
+static const char *shape_name_of(const struct GbShape *shape);
+
 static const char *lock_kind_word(LockKind kind) {
     switch (kind) {
     case LOCK_NUMBER: return "number";
@@ -47744,11 +47761,22 @@ static const char *lock_kind_word(LockKind kind) {
     }
 }
 
+/* the lock as written: "money(USD)", or the shape's name, which may be
+   longer than `spelled` holds */
+static const char *lock_spelled(const TypeLock *lock) {
+    return lock->kind == LOCK_SHAPE ? shape_name_of(lock->shape) : lock->spelled;
+}
+
+/* the word a message names a lock by: the type, or the shape's name */
+static const char *lock_word(const TypeLock *lock) {
+    return lock->kind == LOCK_SHAPE ? shape_name_of(lock->shape) : lock_kind_word(lock->kind);
+}
+
 /* The lock an AST names. The parser refused every name that is not a data
  * type; what is left to check is that money's currency is one gBASIC knows,
  * which needs the currency table and so happens here. Returns 0 and raises
  * when it is not. */
-static int type_lock_resolve(AstTypeLock a, TypeLock *out) {
+static int type_lock_resolve_data(AstTypeLock a, TypeLock *out) {
     static const struct { const char *name; LockKind kind; } words[] = {
         { "number", LOCK_NUMBER }, { "string", LOCK_STRING }, { "text", LOCK_STRING },
         { "boolean", LOCK_BOOLEAN }, { "date", LOCK_DATE }, { "time", LOCK_TIME },
@@ -47783,6 +47811,34 @@ static int type_lock_resolve(AstTypeLock a, TypeLock *out) {
     return out->kind != LOCK_NONE;
 }
 
+static const struct GbShape *shape_find(const char *name);
+
+/* The lock an AST names, a shape's name included (§5). The parser refused a
+ * name that is neither a type nor a shape the file declares; a shape it named
+ * that never registered (one refused, or inside a function) is refused here. */
+static int type_lock_resolve(AstTypeLock a, TypeLock *out) {
+    if (type_lock_resolve_data(a, out)) {
+        return 1;
+    }
+    if (error_action_pending()) {
+        return 0;
+    }
+    const struct GbShape *shape = shape_find(a.name);
+    if (!shape) {
+        char message[320];
+        snprintf(message, sizeof message,
+                 "%s is not a shape yet: without a `program` block a shape is declared when "
+                 "its line is reached, so declare `shape %s` above its first use", a.name,
+                 a.name);
+        runtime_error_raise(message, 1003, "lock");
+        return 0;
+    }
+    out->kind = LOCK_SHAPE;
+    out->shape = shape;
+    snprintf(out->spelled, sizeof out->spelled, "%.*s", (int)sizeof out->spelled - 1, a.name);
+    return 1;
+}
+
 /* A refusal names the lock, so whoever reads it can find the declaration. The
  * cause, when a modifier gave one, follows it. */
 static void lock_refuse(const TypeLock *lock, const char *var, const char *cause) {
@@ -47790,16 +47846,16 @@ static void lock_refuse(const TypeLock *lock, const char *var, const char *cause
     if (lock->is_return) {
         snprintf(message, sizeof message,
                  "%s returns %s, declared by %s(...):%s at line %d, and this value does not convert: %s",
-                 var, lock_kind_word(lock->kind), var, lock->spelled, lock->line, cause);
+                 var, lock_word(lock), var, lock_spelled(lock), lock->line, cause);
     } else if (lock->element) {
         snprintf(message, sizeof message,
                  "%s is locked to %s by %s:%s at line %d, and element %zu does not convert: %s",
-                 var, lock_kind_word(lock->kind), var, lock->spelled, lock->line, lock->element,
+                 var, lock_word(lock), var, lock_spelled(lock), lock->line, lock->element,
                  cause);
     } else {
         snprintf(message, sizeof message,
                  "%s is locked to %s by %s:%s at line %d, and this value does not convert: %s",
-                 var, lock_kind_word(lock->kind), var, lock->spelled, lock->line, cause);
+                 var, lock_word(lock), var, lock_spelled(lock), lock->line, cause);
     }
     if (current_error.active && raise_in_flight) {
         /* The modifier raised already; say whose lock refused, then its cause. */
@@ -47827,9 +47883,38 @@ static int lock_text_is(const char *text, size_t len, const char *word) {
 
 /* Convert `value` into the lock's type, or refuse. Takes ownership of value;
  * on a refusal the error is raised and nothing is returned. */
+static Value shape_convert(const struct GbShape *shape, Value record);
+
 static Value lock_convert(const TypeLock *lock, const char *var, Value value) {
     if (lock_admits(lock, &value)) {
         return value;
+    }
+    if (lock->kind == LOCK_SHAPE) {
+        /* A plain record, or one of ANOTHER shape, converts field by field
+         * (§5); anything else is not a record to convert. A field refused
+         * says so in its own words, after whose lock refused it. */
+        if (value.kind != VALUE_RECORD) {
+            char cause[160];
+            const char *got = value_kind_name(value.kind);
+            snprintf(cause, sizeof cause, "%s %s is not a record, and only a record converts "
+                     "into shape %s", strchr("aeiou", got[0]) ? "an" : "a", got, lock_word(lock));
+            value_free(value);
+            lock_refuse(lock, var, cause);
+            return value_null();
+        }
+        int before = error_generation;
+        Value out = shape_convert(lock->shape, value);
+        if (error_generation != before) {
+            value_free(out);
+            /* a 2126/2127 that `on warning stop` made an error keeps its own words */
+            if (current_error.active && raise_in_flight && current_error.code != 2126 &&
+                current_error.code != 2127) {
+                lock_refuse(lock, var, current_error.message ? current_error.message
+                                                             : "a field did not convert");
+            }
+            return value_null();
+        }
+        return out;
     }
     switch (value.kind) {
     case VALUE_NUMBER: case VALUE_STRING: case VALUE_BOOL: case VALUE_DATETIME:
@@ -47839,7 +47924,7 @@ static Value lock_convert(const TypeLock *lock, const char *var, Value value) {
         char cause[96];
         const char *got = value_kind_name(value.kind);
         snprintf(cause, sizeof cause, "a %s lock cannot hold %s %s",
-                 lock_kind_word(lock->kind), strchr("aeiou", got[0]) ? "an" : "a", got);
+                 lock_word(lock), strchr("aeiou", got[0]) ? "an" : "a", got);
         value_free(value);
         lock_refuse(lock, var, cause);
         return value_null();
@@ -47905,7 +47990,7 @@ static Value lock_convert(const TypeLock *lock, const char *var, Value value) {
          * a datetime with no day) has not converted. */
         char cause[96];
         snprintf(cause, sizeof cause, "it converts to a %s, not a %s",
-                 value_kind_name(out.kind), lock_kind_word(lock->kind));
+                 value_kind_name(out.kind), lock_word(lock));
         value_free(out);
         lock_refuse(lock, var, cause);
         return value_null();
@@ -47959,6 +48044,15 @@ struct GbShape {
 
 static struct GbShape **shapes = NULL;
 static size_t shape_count = 0;
+
+static const char *shape_name_of(const struct GbShape *shape) {
+    return shape->name;
+}
+
+/* gb_parse_shape_known: a prompt line may lock to a shape declared earlier */
+static int shape_known_to_runtime(const char *name) {
+    return shape_find(name) != NULL;
+}
 
 static const struct GbShape *shape_find(const char *name) {
     for (size_t i = 0; i < shape_count; i++) {
@@ -48184,6 +48278,7 @@ static void shapes_teardown(void) {
     free(shapes);
     shapes = NULL;
     shape_count = 0;
+    gb_parse_shape_known = NULL;
 }
 
 /* Declare a shape: check its fields, register its methods, build the
@@ -48256,7 +48351,7 @@ static int shape_register(AstStmt *stmt) {
             continue;
         }
         TypeLock lock;
-        if (type_lock_resolve(af->lock, &lock)) {
+        if (type_lock_resolve_data(af->lock, &lock)) {
             f->kind = SHAPE_FIELD_TYPED;
             f->lock = lock;
             continue;
@@ -48355,6 +48450,7 @@ static int shape_register(AstStmt *stmt) {
     }
     shapes = grown;
     shapes[shape_count++] = shape;
+    gb_parse_shape_known = shape_known_to_runtime;
     env_set(name, value_copy(shape->proto));
     return 1;
 }
@@ -48380,13 +48476,13 @@ static int loop_lock_refused(const char *name, int binds_numbers, int element) {
         snprintf(message, sizeof message,
                  "%s is locked to %s by %s:%s at line %d, so the loop must name the type: "
                  "write `for each %s:%s in ...`, or use another name for the loop",
-                 name, lock_kind_word(held->lock.kind), name, held->lock.spelled, held->lock.line,
-                 name, held->lock.spelled);
+                 name, lock_word(&held->lock), name, lock_spelled(&held->lock), held->lock.line,
+                 name, lock_spelled(&held->lock));
     } else {
         snprintf(message, sizeof message,
                  "%s is locked to %s by %s:%s at line %d, and a loop cannot bind a locked "
                  "variable; use another name for the loop",
-                 name, lock_kind_word(held->lock.kind), name, held->lock.spelled, held->lock.line);
+                 name, lock_word(&held->lock), name, lock_spelled(&held->lock), held->lock.line);
     }
     runtime_error_raise(message, 1003, "lock");
     return 1;
@@ -51089,7 +51185,8 @@ static GB_NOINLINE EvalResult eval_stmt_case_assign(AstStmt *stmt, int previous_
             /* a shaped record's typed field lends its lock (docs/shapes_design.md §4.3) */
             shape_target_lock(stmt->as.assign.target, &op_lock, &op_var);
         }
-        if (stmt->as.assign.op && op_lock.kind != LOCK_NONE && op_lock.kind != LOCK_STRING) {
+        if (stmt->as.assign.op && op_lock.kind != LOCK_NONE && op_lock.kind != LOCK_STRING &&
+            op_lock.kind != LOCK_SHAPE) {
             /* A LOCKED compound assignment converts a TEXT operand first.
              * `42 + "1"` is 421, so `x += "1"` on a locked number would give
              * 421 and then convert it -- silently. Converted first it is 43.

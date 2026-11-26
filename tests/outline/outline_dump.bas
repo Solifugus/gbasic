@@ -57,6 +57,9 @@ function source_for(mode)
   if mode = "unmatched" then
     return "program main(args)\n  if x > 0 then\n    print x\nend program\n"
   end if
+  if mode = "shape" then
+    return "program main(args)\n  p = new point with { x: 3 }\n  print p.x + p.y\nend program\n\nshape point\n  x:number = 0\n  y:number = 4\n  function sum()\n    return this.x + this.y\n  end function\nend shape\n"
+  end if
   if mode = "unicode" then
     return "greeting = \"héllo wörld\"\nprint greeting\n"
   end if

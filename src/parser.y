@@ -6,6 +6,7 @@
 #include "diagnostics.h"
 #include "lexer.h"
 #include "parse_ctx.h"
+#include "window_check.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -964,10 +965,33 @@ static int type_lock_check_as(gb_parse_ctx *ctx, const char *who, const char *na
     return 1;
 }
 
+/* A lock outside a shape's body: a name that is not a data type may name a
+ * shape (§5), which is checked once the whole file is parsed (shape_refs_check),
+ * since a shape may be declared below its first use. */
 static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
                            const char *arg, int line, int column, int end_line,
                            int end_column) {
-    return type_lock_check_as(ctx, who, name, arg, line, column, end_line, end_column, 0);
+    int ok = type_lock_check_as(ctx, who, name, arg, line, column, end_line, end_column, 1);
+    if (ok == 2) {
+        struct gb_shape_ref *grown = realloc(ctx->shape_refs,
+                                             sizeof *grown * (ctx->shape_ref_count + 1));
+        if (!grown) {
+            abort();
+        }
+        ctx->shape_refs = grown;
+        grown[ctx->shape_ref_count++] = (struct gb_shape_ref){ kw_name(name), line, column,
+                                                               end_line, end_column };
+    }
+    return ok != 0;
+}
+
+static void shape_decl_note(gb_parse_ctx *ctx, const char *name) {
+    char **grown = realloc(ctx->shape_decls, sizeof *grown * (ctx->shape_decl_count + 1));
+    if (!grown) {
+        abort();
+    }
+    ctx->shape_decls = grown;
+    grown[ctx->shape_decl_count++] = kw_name(name);
 }
 }
 
@@ -1681,6 +1705,7 @@ shape_block
             GB_REFUSE;
         }
         free($6);
+        shape_decl_note(ctx, $2);
         $$ = ast_shape($2, $4.fields, $4.methods, $4.method_count, @1.first_line, @1.first_column);
       }
     ;
@@ -1696,7 +1721,8 @@ shape_body
                                 "and it is the shape's own");
             GB_REFUSE;
         }
-        $$ = ast_shape_body_add_method($1, $2);
+        $$ = ast_shape_body_add_method($1, ast_stmt_span($2, @2.first_line, @2.first_column,
+                                                          @2.last_line, @2.last_column));
       }
     ;
 
@@ -2640,6 +2666,68 @@ int parse_source_reentrant(const char *source, const char *path,
     return parse_source_reentrant_at(source, path, 1, diags, out_program);
 }
 
+int (*gb_parse_shape_known)(const char *name) = NULL;
+
+/* EVERY LOCK THAT NAMED NO DATA TYPE names a shape this file declares, or one
+ * the runtime already has (the prompt); otherwise it is refused here, before
+ * anything runs, as `x:int` is. The first one only: one cause. 1 if refused. */
+static int shape_refs_check(gb_parse_ctx *ctx) {
+    static const char *const types[] = {
+        "number", "string", "text", "boolean", "date", "time", "datetime",
+        "duration", "money", "file", "dir", NULL
+    };
+    for (size_t i = 0; i < ctx->shape_ref_count; i++) {
+        const struct gb_shape_ref *ref = &ctx->shape_refs[i];
+        int known = gb_parse_shape_known && gb_parse_shape_known(ref->name);
+        for (size_t j = 0; !known && j < ctx->shape_decl_count; j++) {
+            known = strcmp(ctx->shape_decls[j], ref->name) == 0;
+        }
+        if (known) {
+            continue;
+        }
+        const char **words = malloc(sizeof *words * (ctx->shape_decl_count + 12));
+        if (!words) {
+            abort();
+        }
+        size_t n = 0;
+        for (; types[n]; n++) {
+            words[n] = types[n];
+        }
+        for (size_t j = 0; j < ctx->shape_decl_count; j++) {
+            words[n++] = ctx->shape_decls[j];
+        }
+        words[n] = NULL;
+        const char *near = gb_nearest_word(ref->name, words);
+        char message[512];
+        if (near) {
+            snprintf(message, sizeof message,
+                     "'%s' is neither a data type nor a shape this file declares; did you mean %s?",
+                     ref->name, near);
+        } else {
+            snprintf(message, sizeof message,
+                     "'%s' is neither a data type nor a shape this file declares. The types are "
+                     "number, string (or text), boolean, date, time, datetime, duration, "
+                     "money(USD), file and dir; a shape is declared with `shape %s ... end shape`. "
+                     "A lens such as {trimmed} is written in braces", ref->name, ref->name);
+        }
+        free(words);
+        report_syntax_error(ctx, ref->line, ref->column, ref->end_line, ref->end_column, message);
+        return 1;
+    }
+    return 0;
+}
+
+static void shape_refs_free(gb_parse_ctx *ctx) {
+    for (size_t i = 0; i < ctx->shape_ref_count; i++) {
+        free(ctx->shape_refs[i].name);
+    }
+    free(ctx->shape_refs);
+    for (size_t i = 0; i < ctx->shape_decl_count; i++) {
+        free(ctx->shape_decls[i]);
+    }
+    free(ctx->shape_decls);
+}
+
 /* As above, for a buffer that is an excerpt: `first_line` is the line its first
  * character really has (see lexer_init_at). */
 int parse_source_reentrant_at(const char *source, const char *path,
@@ -2656,6 +2744,10 @@ int parse_source_reentrant_at(const char *source, const char *path,
     ctx.synth_parens = 0;
     ctx.shape_open = 0;
     ctx.shape_fn_depth = 0;
+    ctx.shape_refs = NULL;
+    ctx.shape_ref_count = 0;
+    ctx.shape_decls = NULL;
+    ctx.shape_decl_count = 0;
     ctx.active_lexer = NULL;
     ctx.lexer_error_reported = 0;
     ctx.active_parse_path = path;
@@ -2683,6 +2775,10 @@ int parse_source_reentrant_at(const char *source, const char *path,
     ctx.active_lexer = &lexer;
 
     int result = yyparse(&ctx);
+    if (result == 0 && !ctx.lexer_error_reported && shape_refs_check(&ctx)) {
+        result = 1;
+    }
+    shape_refs_free(&ctx);
     if (result != 0) {
         /* Empty unless `program` itself reduced, which a syntax error prevents;
          * non-empty on the YYABORT paths, where the root is built and then
@@ -3288,7 +3384,7 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
     int shape_line = ctx->shape_open && ctx->shape_fn_depth == 0 && !basic_word &&
                      !operator_word &&
                      (ctx->tok_prev_type == TOKEN_NEWLINE || after_first_word) &&
-                     ctx->tok_type != TOKEN_NEWLINE && message &&
+                     ctx->tok_type != TOKEN_NEWLINE && ctx->tok_type != TOKEN_EOF && message &&
                      strncmp(message, "syntax error, ", 14) == 0;
     if (shape_line) {
         message = "a shape's body holds fields (`name:type = default`, or `name = value`) and "
