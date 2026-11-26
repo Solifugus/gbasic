@@ -6,6 +6,9 @@ you. Read this layer first; it is short by design.
 
 ## Reading order
 
+0. **`RULES.md`** (or `gbasic --rules`) — the card: fifteen traps a model meets
+   first, one line and one example each, every example run by a test. Two
+   minutes; read it before anything else.
 1. **`UNLEARN.md`** — the surprises. "gBASIC is not QBasic/VB": every behavior that
    contradicts common BASIC intuition, bluntly stated with a minimal snippet, plus
    negative knowledge (things other BASICs have that gBASIC does not, and the
@@ -37,6 +40,7 @@ The interpreter answers for the build you are using, which a page may not:
   diagnostic on stdout; none means clean. A diagnostic whose rewrite is
   certain carries `"fix"` (the bytes to replace and the text to put there):
   apply it. Write, `--check`, fix, repeat; then run.
+- `gbasic --rules` -- the rules card, as this build has it.
 - `gbasic --explain CODE` -- what a code in a diagnostic, an `error.code` or a
   warning means, and for a warning how to silence or escalate it.
 

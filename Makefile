@@ -536,11 +536,11 @@ gbasic: src/main.o src/repl.o src/lineedit.o src/docindex.o libgbasic.a $(WIN_RE
 # binary was built with (src/docindex_gen.c, run here on the build machine),
 # so they cannot drift from them. A tree without docs/ (run_regex.sh copies
 # src, include and this Makefile) builds, with empty tables.
-DOC_INPUTS := $(wildcard docs/reference.md docs/ai/ERRORS.md)
+DOC_INPUTS := $(wildcard docs/reference.md docs/ai/ERRORS.md docs/ai/RULES.md)
 src/docindex_gen: src/docindex_gen.c
 	$(CC) -O2 -o $@ src/docindex_gen.c
 src/doc_index.h: src/docindex_gen $(DOC_INPUTS) src/builtins.c
-	./src/docindex_gen docs/reference.md docs/ai/ERRORS.md src/builtins.c $@
+	./src/docindex_gen docs/reference.md docs/ai/ERRORS.md src/builtins.c docs/ai/RULES.md $@
 
 # The same binary with every `--profile` hook compiled out (GB_NO_PROFILER),
 # written to NOPROF_DIR: tests/run_profile.sh holds the hooks' cost when

@@ -13155,6 +13155,7 @@ Ask the binary about itself:
 ```sh
 gbasic --doc NAME      # a builtin, module verb (process.start) or library function (dates.days_between)
 gbasic --explain CODE  # a diagnostic, error.code or warning code
+gbasic --rules         # the rules card (docs/ai/RULES.md)
 ```
 
 `--doc` prints the entry from the reference this build was made with, or for

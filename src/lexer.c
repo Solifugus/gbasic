@@ -1039,6 +1039,11 @@ static Token lexer_scan(Lexer *lexer) {
     case '?':
         return error_token_message(lexer, start, line, column,
                                    "gBASIC has no `c ? a : b`; write `a if c else b`");
+    /* QBasic's print separator (2026-11-26, found writing the rules card):
+       `print a; b` said only "unexpected token". `;` is used nowhere else. */
+    case ';':
+        return error_token_message(lexer, start, line, column,
+                                   "';' is not gBASIC; print takes one expression -- print a + \" \" + b");
     case '%':
         if (follows_identifier(lexer, start)) {
             return sigil_error(lexer, start, line, column, '%');

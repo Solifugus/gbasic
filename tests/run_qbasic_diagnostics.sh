@@ -79,6 +79,10 @@ want 'mod word'      'print 7 mod 3'      'the remainder is mod(a, b)'
 want 'MOD spelling'  'print 7 MOD 3'      "'MOD' is not an operator"
 want 'xor word'      'print 7 xor 3'      'bxor(a, b)'
 want 'div word'      'print 7 div 3'      'floor(a / b)'
+# QBasic's print separators (2026-11-26): both said only "unexpected"
+want 'print ;'        'print "a"; "b"'     "print takes one expression"
+want 'print ,'        'print "a", "b"'     "print\` takes one expression; join the parts with +"
+want 'print(a, b)'    'print("a", "b")'    "print\` takes one expression"
 want 'backslash'     'print 7 \ 2'        'integer division is floor(a / b)'
 want 'caret'         'print 2 ^ 3'        'exponentiation is pow(a, b)'
 want 'percent op'    'print 7 % 3'        'the remainder is mod(a, b)'

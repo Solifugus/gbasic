@@ -307,3 +307,14 @@ int gb_explain_main(const char *code, FILE *out) {
     }
     return 0;
 }
+
+int gb_rules_main(FILE *out) {
+    if (gb_doc_rules_count == 0) {
+        fprintf(stderr, "this build was made without docs/ai/RULES.md, so it has no rules card\n");
+        return 1;
+    }
+    for (size_t i = 0; i < gb_doc_rules_count; i++) {
+        fprintf(out, "%s\n", gb_doc_rules[i]);
+    }
+    return 0;
+}

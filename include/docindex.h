@@ -11,5 +11,8 @@ int gb_doc_main(const char *name, FILE *out);
 /* `gbasic --explain CODE`: what a diagnostic, runtime error or warning code
  * means, from docs/ai/ERRORS.md; 0 when found, 1 when not. */
 int gb_explain_main(const char *code, FILE *out);
+/* `gbasic --rules`: the rules card (docs/ai/RULES.md) this build was made
+ * with. 1 when the build has none (a tree without docs/). */
+int gb_rules_main(FILE *out);
 
 #endif

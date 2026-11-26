@@ -14294,3 +14294,9 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Workaround:** resolved: the refusal says "the alias goes last: write
   `load NAME from "path" as ALIAS`", and both docs show the form with a file.
   `tests/run_alias.sh`'s diagnostic tier.
+
+## 2026-11-26 — CC — while: building `gbasic --check` and the rules card (AI aids 3 and 4)
+- **Type:** bug
+- **Severity:** medium
+- **What:** three defects, each found by a new aid. (1) A NOTE (2102, a library or local function sharing a builtin's name) under `--json-diagnostics` printed its plain `note: ...` line into the JSON stream, the defect warnings had until run_absence found it, one severity along; `--check`'s whole output is that stream. (2) Every parse refusal made from a grammar action leaked what the rule had read: bison's YYERROR pops the rule's symbols without their `%destructor`, so `x:int = 5`, `next j` closing an `i` loop and 14 others lost their names and expressions (16 of 31 refusals, measured under valgrind; gbasic-lsp parses per keystroke). (3) QBasic's print separators said nothing useful: `print a; b` gave "unexpected token" and `print a, b` / `print(a, b)` "unexpected `,`".
+- **Workaround:** resolved: (1) `gb_report_note`, notes reach the sink as warnings do (run_check's reports tier); (2) GB_REFUSE in src/parser.y sets yylen to 0 so error recovery destroys them (tests/refusals, run_parse_exit's valgrind tier); (3) both now say "`print` takes one expression" with `print a + " " + b` (run_qbasic_diagnostics).

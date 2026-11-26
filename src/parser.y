@@ -2923,6 +2923,11 @@ static const char *syntax_error_basic_word(gb_parse_ctx *ctx) {
         return "`catch` is not gBASIC; there is no try/catch block: write `x = try f(a)` and then `if error then`, "
                "or catch a whole function with `on error goto label`";
     }
+    /* QBasic's other print separator (2026-11-26): `print a, b` and
+       `print(a, b)` said "unexpected `,`", which names no rule */
+    if (strcmp(word, "print") == 0 && ctx->tok_type == TOKEN_COMMA) {
+        return "`print` takes one expression; join the parts with + -- print a + \" \" + b";
+    }
     if (*p == '(') {
         return NULL;       /* a call, not a classic-BASIC statement */
     }

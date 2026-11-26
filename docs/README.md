@@ -232,6 +232,7 @@ Read in this order. gBASIC diverges from QBasic/VB intuition in ways that fail
 | Document | Status | What it is |
 |---|---|---|
 | [ai/START-HERE.md](ai/START-HERE.md) | Shipped | The entry point. Read it first. |
+| [ai/RULES.md](ai/RULES.md) | Shipped | The rules card: fifteen traps, one line and one example each, every example run by `tests/run_rules_card.sh`; `gbasic --rules` prints it. |
 | [ai/UNLEARN.md](ai/UNLEARN.md) | Shipped | What your BASIC intuition gets wrong here. |
 | [ai/COOKBOOK.md](ai/COOKBOOK.md) | Shipped | One blessed idiom per task, each pointing at a suite-verified file. |
 | [ai/GSQL.md](ai/GSQL.md) | Shipped | Writing G-SQL code as an agent: what surprises (blocks, `:name`, no conversion in comparisons, typed columns, refusals checked when a row arrives), catching refusals by code, the SQL there is and what is refused by name. |

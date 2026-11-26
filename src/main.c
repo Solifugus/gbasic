@@ -44,6 +44,7 @@ static void print_help(const char *argv0) {
     printf("  --modules        list the parts a build can leave out, and whether this one has each\n");
     printf("  --doc NAME       what a builtin, module verb or library function takes and does, from this build\n");
     printf("  --explain CODE   what a diagnostic, error or warning code means\n");
+    printf("  --rules          the rules card: the traps a model writing gBASIC meets first\n");
     printf("  --add-uses FILE  compatibility alias; emits use statements\n");
     printf("  --check FILE     parse FILE and every library it loads, and run every check\n");
     printf("                   made before a statement runs; RUN NOTHING. Each diagnostic\n");
@@ -1172,6 +1173,9 @@ int main(int argc, char **argv) {
     } else if (argc == 3 && strcmp(argv[1], "--explain") == 0) {
         /* what a diagnostic, error or warning code means (docs/ai/ERRORS.md) */
         return gb_explain_main(argv[2], stdout);
+    } else if (argc == 2 && strcmp(argv[1], "--rules") == 0) {
+        /* the rules card this build was made with (docs/ai/RULES.md) */
+        return gb_rules_main(stdout);
     } else if (argc == 2 && strcmp(argv[1], "--modules") == 0) {
         /* WHAT THIS BUILD HAS: each part a build can leave out, tab, "built"
          * or "left out", tab, what it needs. --capabilities lists every
