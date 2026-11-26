@@ -13134,7 +13134,34 @@ gbasic --json-diagnostics FILE
 as JSON on stderr (the model the language server consumes); normal program
 output on stdout is unchanged. A diagnostic whose rewrite is certain (`<>`,
 `elseif`, `x:int`, `i mod 7`, ...) also carries a `fix`: the bytes to replace
-and the text to put there (docs/ai/ERRORS.md). A separate `gbasic-lsp` binary (built by
+and the text to put there (docs/ai/ERRORS.md).
+
+Check a program without running it:
+
+```sh
+gbasic --check FILE
+```
+
+`--check` parses FILE and every library it loads, makes every check a run
+makes before its first statement (a library that does not parse, a `load`
+that resolves nowhere, a function defined twice, warning 2106), and runs
+nothing: no output, no file written, no process started. Each diagnostic is a
+`--json-diagnostics` line on **stdout**, with its `fix` where there is one; no
+lines means clean. It exits 1 if any is an error, 0 otherwise. What only a run
+can find, it cannot: a misspelt variable is still found when the line runs.
+
+Ask the binary about itself:
+
+```sh
+gbasic --doc NAME      # a builtin, module verb (process.start) or library function (dates.days_between)
+gbasic --explain CODE  # a diagnostic, error.code or warning code
+```
+
+`--doc` prints the entry from the reference this build was made with, or for
+`library.function` its signature and comment from the file a `load` would
+read; a misspelling is answered with the nearest names. `--explain` prints
+each table in docs/ai/ERRORS.md that holds the code. Both exit 1 when there is
+no answer. A separate `gbasic-lsp` binary (built by
 `make dev`) serves the same diagnostics over LSP on document sync.
 
 Find where a program spends its time:

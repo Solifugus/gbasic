@@ -13,7 +13,7 @@ application, not a demonstration.
 
 This repository holds the C implementation of gBASIC `0.12.0`. It is an **early
 release** and the version number is honest about that — but it is not a sketch:
-**246 test suites** gate every change, goldens are byte-exact, and the claims in
+**247 test suites** gate every change, goldens are byte-exact, and the claims in
 this file that can be measured have been. Until 1.0.0 the language surface may
 still move between releases; [CHANGELOG.md](CHANGELOG.md) records what changed
 and why, and the [documentation index](docs/README.md) marks every document
@@ -550,6 +550,9 @@ guide, and it opens with the hazard worth knowing before you start: a bare
 ./gbasic --ast program.bas           # dump the parsed AST
 ./gbasic --add-loads program.bas     # print source with suggested `load` lines
 ./gbasic --json-diagnostics prog.bas # diagnostics as JSON on stderr
+./gbasic --check prog.bas            # parse it and what it loads, run nothing; JSON on stdout
+./gbasic --doc starts_with           # a builtin's, verb's or library function's entry, from this build
+./gbasic --explain 1003              # what a diagnostic, error or warning code means
 ./gbasic --line-buffered program.bas # flush stdout per completed line
 ./gbasic --full-trace program.bas    # list every frame inside a library
 ./gbasic --profile program.bas       # each function's and line's runs and share of the time
@@ -584,7 +587,7 @@ default target: build it with `make dev` and install it with
 ./tests/run_all.sh web              # or filter by substring
 ```
 
-**Use `run_all.sh` rather than naming suites.** It discovers all 246 suites by
+**Use `run_all.sh` rather than naming suites.** It discovers all 247 suites by
 glob, and that is the whole point: a hand-maintained list is a gate that
 silently shrinks. Four suites in this repository sat broken across two releases
 because every list anyone ran happened not to name them. It reports a suite

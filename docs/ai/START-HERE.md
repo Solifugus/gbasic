@@ -25,6 +25,21 @@ reference depth), see `docs/reference.md` and `README.md`. This `docs/ai/` layer
 does not duplicate that content — it is the agent-facing distillation: what will
 surprise you, the one right idiom, and how to read an error.
 
+## Ask the binary, then check, before you run
+
+The interpreter answers for the build you are using, which a page may not:
+
+- `gbasic --doc NAME` -- a builtin's, module verb's (`process.start`) or
+  library function's (`dates.days_between`) signature, meaning and example.
+  Ask it instead of guessing a signature from another language.
+- `gbasic --check FILE` -- parse the file and everything it loads, make every
+  check that comes before a statement runs, and run nothing. One JSON line per
+  diagnostic on stdout; none means clean. A diagnostic whose rewrite is
+  certain carries `"fix"` (the bytes to replace and the text to put there):
+  apply it. Write, `--check`, fix, repeat; then run.
+- `gbasic --explain CODE` -- what a code in a diagnostic, an `error.code` or a
+  warning means, and for a warning how to silence or escalate it.
+
 ## The two standing rules (also in CLAUDE.md / AGENTS.md)
 
 - **Before writing gBASIC**, follow this layer (UNLEARN first).
