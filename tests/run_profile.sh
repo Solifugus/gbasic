@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# GATE-LANE: serial -- its sampler thread being descheduled reads as the program misbehaving: the sampled hot/cold self-time ratio (2.5-3.5) was 3.55 in a parallel gate on 2026-11-26 and 2.89-3.03 in six runs alone, since load does not slow the sampler and the program alike
 # `gbasic --profile` (docs/profiler_design.md): exact counts (increment 1),
 # sampled time (increment 2), builtins as rows and a JSON report (increment 3).
 #
