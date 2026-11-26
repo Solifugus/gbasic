@@ -495,7 +495,10 @@ day — so assume you will hit them too.
   `boolean` (not `bool`), `money(USD)`, `date`, `time`, `datetime`,
   `duration`, `file`, `dir`. A lens like `{trimmed}` stays in braces.
   Parameters and returns take the same types: `function f(a:number):string`
-  converts each argument and every `return`.
+  converts each argument and every `return`. A loop binds a locked name only
+  by naming the type itself, `for each x:number in xs` (after 0.12.0), which
+  converts each element the same way and refuses one by its place
+  (`element 2 does not convert`); the lock stays after the loop.
 
 - **Text that is no number is never equal to a number** (0.1.0). `0 = "stop"`
   is **false**, and `1 > "stop"` **raises**. Text that IS a number is no

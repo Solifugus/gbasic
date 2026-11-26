@@ -1610,8 +1610,25 @@ needs a rate.
 - **The lock belongs to the variable in its own scope.** A function's local of
   the same name is a different variable; passing `x` passes its value, not its
   lock.
-- **A loop does not bind a locked variable**, except a number lock on a
-  `for` counter or a `for each` index, which only ever hold numbers.
+- **A loop does not bind a locked variable** unless it names the type, except
+  a number lock on a `for` counter or a `for each` index. A `for each` names
+  the type on its element (*after 0.12.0*):
+
+  <!--fragment: an API shape, not a program-->
+  ```basic
+  for each x:number in [1, "2", unknown]     ' x is 1, then 2, then unknown
+  for each amount:money(USD), i in payments
+  ```
+
+  Each element is bound as `x:number = element` binds it: converted, with
+  `nothing` and `unknown` kept, or refused at the `for each`, naming its place
+  (`x is locked to number by x:number at line 3, and element 2 does not
+  convert: ...`), which ends the loop as any raise ends a statement. The lock
+  outlives the loop, as every lock does: a later `x = "five"` is refused, and a
+  later `for each x in ys` is told to write `for each x:number in ys` (naming
+  another type relocks, as `x:text = e` does). An empty loop binds nothing and
+  locks nothing. Compiled, a `:number` element is held as a machine number, and
+  so is a total it feeds.
 - **A misspelled or foreign type is a parse error with the gBASIC name**:
   `x:int` gives `'int' is not a gBASIC type; write x:number`, and likewise
   `str`, `bool`, `float`, `timestamp` and a bare `x:USD`.

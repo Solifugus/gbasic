@@ -57,7 +57,11 @@ would be silent. Locking the type makes the familiar reading the true one.
    (docs/number_text_equality_design.md §7).
 6. **Record fields and loop variables are out of the first version**
    (`r.amount:money(USD) = ...`, `for each x:number in ...`). They will be
-   decided once plain variables are in use.
+   decided once plain variables are in use. *Loop elements, decided
+   2026-11-25 (Matthew):* `for each x:number in xs` binds each element as
+   `x:number = element` does, refusing at the `for each` by the element's
+   place; the lock outlives the loop, and a bare loop over the locked name is
+   refused saying to write the type. Record fields are still out.
 
 7. **No `integer` type** in the first version (§6 Q1). This stands from
    before G-SQL; an `integer` lock can be added later.
