@@ -103,6 +103,12 @@ typedef struct {
      * the word with the `(` and `)` it was written without: this counts the
      * two still to give. */
     int             synth_parens;
+
+    /* INSIDE A SHAPE'S BODY and how many of its methods deep (2026-11-26), so
+     * a line that is neither a field nor a method is told what a shape
+     * holds, rather than bison's sentence about the word it tripped on. */
+    int             shape_open;
+    int             shape_fn_depth;
 } gb_parse_ctx;
 
 #endif

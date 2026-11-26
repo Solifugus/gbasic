@@ -1656,6 +1656,61 @@ print line_total("3", "1.25")     ' 3.75: each argument converts
   block or server handler parameter is supplied by the runtime, so a lock
   there is refused at load, as a default is.
 
+## Shapes
+
+A **shape** is a record whose fields are declared (docs/shapes_design.md;
+increment 1, 2026-11-26). Each field line is written as a typed variable is,
+and a write converts into the field's type or is refused, exactly as a lock
+does:
+
+```basic
+shape account
+    owner:text = "unnamed"          ' typed, with a default
+    balance:money(USD) = "0.00"     ' the default converts, as a write does
+    opened:date                     ' no default: nothing
+    tags = []                       ' untyped: no colon, any value
+    id (reset 0):number             ' a PBI policy, before the colon
+    function deposit(amount)        ' a method: the shape's, not a field
+        this.balance += amount
+        return this.balance
+    end function
+end shape
+
+a = new account with { owner: "Ann", balance: "12.50" }
+a.balance = "1.25"                  ' converts
+print a.deposit("2.00")             ' 3.25
+```
+
+- **The shape's name is the prototype**, an ordinary record of the defaults,
+  so `new` and `with` work as they do for any prototype. An instance keeps
+  its shape through copies.
+- **Fixed fields.** A write to a field the shape does not declare is refused
+  (`a.nickname = "A"`: "account has no field nickname (account is declared at
+  line 1)"), in an assignment, by brackets and in `with`.
+- **Field kinds.** Typed (`name:type`, any type a lock names), shaped
+  (`holder:person`, another shape declared above, or the shape itself), and
+  untyped (`name = value`). Every field may hold `nothing` or `unknown`.
+- **Defaults are literals**: a number, text, true or false, `nothing`, a
+  duration, or `[ ]` and `{ }` of those, because a shape is registered before
+  the program runs. A value computed at each `new` is a `reset` policy.
+- **Methods** are declared inside the block and reached through the instance
+  (`a.deposit(...)`); they are not fields, so `print`, `encode`, `=` and `has`
+  see only the data. `function account.extra()` outside the block is refused.
+  A `constructor` is not supported yet.
+- **A plain record written to a shaped field converts into the shape**: a
+  declared field is converted (or refused); one missing takes its default
+  silently, or is `nothing` with warning 2127 when it has none; a field the
+  shape lacks is dropped with warning 2126. `on warning stop` makes either a
+  refusal.
+- **Equality and printing** are by fields, as for any record; a shaped record
+  and a plain one with the same fields are `=`. A builtin that makes a NEW
+  record (`merge`, `remove_key`) answers a plain one.
+- `shape` is a keyword only at the start of a statement, followed by a name
+  and the end of the line; `frame.shape(df)` and `shape` as a variable are
+  unchanged. Shapes are declared at the top level of a program, not in a
+  function or (yet) a library. A shape as a lock (`a:account = decode(...)`)
+  is the next increment.
+
 ## Modifiers
 
 Modifier use:

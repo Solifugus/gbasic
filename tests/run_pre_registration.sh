@@ -64,8 +64,16 @@ status=0
 # connects on FIRST USE, so the hoist starts no owner. gBASIC Studio's STU-4B
 # mirror (a separate project) has to gain both kinds; that is recorded in the
 # commit, since this repo cannot edit it.
-EXPECTED_KINDS='AST_STMT_DATABASE AST_STMT_FUNCTION AST_STMT_MODIFIER AST_STMT_PROGRAM AST_STMT_SERVER AST_STMT_SQL AST_STMT_USE AST_STMT_WINDOW'
-EXPECTED_CALLS='database_register function_register library_import modifier_register register_hoistable_declarations register_method_bodies_in server_register sql_register window_register'
+# AST_STMT_SHAPE joined it 2026-11-26 (docs/shapes_design.md increment 1), and
+# this suite went red naming both sets before anything was committed. Position-
+# blind for the window block's reason (a shape sits beside `program main` and
+# is used inside it), registered after the imports, and registering one runs no
+# user code: a shape's defaults are LITERALS, refused otherwise at parse time
+# (shape_default_check, src/parser.y), and `reset` defers a computed value to
+# each `new`. gBASIC Studio's STU-4B mirror has to gain the kind; recorded in
+# the commit, since this repo cannot edit it.
+EXPECTED_KINDS='AST_STMT_DATABASE AST_STMT_FUNCTION AST_STMT_MODIFIER AST_STMT_PROGRAM AST_STMT_SERVER AST_STMT_SHAPE AST_STMT_SQL AST_STMT_USE AST_STMT_WINDOW'
+EXPECTED_CALLS='database_register function_register library_import modifier_register register_hoistable_declarations register_method_bodies_in server_register shape_register sql_register window_register'
 
 # Comment lines are stripped: the set is a fact about CODE, and a comment that
 # happens to name `function_register_def` should not enter the contract.

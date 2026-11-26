@@ -48,7 +48,8 @@ typedef enum {
     AST_STMT_WINDOW,
     AST_STMT_DATABASE,
     AST_STMT_SQL,
-    AST_STMT_WAIT     /* wait until <condition> [for <limit>] (docs/watch_scope_design.md §4) */
+    AST_STMT_WAIT,    /* wait until <condition> [for <limit>] (docs/watch_scope_design.md §4) */
+    AST_STMT_SHAPE    /* shape NAME ... end shape (docs/shapes_design.md) */
 } AstStmtKind;
 
 typedef enum {
@@ -156,6 +157,32 @@ typedef struct {
     int line;
     int column;
 } AstTypeLock;
+
+/* ONE FIELD OF A SHAPE (docs/shapes_design.md §2): `name:type = default`,
+ * `name = value` (untyped: lock.name NULL), or a PBI policy before the colon.
+ * A lock naming something that is not a data type names another shape,
+ * resolved when the shape is declared. `value` NULL: no default. */
+typedef struct {
+    char *name;
+    AstTypeLock lock;
+    AstExpr *value;
+    AstFieldPolicy policy;
+    AstExpr *reset_expr;
+    int line;
+    int column;
+} AstShapeField;
+
+typedef struct {
+    AstShapeField *items;
+    size_t count;
+} AstShapeFieldList;
+
+/* a shape's body while it is parsed: its fields and its methods */
+typedef struct {
+    AstShapeFieldList fields;
+    AstStmt **methods;
+    size_t method_count;
+} AstShapeBody;
 
 /* A parameter list. `defaults[i]` is NULL when the parameter is required, and
  * otherwise a LITERAL expression -- number, string, boolean, `nothing` or
@@ -619,6 +646,14 @@ struct AstStmt {
             AstRecordFieldList options;
             AstWindowItemList items;
         } window;
+        /* `shape NAME` ... `end shape`: its fields in declared order, and its
+         * methods, each a FUNCTION statement (docs/shapes_design.md §2.3) */
+        struct {
+            char *name;
+            AstShapeFieldList fields;
+            size_t method_count;
+            AstStmt **methods;
+        } shape;
         /* `database shop( file: "shop.gsql" )` (docs/gsql_module_design.md §7) */
         struct {
             char *name;
@@ -688,6 +723,17 @@ AstStmt *ast_window(char *name, AstRecordFieldList options, AstWindowItemList it
 
 void ast_free_window_item_list(AstWindowItemList list);
 AstStmt *ast_database(char *name, AstRecordFieldList options, int line, int column);
+AstShapeFieldList ast_shape_field_list_empty(void);
+AstShapeBody ast_shape_body_empty(void);
+AstShapeBody ast_shape_body_add_field(AstShapeBody body, AstShapeField field);
+AstShapeBody ast_shape_body_add_method(AstShapeBody body, AstStmt *method);
+void ast_free_shape_field(AstShapeField field);
+void ast_free_shape_body(AstShapeBody body);
+AstShapeFieldList ast_shape_field_list_append(AstShapeFieldList list, AstShapeField field);
+/* the shape's body as parsed: its fields, and its methods (FUNCTION
+ * statements) */
+AstStmt *ast_shape(char *name, AstShapeFieldList fields, AstStmt **methods,
+                   size_t method_count, int line, int column);
 AstStmt *ast_sql(char *name, char *database, char *text, int text_line, int text_column,
                  int line, int column);
 

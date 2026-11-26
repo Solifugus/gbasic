@@ -1296,6 +1296,8 @@ static Value webserver_eval_call(AstExpr *expr);
 static int webserver_run_event_loop(void);
 static void webserver_clear(void);
 static FunctionDef *function_resolve(const char *library, const char *name);
+static FunctionDef *shape_method_find(const Value *record, const char *name);
+static int shape_write(const Value *record, const char *name, size_t length, Value *value);
 /* private loads (docs/library_private_loads_design.md): a written qualifier's
    identity in the calling scope, and an identity as a user reads it */
 static const char *library_identity_of(const char *written);
@@ -3335,12 +3337,19 @@ static Value value_array(Value *items, size_t count) {
  * stays short. */
 #define RECORD_INDEX_MIN_BUCKETS 32
 
+struct GbShape;
+
 typedef struct {
     size_t refs;          /* shared-array references; 1 at construction */
     size_t capacity;      /* allocated RecordField slots; >= the record's count */
     size_t bucket_count;  /* power of two, or 0 when no index is built */
     size_t indexed;       /* how many leading slots the buckets reflect */
     size_t *buckets;      /* slot + 1 per bucket, 0 meaning empty; NULL until built */
+    /* THE RECORD'S SHAPE, or NULL (docs/shapes_design.md): HERE, beside the
+     * fields every copy shares, so a copy keeps its shape for nothing, `=`
+     * and `encode` (which read the fields) never see it, and a builtin
+     * building a NEW record (merge, remove_key) answers a plain one. */
+    const struct GbShape *shape;
 } RecordHeader;
 
 #define RECORD_HEADER_SIZE (sizeof(RecordHeader))
@@ -3396,6 +3405,7 @@ static RecordField *record_fields_adopt(RecordField *fields, size_t count) {
     header->bucket_count = 0;
     header->indexed = 0;
     header->buckets = NULL;
+    header->shape = NULL;
     RecordField *slots = (RecordField *)(void *)(block + RECORD_HEADER_SIZE);
     memcpy(slots, fields, sizeof(RecordField) * count);
     free(fields);
@@ -3463,6 +3473,7 @@ static RecordField *record_fields_reserve(RecordField *fields, size_t need) {
         header->bucket_count = 0;
         header->indexed = 0;
         header->buckets = NULL;
+        header->shape = NULL;
     }
     header->capacity = newcap;
     return (RecordField *)(void *)(grown + RECORD_HEADER_SIZE);
@@ -3474,6 +3485,19 @@ static Value value_record(RecordField *fields, size_t count) {
     value.as.record.fields = record_fields_adopt(fields, count);
     value.as.record.count = count;
     return value;
+}
+
+/* a record's shape, or NULL (an empty record has no header, and no shape) */
+static const struct GbShape *record_shape(const Value *value) {
+    return value->kind == VALUE_RECORD && value->as.record.fields
+        ? record_header(value->as.record.fields)->shape : NULL;
+}
+
+/* give a record its shape; the fields must be this value's own (refs 1) */
+static void record_shape_set(Value *value, const struct GbShape *shape) {
+    if (value->kind == VALUE_RECORD && value->as.record.fields) {
+        record_header(value->as.record.fields)->shape = shape;
+    }
 }
 
 /* Build a first-class function value referencing a registered function by name
@@ -7846,8 +7870,10 @@ static void record_ensure_unique(Value *record) {
         cell->refcount++;
         copy[i].value = shared[i].value;
     }
+    const struct GbShape *shape = record_header(shared)->shape;
     record_header(shared)->refs--;
     record->as.record.fields = record_fields_adopt(copy, count);
+    record_shape_set(record, shape);
 }
 
 /* Find a field, handing back a writable pointer into the record.
@@ -11984,6 +12010,17 @@ static void library_import_from_block(AstStmt *library, const char *effective) {
             continue;
         }
         char m[512];
+        if (k == AST_STMT_SHAPE) {
+            /* a declaration, but one a library cannot export yet: said so,
+               rather than called a statement that never runs */
+            snprintf(m, sizeof m,
+                     "library %s: shape %s is in a library, and shapes are not exported from "
+                     "libraries yet (docs/shapes_design.md); declare it in the program",
+                     library->as.library.name, stmt->as.shape.name);
+            runtime_error_raise_at(m, 1003, "shape", stmt->line, stmt->column);
+            current_importer_library = previous_importer;
+            return;
+        }
         snprintf(m, sizeof m,
                  "library %s: this statement is at the top level of the library, where it would never "
                  "run -- a library holds declarations (load, function, modifier, database, sql), and "
@@ -37609,6 +37646,15 @@ static GB_INLINE int call_method_target(AstExpr *expr, Value **receiver, Functio
             *bound_ctx = method_field->value->as.function.context;
             return 1;
         }
+        /* a shape's method is the shape's, not a field (docs/shapes_design.md §2.3) */
+        if (!method_field) {
+            FunctionDef *shaped = shape_method_find(receiver_value, expr->as.call.name);
+            if (shaped) {
+                *method = shaped;
+                *bound_ctx = NULL;
+                return 1;
+            }
+        }
     }
     return 0;
 }
@@ -46287,7 +46333,10 @@ static Value derive_record(Value proto) {
         }
         out++;
     }
-    return value_record(fields, out);
+    Value derived = value_record(fields, out);
+    /* an instance has its prototype's shape (docs/shapes_design.md §4.1) */
+    record_shape_set(&derived, record_shape(&proto));
+    return derived;
 }
 
 static Value apply_assignment_modifier(AstModifierUse modifier, Value value);
@@ -46395,6 +46444,23 @@ static GB_NOINLINE Value eval_expr_case_new(AstExpr *expr, int path_keep) {
              * carries its own declared policy; an unknown name is added. */
             for (size_t i = 0; i < overrides.as.record.count; i++) {
                 RecordField *wf = &overrides.as.record.fields[i];
+                if (record_shape(&instance)) {
+                    /* a shaped instance: each override is a write, converted
+                       or refused, and names only declared fields (§4.1) */
+                    Value v = value_copy(*wf->value);
+                    if (!shape_write(&instance, wf->name, string_length(wf->name), &v)) {
+                        value_free(v);
+                        value_free(overrides);
+                        value_free(instance);
+                        return value_null();
+                    }
+                    record_ensure_unique(&instance);
+                    RecordField *slot = record_find_n(&instance, wf->name, string_length(wf->name));
+                    cell_release(slot->value);
+                    slot->value = cell_alloc();
+                    *slot->value = v;
+                    continue;
+                }
                 RecordField *existing = record_find_n(&instance, wf->name, string_length(wf->name));
                 if (existing) {
                     cell_release(existing->value);
@@ -47847,6 +47913,452 @@ static Value lock_convert(const TypeLock *lock, const char *var, Value value) {
     return out;
 }
 
+/* ---- SHAPES: a record's declared form (docs/shapes_design.md) ----------------
+ *
+ * A shape is declared once, `shape account ... end shape`, and becomes two
+ * things: an entry here describing each field (its kind, and a typed field's
+ * lock), and the prototype record bound to the shape's name, which carries
+ * this entry in its header and so does every record `new` derives from it.
+ * A write to a shaped record's field goes through shape_write, which converts
+ * or refuses exactly as a typed variable's lock does and refuses a field the
+ * shape does not declare (§4.2). Methods are the shape's, not fields (§2.3).
+ *
+ * Increment 1: the block, instances, fixed fields, writes, methods, shaped
+ * fields converting a plain record (§5's rules). The shape as a lock
+ * (`a:account = ...`) is increment 2. */
+typedef enum {
+    SHAPE_FIELD_UNTYPED = 0,
+    SHAPE_FIELD_TYPED,
+    SHAPE_FIELD_SHAPED
+} ShapeFieldKind;
+
+typedef struct {
+    char *name;
+    ShapeFieldKind kind;
+    TypeLock lock;                 /* SHAPE_FIELD_TYPED */
+    const struct GbShape *shape;   /* SHAPE_FIELD_SHAPED */
+    int has_default;
+    int line;
+} GbShapeField;
+
+typedef struct {
+    char *name;                    /* as written: deposit */
+    char *internal;                /* the registered function's name */
+} GbShapeMethod;
+
+struct GbShape {
+    char *name;
+    int line;
+    const AstStmt *decl;           /* the declaration, so a re-reach is not a second one */
+    GbShapeField *fields;
+    size_t count;
+    GbShapeMethod *methods;
+    size_t method_count;
+    Value proto;                   /* the defaults, shaped; what `new` derives from */
+};
+
+static struct GbShape **shapes = NULL;
+static size_t shape_count = 0;
+
+static const struct GbShape *shape_find(const char *name) {
+    for (size_t i = 0; i < shape_count; i++) {
+        if (strcmp(shapes[i]->name, name) == 0) {
+            return shapes[i];
+        }
+    }
+    return NULL;
+}
+
+static const GbShapeField *shape_field_find(const struct GbShape *shape, const char *name,
+                                            size_t length) {
+    for (size_t i = 0; i < shape->count; i++) {
+        if (strlen(shape->fields[i].name) == length &&
+            memcmp(shape->fields[i].name, name, length) == 0) {
+            return &shape->fields[i];
+        }
+    }
+    return NULL;
+}
+
+/* the function a shaped record's method `name` reaches, or NULL */
+static FunctionDef *shape_method_find(const Value *record, const char *name) {
+    const struct GbShape *shape = record_shape(record);
+    if (!shape) {
+        return NULL;
+    }
+    for (size_t i = 0; i < shape->method_count; i++) {
+        if (strcmp(shape->methods[i].name, name) == 0) {
+            return function_resolve(NULL, shape->methods[i].internal);
+        }
+    }
+    return NULL;
+}
+
+static Value shape_convert(const struct GbShape *shape, Value record);
+
+/* A write of `*value` to field `name` of `record`. Answers 1 with *value
+ * converted (or untouched when the record has no shape), 0 having raised; on a
+ * refusal *value is left for the caller to free, as assign_lvalue's callers
+ * expect. */
+static int shape_write(const Value *record, const char *name, size_t length, Value *value) {
+    const struct GbShape *shape = record_shape(record);
+    if (!shape) {
+        return 1;
+    }
+    const GbShapeField *field = shape_field_find(shape, name, length);
+    if (!field) {
+        char message[512];
+        int method = 0;
+        for (size_t i = 0; i < shape->method_count; i++) {
+            if (strlen(shape->methods[i].name) == length &&
+                memcmp(shape->methods[i].name, name, length) == 0) {
+                method = 1;
+            }
+        }
+        if (method) {
+            snprintf(message, sizeof message,
+                     "%.*s is a method of %s, not a field, and a shape's methods are fixed "
+                     "(%s is declared at line %d)", (int)length, name, shape->name, shape->name,
+                     shape->line);
+        } else if (value->kind == VALUE_FUNCTION) {
+            snprintf(message, sizeof message,
+                     "%s has no field %.*s: a shape's methods are declared inside `shape %s` "
+                     "(line %d)", shape->name, (int)length, name, shape->name, shape->line);
+        } else {
+            snprintf(message, sizeof message, "%s has no field %.*s (%s is declared at line %d)",
+                     shape->name, (int)length, name, shape->name, shape->line);
+        }
+        runtime_error_raise(message, 1003, "shape");
+        return 0;
+    }
+    if (value->kind == VALUE_NULL || value->kind == VALUE_UNKNOWN) {
+        return 1;   /* absence is legal in every field, as a lock allows */
+    }
+    /* The conversions consume what they are given, and a refusal must leave
+     * *value to the caller (assign_lvalue's callers free their own copy), so
+     * each converts a copy and the original goes only once it has a
+     * replacement. valgrind found the double free this avoids. */
+    if (field->kind == SHAPE_FIELD_TYPED) {
+        int before = error_generation;
+        Value converted = lock_convert(&field->lock, field->name, value_copy(*value));
+        if (error_generation != before) {
+            value_free(converted);
+            return 0;
+        }
+        value_free(*value);
+        *value = converted;
+        return 1;
+    }
+    if (field->kind == SHAPE_FIELD_SHAPED) {
+        if (record_shape(value) == field->shape) {
+            return 1;
+        }
+        if (value->kind != VALUE_RECORD) {
+            char message[320];
+            const char *got = value_kind_name(value->kind);
+            snprintf(message, sizeof message,
+                     "%s is a %s (%s at line %d), and %s %s is not a record to convert into one",
+                     field->name, field->shape->name, shape->name, field->line,
+                     strchr("aeiou", got[0]) ? "an" : "a", got);
+            runtime_error_raise(message, 1003, "shape");
+            return 0;
+        }
+        int before = error_generation;
+        Value converted = shape_convert(field->shape, value_copy(*value));
+        if (error_generation != before) {
+            value_free(converted);
+            return 0;
+        }
+        value_free(*value);
+        *value = converted;
+        return 1;
+    }
+    return 1;
+}
+
+/* A plain record converted into `shape` (§5): a declared field present is
+ * converted (or refused); one missing takes its default silently, or is
+ * nothing with warning 2127; a field the shape lacks is dropped with warning
+ * 2126. Takes ownership of `record`. */
+static Value shape_convert(const struct GbShape *shape, Value record) {
+    Value out = derive_record(shape->proto);
+    if (error_action_pending()) {
+        value_free(record);
+        return out;
+    }
+    for (size_t i = 0; i < record.as.record.count; i++) {
+        RecordField *rf = &record.as.record.fields[i];
+        size_t length = string_length(rf->name);
+        const GbShapeField *field = shape_field_find(shape, rf->name, length);
+        if (!field) {
+            /* keyed by message: one conversion can drop several fields and
+               miss several, all at one site */
+            char warning[512];
+            snprintf(warning, sizeof warning,
+                     "%s has no field %.*s, so it was dropped converting a record into one "
+                     "(%s is declared at line %d)", shape->name, (int)length, rf->name,
+                     shape->name, shape->line);
+            runtime_warn_distinct(warning, 2126, "shape", value_null());
+            if (error_action_pending()) {
+                break;
+            }
+            continue;
+        }
+        Value v = value_copy(*rf->value);
+        if (!shape_write(&out, rf->name, length, &v)) {
+            value_free(v);
+            break;
+        }
+        record_ensure_unique(&out);
+        RecordField *slot = record_find_n(&out, rf->name, length);
+        cell_release(slot->value);
+        slot->value = cell_alloc();
+        *slot->value = v;
+    }
+    if (!error_action_pending()) {
+        for (size_t i = 0; i < shape->count; i++) {
+            const GbShapeField *field = &shape->fields[i];
+            if (field->has_default ||
+                record_find_const_n(&record, field->name, strlen(field->name))) {
+                continue;
+            }
+            char warning[512];
+            snprintf(warning, sizeof warning,
+                     "%s.%s was not given and has no default, so it is nothing "
+                     "(%s is declared at line %d)", shape->name, field->name, shape->name,
+                     shape->line);
+            runtime_warn_distinct(warning, 2127, "shape", value_null());
+            if (error_action_pending()) {
+                break;
+            }
+        }
+    }
+    value_free(record);
+    return out;
+}
+
+/* A compound assignment's target `x.f` or `this.f`, where x is a shaped
+ * record and f a typed field: its lock, so `this.balance += "2.00"` converts
+ * the text first, as `+=` does on a locked variable. 1 with *lock set. */
+static int shape_target_lock(const AstExpr *target, TypeLock *lock, const char **var) {
+    if (target->kind != AST_EXPR_FIELD || target->as.field.object->kind != AST_EXPR_IDENT) {
+        return 0;
+    }
+    const Value *object = NULL;
+    if (ident_key(target->as.field.object) == key_this) {
+        object = current_this;
+    } else {
+        Symbol *symbol = env_find_key(current_env, ident_key(target->as.field.object));
+        object = symbol ? &symbol->value : NULL;
+    }
+    const struct GbShape *shape = object ? record_shape(object) : NULL;
+    const GbShapeField *field = shape ? shape_field_find(shape, target->as.field.field,
+                                                         strlen(target->as.field.field)) : NULL;
+    if (!field || field->kind != SHAPE_FIELD_TYPED) {
+        return 0;
+    }
+    *lock = field->lock;
+    *var = field->name;
+    return 1;
+}
+
+static void shape_free(struct GbShape *shape) {
+    free(shape->name);
+    for (size_t i = 0; i < shape->count; i++) {
+        free(shape->fields[i].name);
+    }
+    free(shape->fields);
+    for (size_t i = 0; i < shape->method_count; i++) {
+        free(shape->methods[i].name);
+        free(shape->methods[i].internal);
+    }
+    free(shape->methods);
+    value_free(shape->proto);
+    free(shape);
+}
+
+static void shapes_teardown(void) {
+    for (size_t i = 0; i < shape_count; i++) {
+        shape_free(shapes[i]);
+    }
+    free(shapes);
+    shapes = NULL;
+    shape_count = 0;
+}
+
+/* Declare a shape: check its fields, register its methods, build the
+ * prototype and bind it to the shape's name. Answers 0 having raised. */
+static int shape_register(AstStmt *stmt) {
+    const char *name = stmt->as.shape.name;
+    const struct GbShape *existing = shape_find(name);
+    if (existing && existing->decl == stmt) {
+        /* the hoist registered it; reaching the statement binds it again */
+        env_set(name, value_copy(existing->proto));
+        return 1;
+    }
+    char message[512];
+    if (existing) {
+        snprintf(message, sizeof message, "shape %s is declared twice: first at line %d",
+                 name, existing->line);
+        runtime_error_raise(message, 1003, "shape");
+        return 0;
+    }
+    if (current_env != &global_env) {
+        snprintf(message, sizeof message,
+                 "shape %s is declared inside a function; a shape is declared at the top "
+                 "level of a program", name);
+        runtime_error_raise(message, 1003, "shape");
+        return 0;
+    }
+    if (stmt->as.shape.fields.count == 0) {
+        snprintf(message, sizeof message, "shape %s declares no fields", name);
+        runtime_error_raise(message, 1003, "shape");
+        return 0;
+    }
+    struct GbShape *shape = calloc(1, sizeof *shape);
+    if (!shape) {
+        abort();
+    }
+    shape->name = copy_string(name);
+    shape->line = stmt->line;
+    shape->decl = stmt;
+    shape->proto = value_null();
+    shape->count = stmt->as.shape.fields.count;
+    shape->fields = calloc(shape->count, sizeof *shape->fields);
+    if (!shape->fields) {
+        abort();
+    }
+    int ok = 1;
+    for (size_t i = 0; i < shape->count && ok; i++) {
+        const AstShapeField *af = &stmt->as.shape.fields.items[i];
+        GbShapeField *f = &shape->fields[i];
+        f->name = copy_string(af->name);
+        f->line = af->line;
+        f->has_default = af->value != NULL;
+        for (size_t j = 0; j < i; j++) {
+            if (strcmp(shape->fields[j].name, af->name) == 0) {
+                snprintf(message, sizeof message, "shape %s declares %s twice (lines %d and %d)",
+                         name, af->name, shape->fields[j].line, af->line);
+                runtime_error_raise(message, 1003, "shape");
+                ok = 0;
+            }
+        }
+        for (size_t j = 0; ok && j < stmt->as.shape.method_count; j++) {
+            if (strcmp(stmt->as.shape.methods[j]->as.function.name
+                           ? stmt->as.shape.methods[j]->as.function.name : "", af->name) == 0) {
+                snprintf(message, sizeof message,
+                         "shape %s has a field and a method both named %s", name, af->name);
+                runtime_error_raise(message, 1003, "shape");
+                ok = 0;
+            }
+        }
+        if (!ok || !af->lock.name) {
+            continue;
+        }
+        TypeLock lock;
+        if (type_lock_resolve(af->lock, &lock)) {
+            f->kind = SHAPE_FIELD_TYPED;
+            f->lock = lock;
+            continue;
+        }
+        if (error_action_pending()) {
+            ok = 0;
+            continue;
+        }
+        const struct GbShape *ref = strcmp(af->lock.name, name) == 0 ? shape : shape_find(af->lock.name);
+        if (!ref) {
+            snprintf(message, sizeof message,
+                     "%s:%s names %s, which is neither a data type nor a shape declared above "
+                     "this one", af->name, af->lock.name, af->lock.name);
+            runtime_error_raise(message, 1003, "shape");
+            ok = 0;
+            continue;
+        }
+        f->kind = SHAPE_FIELD_SHAPED;
+        f->shape = ref;
+    }
+    if (ok) {
+        shape->method_count = stmt->as.shape.method_count;
+        shape->methods = shape->method_count ? calloc(shape->method_count, sizeof *shape->methods) : NULL;
+        for (size_t j = 0; j < shape->method_count && ok; j++) {
+            AstStmt *m = stmt->as.shape.methods[j];
+            const char *as_written = m->as.function.object ? m->as.function.field : m->as.function.name;
+            if (strcmp(as_written, "constructor") == 0) {
+                snprintf(message, sizeof message,
+                         "shape %s: a constructor is not in shapes yet (docs/shapes_design.md); "
+                         "give its fields defaults, or set them after `new`", name);
+                runtime_error_raise(message, 1003, "shape");
+                ok = 0;
+                break;
+            }
+            shape->methods[j].name = copy_string(as_written);
+            if (!m->as.function.object) {
+                /* named as a dotted def is, so the internal name is unique and
+                   deterministic across an actor's re-exec (method_ensure_internal_name) */
+                m->as.function.object = copy_string(name);
+                m->as.function.field = m->as.function.name;
+                m->as.function.name = NULL;
+                method_ensure_internal_name(m);
+            }
+            shape->methods[j].internal = copy_string(m->as.function.name);
+            function_register(m);
+            if (error_action_pending()) {
+                ok = 0;
+            }
+        }
+    }
+    if (ok) {
+        /* the prototype: each field's default, converted as a write is */
+        RecordField *fields = calloc(shape->count, sizeof(RecordField));
+        if (!fields) {
+            abort();
+        }
+        size_t built = 0;
+        for (size_t i = 0; i < shape->count && ok; i++) {
+            const AstShapeField *af = &stmt->as.shape.fields.items[i];
+            current_line = af->line;     /* a default refused is refused at its own line */
+            current_column = af->column;
+            fields[i].name = field_name_new(af->name);
+            fields[i].value = cell_alloc();
+            *fields[i].value = af->value ? eval_expr(af->value) : value_null();
+            fields[i].policy = af->policy;
+            fields[i].reset_expr = af->reset_expr;
+            built = i + 1;
+            if (error_action_pending()) {
+                ok = 0;
+            }
+        }
+        Value proto = value_record(fields, built);
+        record_shape_set(&proto, shape);
+        for (size_t i = 0; i < built && ok; i++) {
+            RecordField *slot = &proto.as.record.fields[i];
+            current_line = stmt->as.shape.fields.items[i].line;
+            current_column = stmt->as.shape.fields.items[i].column;
+            Value v = *slot->value;
+            *slot->value = value_null();
+            if (!shape_write(&proto, slot->name, string_length(slot->name), &v)) {
+                value_free(v);
+                ok = 0;
+                break;
+            }
+            *slot->value = v;
+        }
+        shape->proto = proto;
+    }
+    if (!ok) {
+        shape_free(shape);
+        return 0;
+    }
+    struct GbShape **grown = realloc(shapes, sizeof *shapes * (shape_count + 1));
+    if (!grown) {
+        abort();
+    }
+    shapes = grown;
+    shapes[shape_count++] = shape;
+    env_set(name, value_copy(shape->proto));
+    return 1;
+}
+
 /* A LOOP DOES NOT BIND A LOCKED VARIABLE (docs/typed_variables_design.md
  * rule 6) unless it names the type itself (`for each x:number in xs`, which
  * relocks as `x:number = e` does), except a number lock on a counter or
@@ -49183,6 +49695,9 @@ static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
             runtime_error_raise("field assignment target expects a record", 1003, "assignment");
             return LVALUE_ASSIGN_ERROR;
         }
+        if (!shape_write(object, target->as.field.field, strlen(target->as.field.field), &value)) {
+            return LVALUE_ASSIGN_ERROR;
+        }
         RecordField *field = record_find(object, target->as.field.field);
         int same = assign_same(field ? field->value : NULL, &value);
         record_set(object, target->as.field.field, value);
@@ -49214,6 +49729,10 @@ static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
             return same ? LVALUE_ASSIGN_UNCHANGED : LVALUE_ASSIGN_CHANGED;
         }
         if (container->kind == VALUE_RECORD && index.kind == VALUE_STRING) {
+            if (!shape_write(container, index.as.string, string_length(index.as.string), &value)) {
+                value_free(index);
+                return LVALUE_ASSIGN_ERROR;
+            }
             RecordField *field = record_find_n(container, index.as.string, string_length(index.as.string));
             int same = assign_same(field ? field->value : NULL, &value);
             record_set_n(container, index.as.string, string_length(index.as.string), value);
@@ -49999,6 +50518,19 @@ static void register_hoistable_declarations(AstStmtList program) {
         }
     }
 
+    /* SHAPES, after the imports: a default may call a library's function, and
+     * a shape names the shapes declared above it (docs/shapes_design.md §2). */
+    for (size_t i = 0; i < program.count; i++) {
+        AstStmt *stmt = program.items[i];
+        if (stmt->kind == AST_STMT_SHAPE) {
+            current_line = stmt->line;
+            current_column = stmt->column;
+            if (!shape_register(stmt)) {
+                return;
+            }
+        }
+    }
+
     /* A `database` or `sql` block needs `load gsql`, which is only known
      * once the loads are imported -- after the declarations, above. */
     for (size_t i = 0; i < program.count; i++) {
@@ -50551,7 +51083,13 @@ static GB_NOINLINE EvalResult eval_stmt_case_assign(AstStmt *stmt, int previous_
             current_column = previous_column;
             return eval_error_result();
         }
-        if (stmt->as.assign.op && lock.kind != LOCK_NONE && lock.kind != LOCK_STRING) {
+        TypeLock op_lock = lock;
+        const char *op_var = lock_var;
+        if (stmt->as.assign.op && op_lock.kind == LOCK_NONE) {
+            /* a shaped record's typed field lends its lock (docs/shapes_design.md §4.3) */
+            shape_target_lock(stmt->as.assign.target, &op_lock, &op_var);
+        }
+        if (stmt->as.assign.op && op_lock.kind != LOCK_NONE && op_lock.kind != LOCK_STRING) {
             /* A LOCKED compound assignment converts a TEXT operand first.
              * `42 + "1"` is 421, so `x += "1"` on a locked number would give
              * 421 and then convert it -- silently. Converted first it is 43.
@@ -50559,7 +51097,7 @@ static GB_NOINLINE EvalResult eval_stmt_case_assign(AstStmt *stmt, int previous_
              * locked date is date arithmetic, not a conversion. */
             Value right = eval_expr(stmt->as.assign.value);
             if (error_generation == before_error && right.kind == VALUE_STRING) {
-                right = lock_convert(&lock, lock_var, right);
+                right = lock_convert(&op_lock, op_var, right);
             }
             if (error_generation != before_error) {
                 value_free(right);
@@ -51927,6 +52465,14 @@ static GB_NOINLINE EvalResult eval_stmt_rest(AstStmt *stmt, int previous_line, i
      * editing it: it first said the block was not executable and REFUSED, then
      * said it bound a record and nothing could render it. Both were true when
      * written, and both stopped being true. */
+    case AST_STMT_SHAPE:
+        /* hoisted beside a program block; reached in order without one */
+        if (!shape_register(stmt)) {
+            current_line = previous_line;
+            current_column = previous_column;
+            return eval_error_result();
+        }
+        break;
     case AST_STMT_WINDOW:
         /* REGISTERED BY THE HOIST ALREADY, so reaching the statement binds it
          * again and nothing more -- the same shape a server block has. It no
@@ -52103,6 +52649,7 @@ static EvalResult eval_stmt_list(AstStmtList statements) {
  * here is released by both callers, and a REPL that forgot one would leak or
  * -- worse -- leave a listener bound after the session ended. */
 static void runtime_teardown(void) {
+    shapes_teardown();
     free(base_error_frame.label);
     memset(&base_error_frame, 0, sizeof(base_error_frame));
     current_error_frame = &base_error_frame;
@@ -52230,7 +52777,7 @@ static AstStmt *program_block_prepare(AstStmtList program) {
             if (st->kind == AST_STMT_PROGRAM || st->kind == AST_STMT_FUNCTION ||
                 st->kind == AST_STMT_MODIFIER || st->kind == AST_STMT_SERVER ||
                 st->kind == AST_STMT_WINDOW || st->kind == AST_STMT_DATABASE ||
-                st->kind == AST_STMT_SQL ||
+                st->kind == AST_STMT_SQL || st->kind == AST_STMT_SHAPE ||
                 st->kind == AST_STMT_USE || st->kind == AST_STMT_LIBRARY) {
                 continue;
             }

@@ -114,7 +114,10 @@ Because `1003` covers most runtime errors, **branch on `error.source`, not
 `invalid conversion`, `assignment`, `comparison`, `arithmetic`, `indexing`,
 `field access`, `invalid control flow`, `invalid operation`, `modifier`,
 `serialization`, `source generation`, `datetime`, `clock`, `money`, `random`,
-`password_hash`, `system error`, `use`, `program`, `this`, `unknown`, `gui`.
+`password_hash`, `system error`, `use`, `program`, `this`, `unknown`, `gui`,
+`lock`, `shape` (a shape's field written that it does not declare, a field
+written with a value its kind refuses, a shape declared twice or inside a
+function or a library; docs/shapes_design.md).
 
 ## 3. `on error` is frame-scoped (PLAT-ERR, 2026-08-23)
 
@@ -220,6 +223,8 @@ scope — so it is not a reserved word and `r.warning` still parses.
 | 2123 | a `pg` or `odbc` timestamp (or `pg` time) arrived with a nonzero fraction of a second, which a gBASIC datetime does not hold, so it was cut to the whole second: `10:00:00.75` became `10:00:00`, and two rows a quarter-second apart compare equal. Named, per Matthew's ruling (book gap G47), rather than refused, so existing pulls keep working. Remedy: cast the column to text in the query (`to_char(..., 'YYYY-MM-DD HH24:MI:SS.US')`, `convert(varchar(23), ..., 121)`) and keep the exact text beside the datetime. Said once per site | `fractional seconds` |
 | 2124 | `ui.check` found a part with an `icon:` and neither a label nor a text: where icons are not drawn (the terminal backend, docs/tui_design.md §8.1) it shows only its name. The window still opens; give the part a label | `icon` |
 | 2125 | a function changed a field of a record (or array) PARAMETER and nothing in it reads that afterwards: the parameter is a COPY of what the caller passed, so the change is lost when the function returns. Remedy: `return p`, and `x = f(x)` at the call. Said once per write, only when the argument really is a record or array (a handle, such as a G-SQL connection, is changed for the caller and stays silent), and not judged for a parameter rebound in the body or written inside a loop | `discarded write` |
+| 2126 | a record converted into a shape (a shaped field given a plain record; docs/shapes_design.md §5) had a field the shape does not declare, so it was DROPPED. The conversion went on. Remedy: declare the field in the shape, or remove it from the record; `on warning stop` makes the drop a refusal | `shape` |
+| 2127 | a record converted into a shape lacked a field the shape declares WITHOUT a default, so that field is `nothing`. A field WITH a default takes it silently (declaring one says absence was expected). Remedy: give the field a default, or supply it; `on warning stop` makes it a refusal | `shape` |
 | 2113 | a SUBDIRECTORY reached by a recursive `list`/`files`/`folders` pattern could not be read, and the walk continued without it (the directory you NAMED still raises) | `directory` |
 
 **This table stops where the source does**, checked by `tests/run_docs_gate.sh`

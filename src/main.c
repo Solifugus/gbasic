@@ -769,6 +769,16 @@ static void analyze_stmt(AddUsesContext *ctx, AstStmt *stmt) {
          * walk them or it would miss an import a window needs. */
         analyze_window_items(ctx, stmt->as.window.items);
         break;
+    case AST_STMT_SHAPE:
+        /* a default, a reset and a method body may each call into a library */
+        for (size_t i = 0; i < stmt->as.shape.fields.count; i++) {
+            analyze_expr(ctx, stmt->as.shape.fields.items[i].value);
+            analyze_expr(ctx, stmt->as.shape.fields.items[i].reset_expr);
+        }
+        for (size_t i = 0; i < stmt->as.shape.method_count; i++) {
+            analyze_stmt(ctx, stmt->as.shape.methods[i]);
+        }
+        break;
     case AST_STMT_DATABASE:
     case AST_STMT_SQL:
         /* G-SQL's declarations are the `gsql` module's, and the load-time

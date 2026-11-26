@@ -11,6 +11,8 @@
 #            feature ships, it moves its rows to `taken` deliberately.
 #   names    each word stays an ordinary name everywhere else (`shape` is
 #            frame.shape and a stats parameter; `requires (x)` is a call).
+#   taken    the forms a shipped feature has taken, each now parsing: the
+#            rows moved out of `free` on purpose, the day the feature shipped.
 #
 # Measured with `gbasic --check` (parse and load checks, nothing run).
 . "$(dirname "$0")/portable.sh"
@@ -31,6 +33,16 @@ free() {   # free <label> <source>: must be a syntax error
         *) printf 'FAIL free  %s: no longer a syntax error: %s\n' "$1" "$out"; status=1 ;;
     esac
 }
+taken() {   # taken <label> <source>: a form a shipped feature gave meaning to
+    printf '%b' "$2" >"$work/t.bas"
+    local out
+    out=$(./gbasic --check "$work/t.bas" 2>&1)
+    if [ $? = 0 ] && [ -z "$out" ]; then
+        printf 'ok   taken %s\n' "$1"
+    else
+        printf 'FAIL taken %s: %s\n' "$1" "$out"; status=1
+    fi
+}
 name() {   # name <label> <source>: must check clean
     printf '%b' "$2" >"$work/n.bas"
     local out
@@ -43,8 +55,10 @@ name() {   # name <label> <source>: must check clean
 }
 
 echo "--- shapes (docs/shapes_design.md §3) ---"
-free "shape NAME opens a block"          'shape account\n    owner:text = "x"\nend shape\n'
-free "shape NAME alone"                  'shape account\n'
+taken "shape NAME opens a block (increment 1, 2026-11-26)" 'shape account\n    owner:text = "x"\nend shape\n'
+free "shape NAME with no end shape"      'shape account\n'
+free "an invariant line in a shape (§9)" 'shape account\n    balance:number = 0\n    invariant balance >= 0\nend shape\n'
+free "a requires line in a shape"        'shape account\n    balance:number = 0\n    requires balance >= 0\nend shape\n'
 free "a lock naming a shape"             'a:account = { owner: "x" }\n'
 free "a parameter locked to a shape"     'function post(e:account)\n    return e\nend function\n'
 free "a for each element locked to one"  'for each r:invoice in []\nend for\n'
@@ -54,6 +68,8 @@ name "shape as a function and a call"    'function shape(x)\n    return x\nend f
 name "shape as a parameter"              'function g(shape, rate)\n    return shape + rate\nend function\nprint g(1, 2)\n'
 name "frame.shape"                       'load frame\ndf = frame.from_rows([{ a: 1 }])\nprint frame.shape(df)\n'
 name "shape (x), a call"                 'function shape(x)\n    return x\nend function\nshape (1)\n'
+name "a field named shape before then"   'fam = { shape: 1 }\nif 1 != fam.shape then\n    print 1\nend if\n'
+name "shape NAME inside an expression"   'shape = 1\naccount = 2\nx = [shape, account]\n'
 
 echo "--- contracts (docs/shapes_design.md §9) ---"
 free "requires under a function header"  'function f(n)\n    requires n >= 1\n    return n\nend function\n'

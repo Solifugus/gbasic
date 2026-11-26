@@ -704,6 +704,8 @@ typedef struct {
     AstWindowItem *window_item;
     AstWindowItemList window_item_list;
     AstTypeLock type_lock;
+    AstShapeField shape_field;
+    AstShapeBody shape_body;
 }
 
 %token <numlit> NUMBER
@@ -715,7 +717,7 @@ typedef struct {
  * its own token because sharing the server block's `IDENT IDENT (` head costs
  * 2 reduce/reduce; with it, the block measures ZERO. Nothing is reserved. */
 %token WINDOW_OPEN
-%token DATABASE_OPEN SQL_OPEN
+%token DATABASE_OPEN SQL_OPEN SHAPE_OPEN
 %token <text> SQL_TEXT
 /* `as` reaches the parser ONLY as a field name; everywhere else it is consumed
  * by the lexer's modifier/lens modes. Declared so it can join field_name --
@@ -760,6 +762,58 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
  * its destructor. So an action that has freed or moved a symbol sets it to
  * NULL before refusing, and every destructor takes NULL. */
 #define GB_REFUSE do { yylen = 0; YYERROR; } while (0)
+
+/* A SHAPE'S DEFAULT IS A LITERAL (docs/shapes_design.md §2.1): a number,
+ * text, true/false, nothing, unknown, a duration, a signed number, and
+ * `[ ]` and `{ }` of those. Because a shape is HOISTED, and the hoist runs
+ * no user code (tests/run_pre_registration.sh's contract, which gBASIC
+ * Studio's hoisting mirrors), a default that called a function would run it
+ * before the program began. A value computed at each `new` is `reset`'s. */
+static int shape_default_literal(const AstExpr *e) {
+    if (!e) {
+        return 1;
+    }
+    switch (e->kind) {
+    case AST_EXPR_NUMBER: case AST_EXPR_STRING: case AST_EXPR_BOOL:
+    case AST_EXPR_NULL: case AST_EXPR_UNKNOWN: case AST_EXPR_DURATION:
+        return 1;
+    case AST_EXPR_UNARY:
+        return (strcmp(e->as.unary.op, "-") == 0 || strcmp(e->as.unary.op, "+") == 0) &&
+               e->as.unary.expr->kind == AST_EXPR_NUMBER;
+    case AST_EXPR_ARRAY:
+        for (size_t i = 0; i < e->as.array.count; i++) {
+            if (!shape_default_literal(e->as.array.items[i])) {
+                return 0;
+            }
+        }
+        return 1;
+    case AST_EXPR_RECORD:
+        for (size_t i = 0; i < e->as.record.count; i++) {
+            if (e->as.record.items[i].policy != AST_FIELD_POLICY_COPY ||
+                !shape_default_literal(e->as.record.items[i].value)) {
+                return 0;
+            }
+        }
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+static int shape_default_check(gb_parse_ctx *ctx, const char *field, const AstExpr *e,
+                               int line, int column, int end_line, int end_column) {
+    if (shape_default_literal(e)) {
+        return 1;
+    }
+    char message[400];
+    snprintf(message, sizeof message,
+             "%s's default is not a literal: a shape's default is a number, text, true or "
+             "false, nothing, a duration, or [ ] and { } of those, since a shape is declared "
+             "before the program runs. For a value computed at each `new`, write "
+             "%s (reset <expression>):<type>", field, field);
+    report_syntax_error(ctx, line, column, end_line, end_column, message);
+    return 0;
+}
 
 /* A FIX, MACHINE-APPLICABLE (2026-11-26, the second AI aid): an advice
  * function that knows the rewrite FOR CERTAIN offers it here, and
@@ -821,9 +875,12 @@ static void fix_offer(gb_parse_ctx *ctx, const char *from, const char *to, const
  * writing gBASIC brings Python's and TypeScript's names with it. Returns 1 when
  * the lock is good; otherwise reports and returns 0. `who` is the variable or
  * parameter, for the suggested spelling. */
-static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
-                           const char *arg, int line, int column, int end_line,
-                           int end_column) {
+/* `shape_ok`: a shape's field, where a name that is not a data type names
+ * another shape (docs/shapes_design.md §2.2) -- answered 2, checked when the
+ * shape is declared. A foreign type's name (`int`) is still refused there. */
+static int type_lock_check_as(gb_parse_ctx *ctx, const char *who, const char *name,
+                              const char *arg, int line, int column, int end_line,
+                              int end_column, int shape_ok) {
     static const char *const types[] = {
         "number", "string", "text", "boolean", "date", "time", "datetime",
         "duration", "money", "file", "dir", NULL
@@ -858,8 +915,15 @@ static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
             }
         }
         size_t n = strlen(name);
-        if (n == 3 && isupper((unsigned char)name[0]) && isupper((unsigned char)name[1]) &&
-            isupper((unsigned char)name[2]) && !arg) {
+        int collection = strcmp(name, "array") == 0 || strcmp(name, "record") == 0 ||
+                         strcmp(name, "list") == 0 || strcmp(name, "dict") == 0 ||
+                         strcmp(name, "map") == 0 || strcmp(name, "object") == 0;
+        int currency = n == 3 && isupper((unsigned char)name[0]) && isupper((unsigned char)name[1]) &&
+                       isupper((unsigned char)name[2]);
+        if (shape_ok && !arg && !collection && !currency) {
+            return 2;
+        }
+        if (currency && !arg) {
             snprintf(message, sizeof message,
                      "a lock names a type, and money is one: write %s:money(%s)", who, name);
         } else if (strcmp(name, "array") == 0 || strcmp(name, "record") == 0 ||
@@ -899,6 +963,12 @@ static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
     }
     return 1;
 }
+
+static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
+                           const char *arg, int line, int column, int end_line,
+                           int end_column) {
+    return type_lock_check_as(ctx, who, name, arg, line, column, end_line, end_column, 0);
+}
 }
 
 /* A FAILED PARSE USED TO LEAK THE STATEMENTS IT HAD ALREADY BUILT. Bison drops
@@ -926,7 +996,9 @@ static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
 %type <window_item> window_item
 %type <window_item_list> window_item_list
 %type <stmt> window_block
-%type <stmt> gsql_block
+%type <stmt> gsql_block shape_block
+%type <shape_field> shape_field
+%type <shape_body> shape_body
 %type <stmt> statement assignment print_statement call_statement with_lock_statement for_each_statement do_loop_statement while_statement consider_statement consider_body_statement function_statement modifier_statement program_statement library_statement use_statement return_statement label_statement goto_statement gosub_statement break_statement continue_statement watch_statement unwatch_statement wait_statement without_watchers_statement on_error_statement error_statement if_statement inline_statement server_statement
 %type <server_item> server_item
 %type <server_item_list> server_item_list
@@ -970,6 +1042,8 @@ static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
 %destructor { AstServerItemList one = ast_server_item_list_append(ast_server_item_list_empty(), $$); ast_free_server_item_list(one); } <server_item>
 %destructor { ast_free_server_item_list($$); }         <server_item_list>
 %destructor { ast_type_lock_free($$); }               <type_lock>
+%destructor { ast_free_shape_field($$); }             <shape_field>
+%destructor { ast_free_shape_body($$); }              <shape_body>
 
 /* Bison also treats THE START SYMBOL AS DISCARDED WHEN THE PARSE SUCCEEDS: on
  * YYACCEPT the cleanup loop pops the whole stack, `program` included. Its value
@@ -1000,6 +1074,7 @@ statement
     | with_lock_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | window_block { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | gsql_block { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
+    | shape_block { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | for_each_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | while_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
     | do_loop_statement { $$ = ast_stmt_span($1, @1.first_line, @1.first_column, @1.last_line, @1.last_column); }
@@ -1592,6 +1667,78 @@ server_statement
  * discipline that makes the server block cost zero conflicts, and obeying it is
  * why `stretch()` carries parentheses and why options are always parenthesised.
  * Ten shapes were measured; see docs/qt_gui_design.md §5.2 for all of them. */
+/* A SHAPE (docs/shapes_design.md §2): `shape NAME` (a lexer trigger, so the
+ * word is not reserved), then one field per line, each written as a typed
+ * variable is, and the shape's methods; `end shape`. Anything else in the
+ * body is a syntax error, and stays one: a contract's `invariant` line goes
+ * here after 1.0 (§9), so 1.0 must not give it a meaning. */
+shape_block
+    : SHAPE_OPEN IDENT NEWLINE shape_body END IDENT NEWLINE {
+        if (strcmp($6, "shape") != 0) {
+            char message[160];
+            snprintf(message, sizeof message, "a shape ends with `end shape`, not `end %s`", $6);
+            report_syntax_error(ctx, @6.first_line, @6.first_column, @6.last_line, @6.last_column, message);
+            GB_REFUSE;
+        }
+        free($6);
+        $$ = ast_shape($2, $4.fields, $4.methods, $4.method_count, @1.first_line, @1.first_column);
+      }
+    ;
+
+shape_body
+    : %empty { $$ = ast_shape_body_empty(); }
+    | shape_body NEWLINE { $$ = $1; }
+    | shape_body shape_field { $$ = ast_shape_body_add_field($1, $2); }
+    | shape_body function_statement {
+        if ($2->as.function.object) {
+            report_syntax_error(ctx, @2.first_line, @2.first_column, @2.first_line, @2.first_column,
+                                "a method in a shape is named alone: write `function deposit(...)`, "
+                                "and it is the shape's own");
+            GB_REFUSE;
+        }
+        $$ = ast_shape_body_add_method($1, $2);
+      }
+    ;
+
+shape_field
+    : dot_field_name COLON type_lock NEWLINE {
+        if (!type_lock_check_as(ctx, $1, $3.name, $3.arg, @3.first_line, @3.first_column,
+                                @3.last_line, @3.last_column, 1)) { GB_REFUSE; }
+        $$ = (AstShapeField){ $1, $3, NULL, AST_FIELD_POLICY_COPY, NULL, @1.first_line, @1.first_column };
+      }
+    | dot_field_name COLON type_lock OP_EQ expression NEWLINE {
+        if (!type_lock_check_as(ctx, $1, $3.name, $3.arg, @3.first_line, @3.first_column,
+                                @3.last_line, @3.last_column, 1)) { GB_REFUSE; }
+        if (!shape_default_check(ctx, $1, $5, @5.first_line, @5.first_column, @5.last_line,
+                                 @5.last_column)) { GB_REFUSE; }
+        $$ = (AstShapeField){ $1, $3, $5, AST_FIELD_POLICY_COPY, NULL, @1.first_line, @1.first_column };
+      }
+    | dot_field_name OP_EQ expression NEWLINE {
+        if (!shape_default_check(ctx, $1, $3, @3.first_line, @3.first_column, @3.last_line,
+                                 @3.last_column)) { GB_REFUSE; }
+        $$ = (AstShapeField){ $1, ast_type_lock(NULL, NULL, 0, 0), $3, AST_FIELD_POLICY_COPY, NULL,
+                              @1.first_line, @1.first_column };
+      }
+    | dot_field_name LPAREN field_policy RPAREN COLON type_lock NEWLINE {
+        if (!type_lock_check_as(ctx, $1, $6.name, $6.arg, @6.first_line, @6.first_column,
+                                @6.last_line, @6.last_column, 1)) { GB_REFUSE; }
+        $$ = (AstShapeField){ $1, $6, NULL, $3.policy, $3.reset_expr, @1.first_line, @1.first_column };
+      }
+    | dot_field_name LPAREN field_policy RPAREN COLON type_lock OP_EQ expression NEWLINE {
+        if (!type_lock_check_as(ctx, $1, $6.name, $6.arg, @6.first_line, @6.first_column,
+                                @6.last_line, @6.last_column, 1)) { GB_REFUSE; }
+        if (!shape_default_check(ctx, $1, $8, @8.first_line, @8.first_column, @8.last_line,
+                                 @8.last_column)) { GB_REFUSE; }
+        $$ = (AstShapeField){ $1, $6, $8, $3.policy, $3.reset_expr, @1.first_line, @1.first_column };
+      }
+    | dot_field_name LPAREN field_policy RPAREN OP_EQ expression NEWLINE {
+        if (!shape_default_check(ctx, $1, $6, @6.first_line, @6.first_column, @6.last_line,
+                                 @6.last_column)) { GB_REFUSE; }
+        $$ = (AstShapeField){ $1, ast_type_lock(NULL, NULL, 0, 0), $6, $3.policy, $3.reset_expr,
+                              @1.first_line, @1.first_column };
+      }
+    ;
+
 /* G-SQL'S TWO DECLARATIONS (docs/gsql_module_design.md §7). Both heads are
  * lexer triggers, so neither word is reserved; the `sql` body arrives as ONE
  * token of raw SQL, parsed later by G-SQL's own parser, so SQL's grammar never
@@ -2507,6 +2654,8 @@ int parse_source_reentrant_at(const char *source, const char *path,
      * rather than of inverted logic. */
     ctx.window_depth = 0;
     ctx.synth_parens = 0;
+    ctx.shape_open = 0;
+    ctx.shape_fn_depth = 0;
     ctx.active_lexer = NULL;
     ctx.lexer_error_reported = 0;
     ctx.active_parse_path = path;
@@ -3002,7 +3151,7 @@ static const struct { const char *name; const char *shown; } bison_spelled[] = {
     { "LENS_CONTENT", "lens" }, { "MODIFIER_PREFIX", "modifier (`{...}`)" },
     { "MODIFIER_VALUE", "modifier (`{...}`)" },
     { "WINDOW_OPEN", "`window`" }, { "DATABASE_OPEN", "`database`" },
-    { "SQL_OPEN", "`sql`" }, { "CONSIDER_IF", "`if`" },
+    { "SQL_OPEN", "`sql`" }, { "SHAPE_OPEN", "`shape`" }, { "CONSIDER_IF", "`if`" },
     { "CONSIDER_ELSE", "`else`" }, { "END_CONSIDER", "`end consider`" },
     { "ERROR_VALUE", "`error`" }, { "UNKNOWN_VALUE", "`unknown`" },
     { "WAIT", "`wait`" },   /* a keyword only before `until`, so the lexer's list lacks it */
@@ -3124,8 +3273,30 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
         memcpy(fix_text, ctx->fix.text, sizeof fix_text);
     }
     ctx->fix.set = 0;
+    /* a line of a shape's own body that is neither a field nor a method */
+    /* bison's own sentence only: an action's refusal (`n:int`) says more */
+    /* ...and the line opened with a word a field can be named (a keyword is
+       one: `next:node`), followed by something that cannot go on a field */
+    int after_first_word = 0;
+    if (ctx->tok_prev_start && ctx->active_lexer && ctx->active_lexer->source) {
+        const char *b = ctx->tok_prev_start;
+        while (b > ctx->active_lexer->source && (b[-1] == ' ' || b[-1] == '\t')) b--;
+        after_first_word = (b == ctx->active_lexer->source || b[-1] == '\n') &&
+                           ctx->tok_type != TOKEN_COLON && ctx->tok_type != TOKEN_OP_EQ &&
+                           ctx->tok_type != TOKEN_LPAREN;
+    }
+    int shape_line = ctx->shape_open && ctx->shape_fn_depth == 0 && !basic_word &&
+                     !operator_word &&
+                     (ctx->tok_prev_type == TOKEN_NEWLINE || after_first_word) &&
+                     ctx->tok_type != TOKEN_NEWLINE && message &&
+                     strncmp(message, "syntax error, ", 14) == 0;
+    if (shape_line) {
+        message = "a shape's body holds fields (`name:type = default`, or `name = value`) and "
+                  "methods (`function ... end function`), and this line is neither";
+        fix_set = 0;
+    }
     char reworded[512];
-    const char *reserved = syntax_error_reserved_word(ctx, message);
+    const char *reserved = shape_line ? NULL : syntax_error_reserved_word(ctx, message);
     if (reserved) {
         snprintf(reworded, sizeof(reworded),
                  "%s -- '%s' is a reserved word and cannot be used as a name",
@@ -3187,6 +3358,15 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     ctx->tok_prev_after = ctx->tok_after;
     ctx->tok_start = token.start;
     ctx->tok_after = token.start + token.length;
+    if (token.type == TOKEN_SHAPE_OPEN) {
+        ctx->shape_open = 1;
+        ctx->shape_fn_depth = 0;
+    } else if (ctx->shape_open && token.type == TOKEN_FUNCTION) {
+        ctx->shape_fn_depth += ctx->tok_prev_type == TOKEN_END ? -1 : 1;
+    } else if (ctx->shape_open && ctx->tok_prev_type == TOKEN_END && token.type == TOKEN_IDENT &&
+               token.length == 5 && strncmp(token.start, "shape", 5) == 0) {
+        ctx->shape_open = 0;
+    }
     ctx->tok_word[0] = '\0';
     if (token.length > 0 && (size_t)token.length < sizeof(ctx->tok_word) &&
         (isalpha((unsigned char)token.start[0]) || token.start[0] == '_')) {
@@ -3411,6 +3591,7 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
         return WINDOW_OPEN;
     case TOKEN_DATABASE_OPEN: return DATABASE_OPEN;
     case TOKEN_SQL_OPEN: return SQL_OPEN;
+    case TOKEN_SHAPE_OPEN: return SHAPE_OPEN;
     case TOKEN_SQL_TEXT:
         lvalp->text = copy_text(token.start, token.length);
         return SQL_TEXT;

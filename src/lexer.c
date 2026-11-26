@@ -561,6 +561,32 @@ static Token identifier_token(Lexer *lexer, const char *start, int line, int col
             }
         }
     }
+    /* A SHAPE'S HEAD (docs/shapes_design.md §3): `shape NAME` and nothing
+     * after it but blanks or a comment. Measured 2026-11-26: that line is a
+     * syntax error in every earlier gBASIC, while `shape` as a variable, a
+     * function, a parameter and `frame.shape(df)` all parse -- so the word is
+     * not reserved and no program that ran changes meaning
+     * (tests/run_reserved_forms.sh). AT A STATEMENT'S START, as well: only
+     * blanks between the word and the line's beginning. Without that,
+     * `if shape(t) != fam.shape then` (stdlib/ari_discover.bas) read the
+     * FIELD `shape` and the keyword after it as a shape's head; run_check's
+     * stdlib tier found it. */
+    const char *line_start = start;
+    while (line_start > lexer->source && (line_start[-1] == ' ' || line_start[-1] == '\t')) {
+        line_start--;
+    }
+    if (type == TOKEN_IDENT && (line_start == lexer->source || line_start[-1] == '\n') &&
+        keyword_equals(start, (int)(lexer->current - start), "shape")) {
+        const char *probe = lexer->current;
+        while (*probe == ' ' || *probe == '\t') probe++;
+        if (probe > lexer->current && (isalpha((unsigned char)*probe) || *probe == '_')) {
+            while (isalnum((unsigned char)*probe) || *probe == '_') probe++;
+            while (*probe == ' ' || *probe == '\t' || *probe == '\r') probe++;
+            if (*probe == '\n' || *probe == '\'' || *probe == '\0') {
+                type = TOKEN_SHAPE_OPEN;
+            }
+        }
+    }
     if (type == TOKEN_IDENT && keyword_equals(start, (int)(lexer->current - start), "sql") &&
         sql_head_follows(lexer->current)) {
         type = TOKEN_SQL_OPEN;
@@ -1154,6 +1180,7 @@ const char *token_type_name(TokenType type) {
     case TOKEN_WINDOW_OPEN: return "WINDOW_OPEN";
     case TOKEN_DATABASE_OPEN: return "DATABASE_OPEN";
     case TOKEN_SQL_OPEN: return "SQL_OPEN";
+    case TOKEN_SHAPE_OPEN: return "SHAPE_OPEN";
     case TOKEN_SQL_TEXT: return "SQL_TEXT";
     case TOKEN_LBRACE: return "LBRACE";
     case TOKEN_PATH_LBRACE: return "PATH_LBRACE";

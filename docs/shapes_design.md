@@ -1,6 +1,9 @@
 # Shapes: a record's declared form
 
-Status: **ruled 2026-11-26; nothing is built past increment 0.** The concept
+Status: **ruled 2026-11-26; increments 0 and 1 built 2026-11-26**
+(tests/run_reserved_forms.sh, tests/run_shapes.sh): the block, instances,
+fixed fields, writes, methods and shaped fields. Increment 2, the shape as a
+lock, is next. The concept
 was agreed by Matthew on 2026-11-25 ("It feels like a more intuitive and
 higher level C struct"), with three rulings: the word is worth having (as a
 contextual keyword, ruled the same day), fixed means fixed (§4.2), and a shape
@@ -78,8 +81,23 @@ end shape
   typed field holding `nothing` or `unknown` is legal, as a lock allows
   (typed_variables_design.md, rule 3).
 - Field names follow record keys, case-sensitive; a keyword is a legal field
-  name (`end:date`), as it is in a record literal today
+  name (`next:node`, built: run_shapes), as it is in a record literal today
   (tests/run_keyword_fields.sh).
+
+**What building increment 1 settled** (2026-11-26):
+- **Defaults are literals, enforced at parse time.** A shape is hoisted, and
+  the hoist runs no user code (run_pre_registration's contract, which gBASIC
+  Studio's hoisting mirrors), so a default calling a function would run it
+  before the program began. `reset` covers a computed value.
+- **Methods are the shape's, found through the instance**, never fields
+  (§2.3); a `constructor` is refused until it is designed.
+- **A shaped field may name the shape itself** (`next:node = nothing`); any
+  other shape must be declared above.
+- **The keyword is a statement's first word**: `fam.shape then` at a line's
+  end (stdlib/ari_discover.bas) is a field and a keyword, which run_check's
+  stdlib tier caught.
+- **Not yet**: shapes in libraries (refused, naming this), the shape as a
+  lock, CSV/JSON/G-SQL boundaries, the compiler's field positions.
 
 ### 2.2 Field kinds
 
@@ -104,7 +122,12 @@ field, which §4.2 refuses. So a shape's methods are declared inside its block,
 with `this` bound per call exactly as today. `function account.deposit(...)`
 outside the block, on a shape, is refused, naming the block to put it in.
 
-A method is not a field a program can assign: `a.deposit = 0` is refused.
+**A method belongs to the shape, not to the instance.** It is not a field:
+`a.deposit(...)` finds it through the instance's shape, and `print`,
+`encode`, `=` and `has` see only the fields. That is what keeps §4.5 true
+for a shape with methods (a PBI method is a field holding a function value,
+which `encode` refuses), and it makes `a.deposit = 0` simply a write to a
+field the shape does not declare, refused as one, naming the method.
 
 ### 2.4 Derivation between shapes
 
@@ -169,8 +192,11 @@ A write to a typed field converts or refuses exactly as `x:T = e` does,
 including text read as the type (`a.balance = "12.50"`). A write to a shaped
 field converts a plain record into that shape (§5). A read is an ordinary
 field read; a missing field cannot exist, so `a.f` never raises for a declared
-`f`. Compound assignment (`a.balance += "1.00"`) is `a.balance = a.balance +
-"1.00"`, as for a locked variable.
+`f`. Compound assignment (`a.balance += "1.00"`) converts the text to the field's
+type first, as it does for a locked variable, so it adds money; note that
+`a.balance = a.balance + "1.00"` is a different statement, since `+` joins
+whenever one side is text (measured 2026-11-26 on a `money(USD)` lock: `+=`
+gives 14.50, the spelled-out `+` is refused as "12.502.00").
 
 ### 4.4 Equality and printing
 
@@ -185,7 +211,9 @@ The alternative, a shape making two records unequal, makes `contains` and
 
 `encode`, `json_encode`, `print` and `string` write a shaped record as plain
 data. Reading it back is `a:account = decode(text)`. Nothing outside gBASIC
-has to know shapes exist.
+has to know shapes exist. A field holding a typed value (a date, money) encodes as it
+would in any record: `json_encode` refuses one today, and `notation` keeps
+it; a shape changes nothing about that.
 
 ## 5. A shape as a lock
 

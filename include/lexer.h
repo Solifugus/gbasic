@@ -121,6 +121,7 @@ typedef enum {
      * parser, so SQL's words are never gBASIC's. */
     TOKEN_DATABASE_OPEN,
     TOKEN_SQL_OPEN,
+    TOKEN_SHAPE_OPEN,    /* `shape NAME` alone on its line (docs/shapes_design.md §3) */
     TOKEN_SQL_TEXT,
     TOKEN_LBRACE,
     TOKEN_RBRACE,

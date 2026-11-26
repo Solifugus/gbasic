@@ -661,6 +661,56 @@ AstStmt *ast_window(char *name, AstRecordFieldList options, AstWindowItemList it
     return stmt;
 }
 
+AstShapeFieldList ast_shape_field_list_empty(void) {
+    AstShapeFieldList list = { NULL, 0 };
+    return list;
+}
+
+AstShapeFieldList ast_shape_field_list_append(AstShapeFieldList list, AstShapeField field) {
+    AstShapeField *grown = realloc(list.items, sizeof(AstShapeField) * (list.count + 1));
+    if (!grown) {
+        abort();
+    }
+    grown[list.count] = field;
+    list.items = grown;
+    list.count++;
+    return list;
+}
+
+AstShapeBody ast_shape_body_empty(void) {
+    AstShapeBody body = { { NULL, 0 }, NULL, 0 };
+    return body;
+}
+
+AstShapeBody ast_shape_body_add_field(AstShapeBody body, AstShapeField field) {
+    body.fields = ast_shape_field_list_append(body.fields, field);
+    return body;
+}
+
+AstShapeBody ast_shape_body_add_method(AstShapeBody body, AstStmt *method) {
+    AstStmt **grown = realloc(body.methods, sizeof(AstStmt *) * (body.method_count + 1));
+    if (!grown) {
+        abort();
+    }
+    grown[body.method_count++] = method;
+    body.methods = grown;
+    return body;
+}
+
+AstStmt *ast_shape(char *name, AstShapeFieldList fields, AstStmt **methods,
+                   size_t method_count, int line, int column) {
+    AstStmt *stmt = stmt_alloc();
+    memset(stmt, 0, sizeof(*stmt));
+    stmt->kind = AST_STMT_SHAPE;
+    stmt->as.shape.name = name;
+    stmt->as.shape.fields = fields;
+    stmt->as.shape.methods = methods;
+    stmt->as.shape.method_count = method_count;
+    stmt->line = line;
+    stmt->column = column;
+    return stmt;
+}
+
 AstStmt *ast_database(char *name, AstRecordFieldList options, int line, int column) {
     AstStmt *stmt = stmt_alloc();
     memset(stmt, 0, sizeof(*stmt));
@@ -1362,6 +1412,32 @@ static void dump_stmt(AstStmt *stmt, int indent) {
     case AST_STMT_DATABASE:
         printf("Database \"%s\"\n", stmt->as.database.name);
         break;
+    case AST_STMT_SHAPE:
+        printf("Shape \"%s\"\n", stmt->as.shape.name);
+        for (size_t i = 0; i < stmt->as.shape.fields.count; i++) {
+            const AstShapeField *f = &stmt->as.shape.fields.items[i];
+            dump_indent(indent + 1);
+            printf("Field %s", f->name);
+            if (f->lock.name) {
+                if (f->lock.arg) {
+                    printf(" lock(%s(%s))", f->lock.name, f->lock.arg);
+                } else {
+                    printf(" lock(%s)", f->lock.name);
+                }
+            }
+            static const char *const policy_word[] = { "copy", "link", "reset", "exclude" };
+            if (f->policy != AST_FIELD_POLICY_COPY && (int)f->policy < 4) {
+                printf(" policy(%s)", policy_word[f->policy]);
+            }
+            printf("\n");
+            if (f->value) {
+                dump_expr(f->value, indent + 2);
+            }
+        }
+        for (size_t i = 0; i < stmt->as.shape.method_count; i++) {
+            dump_stmt(stmt->as.shape.methods[i], indent + 1);
+        }
+        break;
     case AST_STMT_SQL:
         printf("Sql \"%s\" on \"%s\"\n", stmt->as.sql.name, stmt->as.sql.database);
         break;
@@ -1786,6 +1862,13 @@ static void free_stmt(AstStmt *stmt) {
         free(stmt->as.database.name);
         ast_free_record_field_list(stmt->as.database.options);
         break;
+    case AST_STMT_SHAPE: {
+        free(stmt->as.shape.name);
+        AstShapeBody body = { stmt->as.shape.fields, stmt->as.shape.methods,
+                              stmt->as.shape.method_count };
+        ast_free_shape_body(body);
+        break;
+    }
     case AST_STMT_SQL:
         free(stmt->as.sql.name);
         free(stmt->as.sql.database);
@@ -1965,4 +2048,22 @@ void gb_format_unknown_block(char *out, size_t size, const char *word) {
     }
     snprintf(out, size, "unknown declarative block '%s' (only 'server' exists)%s",
              word ? word : "?", remedy);
+}
+
+void ast_free_shape_field(AstShapeField field) {
+    free(field.name);
+    ast_type_lock_free(field.lock);
+    free_expr(field.value);
+    free_expr(field.reset_expr);
+}
+
+void ast_free_shape_body(AstShapeBody body) {
+    for (size_t i = 0; i < body.fields.count; i++) {
+        ast_free_shape_field(body.fields.items[i]);
+    }
+    free(body.fields.items);
+    for (size_t i = 0; i < body.method_count; i++) {
+        free_stmt(body.methods[i]);
+    }
+    free(body.methods);
 }
