@@ -521,7 +521,9 @@ day — so assume you will hit them too.
   `if false then load nosuchlib` still imports nothing.
 
 - **`load NAME as ALIAS` picks the prefix** (0.1.0). `load statistics_helpers as
-  st` and the qualifier is `st.`; both spellings of `load` take one. The alias
+  st` and the qualifier is `st.`; both spellings of `load` take one, and the
+  alias always goes LAST: `load toolkit from "vendor/toolkit.bas" as tools`
+  (`load toolkit as tools from ...` is refused, saying so). The alias
   **replaces** the declared name rather than adding to it, so `statistics_helpers.`
   is then an error — and the error says which name it *was* loaded under, because
   a rename that missed a call site is the easy mistake here. Effective names are

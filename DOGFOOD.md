@@ -14269,3 +14269,28 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   read as days as before. Held against python3's datetime over 3,006 pairs
   and by a cost tier (2000 calls over 11,000 days against over 10, within
   3x) in `tests/run_dates.sh`.
+
+## 2026-11-25 — CC — while: writing benchmark programs for the increment 3 report
+- **Type:** diagnostic
+- **Severity:** low
+- **What:** `string(i mod 7)` said `unexpected name, expecting `)``.
+  UNLEARN.md documents the trap, but its hint fired only for `7 mod 3`, which
+  the parser reads as a duration (so the unit check names the remedy); after
+  a name, an index or a call -- the form an author writes -- it was bison's
+  sentence. `xor` and `div` the same.
+- **Workaround:** resolved: an operator word after something an expression
+  ends with says "'mod' is not an operator in gBASIC; the remainder is
+  mod(a, b)" (and `bxor`, `floor(a / b)`). `mod` as a name still works.
+  `tests/run_qbasic_diagnostics.sh` TIER 1, with that and an unrelated stray
+  name as controls.
+
+## 2026-11-24 — CC — while: writing tests/jit/values.bas
+- **Type:** diagnostic
+- **Severity:** low
+- **What:** `load callee as cal from "callee.bas"` said `unexpected name,
+  expecting end of line` at `from`. UNLEARN.md and COOKBOOK.md showed the
+  alias only without a path (`load NAME as ALIAS`), so putting it before the
+  path was the natural guess; the alias goes last.
+- **Workaround:** resolved: the refusal says "the alias goes last: write
+  `load NAME from "path" as ALIAS`", and both docs show the form with a file.
+  `tests/run_alias.sh`'s diagnostic tier.

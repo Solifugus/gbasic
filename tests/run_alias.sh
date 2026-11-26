@@ -151,6 +151,18 @@ else
     fail "a call to the replaced name names the alias in force"
 fi
 
+# THE ALIAS WRITTEN BEFORE THE PATH (2026-11-25): `load x as y from "f"` said
+# `unexpected name, expecting end of line`. Written that way while writing a
+# fixture, from docs that showed the alias only without a path.
+printf 'load toolkit as ta from "libs/vendor_a/toolkit.bas"\nprint 1\n' >"$scratch/alias_order.bas"
+./gbasic "$scratch/alias_order.bas" >"$scratch/alias_order.out" 2>&1
+if grep -q 'the alias goes last: write `load NAME from "path" as ALIAS`' "$scratch/alias_order.out" &&
+   ! grep -q '^1$' "$scratch/alias_order.out"; then
+    pass "an alias before the path is refused naming the order"
+else
+    fail "an alias before the path is refused naming the order ($(head -1 "$scratch/alias_order.out"))"
+fi
+
 # BOTH DIRECTIONS OF THE COLLISION, because a rule that only holds one way
 # around is a rule about statement order rather than about names.
 if grep -q "already refers to library 'scope_alpha'" "$scratch/negative_alias_shadows_library.said" && \

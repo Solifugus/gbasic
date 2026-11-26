@@ -2498,6 +2498,33 @@ static int word_is_reserved(const char *word) {
  * previous token was a keyword" -- it fires on `for i = 1 to` with the line
  * unfinished, where `to` is perfectly correct and the author never tried to
  * use it as a name. */
+/* AN OPERATOR WORD AFTER A NAME (2026-11-25). `7 mod 3` is read as a
+ * duration, so duration_unit_error names the remedy; `i mod 7` is a name
+ * followed by a name, and said only `unexpected name, expecting `)``. The
+ * word must follow something an expression ends with, and be one
+ * operator_word_remedy knows, so it names a call that exists. */
+static const char *syntax_error_operator_word(gb_parse_ctx *ctx) {
+    static _Thread_local char advice[160];
+    char lowered[8];
+    size_t i = 0;
+    for (; ctx->tok_word[i] && i + 1 < sizeof(lowered); i++) {
+        lowered[i] = (char)tolower((unsigned char)ctx->tok_word[i]);
+    }
+    if (ctx->tok_word[i]) {
+        return NULL;
+    }
+    lowered[i] = '\0';
+    const char *remedy = operator_word_remedy(lowered);
+    TokenType before = ctx->tok_prev_type;
+    if (!remedy || ctx->tok_type != TOKEN_IDENT ||
+        !(before == TOKEN_IDENT || before == TOKEN_NUMBER || before == TOKEN_STRING ||
+          before == TOKEN_RPAREN || before == TOKEN_RBRACKET)) {
+        return NULL;
+    }
+    snprintf(advice, sizeof advice, "'%s' is not an operator in gBASIC; %s", ctx->tok_word, remedy);
+    return advice;
+}
+
 static const char *syntax_error_reserved_word(gb_parse_ctx *ctx, const char *message) {
     if (!message) {
         return NULL;
@@ -2670,6 +2697,12 @@ static const char *syntax_error_basic_word(gb_parse_ctx *ctx) {
                  (int)(nx - p), p);
         return exit_advice;
     }
+    /* AN ALIAS WRITTEN BEFORE THE PATH (2026-11-25): `load x as y from "f"`
+       said `unexpected name, expecting end of line` at `from`; the alias goes
+       last */
+    if (strcmp(word, "load") == 0 && strcmp(ctx->tok_word, "from") == 0) {
+        return "the alias goes last: write `load NAME from \"path\" as ALIAS`";
+    }
     if (strcmp(word, "let") == 0) {
         return "`let` is not a gBASIC statement; assign directly (x = 1)";
     }
@@ -2812,6 +2845,10 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
     const char *basic_word = syntax_error_basic_word(ctx);
     if (basic_word) {
         message = basic_word;
+    }
+    const char *operator_word = syntax_error_operator_word(ctx);
+    if (operator_word) {
+        message = operator_word;
     }
     char reworded[512];
     const char *reserved = syntax_error_reserved_word(ctx, message);

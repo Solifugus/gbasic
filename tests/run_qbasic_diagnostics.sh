@@ -84,6 +84,23 @@ want 'caret'         'print 2 ^ 3'        'exponentiation is pow(a, b)'
 want 'percent op'    'print 7 % 3'        'the remainder is mod(a, b)'
 want 'ampersand'     'print "a" & "b"'    'does not join text; use +'
 
+# AFTER A NAME, NOT A NUMBER (2026-11-25). `7 mod 3` is read as a duration,
+# which is how its hint is found; `i mod 7` is a name then a name, and said only
+# `unexpected name, expecting `)`` -- the form an author actually writes, met
+# writing the compiler's report. The controls: `mod` is still a usable name, and
+# a stray name that is no operator keeps bison's sentence.
+want 'mod after name'     'x = 5
+print string(x mod 7)'                    "'mod' is not an operator in gBASIC; the remainder is mod(a, b)"
+want 'MOD after name'     'x = 5
+y = x MOD 2'                              "'MOD' is not an operator"
+want 'xor after index'    'xs = [1]
+print xs[0] xor 3'                        'bitwise XOR is bxor(a, b)'
+want 'div after call'     'print len("ab") div 2'   'floor(a / b)'
+lacks 'mod is still a name' 'mod = 3
+print mod'                                'not an operator'
+want 'other name unchanged' 'x = 1
+y = x z'                                  'unexpected name, expecting end of line'
+
 echo "--- TIER 1b: the three the first sweep missed (2026-10-04) ---"
 # REPORTED BY THE BOOK, AS AN ASIDE. The Core Language session was revising the
 # chapter that had complained the `^`/`%` refusals "name neither the character
