@@ -52,6 +52,19 @@ typedef struct {
     char            tok_word[40];          /* its source spelling, "" if not word-shaped */
     char            tok_prev_word[40];
     const char     *tok_after;             /* source just past the token (borrowed) */
+    const char     *tok_start;             /* the token's first byte, at (la_line, la_column) */
+    const char     *tok_prev_start;        /* the token before's first byte and */
+    const char     *tok_prev_after;        /* just past it */
+
+    /* A MACHINE-APPLICABLE FIX OFFERED FOR THE NEXT SYNTAX ERROR (2026-11-26):
+     * replace the bytes in `span` with `text`. Set by an advice function that
+     * knows the rewrite for certain, taken by report_syntax_error onto the
+     * diagnostic it reports (gb_diag.fix_text), and cleared there. */
+    struct {
+        int     set;
+        gb_span span;
+        char    text[256];
+    } fix;
 
     /* A declarative block whose head word is not `server`, remembered rather
      * than refused (DOGFOOD 31). The frontend's load-time pass already

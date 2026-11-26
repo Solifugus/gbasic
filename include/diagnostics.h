@@ -79,6 +79,13 @@ typedef struct {
     char        *path;      /* owned copy; NULL when the source path is unknown */
     gb_span      span;
     char        *message;   /* owned copy */
+    /* A MACHINE-APPLICABLE FIX (2026-11-26, an AI aid): replace the source
+     * bytes in fix_span with fix_text and this diagnostic's cause is gone.
+     * NULL when there is none -- only where the rewrite is certain, never a
+     * guess; a message may still say more than the fix does. fix_span uses
+     * the same units as span. Owned copy. */
+    char        *fix_text;
+    gb_span      fix_span;
 } gb_diag;
 
 /* Zero-initialization ({0}) is a valid empty sink; gb_diagnostics_init() is the
@@ -101,6 +108,11 @@ void           gb_diagnostics_add(gb_diagnostics *diags,
                                   const char *path,
                                   gb_span span,
                                   const char *message);
+
+/* Attach a fix to the LAST diagnostic in the sink (see gb_diag.fix_text);
+ * replaces one already there. Does nothing on an empty or NULL sink. */
+void           gb_diagnostics_set_fix(gb_diagnostics *diags, gb_span span,
+                                      const char *text);
 
 size_t         gb_diagnostics_count(const gb_diagnostics *diags);
 const gb_diag *gb_diagnostics_at(const gb_diagnostics *diags, size_t index);
@@ -149,7 +161,10 @@ const char     *gb_diag_kind_str(gb_diag_code code);
  * line/column (see gb_span). Hand-rolled (no cJSON), so the main `gbasic` binary
  * gains no JSON dependency. Schema (stable field order):
  *   {"severity","code","subcode","path","start":{"line","column"},
- *    "end":{"line","column"},"message"}
+ *    "end":{"line","column"},"message"[,"fix"]}
+ * where "fix", present only when the diagnostic carries one, is
+ *   {"start":{"line","column"},"end":{"line","column"},"text"}
+ * -- replace those bytes with text.
  * `path` is JSON null when unknown; message/path strings are JSON-escaped with
  * multi-byte UTF-8 passed through as raw bytes. */
 void            gb_diag_write_json(FILE *out, const gb_diag *diag);

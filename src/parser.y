@@ -750,6 +750,60 @@ static void yyerror(YYLTYPE *llocp, gb_parse_ctx *ctx, const char *message);
 static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
                                 int end_line, int end_column, const char *message);
 
+/* A FIX, MACHINE-APPLICABLE (2026-11-26, the second AI aid): an advice
+ * function that knows the rewrite FOR CERTAIN offers it here, and
+ * report_syntax_error puts it on the diagnostic, where --json-diagnostics
+ * prints it as "fix". Only certain rewrites -- `a mod b` is offered only where
+ * precedence cannot move under it -- since an agent applies a fix unread.
+ *
+ * Positions are counted from the lookahead token, whose first byte is known
+ * to be at (la_line, la_column): the lines between are counted, the column is
+ * the byte offset in its own line, as gb_span's units are. */
+static int fix_position(gb_parse_ctx *ctx, const char *p, int *line, int *column) {
+    if (!ctx->active_lexer || !ctx->active_lexer->source || !ctx->tok_start || ctx->la_line <= 0) {
+        return 0;
+    }
+    const char *base = ctx->active_lexer->source;
+    const char *anchor = ctx->tok_start;
+    if (p < base) {
+        return 0;
+    }
+    int l = ctx->la_line;
+    if (p < anchor) {
+        for (const char *q = p; q < anchor; q++) {
+            if (*q == '\n') l--;
+        }
+    } else {
+        for (const char *q = anchor; q < p; q++) {
+            if (*q == '\0') return 0;
+            if (*q == '\n') l++;
+        }
+    }
+    const char *start = p;
+    while (start > base && start[-1] != '\n') {
+        start--;
+    }
+    *line = l;
+    *column = (int)(p - start) + 1;
+    return 1;
+}
+
+static void fix_offer_span(gb_parse_ctx *ctx, gb_span span, const char *text) {
+    int n = snprintf(ctx->fix.text, sizeof ctx->fix.text, "%s", text);
+    ctx->fix.set = n >= 0 && (size_t)n < sizeof ctx->fix.text;
+    ctx->fix.span = span;
+}
+
+/* replace the source bytes [from, to) with text */
+static void fix_offer(gb_parse_ctx *ctx, const char *from, const char *to, const char *text) {
+    gb_span span;
+    if (to < from || !fix_position(ctx, from, &span.start_line, &span.start_column) ||
+        !fix_position(ctx, to, &span.end_line, &span.end_column)) {
+        return;
+    }
+    fix_offer_span(ctx, span, text);
+}
+
 /* THE DATA TYPES A LOCK MAY NAME (docs/typed_variables_design.md): one word,
  * and `money` takes its currency. Checked HERE, at parse time, so `x:int` is
  * refused before anything runs -- and with the gBASIC spelling, because a model
@@ -785,6 +839,9 @@ static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
             if (strcmp(near[i].foreign, name) == 0) {
                 snprintf(message, sizeof message,
                          "'%s' is not a gBASIC type; write %s:%s", name, who, near[i].ours);
+                if (!arg) {
+                    fix_offer_span(ctx, (gb_span){ line, column, end_line, end_column }, near[i].ours);
+                }
                 report_syntax_error(ctx, line, column, end_line, end_column, message);
                 return 0;
             }
@@ -2450,6 +2507,10 @@ int parse_source_reentrant_at(const char *source, const char *path,
     ctx.tok_word[0] = '\0';
     ctx.tok_prev_word[0] = '\0';
     ctx.tok_after = NULL;
+    ctx.tok_start = NULL;
+    ctx.tok_prev_start = NULL;
+    ctx.tok_prev_after = NULL;
+    ctx.fix.set = 0;
     ctx.bad_block_word[0] = '\0';
     ctx.bad_block_line = 0;
     ctx.bad_block_column = 0;
@@ -2528,6 +2589,87 @@ static int word_is_reserved(const char *word) {
  * previous token was a keyword" -- it fires on `for i = 1 to` with the line
  * unfinished, where `to` is perfectly correct and the author never tried to
  * use it as a name. */
+/* `a mod b` -> `mod(a, b)`, offered only when both operands are a plain name
+ * or number and what stands either side binds looser than QBasic's MOD (which
+ * is above + and -, below * and /), so the rewrite cannot regroup anything:
+ * `x = a mod 7`, `if i mod 2 = 0 then`, `s + n mod 10`. Not `a * b mod 7`
+ * (QBasic reads (a*b) MOD 7), not `-a mod 7`, not `a mod f(x)`. */
+static int fix_atom_end(const char *p) {
+    const char *q = p;
+    if (isalpha((unsigned char)*q) || *q == '_') {
+        while (isalnum((unsigned char)*q) || *q == '_') q++;
+        char word[40];
+        size_t n = (size_t)(q - p);
+        if (n >= sizeof word) return 0;
+        memcpy(word, p, n);
+        word[n] = '\0';
+        if (word_is_reserved(word)) return 0;
+    } else if (isdigit((unsigned char)*q)) {
+        while (isdigit((unsigned char)*q) || *q == '.') q++;
+    } else {
+        return 0;
+    }
+    return (int)(q - p);
+}
+
+/* a reserved word ends at p (looking left) or starts at p (looking right) */
+static int fix_word_reserved(const char *from, const char *to) {
+    char word[16];
+    size_t n = (size_t)(to - from);
+    if (n == 0 || n >= sizeof word) return 0;
+    for (size_t i = 0; i < n; i++) word[i] = (char)tolower((unsigned char)from[i]);
+    word[n] = '\0';
+    return word_is_reserved(word);
+}
+
+static void operator_word_fix(gb_parse_ctx *ctx) {
+    const char *base = ctx->active_lexer ? ctx->active_lexer->source : NULL;
+    const char *left = ctx->tok_prev_start, *left_end = ctx->tok_prev_after;
+    if (!base || !left || !left_end || left < base ||
+        !(ctx->tok_prev_type == TOKEN_IDENT || ctx->tok_prev_type == TOKEN_NUMBER) ||
+        fix_atom_end(left) != (int)(left_end - left)) {
+        return;
+    }
+    /* what stands before the left operand */
+    const char *b = left;
+    while (b > base && (b[-1] == ' ' || b[-1] == '\t')) b--;
+    if (b > base && b[-1] != '\n' && !strchr("=(,[<>+", b[-1])) {
+        const char *w = b;
+        while (w > base && (isalnum((unsigned char)w[-1]) || w[-1] == '_')) w--;
+        if (w == b || !fix_word_reserved(w, b) || (w > base && w[-1] == '.')) {
+            return;
+        }
+    }
+    /* `+` only as a binary operator: something an operand ends with before it */
+    if (b > base && b[-1] == '+') {
+        const char *c = b - 1;
+        while (c > base && (c[-1] == ' ' || c[-1] == '\t')) c--;
+        if (c == base || !(isalnum((unsigned char)c[-1]) || c[-1] == '_' || c[-1] == ')' ||
+                           c[-1] == ']' || c[-1] == '"')) {
+            return;
+        }
+    }
+    /* the right operand and what follows it */
+    const char *r = ctx->tok_after;
+    while (*r == ' ' || *r == '\t') r++;
+    int rn = fix_atom_end(r);
+    if (rn == 0) return;
+    const char *after = r + rn;
+    while (*after == ' ' || *after == '\t') after++;
+    if (!(*after == '\0' || strchr("\n\r'),]=<>!+-", *after))) {
+        const char *w = after;
+        while (isalpha((unsigned char)*w)) w++;
+        if (w == after || !fix_word_reserved(after, w)) {
+            return;
+        }
+    }
+    const char *right_end = r + rn;
+    char text[200];
+    int n = snprintf(text, sizeof text, "mod(%.*s, %.*s)", (int)(left_end - left), left, rn, r);
+    if (n < 0 || (size_t)n >= sizeof text) return;
+    fix_offer(ctx, left, right_end, text);
+}
+
 /* AN OPERATOR WORD AFTER A NAME (2026-11-25). `7 mod 3` is read as a
  * duration, so duration_unit_error names the remedy; `i mod 7` is a name
  * followed by a name, and said only `unexpected name, expecting `)``. The
@@ -2552,6 +2694,9 @@ static const char *syntax_error_operator_word(gb_parse_ctx *ctx) {
         return NULL;
     }
     snprintf(advice, sizeof advice, "'%s' is not an operator in gBASIC; %s", ctx->tok_word, remedy);
+    if (strcmp(lowered, "mod") == 0) {
+        operator_word_fix(ctx);
+    }
     return advice;
 }
 
@@ -2587,6 +2732,43 @@ static const char *syntax_error_reserved_word(gb_parse_ctx *ctx, const char *mes
         }
     }
     return NULL;
+}
+
+/* `load NAME as ALIAS from "path"` -> `load NAME from "path" as ALIAS`, when
+ * the line is exactly that (`p` is just past `load `) and the lookahead is
+ * the `from`. */
+static void load_alias_fix(gb_parse_ctx *ctx, const char *p) {
+    const char *name = p;
+    int nn = fix_atom_end(name);
+    if (nn == 0 || !isalpha((unsigned char)*name)) return;
+    const char *q = name + nn;
+    while (*q == ' ' || *q == '\t') q++;
+    const char *as = q;
+    if (strncmp(q, "as", 2) != 0 || (q[2] != ' ' && q[2] != '\t')) return;
+    q += 2;
+    while (*q == ' ' || *q == '\t') q++;
+    const char *alias = q;
+    int an = fix_atom_end(alias);
+    if (an == 0 || !isalpha((unsigned char)*alias)) return;
+    q = alias + an;
+    while (*q == ' ' || *q == '\t') q++;
+    if (q != ctx->tok_start) return;
+    q += 4;                                     /* `from` */
+    while (*q == ' ' || *q == '\t') q++;
+    if (*q != '"') return;
+    const char *path = q++;
+    while (*q && *q != '"' && *q != '\n') {
+        if (*q == '\\' && q[1]) q++;
+        q++;
+    }
+    if (*q != '"') return;
+    const char *path_end = ++q;
+    while (*q == ' ' || *q == '\t' || *q == '\r') q++;
+    if (*q && *q != '\n' && *q != '\'') return;
+    char text[256];
+    int n = snprintf(text, sizeof text, "from %.*s as %.*s", (int)(path_end - path), path, an, alias);
+    if (n < 0 || (size_t)n >= sizeof text) return;
+    fix_offer(ctx, as, path_end, text);
 }
 
 /* THE CLASSIC-BASIC STATEMENT WORDS THAT ARE NOT RESERVED, AND MUST NOT BE.
@@ -2677,6 +2859,25 @@ static const char *syntax_error_basic_word(gb_parse_ctx *ctx) {
             if (gbasic_builtin_function(name)) {
                 snprintf(call_advice, sizeof call_advice,
                          "`%s` is a function, so its arguments go in parentheses: write `%s(...)`", name, name);
+                /* the rest of the line, to a comment, in the parentheses */
+                const char *e = after;
+                char quote = 0;
+                while (*e && *e != '\n' && (quote || *e != '\'')) {
+                    if (quote && *e == '\\' && e[1]) {
+                        e++;
+                    } else if (*e == '"') {
+                        quote = !quote;
+                    }
+                    e++;
+                }
+                while (e > after && (e[-1] == ' ' || e[-1] == '\t' || e[-1] == '\r')) {
+                    e--;
+                }
+                char text[200];
+                int tn = snprintf(text, sizeof text, "(%.*s)", (int)(e - after), after);
+                if (!quote && e > after && tn > 0 && (size_t)tn < sizeof text) {
+                    fix_offer(ctx, q, e, text);
+                }
                 return call_advice;
             }
         }
@@ -2731,27 +2932,34 @@ static const char *syntax_error_basic_word(gb_parse_ctx *ctx) {
        said `unexpected name, expecting end of line` at `from`; the alias goes
        last */
     if (strcmp(word, "load") == 0 && strcmp(ctx->tok_word, "from") == 0) {
+        load_alias_fix(ctx, p);
         return "the alias goes last: write `load NAME from \"path\" as ALIAS`";
     }
     if (strcmp(word, "let") == 0) {
+        fix_offer(ctx, w, p, "");
         return "`let` is not a gBASIC statement; assign directly (x = 1)";
     }
     if (strcmp(word, "rem") == 0) {
+        fix_offer(ctx, w, w + n, "'");
         return "`rem` is not a gBASIC comment; a comment starts with ' and runs to the end of the line";
     }
     /* VB's, Ada's and Python's spellings of a chain (DOGFOOD 2026-11-02): the
        same misdirection, `expecting LPAREN`, for the word every one of those
        readers types */
     if (strcmp(word, "elseif") == 0) {
+        fix_offer(ctx, w, w + n, "else if");
         return "`elseif` is not gBASIC; write `else if`, two words, and one `end if` closes the whole chain";
     }
     if (strcmp(word, "elsif") == 0) {
+        fix_offer(ctx, w, w + n, "else if");
         return "`elsif` is not gBASIC; write `else if`, two words, and one `end if` closes the whole chain";
     }
     if (strcmp(word, "elif") == 0) {
+        fix_offer(ctx, w, w + n, "else if");
         return "`elif` is not gBASIC; write `else if`, two words, and one `end if` closes the whole chain";
     }
     if (strcmp(word, "endif") == 0) {
+        fix_offer(ctx, w, w + n, "end if");
         return "`endif` is not gBASIC; an if ends with `end if`, two words";
     }
     return NULL;
@@ -2853,8 +3061,16 @@ static int spell_bison_tokens(const char *message, char *out, size_t size) {
 static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
                                 int end_line, int end_column, const char *message) {
     if (ctx->lexer_error_reported) {
+        ctx->fix.set = 0;
         return;
     }
+    /* the caller's fix (a type lock's), unless advice below replaces the
+       message, which then brings its own or none */
+    int fix_set = ctx->fix.set;
+    gb_span fix_span = ctx->fix.span;
+    char fix_text[sizeof ctx->fix.text];
+    memcpy(fix_text, ctx->fix.text, sizeof fix_text);
+    ctx->fix.set = 0;
     /* A BAD BLOCK HEAD OUTRANKS WHATEVER THE BODY TRIPPED ON, because the body
      * is only being read at all on the strength of that head (DOGFOOD 31). */
     char block_message[320];
@@ -2867,6 +3083,7 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
         end_column = column + (int)strlen(ctx->bad_block_word);
         message = block_message;
         ctx->bad_block_word[0] = '\0';
+        fix_set = 0;
     }
     /* A CLASSIC-BASIC STATEMENT WORD REPLACES the message rather than appending
      * to it, unlike the reserved-word note: bison's own sentence here is about
@@ -2875,11 +3092,19 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
     const char *basic_word = syntax_error_basic_word(ctx);
     if (basic_word) {
         message = basic_word;
+        fix_set = ctx->fix.set;
+        fix_span = ctx->fix.span;
+        memcpy(fix_text, ctx->fix.text, sizeof fix_text);
     }
+    ctx->fix.set = 0;
     const char *operator_word = syntax_error_operator_word(ctx);
     if (operator_word) {
         message = operator_word;
+        fix_set = ctx->fix.set;
+        fix_span = ctx->fix.span;
+        memcpy(fix_text, ctx->fix.text, sizeof fix_text);
     }
+    ctx->fix.set = 0;
     char reworded[512];
     const char *reserved = syntax_error_reserved_word(ctx, message);
     if (reserved) {
@@ -2909,6 +3134,9 @@ static void report_syntax_error(gb_parse_ctx *ctx, int line, int column,
         end_column = column;
     }
     report_diag(ctx, GB_DIAG_PARSE_ERROR, line, column, end_line, end_column, message);
+    if (fix_set) {
+        gb_diagnostics_set_fix(ctx->diags, fix_span, fix_text);
+    }
 }
 
 static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
@@ -2936,6 +3164,9 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
     ctx->tok_prev_type = ctx->tok_type;
     memcpy(ctx->tok_prev_word, ctx->tok_word, sizeof(ctx->tok_word));
     ctx->tok_type = token.type;
+    ctx->tok_prev_start = ctx->tok_start;
+    ctx->tok_prev_after = ctx->tok_after;
+    ctx->tok_start = token.start;
     ctx->tok_after = token.start + token.length;
     ctx->tok_word[0] = '\0';
     if (token.length > 0 && (size_t)token.length < sizeof(ctx->tok_word) &&
@@ -3174,6 +3405,12 @@ static int yylex(YYSTYPE *lvalp, YYLTYPE *llocp, gb_parse_ctx *ctx) {
         if (ctx->active_lexer->error_message[0]) {
             report_diag_lexeme(ctx, GB_DIAG_LEX_DETAIL, token.line, token.column,
                                token.start, token.length, ctx->active_lexer->error_message);
+            /* QBasic's not-equal, whose message names the one spelling */
+            if (token.length == 2 && token.start[0] == '<' && token.start[1] == '>') {
+                gb_diagnostics_set_fix(ctx->diags,
+                                       (gb_span){ token.line, token.column, token.line, token.column + 2 },
+                                       "!=");
+            }
         } else {
             report_diag_lexeme(ctx, GB_DIAG_LEX_ERROR, token.line, token.column,
                                token.start, token.length, "unexpected token");

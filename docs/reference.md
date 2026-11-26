@@ -13132,7 +13132,9 @@ gbasic --json-diagnostics FILE
 
 `--json-diagnostics` runs the program but reports parse and runtime diagnostics
 as JSON on stderr (the model the language server consumes); normal program
-output on stdout is unchanged. A separate `gbasic-lsp` binary (built by
+output on stdout is unchanged. A diagnostic whose rewrite is certain (`<>`,
+`elseif`, `x:int`, `i mod 7`, ...) also carries a `fix`: the bytes to replace
+and the text to put there (docs/ai/ERRORS.md). A separate `gbasic-lsp` binary (built by
 `make dev`) serves the same diagnostics over LSP on document sync.
 
 Find where a program spends its time:

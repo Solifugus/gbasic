@@ -29,6 +29,7 @@ void gb_diagnostics_free(gb_diagnostics *diags) {
     for (size_t i = 0; i < diags->count; i++) {
         free(diags->items[i].message);
         free(diags->items[i].path);
+        free(diags->items[i].fix_text);
     }
     free(diags->items);
     diags->items = NULL;
@@ -60,6 +61,18 @@ void gb_diagnostics_add(gb_diagnostics *diags,
     slot->path = diag_strdup(path);
     slot->span = span;
     slot->message = diag_strdup(message ? message : "");
+    slot->fix_text = NULL;
+    slot->fix_span = (gb_span){ 0, 0, 0, 0 };
+}
+
+void gb_diagnostics_set_fix(gb_diagnostics *diags, gb_span span, const char *text) {
+    if (!diags || diags->count == 0 || !text) {
+        return;
+    }
+    gb_diag *last = &diags->items[diags->count - 1];
+    free(last->fix_text);
+    last->fix_text = diag_strdup(text);
+    last->fix_span = span;
 }
 
 size_t gb_diagnostics_count(const gb_diagnostics *diags) {
@@ -209,6 +222,14 @@ void gb_diag_write_json(FILE *out, const gb_diag *diag) {
             diag->span.end_line, diag->span.end_column);
     fputs(",\"message\":", out);
     json_escape(out, diag->message ? diag->message : "");
+    if (diag->fix_text) {
+        fprintf(out, ",\"fix\":{\"start\":{\"line\":%d,\"column\":%d}",
+                diag->fix_span.start_line, diag->fix_span.start_column);
+        fprintf(out, ",\"end\":{\"line\":%d,\"column\":%d},\"text\":",
+                diag->fix_span.end_line, diag->fix_span.end_column);
+        json_escape(out, diag->fix_text);
+        fputc('}', out);
+    }
     fputs("}\n", out);
 }
 
@@ -228,6 +249,7 @@ void gb_report_to(gb_diagnostics *sink, gb_diag_code code, int subcode,
     d.path = (char *)path;
     d.span = span;
     d.message = (char *)message;
+    d.fix_text = NULL;
     gb_diag_format(stderr, &d);
 }
 

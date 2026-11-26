@@ -49,6 +49,31 @@ Positions are **1-based byte** offsets, inclusive-start / exclusive-end (see
 `include/diagnostics.h` and the reference's Errors section). `subcode` is the
 runtime `error.code` below (0 for non-runtime diagnostics).
 
+**A `fix`, where the rewrite is certain** (2026-11-26). A diagnostic may end
+with one more field:
+
+```json
+{"severity":"error","code":"GB_DIAG_PARSE_ERROR","subcode":0,"path":"prog.bas",
+ "start":{"line":2,"column":14},"end":{"line":2,"column":17},
+ "message":"'mod' is not an operator in gBASIC; the remainder is mod(a, b)",
+ "fix":{"start":{"line":2,"column":14},"end":{"line":2,"column":21},"text":"mod(i, 7)"}}
+```
+
+Replace the bytes from `fix.start` to `fix.end` (the same units as the
+diagnostic's own span) with `fix.text`, and that diagnostic's cause is gone.
+It is offered only where the rewrite cannot change what the author meant, so a
+tool may apply it unread; the field is absent everywhere else, and a message
+may say more than its fix does. Offered today for `<>` (`!=`), `elseif`,
+`elsif` and `elif` (`else if`), `endif` (`end if`), a leading `let` (removed),
+`rem` (`'`), a lock naming another language's type (`x:int` -> `x:number`),
+a builtin written as a statement (`sleep 1` -> `sleep(1)`), an alias written
+before the path (`load x as y from "f"` -> `load x from "f" as y`), and
+`a mod b` -> `mod(a, b)` when both operands are a name or a number and what
+stands either side binds looser than QBasic's MOD (not `a * b mod 7`, which
+QBasic reads as `(a*b) MOD 7`; not `-a mod 7`; not `a mod f(x)`).
+`tests/run_json_diagnostics.sh` applies each fix from the printed numbers
+alone and runs the result.
+
 Two invariants a tool can rely on, both true only since 0.1.0-rc7:
 
 - **Every diagnostic goes through the sink.** Under `--json-diagnostics` the
