@@ -122,4 +122,61 @@ else
     status=1
 fi
 
+echo "--- TIER 4: days_between against python3's datetime ---"
+# It walked a day at a time until 2026-11-25 (DOGFOOD); now it is the days of
+# b - a. The oracle is Python's date arithmetic, not gBASIC's own: random
+# pairs over 1900-2119 both ways, spans of 0, 1, -1, 28, 29, a year either
+# side and up to 82 years, and the leap days and century turns by hand.
+if command -v python3 >/dev/null 2>&1; then
+    pairs="$(mktemp)"
+    trap 'rm -f "$probe_src" "$pairs"' EXIT
+    python3 - "$pairs" <<'PY'
+import random, sys, datetime
+random.seed(20261125)
+base = datetime.date(1900, 1, 1)
+out = []
+for _ in range(3000):
+    a = base + datetime.timedelta(days=random.randint(0, 80000))
+    b = a + datetime.timedelta(days=random.choice([0, 1, -1, 28, 29, -365, 366, random.randint(-30000, 30000)]))
+    out.append((a, b))
+for a, b in [("2024-02-28", "2024-03-01"), ("2023-02-28", "2023-03-01"), ("1999-12-31", "2000-01-01"),
+             ("2000-03-01", "2000-02-28"), ("1900-02-28", "1900-03-01"), ("2026-11-25", "2026-11-25")]:
+    out.append((datetime.date.fromisoformat(a), datetime.date.fromisoformat(b)))
+with open(sys.argv[1], "w") as f:
+    for a, b in out:
+        f.write(f"{a} {b} {(b - a).days}\n")
+PY
+    out="$({ DAYS_PAIRS="$pairs" GBASIC_PATH=stdlib timeout -k 5 60 ./gbasic tests/dates/days_between_test.bas 2>&1 </dev/null || true; })"
+    bad="$(printf '%s\n' "$out" | sed -n 's/^mismatches: //p')"
+    checks="$(printf '%s\n' "$out" | sed -n 's/^checks: //p')"
+    if [ "${bad:-1}" = 0 ] && [ "${checks:-0}" -ge 3006 ]; then
+        printf 'ok   %s pairs, each the days python3 counts\n' "$checks"
+    else
+        printf 'FAIL days_between: %s checks, %s wrong\n' "${checks:-none}" "${bad:-?}"
+        printf '%s\n' "$out" | head -4 | sed 's/^/  /'
+        status=1
+    fi
+else
+    printf 'SKIP days_between oracle (no python3)\n'
+fi
+
+echo "--- TIER 5: days_between costs the same over 30 years as over 10 days ---"
+# A ratio of two runs of one program, so it holds on a slower machine. The
+# day-at-a-time loop made the 11,000-day run about a thousand times the
+# 10-day one; the bound is 3.
+span_time() {
+    local t0 t1
+    t0=$(date +%s%N)
+    DAYS_SPAN="$1" GBASIC_PATH=stdlib timeout -k 5 120 ./gbasic tests/dates/days_between_cost.bas >/dev/null 2>&1 </dev/null
+    t1=$(date +%s%N)
+    echo $(( (t1 - t0) / 1000 ))
+}
+short="$(span_time 10)"; long="$(span_time 11000)"
+if [ "$long" -le $(( short * 3 )) ]; then
+    printf 'ok   2000 calls: %s us over 10 days, %s us over 11000\n' "$short" "$long"
+else
+    printf 'FAIL 2000 calls: %s us over 10 days, %s us over 11000 (more than 3x)\n' "$short" "$long"
+    status=1
+fi
+
 exit $status

@@ -14265,5 +14265,7 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   and 15.7 million of the 89.8 million expressions compiled code handed back,
   nearly all from run_credit and run_fake. `b - a` on two days is already a
   duration of whole days.
-- **Workaround:** none yet; listed in the report as a library fix that would
-  outweigh any compiler work for those suites.
+- **Workaround:** resolved: it returns the days of `end - start`, the two
+  read as days as before. Held against python3's datetime over 3,006 pairs
+  and by a cost tier (2000 calls over 11,000 days against over 10, within
+  3x) in `tests/run_dates.sh`.

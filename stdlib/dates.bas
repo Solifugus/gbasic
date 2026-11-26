@@ -31,31 +31,15 @@ library dates
         return d.dayname
     end function
 
+    ' b - a in days, signed. It used to walk from one to the other a day at a
+    ' time, the same O(days) behind an O(1) name dayname had; counted across
+    ' twenty suites, that loop was a third of all the statements compiled
+    ' code handed back (DOGFOOD, 2026-11-25). Two days subtract to a duration
+    ' of whole days, so its days are the answer.
     function days_between(a, b)
         start_date{day}= a
         end_date{day}= b
-        count = 0
-
-        if start_date = end_date then
-            return 0
-        end if
-        if start_date > end_date then goto backward
-
-    forward:
-        if start_date = end_date then
-            return count
-        end if
-        start_date = start_date + 1 day
-        count = count + 1
-        goto forward
-
-    backward:
-        if start_date = end_date then
-            return -count
-        end if
-        start_date = start_date - 1 day
-        count = count + 1
-        goto backward
+        return (end_date - start_date).days
     end function
 
     function _end_of_month(d)
