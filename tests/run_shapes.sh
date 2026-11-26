@@ -350,14 +350,15 @@ case "$got" in
 esac
 
 echo "--- TIER cost ---"
-if command -v valgrind >/dev/null 2>&1; then
+. tests/valgrind_tier.sh
+if vg_available && command -v callgrind_annotate >/dev/null 2>&1; then
     # ONE body, the field substituted: what differs between two runs is
     # where the field is, and nothing else
     for op in read write; do
         for f in a h; do
             if [ $op = read ]; then body="s = s + r.$f"; else body="r.$f = r.$f + 1"; fi
             printf 'function run(n)\n    r = new acct\n    s = 0\n    for i = 1 to n\n        %s\n    end for\n    return s\nend function\n\nprogram main(args)\n    print run(200000)\nend program\n\nshape acct\n    a:number = 1\n    b:number = 2\n    c:number = 3\n    d:number = 4\n    e:number = 5\n    f:number = 6\n    g:number = 7\n    h:number = 8\nend shape\n' "$body" >"$work/cost_$op$f.bas"
-            valgrind --tool=callgrind --callgrind-out-file="$work/cg.$op$f" "$G" "$work/cost_$op$f.bas" >/dev/null 2>&1
+            vg_callgrind_to "$work/cg.$op$f" "$G" "$work/cost_$op$f.bas" >/dev/null 2>&1
             eval "ir_$op$f=$(callgrind_annotate "$work/cg.$op$f" 2>/dev/null | awk '/PROGRAM TOTALS/ { gsub(",", "", $1); print $1 }')"
         done
         first=$(eval echo "\$ir_${op}a"); last=$(eval echo "\$ir_${op}h")
@@ -368,7 +369,7 @@ if command -v valgrind >/dev/null 2>&1; then
         fi
     done
 else
-    printf 'SKIP cost (no valgrind): the slot found once a site was NOT counted\n'
+    printf 'SKIP cost (needs valgrind and callgrind_annotate): the slot found once a site was NOT counted\n'
 fi
 
 echo "--- TIER valgrind ---"

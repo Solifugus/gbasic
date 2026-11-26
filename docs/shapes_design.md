@@ -427,8 +427,8 @@ through its own variable: two instances share a `link` field's cell, so
 `b.n = 5` changes `a.n` (measured). Holding is sound only where the body
 knows a variable's shape (a lock, §5) and the field is not `link`, and its
 ceiling is small: a loop doing nothing but read one field would go from
-0.26 s to the bare loop's 0.15 s. Left for Matthew to weigh against the
-work; nothing above depends on it.
+0.26 s to the bare loop's 0.15 s. Ruled by Matthew, 2026-11-26: "left out
+makes sense".
 
 Held by run_shapes' `sites` tier (tests/shapes/sites.bas: one read and one
 write site meeting records of every layout, a shape's field converting by
