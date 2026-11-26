@@ -483,7 +483,7 @@ endif
 KSYNTAX_OBJS := src/ksyntax.o
 
 LIB_OBJS := src/lexer.o src/parser.tab.o src/ast.o src/eval.o src/builtins.o src/actor.o src/diagnostics.o src/frontend.o src/window_check.o src/csv_reader.o $(PLATFORM_OBJ) $(YESCRYPT_OBJS) src/jit.o $(QT_OBJS) $(GSQL_OBJS) $(TERM_OBJS) $(KSYNTAX_OBJS)
-OBJS := src/main.o src/repl.o src/lineedit.o $(LIB_OBJS)
+OBJS := src/main.o src/repl.o src/lineedit.o src/docindex.o $(LIB_OBJS)
 
 # gbasic-lsp: the Language Server, first external consumer of libgbasic. Kept out
 # of the default `all` target so a plain `make` stays lean; build it with
@@ -529,17 +529,27 @@ dev: all gbasic-lsp
 libgbasic.a: $(LIB_OBJS)
 	$(AR) rcs $@ $(LIB_OBJS)
 
-gbasic: src/main.o src/repl.o src/lineedit.o libgbasic.a $(WIN_RES)
-	$(CC) $(CFLAGS) -o $@ src/main.o src/repl.o src/lineedit.o $(WIN_RES) libgbasic.a $(LDLIBS)
+gbasic: src/main.o src/repl.o src/lineedit.o src/docindex.o libgbasic.a $(WIN_RES)
+	$(CC) $(CFLAGS) -o $@ src/main.o src/repl.o src/lineedit.o src/docindex.o $(WIN_RES) libgbasic.a $(LDLIBS)
+
+# `gbasic --doc` and `--explain` answer from tables made from the docs this
+# binary was built with (src/docindex_gen.c, run here on the build machine),
+# so they cannot drift from them. A tree without docs/ (run_regex.sh copies
+# src, include and this Makefile) builds, with empty tables.
+DOC_INPUTS := $(wildcard docs/reference.md docs/ai/ERRORS.md)
+src/docindex_gen: src/docindex_gen.c
+	$(CC) -O2 -o $@ src/docindex_gen.c
+src/doc_index.h: src/docindex_gen $(DOC_INPUTS) src/builtins.c
+	./src/docindex_gen docs/reference.md docs/ai/ERRORS.md src/builtins.c $@
 
 # The same binary with every `--profile` hook compiled out (GB_NO_PROFILER),
 # written to NOPROF_DIR: tests/run_profile.sh holds the hooks' cost when
 # profiling is off against it (docs/profiler_design.md §4). Never ./gbasic.
 NOPROF_DIR ?= .
 .PHONY: gbasic-noprof
-gbasic-noprof: src/main.o src/repl.o src/lineedit.o libgbasic.a $(WIN_RES)
+gbasic-noprof: src/main.o src/repl.o src/lineedit.o src/docindex.o libgbasic.a $(WIN_RES)
 	$(CC) $(CFLAGS) -DGB_NO_PROFILER -c src/eval.c -o $(NOPROF_DIR)/eval-noprof.o
-	$(CC) $(CFLAGS) -o $(NOPROF_DIR)/gbasic-noprof src/main.o src/repl.o src/lineedit.o $(WIN_RES) $(NOPROF_DIR)/eval-noprof.o libgbasic.a $(LDLIBS)
+	$(CC) $(CFLAGS) -o $(NOPROF_DIR)/gbasic-noprof src/main.o src/repl.o src/lineedit.o src/docindex.o $(WIN_RES) $(NOPROF_DIR)/eval-noprof.o libgbasic.a $(LDLIBS)
 
 src/gbasic_win32.res.o: src/gbasic_win32.rc src/gbasic.manifest
 	windres -i src/gbasic_win32.rc -o $@
@@ -630,7 +640,8 @@ GBASIC_REVISION := $(shell \
 	@printf '%s' '$(GBASIC_REVISION)' | cmp -s - $@ 2>/dev/null || printf '%s' '$(GBASIC_REVISION)' > $@
 
 src/main.o: CPPFLAGS += -DGBASIC_REVISION='"$(GBASIC_REVISION)"'
-src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/builtins.h include/gbasic.h include/diagnostics.h include/repl.h include/platform.h .stdlibdir-stamp .buildswitch-stamp .revision-stamp
+src/main.o: src/main.c include/ast.h include/eval.h include/lexer.h include/builtins.h include/gbasic.h include/diagnostics.h include/repl.h include/platform.h include/docindex.h .stdlibdir-stamp .buildswitch-stamp .revision-stamp
+src/docindex.o: src/docindex.c include/docindex.h include/builtins.h include/eval.h src/doc_index.h .stdlibdir-stamp .buildswitch-stamp
 
 src/repl.o: src/repl.c include/ast.h include/eval.h include/gbasic.h include/diagnostics.h include/repl.h include/lineedit.h include/platform.h .buildswitch-stamp
 
@@ -739,6 +750,7 @@ uninstall:
 
 clean:
 	rm -f gbasic libgbasic.a $(OBJS) src/parser.tab.c src/parser.tab.h src/gbasic_win32.res.o
+	rm -f src/docindex_gen src/docindex_gen.exe src/doc_index.h
 	rm -f third_party/yescrypt/*.o
 	rm -f gbasic-lsp $(LSP_OBJS)
 	rm -f .stdlibdir-stamp .buildswitch-stamp .revision-stamp

@@ -9,6 +9,9 @@ parser.tab.c
 parser.tab.h
 src/parser.tab.c
 src/parser.tab.h
+src/doc_index.h
+src/docindex_gen
+src/docindex_gen.exe
 examples/tmp_*.txt
 examples/tmp_*.csv
 examples/gbasic_site/csrf_token.txt

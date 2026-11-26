@@ -7,6 +7,7 @@
 #include "eval.h"
 #include "gbasic.h"
 #include "repl.h"
+#include "docindex.h"
 #include "lexer.h"
 #include "platform.h"
 
@@ -40,6 +41,8 @@ static void print_help(const char *argv0) {
     printf("  --add-loads FILE analyze unresolved calls/modifiers and print source with load statements\n");
     printf("  --capabilities   list what this interpreter can touch (name, labels), for capability scanners\n");
     printf("  --modules        list the parts a build can leave out, and whether this one has each\n");
+    printf("  --doc NAME       what a builtin, module verb or library function takes and does, from this build\n");
+    printf("  --explain CODE   what a diagnostic, error or warning code means\n");
     printf("  --add-uses FILE  compatibility alias; emits use statements\n");
     printf("  --json-diagnostics FILE [args...]  run FILE, emitting diagnostics as JSON\n");
     printf("                   lines to stderr. Runs the program, so it takes program\n");
@@ -1150,6 +1153,16 @@ int main(int argc, char **argv) {
          * silently incomplete. docs/library_trust_design.md §1.3. */
         gb_print_capabilities(stdout);
         return 0;
+    } else if (argc == 3 && strcmp(argv[1], "--doc") == 0) {
+        /* THE BINARY ANSWERS FOR ITSELF (2026-11-25): a builtin's or module
+         * verb's entry from the reference this build was made with, or a
+         * library function's signature and comment from the file a `load`
+         * would read -- so an author, an AI writing gBASIC most of all, asks
+         * rather than guesses a signature. */
+        return gb_doc_main(argv[2], stdout);
+    } else if (argc == 3 && strcmp(argv[1], "--explain") == 0) {
+        /* what a diagnostic, error or warning code means (docs/ai/ERRORS.md) */
+        return gb_explain_main(argv[2], stdout);
     } else if (argc == 2 && strcmp(argv[1], "--modules") == 0) {
         /* WHAT THIS BUILD HAS: each part a build can leave out, tab, "built"
          * or "left out", tab, what it needs. --capabilities lists every

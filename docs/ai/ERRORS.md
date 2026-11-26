@@ -72,6 +72,8 @@ After a raise, a program reads `error` (truthy), `error.message`, `error.line`,
 | 1003 | **Generic invalid operation / bad argument** (the catch-all) | see the domain list below |
 | 1004 | I/O-style operation failure | `file operation`, `path operation`, `actor`, `net` (with `error.details.code`: `refused`, `timeout`, `reset`, `closed`, ...) |
 | 1005 | Watcher cascade cap exceeded | `watcher` |
+| 1006 | `reflect` module error (a bad argument to a `reflect.` verb) | `reflect` |
+| 1007 | Regex error: a pattern that does not compile (named at its character), an unknown flag, a pattern or flags that are not text, a match that ran past PCRE2's limit | `regex` |
 | 2000 | Explicit `error "…"` statement | `explicit error` |
 | 2001 | PostgreSQL module error | `postgres` |
 | 2002 | SQLite module error | `sqlite` |
