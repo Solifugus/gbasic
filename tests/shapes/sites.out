@@ -1,0 +1,23 @@
+read 0 ok
+read 1 ok
+read 2 ok
+read 3 ok
+read 4 ok
+read 5 ok
+read 6 ok
+read absent ok
+write plain ok
+write appended ok
+write pair ok
+write flip ok
+write pair again ok
+write refused ok
+write wide ok
+bump plain ok
+bump pair ok
+bump flip ok
+bump wide ok
+others kept ok
+this pair ok
+this flip ok
+detached ok

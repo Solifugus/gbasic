@@ -62,6 +62,17 @@
 #             Then a file field beside a column of its name, a table that is not
 #             there, a plain record for a shape, and a handle's method beside
 #             the module's. Skips when the build has no G-SQL.
+#   sites     increment 4 (§7): a `.field` site keeps the slot it last found
+#             its field at, and a write site the shape field it converted by,
+#             each checked by name on every use. tests/shapes/sites.bas (both
+#             lanes, self-checking) has ONE site meet records of every layout:
+#             plain in two orders, two shapes holding the field at different
+#             positions (number in one, text in the other), a record of 21
+#             fields (hashed), one without the field, a shared record written.
+#   cost      the slot found once a site, counted by callgrind: reading, and
+#             writing, the 8th of 8 fields costs what the 1st does, within 2%
+#             of the whole run (before: 8% more to read, 6% to write). Skips
+#             without valgrind.
 #   valgrind  the golden and every refusal.
 . "$(dirname "$0")/portable.sh"
 set -u
@@ -318,12 +329,55 @@ else
     printf 'SKIP gsql (this build has no G-SQL): rows into a shape and gsql.expect were NOT measured\n'
 fi
 
+echo "--- TIER sites ---"
+if "$G" tests/shapes/sites.bas 2>"$work/err" | cmp -s - tests/shapes/sites.out && [ ! -s "$work/err" ]; then
+    pass "sites.bas: one site over every layout, each field the right one"
+else
+    fail "sites.bas: $(diff <("$G" tests/shapes/sites.bas 2>&1) tests/shapes/sites.out | head -5)"
+fi
+if GBASIC_COMPILE=all "$G" tests/shapes/sites.bas 2>/dev/null | cmp -s - tests/shapes/sites.out; then
+    pass "and compiled, the same bytes"
+else
+    fail "sites.bas compiled differs"
+fi
+# a field read in place is read only from THIS frame: one from an enclosing
+# frame still notes the read, so shadowing the name afterwards warns
+printf 'cfg = { level: 3 }\nfunction f()\n    x = cfg.level\n    cfg = { level: 9 }\n    return x\nend function\nprint f()\n' >"$work/shadow.bas"
+got=$("$G" "$work/shadow.bas" 2>&1)
+case "$got" in
+    *"'cfg' was read from an enclosing scope"*"[2104]"*3) pass "a field read from an enclosing frame still warns 2104 when the name is then shadowed" ;;
+    *) fail "shadowed after a field read: $got" ;;
+esac
+
+echo "--- TIER cost ---"
+if command -v valgrind >/dev/null 2>&1; then
+    # ONE body, the field substituted: what differs between two runs is
+    # where the field is, and nothing else
+    for op in read write; do
+        for f in a h; do
+            if [ $op = read ]; then body="s = s + r.$f"; else body="r.$f = r.$f + 1"; fi
+            printf 'function run(n)\n    r = new acct\n    s = 0\n    for i = 1 to n\n        %s\n    end for\n    return s\nend function\n\nprogram main(args)\n    print run(200000)\nend program\n\nshape acct\n    a:number = 1\n    b:number = 2\n    c:number = 3\n    d:number = 4\n    e:number = 5\n    f:number = 6\n    g:number = 7\n    h:number = 8\nend shape\n' "$body" >"$work/cost_$op$f.bas"
+            valgrind --tool=callgrind --callgrind-out-file="$work/cg.$op$f" "$G" "$work/cost_$op$f.bas" >/dev/null 2>&1
+            eval "ir_$op$f=$(callgrind_annotate "$work/cg.$op$f" 2>/dev/null | awk '/PROGRAM TOTALS/ { gsub(",", "", $1); print $1 }')"
+        done
+        first=$(eval echo "\$ir_${op}a"); last=$(eval echo "\$ir_${op}h")
+        if [ -n "$first" ] && [ -n "$last" ] && awk -v a="$first" -v b="$last" 'BEGIN { d = (b - a) / a; exit !(d < 0.02 && d > -0.02) }'; then
+            pass "$op the 8th field: $last instructions, the 1st $first, within 2%"
+        else
+            fail "$op the 8th field: $last instructions against the 1st's $first (more than 2% apart: the slot is searched for again)"
+        fi
+    done
+else
+    printf 'SKIP cost (no valgrind): the slot found once a site was NOT counted\n'
+fi
+
 echo "--- TIER valgrind ---"
 . tests/valgrind_tier.sh
 if vg_available; then
     bad=""
     vg_run -q "$G" tests/shapes/instances.bas >/dev/null 2>"$work/vg" || bad="$bad instances.bas"
     vg_run -q "$G" tests/shapes/locks.bas >/dev/null 2>"$work/vg" || bad="$bad locks.bas"
+    vg_run -q "$G" tests/shapes/sites.bas >/dev/null 2>"$work/vg" || bad="$bad sites.bas"
     vg_run -q "$G" tests/shapes/csv.bas "$work" >/dev/null 2>"$work/vg" || bad="$bad csv.bas"
     vg_run -q "$G" tests/shapes/schema_check.bas schema >/dev/null 2>"$work/vg" || bad="$bad schema_check.bas"
     if [ "$("$G" "$work/gprobe.bas" 2>&1)" = loaded ]; then

@@ -1302,6 +1302,8 @@ static void webserver_clear(void);
 static FunctionDef *function_resolve(const char *library, const char *name);
 static FunctionDef *shape_method_find(const Value *record, const char *name);
 static int shape_write(const Value *record, const char *name, size_t length, Value *value);
+static int shape_write_at(const Value *record, const char *name, size_t length, Value *value,
+                          AstExpr *site);
 /* the csv module's way to a shape (§6.1), defined with the shapes */
 static void csv_raise_at(const char *message, uint64_t line, uint64_t offset, uint64_t record);
 static int shape_columns(const struct GbShape *shape, const char *label, char *const *names,
@@ -7925,6 +7927,30 @@ static RecordField *record_find(Value *record, const char *name) {
     return record_find_n(record, name, strlen(name));
 }
 
+/* WHERE A `.field` SITE'S FIELD IS in this record (docs/shapes_design.md §7):
+ * the slot the site last found it at is tried first, and checked by name
+ * every time, so a record of another layout costs one comparison and the
+ * walk, never a wrong field. `count` when the record has no such field.
+ * Measured before it was written: a read of the 8th of 8 fields spent 215
+ * of its 714 instructions finding the slot, a compound write three walks. */
+static GB_INLINE size_t record_slot_at_site(const Value *record, AstExpr *expr) {
+    const RecordField *fields = record->as.record.fields;
+    size_t count = record->as.record.count;
+    if (!expr->as.field.length) {
+        expr->as.field.length = strlen(expr->as.field.field);
+    }
+    size_t length = expr->as.field.length;
+    size_t slot = expr->as.field.slot;
+    if (slot < count && record_name_equal(&fields[slot], expr->as.field.field, length)) {
+        return slot;
+    }
+    slot = record_slot_of_n(fields, count, expr->as.field.field, length);
+    if (slot < count) {
+        expr->as.field.slot = slot;
+    }
+    return slot;
+}
+
 static const RecordField *record_find_const_n(const Value *record, const char *name,
                                               size_t length) {
     if (record->kind != VALUE_RECORD) {
@@ -7939,24 +7965,32 @@ static const RecordField *record_find_const(const Value *record, const char *nam
     return record_find_const_n(record, name, strlen(name));
 }
 
+/* Replace the value of the field at `slot`, which the record has. Detaching
+ * keeps every field where it was, so the slot holds across it. */
+static void record_set_slot(Value *record, size_t slot, Value value) {
+    record_ensure_unique(record);
+    RecordField *field = &record->as.record.fields[slot];
+    if (field->policy != AST_FIELD_POLICY_LINK &&
+        ((ValueCell *)field->value)->refcount > 1) {
+        /* The cell is shared (copy-on-write) and is about to be replaced
+         * wholesale: detach into a private cell so the aliases keep the old
+         * value. No need to copy the old content — it is being overwritten.
+         * `link` falls through and writes in place (write-through). */
+        cell_release(field->value);
+        field->value = cell_alloc();
+    } else {
+        value_free(*field->value);
+    }
+    *field->value = value;
+}
+
 static void record_set_n(Value *record, const char *name, size_t name_length, Value value) {
     /* About to repoint a field's cell or append a slot, both of which mutate the
      * field array, so detach from a shared one first. */
     record_ensure_unique(record);
     RecordField *field = record_find_n(record, name, name_length);
     if (field) {
-        if (field->policy != AST_FIELD_POLICY_LINK &&
-            ((ValueCell *)field->value)->refcount > 1) {
-            /* The cell is shared (copy-on-write) and is about to be replaced
-             * wholesale: detach into a private cell so the aliases keep the old
-             * value. No need to copy the old content — it is being overwritten.
-             * `link` falls through and writes in place (write-through). */
-            cell_release(field->value);
-            field->value = cell_alloc();
-        } else {
-            value_free(*field->value);
-        }
-        *field->value = value;
+        record_set_slot(record, (size_t)(field - record->as.record.fields), value);
         return;
     }
 
@@ -35683,6 +35717,14 @@ static Value eval_method_call(AstExpr *expr) {
             if (have_temp) value_free(temp);
             return out;
         }
+        /* a shape's method, on a receiver that is not a variable
+           (`make().m()`), as call_method_target finds it on one that is */
+        FunctionDef *shaped = mf ? NULL : shape_method_find(ref, method);
+        if (shaped) {
+            Value out = eval_user_function_bound(expr, shaped, ref, NULL);
+            if (have_temp) value_free(temp);
+            return out;
+        }
     }
 
     const char *module = handle_method_module(ref);
@@ -46403,6 +46445,7 @@ static Value eval_expr_case_record(AstExpr *expr, int path_keep);
 static Value eval_expr_case_new(AstExpr *expr, int path_keep);
 static Value eval_expr_case_index(AstExpr *expr, int path_keep);
 static Value eval_expr_case_field(AstExpr *expr, int path_keep);
+static Value field_of_record(const Value *object, AstExpr *expr);
 static Value eval_expr_case_project(AstExpr *expr, int path_keep);
 static Value eval_expr_case_column(AstExpr *expr, int path_keep);
 static Value eval_expr_case_apply(AstExpr *expr, int path_keep);
@@ -47145,6 +47188,28 @@ static Value eval_pick(AstExpr *top, AstExpr **ops, size_t n, AstExpr *root, int
     return pick_plain(v, ops, n, root->kind == AST_EXPR_IDENT ? root->as.ident : "the value");
 }
 
+/* `r.x` with `r` a record in THIS frame, or `this.x` in a method, read in
+ * place: the record neither looked up twice nor copied, and none of
+ * eval_expr_case_field's general cases asked. The record, or NULL for the
+ * general path. A name found in an enclosing frame takes that path, which
+ * notes the read for the shadowing warning (env_get_key); `error` is never
+ * a variable there. */
+static GB_INLINE const Value *field_object_in_place(AstExpr *expr) {
+    AstExpr *object = expr->as.field.object;
+    if (object->kind != AST_EXPR_IDENT) {
+        return NULL;
+    }
+    const char *key = ident_key(object);
+    if (key == key_this) {
+        return current_this && current_this->kind == VALUE_RECORD ? current_this : NULL;
+    }
+    if (key == key_error) {
+        return NULL;
+    }
+    Symbol *symbol = env_find_key(current_env, key);
+    return symbol && symbol->value.kind == VALUE_RECORD ? &symbol->value : NULL;
+}
+
 static GB_NOINLINE Value eval_expr_case_field(AstExpr *expr, int path_keep) {
 
         /* PLAT-WARN: `warning.field` reads the stored warning without claiming
@@ -47237,6 +47302,12 @@ static Value field_of_value(Value object, AstExpr *expr, int path_keep) {
             return gsql_path_step(object, expr, path_keep && !expr->parenthesized);
         }
 #endif
+        /* a record first: it is by far the commonest kind read this way */
+        if (object.kind == VALUE_RECORD) {
+            Value result = field_of_record(&object, expr);
+            value_free(object);
+            return result;
+        }
         /* §3 of docs/datetime_design.md: datetimes and durations answer dot
          * fields (d.year, d.weekday, dur.total_seconds), keeping extraction out
          * of the global namespace -- the lenses truncate, the fields extract. */
@@ -47403,28 +47474,28 @@ static Value field_of_value(Value object, AstExpr *expr, int path_keep) {
             return ok ? got : value_null();
         }
 #endif
-        if (object.kind != VALUE_RECORD) {
-            runtime_error_raise("field access expects a record", 1003, "field access");
-            value_free(object);
-            return value_null();
-        }
-        /* Read-only: the const lookup, so reading `rec.field` does not detach
-         * the record from its shared field array. */
-        const RecordField *field = record_find_const(&object, expr->as.field.field);
-        if (!field) {
-            char message[256];
-            snprintf(message, sizeof(message), "unknown record field: %s", expr->as.field.field);
-            /* At the `.`, for the reason the index raise above gives. */
-            runtime_error_raise_at(message, 1003, "field access",
-                                   expr->line, expr->column);
-            value_free(object);
-            return value_null();
-        }
-        Value result = value_copy(*field->value);
+        runtime_error_raise("field access expects a record", 1003, "field access");
         value_free(object);
-        return result;
+        return value_null();
     (void)path_keep;
+}
+
+/* `.name` on a record, read-only: the record is not detached from a shared
+ * field array, and is the caller's still. */
+static GB_NOINLINE Value field_unknown(AstExpr *expr) {
+    char message[256];
+    snprintf(message, sizeof(message), "unknown record field: %s", expr->as.field.field);
+    /* At the `.`, as the index raise in field_of_value is. */
+    runtime_error_raise_at(message, 1003, "field access", expr->line, expr->column);
     return value_null();
+}
+
+static Value field_of_record(const Value *object, AstExpr *expr) {
+    size_t slot = record_slot_at_site(object, expr);
+    if (slot >= object->as.record.count) {
+        return field_unknown(expr);
+    }
+    return value_copy(*object->as.record.fields[slot].value);
 }
 
 static GB_NOINLINE Value eval_expr_case_project(AstExpr *expr, int path_keep) {
@@ -47678,8 +47749,10 @@ static Value eval_expr(AstExpr *expr) {
         return eval_expr_case_new(expr, path_keep);
     case AST_EXPR_INDEX:
         return eval_expr_case_index(expr, path_keep);
-    case AST_EXPR_FIELD:
-        return eval_expr_case_field(expr, path_keep);
+    case AST_EXPR_FIELD: {
+        const Value *record = field_object_in_place(expr);
+        return record ? field_of_record(record, expr) : eval_expr_case_field(expr, path_keep);
+    }
     case AST_EXPR_CALL:
         return eval_call(expr);
     case AST_EXPR_SPAWN:
@@ -48130,11 +48203,36 @@ static Value shape_convert(const struct GbShape *shape, Value record);
  * refusal *value is left for the caller to free, as assign_lvalue's callers
  * expect. */
 static int shape_write(const Value *record, const char *name, size_t length, Value *value) {
+    return shape_write_at(record, name, length, value, NULL);
+}
+
+/* The shape field a `.field` site writes, the one its last write found
+ * tried first and checked by name (a cache, as record_slot_at_site's is). */
+static const GbShapeField *shape_field_at_site(const struct GbShape *shape, const char *name,
+                                               size_t length, AstExpr *site) {
+    if (site->as.field.shape == shape) {
+        const GbShapeField *field = &shape->fields[site->as.field.shape_index];
+        if (strlen(field->name) == length && memcmp(field->name, name, length) == 0) {
+            return field;
+        }
+    }
+    const GbShapeField *field = shape_field_find(shape, name, length);
+    if (field) {
+        site->as.field.shape = shape;
+        site->as.field.shape_index = (size_t)(field - shape->fields);
+    }
+    return field;
+}
+
+/* shape_write, from a `.field` site (or NULL) */
+static int shape_write_at(const Value *record, const char *name, size_t length, Value *value,
+                          AstExpr *site) {
     const struct GbShape *shape = record_shape(record);
     if (!shape) {
         return 1;
     }
-    const GbShapeField *field = shape_field_find(shape, name, length);
+    const GbShapeField *field = site ? shape_field_at_site(shape, name, length, site)
+                                     : shape_field_find(shape, name, length);
     if (!field) {
         char message[512];
         int method = 0;
@@ -50122,7 +50220,8 @@ static Value *resolve_lvalue_ref(AstExpr *target) {
          * branch below, the recursion detaches every level of a nested path
          * (a.b.c = x), and `object` is owned storage by construction. */
         record_ensure_unique(object);
-        RecordField *field = record_find(object, target->as.field.field);
+        size_t slot = record_slot_at_site(object, target);
+        RecordField *field = slot < object->as.record.count ? &object->as.record.fields[slot] : NULL;
         if (!field) {
             char message[256];
             snprintf(message, sizeof(message), "unknown record field: %s", target->as.field.field);
@@ -50235,12 +50334,19 @@ static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
             runtime_error_raise("field assignment target expects a record", 1003, "assignment");
             return LVALUE_ASSIGN_ERROR;
         }
-        if (!shape_write(object, target->as.field.field, strlen(target->as.field.field), &value)) {
+        /* one search for the field, from the site (record_slot_at_site),
+         * where there were three */
+        size_t slot = record_slot_at_site(object, target);
+        if (!shape_write_at(object, target->as.field.field, target->as.field.length, &value,
+                            target)) {
             return LVALUE_ASSIGN_ERROR;
         }
-        RecordField *field = record_find(object, target->as.field.field);
-        int same = assign_same(field ? field->value : NULL, &value);
-        record_set(object, target->as.field.field, value);
+        if (slot >= object->as.record.count) {
+            record_set_n(object, target->as.field.field, target->as.field.length, value);
+            return LVALUE_ASSIGN_CHANGED;
+        }
+        int same = assign_same(object->as.record.fields[slot].value, &value);
+        record_set_slot(object, slot, value);
         return same ? LVALUE_ASSIGN_UNCHANGED : LVALUE_ASSIGN_CHANGED;
     }
     case AST_EXPR_INDEX: {
@@ -51758,6 +51864,12 @@ static EvalResult assign_finish(AstStmt *stmt, Value value, int before_error, Ty
             }
         }
         if (assign_result == LVALUE_ASSIGN_UNCHANGED) {
+            goto case_done;
+        }
+        if (watcher_count == 0 && !watcher_delivering && !watcher_delivery_frame) {
+            /* no watch to fire, and none being delivered to reset: what
+               watcher_trigger_change would do, without building the path it
+               would be asked about (a copy and a free every assignment) */
             goto case_done;
         }
         char *watch_path = lvalue_watch_path(stmt->as.assign.target);

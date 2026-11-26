@@ -388,6 +388,15 @@ struct AstExpr {
         struct {
             AstExpr *object;
             char *field;
+            /* A CACHE, never the answer (docs/shapes_design.md §7): the
+               slot this site last found its field at, tried first and
+               checked by name, and the shape field its last write to a
+               shaped record converted by. `length` is strlen(field), 0
+               until first used. */
+            size_t length;
+            size_t slot;
+            const void *shape;
+            size_t shape_index;
         } field;
         struct {
             AstExpr *object;
