@@ -1,11 +1,12 @@
 # Shapes: a record's declared form
 
-Status: **proposal, 2026-11-26. Nothing is built.** The concept was agreed by
-Matthew on 2026-11-25 ("It feels like a more intuitive and higher level C
-struct"), with three rulings: the word is worth having (as a contextual
-keyword, ruled the same day), fixed means fixed (he leans that way, §4.2), and
-a shape never reaches the wire (§4.5). The rest is proposed here and marked
-**Q** where it needs his answer (collected in §11). §9 sketches where
+Status: **ruled 2026-11-26; nothing is built past increment 0.** The concept
+was agreed by Matthew on 2026-11-25 ("It feels like a more intuitive and
+higher level C struct"), with three rulings: the word is worth having (as a
+contextual keyword, ruled the same day), fixed means fixed (§4.2), and a shape
+never reaches the wire (§4.5). The five questions this note asked were ruled
+on 2026-11-26 (§11), one of them refined: a missing field WITH a default takes
+it silently (§5). §9 sketches where
 contracts would go after 1.0, positions only, so that nothing before 1.0
 takes them. The examples are not runnable yet; each becomes a fixture in the
 increment that builds it (§10). Every claim about TODAY'S grammar was
@@ -107,10 +108,11 @@ A method is not a field a program can assign: `a.deposit = 0` is refused.
 
 ### 2.4 Derivation between shapes
 
-**Q1.** A shape built from another (`shape savings from account`, adding
-`rate:number`) is the obvious next want, and PBI's `new` already derives one
-record from another. I propose **leaving it out of the first version**: every
-shape is declared whole. It can be added later without breaking anything,
+**Ruled (Q1): left out of the first version.** A shape built from another
+(`shape savings from account`, adding `rate:number`) is the obvious next
+want, and PBI's `new` already derives one record from another, but Matthew:
+"Get one complete, dependable shape model working before adding
+inheritance." Every shape is declared whole. It can be added later without breaking anything,
 since `shape NAME from` is a syntax error under this design's first grammar.
 
 ## 3. The word: a contextual keyword
@@ -172,7 +174,7 @@ field read; a missing field cannot exist, so `a.f` never raises for a declared
 
 ### 4.4 Equality and printing
 
-**Q2.** I propose a shaped record compares by its fields, exactly as a record
+**Ruled (Q2): a shaped record compares by its fields**, exactly as a record
 does today (`=` and the same-value routes ignore the shape), and prints as a
 record does. The shape is about what may be written, not what the value is,
 so `new account = { owner: "unnamed", ... }` with the same fields is `true`.
@@ -199,17 +201,17 @@ Converting a plain record into a shape, field by field:
 
 1. **A declared field present in the record**: converted to its kind, or
    refused naming the field, the value, and the shape's line.
-2. **A declared field missing from the record**: takes its default, and
-   `nothing` when it has none.
-3. **A field the record has and the shape does not**: dropped.
+2. **A declared field missing from the record, with a default**: takes the
+   default, SILENTLY. Declaring a default says absence was anticipated.
+3. **A declared field missing, with no default**: `nothing`, and a warning.
+4. **A field the record has and the shape does not**: dropped, and a warning.
 
-Rules 2 and 3 follow Matthew's principle (2026-11-25, robust by default):
-refuse what was DECLARED (a type), tolerate what is incidental (a JSON object
-with one more field, a CSV column nobody asked for) **and say so**. Each
-tolerance is a warning through the warning channel, once per site and field,
-so `on warning stop` turns it into a refusal for a program that wants strict,
-and `on warning ignore` silences it. **Q3**: are the two warnings right, or
-should a missing field with no default be refused outright?
+Ruled 2026-11-26 (Q3, refined by Matthew), following his principle (robust
+by default, 2026-11-25): refuse what was DECLARED (a type), tolerate what is
+incidental (a JSON object with one more field, a CSV column nobody asked for)
+**and say so** where nothing anticipated it. Each warning goes through the
+warning channel, once per site and field; `on warning stop` already makes it
+strict, and `on warning ignore` silences it.
 
 An instance of the shape passes through a lock unchanged; an instance of a
 DIFFERENT shape is converted as a plain record would be.
@@ -227,15 +229,16 @@ csv.write(f, invoices)                   ' header from the shape, in declared or
 
 - **The header is matched once, at open**: by field name, then by the name
   with case and spaces and `_` ignored ("Invoice Date" finds `invoice_date`).
-  A field no column matches takes its default (rule 2 above) and the warning
-  names it; a column no field matches is dropped and named.
+  A field no column matches follows §5's rules 2 and 3 (its default
+  silently, else `nothing` and a warning naming it); a column no field
+  matches is dropped, and the warning names it.
 - Each record converts as §5 says; a bad cell is refused naming the LINE
   (`csv.records` already knows where each record starts) and the field.
-- **Q4: a column named nothing like its field** ("Amt (USD)" for `amount`).
-  That needs a spelling on the field, e.g. `amount (column "Amt (USD)"):money(USD)`
-  in the policy slot. It overlaps the renaming question deferred in November
-  (deferred-data-spelling-questions); I propose settling both together, and
-  leaving it out of the first CSV increment.
+- **A column named nothing like its field** ("Amt (USD)" for `amount`):
+  **ruled (Q4) deferred** until the broader renaming decision (the braces
+  question deferred in November). A spelling on the field, such as
+  `amount (column "Amt (USD)"):money(USD)` in the policy slot, is one
+  candidate. The first CSV increment has no aliases.
 
 ### 6.2 JSON
 
@@ -247,11 +250,11 @@ not two).
 ### 6.3 G-SQL
 
 - **A row read is converted into a shape**: `for each c:customer in shop.customer[.active]`.
-- **A shape is checked against its table when the program connects**, if the
-  program says which table it describes (**Q5**: `shape customer` plus
-  `gsql.expect(db, "customer", customer)`, named after `mcp`'s `expect`, is my
-  proposal). A missing column or a different kind is reported at connect,
-  naming both, not at the first write.
+- **A shape is checked against its table when the program connects**, by an
+  explicit expectation the program states (**ruled (Q5)**: an explicit
+  connection-time check; `gsql.expect(db, "customer", customer)` is
+  reasonable, its final spelling open). A missing column or a different kind
+  is reported at connect, naming both, not at the first write.
 - **Shapes do not create tables.** Keys, indexes, foreign keys and required
   columns are storage, not form. Matthew (2026-11-25): schema from gBASIC is
   where this may grow, later; nothing here forecloses it.
@@ -375,17 +378,17 @@ included).
 4. **The compiler** (§7): field positions and held number fields, measured.
 5. **Frames** (§6.4), library work.
 
-## 11. Questions for Matthew
+## 11. Rulings (Matthew, 2026-11-26)
 
-1. **Derivation** (§2.4): leave `shape b from a` out of the first version?
-   (proposed: yes)
-2. **Equality** (§4.4): a shaped record compares by its fields, the shape
-   ignored? (proposed: yes)
-3. **Missing and extra fields** (§5): tolerated with a warning each (missing
-   takes its default or `nothing`; extra is dropped)? Or refuse a missing field
-   with no default? (proposed: warn both)
-4. **CSV columns named nothing like the field** (§6.1): settle with the
-   deferred renaming question, and leave it out of the first CSV increment?
-   (proposed: yes)
-5. **Shape against table** (§6.3): `gsql.expect(db, "customer", customer)`
-   at connect? (proposed: yes, spelling open)
+1. **Derivation**: left out initially. "Get one complete, dependable shape
+   model working before adding inheritance."
+2. **Equality**: by field values, the shape ignored. "That preserves normal
+   record behavior."
+3. **Missing and extra fields**: a missing field with a default takes it
+   without a warning ("Declaring a default means absence is anticipated");
+   one without a default is `nothing` with a warning; an extra field is
+   dropped with a warning. "`on warning stop` already provides strict
+   behavior."
+4. **CSV aliases**: deferred until the broader renaming decision.
+5. **G-SQL**: an explicit connection-time expectation check;
+   `gsql.expect(...)` is reasonable, the final spelling can wait.
