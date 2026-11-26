@@ -1,11 +1,13 @@
 # Shapes: a record's declared form
 
-Status: **ruled 2026-11-26; increments 0 to 3 built 2026-11-26**
+Status: **ruled 2026-11-26; increments 0 to 4 built 2026-11-26**
 (tests/run_reserved_forms.sh, tests/run_shapes.sh): the block, instances,
 fixed fields, writes, methods and shaped fields, the shape as a lock (§5),
-and the boundaries (§6.1-§6.3: CSV, `json_schema`, G-SQL rows and
-`gsql.expect`). `llm.ask` with a shape (§6.5) goes with the AI-engineering
-work; the compiler (§7) is increment 4. The concept
+the boundaries (§6.1-§6.3: CSV, `json_schema`, G-SQL rows and
+`gsql.expect`), and field positions (§7, measured: a site's cache, which
+every record gains, not a position the shape promises). `llm.ask` with a
+shape (§6.5) goes with the AI-engineering work; frames (§6.4) are increment
+5. The concept
 was agreed by Matthew on 2026-11-25 ("It feels like a more intuitive and
 higher level C struct"), with three rulings: the word is worth having (as a
 contextual keyword, ruled the same day), fixed means fixed (§4.2), and a shape
@@ -44,7 +46,8 @@ text, JSON is whatever came, a model's answer is a string to be hoped about.
 A shape makes them one thing: **converted where the data enters, refused by
 field name and line where it does not fit**, with the messages a typed
 variable already gives. The rest of the program then works with values whose
-form it knows, and the compiler gets fixed field positions it can use (§7).
+form it knows. (Field positions, once expected to come from the shape, came
+from a cache every record gains: §7.)
 
 It builds on two things that exist: **typed variables** (every field line is
 written as a typed variable is, `name:type = default`, and converts and refuses
@@ -364,14 +367,80 @@ the reason shapes come before the AI-engineering increments in the 1.0 order.
   shape may read part of a row, but reading `select *` into such a shape
   warns 2126 at each site, as any extra field does.
 
-## 7. The compiler
+## 7. Field positions (increment 4, built and measured 2026-11-26)
 
-A shape fixes a record's field set and order, so a field's position is known
-at load: `r.x` on a shaped `r` is an index, not a hash lookup, and a `number`
-field can be held in a slot as a typed variable is (the increment-3 report's
-B2). The interpreter keeps the record's hashed map; the compiler gains the
-positions. Measured nothing yet: the report's estimate for B2 stands until an
-increment measures it.
+*As drafted:* a shape fixes a record's field set and order, so `r.x` on a
+shaped `r` is an index known at load, and a `number` field could be held in
+a slot as a typed variable is; the compiler would gain the positions.
+
+*What measuring first found.* Counted by callgrind per loop pass, before
+anything was built (a bare `s = s + 8` pass is 1,539 instructions):
+
+| | instructions a pass | over the bare loop |
+| --- | --- | --- |
+| `s = s + r.a`, the 1st of 8 fields | 2,078 | 539 |
+| `s = s + r.h`, the 8th of 8 | 2,253 | 714 |
+| `r.h = r.h + 1`, a plain record | 3,628 | 2,089 |
+| `r.h = r.h + 1`, shaped | 4,121 | 2,582 |
+
+Finding the slot was 215 of the read's 714; the rest was the receiver looked
+up twice (once to see it was not a library's name), the record copied and
+freed, and a dozen kind checks ahead of the record's. A write searched for
+its field three times by name (resolving, comparing for the watchers,
+setting), a shaped one a fourth in the shape, and every assignment of any
+kind built and freed its watch path with no watch in the program. And the
+premise does not hold as written: a field with the `exclude` policy is left
+out of an instance (derive_record), so slot i of an instance is not always
+field i of its shape.
+
+*What was built*, in the interpreter, so both lanes have it:
+
+- **A site keeps its slot.** Each `.field` node remembers the slot it last
+  found its field at (`record_slot_at_site`), tried first and CHECKED BY
+  NAME on every use: a record of another layout costs one comparison and the
+  walk, never a wrong field. So it needs nothing from a shape, and a plain
+  record gains as much as a shaped one.
+- **A write site keeps its shape field**, keyed by the shape and checked by
+  name (`shape_field_at_site`), and a write finds its record slot once
+  (`record_set_slot`).
+- **A record in this frame, or `this`, is read in place** (`field_object_in_place`):
+  not looked up twice, not copied. A name found in an ENCLOSING frame takes
+  the general path, which notes the read for warning 2104.
+- **No watch path without a watch**: built only when a watch exists or is
+  being delivered, which is exactly when watcher_trigger_change could act.
+
+*Measured after*, best of five, 3,000,000 passes, interpreted and compiled
+alike (the compiled code hands a field to the interpreter):
+
+| | before | after |
+| --- | --- | --- |
+| bare loop | 0.15 s, 1,539 instr | 0.15 s, 1,358 instr |
+| read the 1st / 8th of 8 fields | 0.34 / 0.40 s | 0.26 / 0.26 s, 1,496 instr |
+| `r.h = r.h + 1`, plain | 0.75 s, 3,628 | 0.35 s, 1,660 |
+| `r.h = r.h + 1`, shaped | 0.92 s, 4,121 | 0.40 s, 1,822 |
+
+A read now costs 138 instructions over the bare loop whichever field it is;
+a compound write a fifth of what it did.
+
+*Not built: holding a number field in a slot.* A field is not only changed
+through its own variable: two instances share a `link` field's cell, so
+`b.n = 5` changes `a.n` (measured). Holding is sound only where the body
+knows a variable's shape (a lock, §5) and the field is not `link`, and its
+ceiling is small: a loop doing nothing but read one field would go from
+0.26 s to the bare loop's 0.15 s. Left for Matthew to weigh against the
+work; nothing above depends on it.
+
+Held by run_shapes' `sites` tier (tests/shapes/sites.bas: one read and one
+write site meeting records of every layout, a shape's field converting by
+the right lock where the wrong one is of another type, `this` on two shapes,
+a shared record detached; both lanes and valgrind; and 2104 after a field
+read from an enclosing frame) and its `cost` tier (callgrind: the 8th of 8
+fields read and written within 2% of the 1st). Perturbations proven red: the
+cached slot used without its name check; the shape field used without its
+check (green at first: the wrong field had the same type, so sites.bas's
+`flip` was reordered); the slot never kept (cost only); the in-place read
+taken from an enclosing frame (2104 lost); the watch path always skipped
+(run_watch_scope); the method on an expression removed.
 
 ## 8. What shapes do not do
 
@@ -463,7 +532,8 @@ included).
 3. **The boundaries** (§6): `csv.records(f, shape)` and `csv.write`;
    `json_schema`; G-SQL rows and `expect`; then `llm.ask` with a shape in the
    AI-engineering work.
-4. **The compiler** (§7): field positions and held number fields, measured.
+4. **Field positions** (§7): measured first, built as a site's cache; held
+   number fields left out (§7).
 5. **Frames** (§6.4), library work.
 
 ## 11. Rulings (Matthew, 2026-11-26)
