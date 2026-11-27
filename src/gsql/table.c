@@ -16,6 +16,8 @@
 #include "gsql_key.h"
 #include "serialize_tags.h"
 #include "v3.h"
+#include "hnsw.h"
+#include "gb_vector.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -233,7 +235,7 @@ static void schema_encode(const GsqlTable *tb, GsqlBuf *b) {
     v3_w_array(b, tb->nidx);
     for (size_t i = 0; i < tb->nidx; i++) {
         const GsqlIndex *x = &tb->idx[i];
-        v3_w_record(b, 5);
+        v3_w_record(b, x->method == GSQL_INDEX_HNSW ? 6 : 5);
         v3_w_name(b, "name");
         v3_w_text(b, x->name);
         v3_w_name(b, "id");
@@ -250,6 +252,18 @@ static void schema_encode(const GsqlTable *tb, GsqlBuf *b) {
         }
         v3_w_name(b, "unique");
         v3_w_bool(b, x->unique);
+        /* written only for an HNSW graph, so every other index stores as
+           before (docs/gsql_vector_design.md §9) */
+        if (x->method == GSQL_INDEX_HNSW) {
+            v3_w_name(b, "hnsw");
+            v3_w_record(b, 3);
+            v3_w_name(b, "metric");
+            v3_w_text(b, x->metric == GB_VEC_COSINE ? "cosine" : x->metric == GB_VEC_IP ? "ip" : "l2");
+            v3_w_name(b, "m");
+            v3_w_int(b, x->m);
+            v3_w_name(b, "ef_construction");
+            v3_w_int(b, x->ef_construction);
+        }
     }
 }
 
@@ -466,6 +480,29 @@ static int schema_decode(const char *name, const unsigned char *p, size_t n, Gsq
             }
             xcols[j] = (unsigned)v;
             xdesc[j] = d;
+        }
+        const V3Field *xh = v3_field_named(xf, nxf, "hnsw");
+        if (xh) {
+            V3Field hf[4];
+            long nhf = v3_record_fields(xh->v, xh->vlen, hf, 4);
+            const V3Field *hm = nhf > 0 ? v3_field_named(hf, nhf, "metric") : NULL;
+            const V3Field *hmm = nhf > 0 ? v3_field_named(hf, nhf, "m") : NULL;
+            const V3Field *he = nhf > 0 ? v3_field_named(hf, nhf, "ef_construction") : NULL;
+            char *metric = hm ? v3_read_text(hm->v, hm->vlen) : NULL;
+            uint64_t m = 0, efc = 0;
+            int good = metric && hmm && he && v3_read_u64(hmm->v, hmm->vlen, &m) && v3_read_u64(he->v, he->vlen, &efc) &&
+                       m >= 2 && m <= 100 && efc >= 4 && efc <= 1000 && x->ncols == 1 &&
+                       tb->cols[xcols[0]].kind == GSQL_COL_VECTOR && tb->cols[xcols[0]].dimension;
+            int mk = !metric ? -1 : strcmp(metric, "l2") == 0 ? GB_VEC_L2 : strcmp(metric, "cosine") == 0
+                     ? GB_VEC_COSINE : strcmp(metric, "ip") == 0 ? GB_VEC_IP : -1;
+            free(metric);
+            if (!good || mk < 0) {
+                goto bad;
+            }
+            x->method = GSQL_INDEX_HNSW;
+            x->metric = mk;
+            x->m = (unsigned)m;
+            x->ef_construction = (unsigned)efc;
         }
     }
     free(items);
@@ -1502,6 +1539,15 @@ static int entries_build(const GsqlTable *tb, const GsBytes *vals, GsBytes rowke
     }
     for (size_t i = 0; i < tb->nidx; i++) {
         gsql_key_init(&en->k[i]);
+        if (tb->idx[i].method == GSQL_INDEX_HNSW) {
+            /* the graph's "entry" is the vector's own bytes, empty for an
+               absent one: an update that leaves it alone compares equal */
+            GsBytes v = vals[tb->idx[i].cols[0]];
+            if (!is_absent(v)) {
+                key_raw(&en->k[i], v);
+            }
+            continue;
+        }
         if (!index_entry(tb, &tb->idx[i], vals, rowkey, &en->k[i], &en->unique_form[i])) {
             return fail(err, GSQL_CORRUPT, "index %s holds a column with no order", tb->idx[i].name);
         }
@@ -1556,14 +1602,76 @@ static int unique_taken(const GsEngine *e, GsTxn *t, const GsqlTable *tb, size_t
     return GSQL_DUPLICATE;
 }
 
+void gsql_index_hnsw_of(const GsqlTable *tb, size_t i, GsqlHnsw *h) {
+    const GsqlIndex *x = &tb->idx[i];
+    h->tree = gsql_index_tree(tb, i);
+    h->metric = x->metric;
+    h->m = x->m;
+    h->ef_construction = x->ef_construction;
+    h->dim = tb->cols[x->cols[0]].dimension;
+}
+
+/* A vector an HNSW index can place: under the cosine metric it needs a
+ * direction, as <=> does (docs/gsql_vector_design.md §9). Checked with the
+ * other refusals, before anything is written. */
+static int hnsw_admits(const GsqlTable *tb, size_t i, const Entries *en, GsqlError *err) {
+    const GsqlIndex *x = &tb->idx[i];
+    if (x->method != GSQL_INDEX_HNSW || x->metric != GB_VEC_COSINE || !en->k[i].length) {
+        return GSQL_OK;
+    }
+    float *f;
+    size_t dim;
+    if (!gsql_hnsw_floats(en->k[i].bytes, en->k[i].length, 0, &f, &dim)) {
+        return fail(err, GSQL_CORRUPT, "%s: index %s was given a value that is not a vector", tb->name, x->name);
+    }
+    double n = gb_vec_norm(f, dim);
+    free(f);
+    if (!(n > 0)) {
+        fail(err, GSQL_TYPE, "%s.%s: the vector is all zeros, which has no direction, so cosine index %s cannot "
+             "hold it", tb->name, tb->cols[x->cols[0]].name, x->name);
+        gsql_error_about(err, tb->name, tb->cols[x->cols[0]].name, x->name);
+        return GSQL_TYPE;
+    }
+    return GSQL_OK;
+}
+
+static int hnsw_put(const GsEngine *e, GsTxn *t, const GsqlTable *tb, size_t i, const Entries *en, GsBytes rowkey,
+                    GsqlError *err) {
+    if (!en->k[i].length) {
+        return GSQL_OK;   /* an absent vector is not in the graph */
+    }
+    GsqlHnsw h;
+    gsql_index_hnsw_of(tb, i, &h);
+    float *f;
+    if (!gsql_hnsw_floats(en->k[i].bytes, en->k[i].length, h.dim, &f, NULL)) {
+        return fail(err, GSQL_CORRUPT, "%s: index %s was given a value that is not a vector of %zu dimensions",
+                    tb->name, tb->idx[i].name, h.dim);
+    }
+    int rc = gsql_hnsw_insert(e, t, &h, rowkey, f, err);
+    free(f);
+    return rc;
+}
+
 static int put_entry(const GsEngine *e, GsTxn *t, const GsqlTable *tb, size_t i, const Entries *en, GsBytes rowkey,
                      GsqlError *err) {
+    if (tb->idx[i].method == GSQL_INDEX_HNSW) {
+        return hnsw_put(e, t, tb, i, en, rowkey, err);
+    }
     GsBytes empty = { NULL, 0 };
     int st = e->put(t, gsql_index_tree(tb, i), key_bytes(&en->k[i]), en->unique_form[i] ? rowkey : empty, 0);
     return st == GS_OK ? GSQL_OK : storage(err, st, "writing an index entry");
 }
 
-static int del_entry(const GsEngine *e, GsTxn *t, const GsqlTable *tb, size_t i, const Entries *en, GsqlError *err) {
+static int del_entry(const GsEngine *e, GsTxn *t, const GsqlTable *tb, size_t i, const Entries *en, GsBytes rowkey,
+                     GsqlError *err) {
+    if (tb->idx[i].method == GSQL_INDEX_HNSW) {
+        if (!en->k[i].length) {
+            return GSQL_OK;
+        }
+        GsqlHnsw h;
+        gsql_index_hnsw_of(tb, i, &h);
+        return gsql_hnsw_delete(e, t, &h, rowkey, err);
+    }
     int st = e->del(t, gsql_index_tree(tb, i), key_bytes(&en->k[i]));
     if (st == GS_NOT_FOUND) {
         return fail(err, GSQL_CORRUPT, "%s: index %s was missing an entry for a row", tb->name, tb->idx[i].name);
@@ -1615,7 +1723,7 @@ int gsql_row_insert(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlIn *va
         goto out;
     }
     for (size_t i = 0; i < tb->nidx; i++) {
-        if ((rc = unique_taken(e, t, tb, i, &en, NULL, err))) {
+        if ((rc = unique_taken(e, t, tb, i, &en, NULL, err)) || (rc = hnsw_admits(tb, i, &en, err))) {
             goto out;
         }
     }
@@ -1761,7 +1869,7 @@ int gsql_row_update(const GsEngine *e, GsTxn *t, GsqlTable *tb, GsBytes rowkey, 
         goto out;
     }
     for (size_t i = 0; i < tb->nidx; i++) {
-        if ((rc = unique_taken(e, t, tb, i, &newe, &self, err))) {
+        if ((rc = unique_taken(e, t, tb, i, &newe, &self, err)) || (rc = hnsw_admits(tb, i, &newe, err))) {
             goto out;
         }
     }
@@ -1785,7 +1893,8 @@ int gsql_row_update(const GsEngine *e, GsTxn *t, GsqlTable *tb, GsBytes rowkey, 
             olde.unique_form[i] == newe.unique_form[i]) {
             continue;
         }
-        if ((rc = del_entry(e, t, tb, i, &olde, err)) || (rc = put_entry(e, t, tb, i, &newe, key_bytes(&k), err))) {
+        if ((rc = del_entry(e, t, tb, i, &olde, rowkey, err)) ||
+            (rc = put_entry(e, t, tb, i, &newe, key_bytes(&k), err))) {
             goto out;
         }
     }
@@ -1819,7 +1928,7 @@ int gsql_row_delete(const GsEngine *e, GsTxn *t, GsqlTable *tb, GsBytes rowkey, 
         rc = entries_build(tb, v, rowkey, &en, err);
     }
     for (size_t i = 0; !rc && i < tb->nidx; i++) {
-        rc = del_entry(e, t, tb, i, &en, err);
+        rc = del_entry(e, t, tb, i, &en, rowkey, err);
     }
     if (!rc) {
         int st = e->del(t, gsql_table_rows_tree(tb), rowkey);
@@ -1865,7 +1974,34 @@ int gsql_index_create(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlInde
     if ((rc = check_positions(tb->name, "index", d->cols, d->ncols, tb->ncols, err))) {
         return rc;
     }
-    for (size_t i = 0; i < d->ncols; i++) {
+    if (d->method == GSQL_INDEX_HNSW) {
+        /* pgvector's rules (docs/gsql_vector_design.md §9) */
+        const GsqlColumn *vc = &tb->cols[d->cols[0]];
+        if (d->ncols != 1) {
+            return fail(err, GSQL_SCHEMA, "hnsw index %s is over one vector column, not %zu columns", d->name,
+                        d->ncols);
+        }
+        if (vc->kind != GSQL_COL_VECTOR || !vc->dimension) {
+            return fail(err, GSQL_SCHEMA, "hnsw index %s needs a vector column of one dimension, as in VECTOR(1536), "
+                        "and %s.%s is %s", d->name, tb->name, vc->name,
+                        vc->kind == GSQL_COL_VECTOR ? "a vector of any dimension" : gsql_kind_name(vc->kind));
+        }
+        if (d->unique) {
+            return fail(err, GSQL_SCHEMA, "hnsw index %s cannot be unique: it finds what is near, not what is equal",
+                        d->name);
+        }
+        if (d->m < 2 || d->m > 100) {
+            return fail(err, GSQL_SCHEMA, "hnsw index %s: m is 2 to 100, not %u", d->name, d->m);
+        }
+        if (d->ef_construction < 4 || d->ef_construction > 1000 || d->ef_construction < 2 * d->m) {
+            return fail(err, GSQL_SCHEMA, "hnsw index %s: ef_construction is 4 to 1000 and at least twice m (%u), "
+                        "not %u", d->name, 2 * d->m, d->ef_construction);
+        }
+        if (d->metric != GB_VEC_L2 && d->metric != GB_VEC_COSINE && d->metric != GB_VEC_IP) {
+            return fail(err, GSQL_SCHEMA, "hnsw index %s: metric %d is not one", d->name, d->metric);
+        }
+    }
+    for (size_t i = 0; i < d->ncols && d->method != GSQL_INDEX_HNSW; i++) {
         if (tb->cols[d->cols[i]].kind == GSQL_COL_RECORD) {
             return fail(err, GSQL_SCHEMA, "%s.%s is a record, which has no order, so index %s cannot hold it",
                         tb->name, tb->cols[d->cols[i]].name, d->name);
@@ -1909,6 +2045,10 @@ int gsql_index_create(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlInde
     x->cols = cols;
     x->desc = desc;
     x->unique = d->unique;
+    x->method = d->method;
+    x->metric = d->metric;
+    x->m = d->m;
+    x->ef_construction = d->ef_construction;
     tb->nidx++;
     tb->version++;
     set_trees(tb);
@@ -1919,6 +2059,91 @@ int gsql_index_create(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlInde
         rc = storage(err, st, "creating an index tree");
         reload(e, t, tb);
         return rc;
+    }
+    if (x->method == GSQL_INDEX_HNSW) {
+        /* each row's vector into the graph, in row order, as inserting them
+           would: the rows read first, since the graph's writes go through
+           this transaction too */
+        GsCursor *hc;
+        st = e->cursor_open(t, gsql_table_rows_tree(tb), &hc);
+        if (st != GS_OK) {
+            rc = storage(err, st, "opening the rows");
+            goto undo;
+        }
+        GsqlBuf keys = { 0 }, vecs = { 0 };
+        size_t *koff = NULL, *voff = NULL, nrows = 0, cap = 0;
+        GsBytes *hv = malloc(tb->ncols * sizeof *hv);
+        if (!hv) {
+            abort();
+        }
+        int hpos = 0;
+        st = e->first(hc, &hpos);
+        while (st == GS_OK && hpos && !rc) {
+            GsBytes rk, rv;
+            if ((st = e->key(hc, &rk)) != GS_OK || (st = e->value(hc, &rv)) != GS_OK) {
+                break;
+            }
+            rc = row_decode(tb, rv.p, rv.n, hv, err);
+            GsBytes vv = rc ? (GsBytes){ NULL, 0 } : hv[x->cols[0]];
+            if (!rc && !is_absent(vv)) {
+                if (nrows == cap) {
+                    cap = cap ? cap * 2 : 256;
+                    koff = realloc(koff, (cap + 1) * sizeof *koff);
+                    voff = realloc(voff, (cap + 1) * sizeof *voff);
+                    if (!koff || !voff) {
+                        abort();
+                    }
+                }
+                koff[nrows] = keys.length;
+                voff[nrows] = vecs.length;
+                v3_put(&keys, rk.p, rk.n);
+                v3_put(&vecs, vv.p, vv.n);
+                nrows++;
+            }
+            if (!rc) {
+                st = e->next(hc, &hpos);
+            }
+        }
+        free(hv);
+        e->cursor_close(hc);
+        if (!rc && st != GS_OK) {
+            rc = storage(err, st, "reading the rows");
+        }
+        if (koff) {
+            koff[nrows] = keys.length;
+            voff[nrows] = vecs.length;
+        }
+        for (size_t r = 0; r < nrows && !rc; r++) {
+            Entries one;
+            GsqlKey k1;
+            k1.bytes = vecs.bytes + voff[r];
+            k1.length = voff[r + 1] - voff[r];
+            k1.capacity = k1.length;
+            /* only index ix is read by hnsw_admits and hnsw_put */
+            GsqlKey *slots = calloc(tb->nidx, sizeof *slots);
+            if (!slots) {
+                abort();
+            }
+            slots[ix] = k1;
+            one.k = slots;
+            one.unique_form = NULL;
+            rc = hnsw_admits(tb, ix, &one, err);
+            if (!rc) {
+                rc = hnsw_put(e, t, tb, ix, &one, (GsBytes){ keys.bytes + koff[r], koff[r + 1] - koff[r] }, err);
+            }
+            free(slots);
+        }
+        free(koff);
+        free(voff);
+        gsql_buf_free(&keys);
+        gsql_buf_free(&vecs);
+        if (!rc) {
+            rc = schema_write(e, t, tb, err);
+        }
+        if (!rc) {
+            return ok(err);
+        }
+        goto undo;
     }
     /* Build over the rows already there: every entry to the external sorter
      * first, the rows read whole before anything is written, then the
@@ -2245,6 +2470,10 @@ static void check_table(const GsEngine *e, GsTxn *t, const GsqlTable *tb, Checke
         abort();
     }
     uint64_t rows = 0;
+    uint64_t *vectors = calloc(tb->nidx ? tb->nidx : 1, sizeof *vectors);   /* rows each graph should hold */
+    if (!vectors) {
+        abort();
+    }
     int pos = 0;
     int st = e->first(c, &pos);
     while (st == GS_OK && pos) {
@@ -2283,6 +2512,29 @@ static void check_table(const GsEngine *e, GsTxn *t, const GsqlTable *tb, Checke
             } else {
                 for (size_t i = 0; i < tb->nidx; i++) {
                     GsBytes got;
+                    if (tb->idx[i].method == GSQL_INDEX_HNSW) {
+                        /* the row's vector, byte for byte, and its node */
+                        if (!en.k[i].length) {
+                            continue;
+                        }
+                        vectors[i]++;
+                        unsigned char kb[GS_MAX_KEY + 1];
+                        size_t kn = rk.n < GS_MAX_KEY ? rk.n : GS_MAX_KEY;
+                        kb[0] = 'v';
+                        memcpy(kb + 1, rk.p, kn);
+                        size_t dim = tb->cols[tb->idx[i].cols[0]].dimension;
+                        const unsigned char *payload = en.k[i].bytes + en.k[i].length - dim * 4;
+                        int gs = e->get(t, gsql_index_tree(tb, i), (GsBytes){ kb, kn + 1 }, &got);
+                        if (gs != GS_OK || got.n != dim * 4 || memcmp(got.p, payload, dim * 4) != 0) {
+                            problem(ck, "%s: index %s does not hold a row's vector as the row does", tb->name,
+                                    tb->idx[i].name);
+                        }
+                        kb[0] = 'n';
+                        if (e->get(t, gsql_index_tree(tb, i), (GsBytes){ kb, kn + 1 }, &got) != GS_OK) {
+                            problem(ck, "%s: index %s has no node for a row", tb->name, tb->idx[i].name);
+                        }
+                        continue;
+                    }
                     int gs = e->get(t, gsql_index_tree(tb, i), key_bytes(&en.k[i]), &got);
                     if (gs != GS_OK) {
                         problem(ck, "%s: index %s has no entry for a row", tb->name, tb->idx[i].name);
@@ -2310,6 +2562,34 @@ static void check_table(const GsEngine *e, GsTxn *t, const GsqlTable *tb, Checke
         uint64_t n = 0;
         int p2 = 0;
         int s2 = e->first(ic, &p2);
+        if (tb->idx[i].method == GSQL_INDEX_HNSW) {
+            /* every vector and node is a row's, and the count says how many */
+            uint64_t nv = 0, nn = 0;
+            while (s2 == GS_OK && p2) {
+                GsBytes ek, got;
+                e->key(ic, &ek);
+                if (ek.n > 1 && (ek.p[0] == 'v' || ek.p[0] == 'n')) {
+                    nv += ek.p[0] == 'v';
+                    nn += ek.p[0] == 'n';
+                    if (e->get(t, gsql_table_rows_tree(tb), (GsBytes){ ek.p + 1, ek.n - 1 }, &got) != GS_OK) {
+                        problem(ck, "%s: index %s holds a node for a row that is not there", tb->name,
+                                tb->idx[i].name);
+                    }
+                }
+                s2 = e->next(ic, &p2);
+            }
+            e->cursor_close(ic);
+            GsqlHnsw h;
+            gsql_index_hnsw_of(tb, i, &h);
+            uint64_t said = 0;
+            GsqlError er;
+            if (gsql_hnsw_count(e, t, &h, &said, &er) != GSQL_OK || said != nv || nv != nn || nv != vectors[i]) {
+                problem(ck, "%s: index %s holds %llu vectors and %llu nodes, counts %llu, for %llu rows with one",
+                        tb->name, tb->idx[i].name, (unsigned long long)nv, (unsigned long long)nn,
+                        (unsigned long long)said, (unsigned long long)vectors[i]);
+            }
+            continue;
+        }
         while (s2 == GS_OK && p2) {
             GsBytes ek, ev, rk;
             e->key(ic, &ek);
@@ -2332,6 +2612,7 @@ static void check_table(const GsEngine *e, GsTxn *t, const GsqlTable *tb, Checke
                     (unsigned long long)n, (unsigned long long)rows);
         }
     }
+    free(vectors);
 }
 
 int gsql_table_check(const GsEngine *e, GsTxn *t, void (*report)(void *ctx, const char *line), void *ctx,

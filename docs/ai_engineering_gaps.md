@@ -164,6 +164,17 @@ Steward grows, in order, each step usable:
 8. The reference application and the pgvector comparison (§3), finished last
    because it is the measurement of all of the above.
 
+**Added 2026-11-27 (Matthew):** after increment 2's HNSW index, before
+increment 3, an **analytics benchmark and design note**: numeric speed on large
+arrays is the gap against Python that matters most to him ("pandas has too big
+of a learning curve"). 1 to 10 million rows (CSV load, filter, a computed money
+column, group-by, join, sort, a window) as a gBASIC loop, through frame.bas,
+in G-SQL, and in pandas and polars for reference; then a note on where the time
+goes and a packed COLUMN value kind (the vector kind generalized: float64, exact
+int64, money, date, boolean, text; ordinary gBASIC expressions applying to whole
+columns). Whether it is built before 1.0 turns on one question the note must
+answer: whether it needs core grammar (an inline predicate or expression form).
+
 ## 5. Questions for Matthew
 
 1. **The vector value**: a new value kind made by builtins, with no syntax

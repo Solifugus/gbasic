@@ -1042,6 +1042,9 @@ static void choose(B *b, size_t k, int force_scan) {
         }
         for (size_t i = 0; i < gsql_table_nindexes(tb) && n < 65; i++) {
             const GsqlIndex *x = gsql_table_index(tb, i);
+            if (x->method == GSQL_INDEX_HNSW) {
+                continue;   /* no key to seek: choose_ann's */
+            }
             memset(&cands[n], 0, sizeof cands[n]);
             cands[n].access = ACC_INDEX;
             cands[n].index = i;
@@ -1097,6 +1100,73 @@ static void choose(B *b, size_t k, int force_scan) {
     sc->point = best.access != ACC_SCAN && best.unique && best.neq == best.ncols;
     sc->ordered = sc->point || best_order != 0;
     sc->backward = best_order < 0;
+}
+
+/* a value fixed for the statement: a literal or a parameter, or a CAST of one */
+static int ann_constant(const SqlExpr *e) {
+    while (e && e->kind == SX_CAST) {
+        e = e->a[0];
+    }
+    return e && (e->kind == SX_LIT || e->kind == SX_PARAM);
+}
+
+/* `ORDER BY <distance>(col, q) LIMIT k` over one table, answered by an HNSW
+ * index built for that distance (docs/gsql_vector_design.md §9): the rows
+ * come nearest first from the graph, the WHERE is applied as they come, and
+ * the sort above still orders them by the expression itself. Anything else
+ * -- another distance, DESC, no LIMIT, a join, grouping, DISTINCT, a window --
+ * is the exact search. */
+static void choose_ann(B *b, int force_scan) {
+    SqlPlan *p = b->p;
+    SqlStmt *s = p->s;
+    SqlScan *sc = &p->scans[0];
+    if (force_scan || s->kind != SQ_SELECT || p->nscans != 1 || sc->derived || sc->point || !s->norder || !s->limit ||
+        s->order[0].desc || p->grouped || p->nwins || s->distinct || !p->order || !p->order[0]) {
+        return;
+    }
+    const SqlExpr *e = p->order[0];
+    int metric = -1;
+    const SqlExpr *x = NULL, *y = NULL;
+    if (e->kind == SX_BIN && (e->op == SQL_OP_L2 || e->op == SQL_OP_COSINE || e->op == SQL_OP_IP)) {
+        metric = e->op == SQL_OP_L2 ? 0 : e->op == SQL_OP_COSINE ? 1 : 2;
+        x = e->a[0];
+        y = e->a[1];
+    } else if (e->kind == SX_CALL && e->na == 2) {
+        metric = strcmp(e->name, "l2_distance") == 0 ? 0 : strcmp(e->name, "cosine_distance") == 0 ? 1
+                 : strcmp(e->name, "negative_inner_product") == 0 ? 2 : -1;
+        x = e->a[0];
+        y = e->a[1];
+    }
+    if (metric < 0) {
+        return;
+    }
+    if (ann_constant(x) && y->kind == SX_COL) {
+        const SqlExpr *t = x;
+        x = y;
+        y = t;
+    }
+    if (x->kind != SX_COL || x->tab != 0 || x->nfields || !ann_constant(y)) {
+        return;
+    }
+    const GsqlTable *tb = sc->tb;
+    for (size_t i = 0; i < gsql_table_nindexes(tb); i++) {
+        const GsqlIndex *ix = gsql_table_index(tb, i);
+        if (ix->method == GSQL_INDEX_HNSW && ix->metric == metric && ix->cols[0] == x->col) {
+            sc->access = ACC_ANN;
+            sc->index = i;
+            sc->ann_q = (SqlExpr *)y;
+            sc->neq = 0;
+            sc->eq = NULL;
+            sc->lo = sc->hi = NULL;
+            sc->nkeycols = 0;
+            sc->keycols = NULL;
+            sc->keydesc = NULL;
+            memset(sc->consumed, 0, sizeof(int) * (sc->nconj ? sc->nconj : 1));
+            sc->ordered = 0;
+            sc->backward = 0;
+            return;
+        }
+    }
 }
 
 /* A join's inner scan that would be read whole, with a condition `col = e`
@@ -2142,6 +2212,7 @@ static int plan_select(B *b, const GsEngine *e, GsTxn *t, int force_scan) {
         choose_hash(sc, k, force_scan);
     }
     cb_rank = saved_rank;
+    choose_ann(b, force_scan);
     return 1;
 }
 
@@ -2901,6 +2972,16 @@ static void access_line(const SqlPlan *p, const SqlScan *sc, GsqlBuf *b) {
     const GsqlTable *tb = sc->tb;
     const char *tname = gsql_table_name(tb);
     const char *iname = sc->access == ACC_INDEX ? gsql_table_index(tb, sc->index)->name : NULL;
+    if (sc->access == ACC_ANN) {
+        put(b, "HNSW Search on ");
+        put(b, tname);
+        put(b, " using ");
+        put(b, gsql_table_index(tb, sc->index)->name);
+        put(b, " (nearest ");
+        sql_print_expr_scans(b, sc->ann_q, p->scans, p->nscans);
+        put(b, ")");
+        goto hashed;
+    }
     if (sc->access == ACC_SCAN) {
         put(b, "Scan on ");
     } else if (sc->point) {

@@ -384,6 +384,11 @@ typedef struct SqlStmt {
     char *constraint;
     int unique;
     SqlNameList index_cols;
+    /* CREATE INDEX ... USING hnsw (docs/gsql_vector_design.md §9): the kind
+       (GSQL_INDEX_*), its metric and sizes */
+    int index_method;
+    int index_metric;
+    unsigned index_m, index_efc;
     /* parameters, in order of first appearance */
     char **param_names;      /* :name parameters */
     size_t nparam_names;
@@ -430,7 +435,8 @@ typedef enum {
     ACC_SCAN,        /* the rows tree, whole */
     ACC_PK,          /* a range of the rows tree: the primary key's columns */
     ACC_INDEX,       /* a range of one index, then each row by its key */
-    ACC_DERIVED      /* a derived table or WITH query: its plan's rows, materialized */
+    ACC_DERIVED,     /* a derived table or WITH query: its plan's rows, materialized */
+    ACC_ANN          /* an HNSW index's search (docs/gsql_vector_design.md §9): rows nearest ann_q first */
 } SqlAccess;
 
 /* One table of a statement and how it is read: its access path, and the
@@ -442,7 +448,8 @@ typedef struct SqlScan {
     const char *qualifier;   /* the alias, or the table's name */
     SqlJoin join;
     SqlAccess access;
-    size_t index;            /* ACC_INDEX */
+    size_t index;            /* ACC_INDEX, ACC_ANN */
+    SqlExpr *ann_q;          /* ACC_ANN: the vector searched from, a constant or parameter */
     size_t nkeycols;         /* the key's columns: the PK's or the index's */
     const unsigned *keycols;
     const int *keydesc;      /* NULL: all ascending */

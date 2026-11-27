@@ -115,12 +115,19 @@ typedef struct {
     const unsigned *key;       /* column positions */
 } GsqlTableDecl;
 
+/* An index's kind: an ordered key (every index before 2026-11-27), or an HNSW
+ * graph over one VECTOR(N) column (docs/gsql_vector_design.md §9). */
+enum { GSQL_INDEX_BTREE = 0, GSQL_INDEX_HNSW };
+
 typedef struct {
     const char *name;
     size_t ncols;
     const unsigned *cols;      /* column positions */
     const int *desc;           /* one per column, NULL for all ascending */
     int unique;
+    int method;                /* GSQL_INDEX_*; HNSW: one column, the metric and its sizes below */
+    int metric;                /* GbVecMetric: 0 l2, 1 cosine, 2 ip */
+    unsigned m, ef_construction;
 } GsqlIndexDecl;
 
 /* An index as the table knows it. */
@@ -131,6 +138,9 @@ typedef struct {
     const unsigned *cols;
     const int *desc;
     int unique;
+    int method;
+    int metric;
+    unsigned m, ef_construction;
 } GsqlIndex;
 
 typedef struct GsqlTable GsqlTable;

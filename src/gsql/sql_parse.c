@@ -8,6 +8,7 @@
 
 #include "sql.h"
 #include "v3.h"
+#include "hnsw.h"
 #include "gsql_wire.h"
 #include "serialize_tags.h"
 #include "gb_decimal.h"
@@ -711,6 +712,7 @@ static int compound(P *p, SqlStmt *root);
 static int name_list(P *p, SqlNameList *l, int allow_order);
 static SqlStmt *subquery(P *p);
 static int at_word(P *p, const char *w);
+static int index_using(P *p, SqlStmt *s);
 static int accept_word(P *p, const char *w);
 static SqlStmt *query_stmt(P *p);
 static int alias_follows(P *p);
@@ -2813,12 +2815,103 @@ static int create_stmt(P *p, SqlStmt *s) {
         if (!s->table) {
             return 0;
         }
+        if (accept_kw(p, "using")) {
+            return index_using(p, s);
+        }
         return name_list(p, &s->index_cols, 1);
     }
     if (unique) {
         return expected(p, "INDEX after CREATE UNIQUE");
     }
     return expected(p, "TABLE, INDEX or VIEW after CREATE");
+}
+
+/* USING hnsw (col [opclass]) [WITH (m = n, ef_construction = n)], pgvector's
+ * spelling (docs/gsql_vector_design.md §9); USING btree is the index there was */
+static int index_using(P *p, SqlStmt *s) {
+    uint32_t at = p->tok.pos;
+    if (accept_kw(p, "btree")) {
+        return name_list(p, &s->index_cols, 1);
+    }
+    if (!accept_kw(p, "hnsw")) {
+        if (p->tok.kind == T_IDENT) {
+            return fail_at(p, at, GSQL_UNSUPPORTED, "`%s` is not an index method of G-SQL: the methods are btree "
+                           "(the default) and hnsw, for a vector column%s", p->tok.text,
+                           strcmp(p->tok.text, "ivfflat") == 0 ? "; hnsw needs no training step" : "");
+        }
+        return expected(p, "an index method, btree or hnsw, after USING");
+    }
+    s->index_method = GSQL_INDEX_HNSW;
+    s->index_metric = 0;
+    s->index_m = GSQL_HNSW_M_DEFAULT;
+    s->index_efc = GSQL_HNSW_EFC_DEFAULT;
+    s->index_cols.pos = p->tok.pos;
+    if (!expect_sym(p, "(")) {
+        return 0;
+    }
+    char *col = name(p, "the vector column");
+    if (!col) {
+        return 0;
+    }
+    if (p->tok.kind == T_IDENT) {
+        uint32_t opos = p->tok.pos;
+        const char *op = p->tok.text;
+        if (strcmp(op, "vector_l2_ops") == 0) {
+            s->index_metric = 0;
+        } else if (strcmp(op, "vector_cosine_ops") == 0) {
+            s->index_metric = 1;
+        } else if (strcmp(op, "vector_ip_ops") == 0) {
+            s->index_metric = 2;
+        } else {
+            return fail_at(p, opos, GSQL_UNSUPPORTED, "`%s` is not an operator class of G-SQL's hnsw: write "
+                           "vector_l2_ops (<->), vector_cosine_ops (<=>) or vector_ip_ops (<#>)", op);
+        }
+        next(p);
+    }
+    if (at_sym(p, ",")) {
+        return fail_at(p, p->tok.pos, GSQL_UNSUPPORTED, "an hnsw index is over one vector column");
+    }
+    if (!expect_sym(p, ")")) {
+        return 0;
+    }
+    s->index_cols.cols = sql_alloc(p->arena, sizeof(char *));
+    s->index_cols.desc = sql_alloc(p->arena, sizeof(int));
+    s->index_cols.cols[0] = col;
+    s->index_cols.desc[0] = 0;
+    s->index_cols.n = 1;
+    if (!accept_kw(p, "with")) {
+        return 1;
+    }
+    if (!expect_sym(p, "(")) {
+        return 0;
+    }
+    int seen_m = 0, seen_efc = 0;
+    do {
+        uint32_t wpos = p->tok.pos;
+        if (p->tok.kind != T_IDENT || (strcmp(p->tok.text, "m") != 0 && strcmp(p->tok.text, "ef_construction") != 0)) {
+            return fail_at(p, wpos, GSQL_UNSUPPORTED, "an hnsw index takes m and ef_construction, not `%s`",
+                           p->tok.kind == T_IDENT ? p->tok.text : "that");
+        }
+        int is_m = strcmp(p->tok.text, "m") == 0;
+        if (is_m ? seen_m++ : seen_efc++) {
+            return fail_at(p, wpos, GSQL_SYNTAX, "%s is given twice", is_m ? "m" : "ef_construction");
+        }
+        next(p);
+        if (!expect_sym(p, "=")) {
+            return 0;
+        }
+        if (p->tok.kind != T_NUMBER || strspn(p->tok.text, "0123456789") != strlen(p->tok.text)) {
+            return expected(p, "a whole number");
+        }
+        unsigned long v = strlen(p->tok.text) > 6 ? 9999999 : strtoul(p->tok.text, NULL, 10);
+        if (is_m) {
+            s->index_m = (unsigned)v;
+        } else {
+            s->index_efc = (unsigned)v;
+        }
+        next(p);
+    } while (accept_sym(p, ","));
+    return expect_sym(p, ")");
 }
 
 static int drop_stmt(P *p, SqlStmt *s) {
@@ -4229,6 +4322,17 @@ void sql_print_stmt(GsqlBuf *o, const SqlStmt *s) {
         print_name(o, s->index);
         puts_(o, " ON ");
         print_name(o, s->table);
+        if (s->index_method == GSQL_INDEX_HNSW) {
+            static const char *const ops[] = { "vector_l2_ops", "vector_cosine_ops", "vector_ip_ops" };
+            char b[96];
+            puts_(o, " USING hnsw (");
+            print_name(o, s->index_cols.cols[0]);
+            snprintf(b, sizeof b, " %s) WITH (m = %u, ef_construction = %u)",
+                     ops[s->index_metric >= 0 && s->index_metric <= 2 ? s->index_metric : 0], s->index_m,
+                     s->index_efc);
+            puts_(o, b);
+            return;
+        }
         v3_put(o, " ", 1);
         print_names(o, &s->index_cols, 1);
         return;

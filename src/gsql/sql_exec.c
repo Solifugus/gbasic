@@ -14,6 +14,8 @@
 #include "serialize_tags.h"
 #include "platform.h"
 #include "xsort.h"
+#include "hnsw.h"
+#include "gb_vector.h"
 #include "gb_number_text.h"
 
 #include <ctype.h>
@@ -27,6 +29,7 @@ struct GsqlSql {
     GsqlHost h;
     int force_scan;
     unsigned long seeks, scans;
+    unsigned long ann_widened;   /* HNSW searches whose beam was widened for a filter */
     /* the statement svc_writes parsed, kept for the svc_run that follows it,
        so one request is parsed once: it was parsed twice, a third of the
        owner's time for a one-row INSERT (2026-11-06). Taken by svc_run only
@@ -1538,6 +1541,18 @@ typedef struct {
     int hashing;        /* a hash scan's probe: the chain from hcur, or every row */
     int hall;
     size_t hcur;
+    /* an HNSW search (ACC_ANN): the hits of a beam of `ef`, read from hpos;
+       the rows yielded so far, and how many passed the WHERE, against the
+       `want` LIMIT and OFFSET ask for; `every` once the beam has been widened
+       to every node (docs/gsql_vector_design.md §9) */
+    int ann, every;
+    float *annq;
+    GsqlHnsw hnsw;
+    GsqlHnswHit *hits;
+    size_t nhits, hpos, ef;
+    uint64_t want, kept, nodes;
+    unsigned char **seen;
+    size_t *seenn, nseen, seencap;
 } Iter;
 
 static int derived_rows(X *x, size_t k);
@@ -1598,6 +1613,154 @@ static int bound_key(Iter *it, SqlExpr *e, size_t j, GsqlKey *key) {
     return fits;
 }
 
+/* how wide a search's first beam is, at least LIMIT + OFFSET */
+#define ANN_EF_DEFAULT 40
+
+/* the vector an ACC_ANN scan searches from, and its first beam: 1 searching,
+   0 the exact scan instead, -1 failed */
+static int ann_open(Iter *it) {
+    X *x = it->x;
+    const SqlScan *p = it->sc;
+    const SqlStmt *s = x->p->s;
+    uint64_t limit = 0, offset = 0;
+    if (count_value(x, s->limit, "LIMIT", &limit) != GSQL_OK ||
+        (s->offset && count_value(x, s->offset, "OFFSET", &offset) != GSQL_OK)) {
+        return -1;
+    }
+    if (limit == UINT64_MAX) {
+        return 0;
+    }
+    gsql_index_hnsw_of(p->tb, p->index, &it->hnsw);
+    GsqlBuf b = {0};
+    if (eval_into(x, p->ann_q, &b) != GSQL_OK) {
+        gsql_buf_free(&b);
+        return -1;
+    }
+    if (b.length && (b.bytes[0] == SER_STRING || b.bytes[0] == SER_ARRAY)) {
+        /* read as the operators read it; one that does not read is the exact
+           scan's to refuse, in its own words */
+        GsqlError quiet;
+        memset(&quiet, 0, sizeof quiet);
+        GsqlHv *v = x->h->load(x->h->ctx, b.bytes, b.length, &quiet);
+        GsqlHv *c = v ? x->h->cast(x->h->ctx, v, GSQL_COL_VECTOR, "", &quiet) : NULL;
+        rel(x, v);
+        b.length = 0;
+        if (!c || x->h->store(x->h->ctx, c, &b, &quiet) != GSQL_OK) {
+            b.length = 0;
+        }
+        rel(x, c);
+    }
+    float *q = NULL;
+    int ok = b.length && gsql_hnsw_floats(b.bytes, b.length, it->hnsw.dim, &q, NULL);
+    gsql_buf_free(&b);
+    if (!ok) {
+        return 0;
+    }
+    if (it->hnsw.metric == GB_VEC_COSINE && !(gb_vec_norm(q, it->hnsw.dim) > 0)) {
+        free(q);
+        return 0;
+    }
+    it->ann = 1;
+    it->annq = q;
+    it->want = limit + offset < limit ? UINT64_MAX : limit + offset;
+    if (gsql_hnsw_count(x->e, x->t, &it->hnsw, &it->nodes, x->err) != GSQL_OK) {
+        return -1;
+    }
+    it->ef = it->want > ANN_EF_DEFAULT ? (size_t)(it->want < it->nodes ? it->want : it->nodes) : ANN_EF_DEFAULT;
+    x->q->seeks++;
+    if (gsql_hnsw_search(x->e, x->t, &it->hnsw, q, it->ef, &it->hits, &it->nhits, x->err) != GSQL_OK) {
+        return -1;
+    }
+    return 1;
+}
+
+static int ann_seen(Iter *it, const unsigned char *k, size_t n) {
+    for (size_t i = 0; i < it->nseen; i++) {
+        if (it->seenn[i] == n && memcmp(it->seen[i], k, n) == 0) {
+            return 1;
+        }
+    }
+    if (it->nseen == it->seencap) {
+        it->seencap = it->seencap ? it->seencap * 2 : 64;
+        it->seen = realloc(it->seen, it->seencap * sizeof *it->seen);
+        it->seenn = realloc(it->seenn, it->seencap * sizeof *it->seenn);
+        if (!it->seen || !it->seenn) {
+            abort();
+        }
+    }
+    it->seen[it->nseen] = malloc(n ? n : 1);
+    if (!it->seen[it->nseen]) {
+        abort();
+    }
+    memcpy(it->seen[it->nseen], k, n);
+    it->seenn[it->nseen++] = n;
+    return 0;
+}
+
+static int check(X *x, const SqlScan *sc, size_t from, size_t to);
+static void row_clear_scan(X *x, size_t k);
+
+/* the next row of an HNSW search, nearest first: 1, 0 done, -1 failed. The
+   WHERE is checked here as well as by the caller, to count the rows that
+   pass: fewer than asked widens the beam, to every node at the last. */
+static int ann_next(Iter *it) {
+    X *x = it->x;
+    XScan *xs = &x->sx[it->k];
+    for (;;) {
+        if (it->kept >= it->want) {
+            return 0;
+        }
+        if (it->hpos < it->nhits) {
+            GsqlHnswHit *h = &it->hits[it->hpos++];
+            if (ann_seen(it, h->key, h->n)) {
+                continue;
+            }
+            xs->rowkey.length = 0;
+            v3_put(&xs->rowkey, h->key, h->n);
+            GsBytes rk = { xs->rowkey.bytes, xs->rowkey.length };
+            xs->row.length = 0;
+            int rc = gsql_row_get(x->e, x->t, it->sc->tb, rk, &xs->row, x->err);
+            if (rc != GSQL_OK) {
+                if (x->err->code == GSQL_NOT_FOUND) {
+                    x->err->code = GSQL_CORRUPT;
+                }
+                return -1;
+            }
+            xs->have_row = 1;
+            int pass = check(x, it->sc, 0, it->sc->nconj);
+            if (pass < 0) {
+                return -1;
+            }
+            it->kept += pass == 1;
+            return 1;
+        }
+        if (it->every || it->ef >= it->nodes) {
+            if (it->every) {
+                return 0;
+            }
+            /* the graph's beam has held every node it reaches: every node,
+               so a node the graph cannot reach is not left out */
+            gsql_hnsw_hits_free(it->hits, it->nhits);
+            it->hits = NULL;
+            it->nhits = it->hpos = 0;
+            it->every = 1;
+            if (gsql_hnsw_every(x->e, x->t, &it->hnsw, it->annq, &it->hits, &it->nhits, x->err) != GSQL_OK) {
+                return -1;
+            }
+            continue;
+        }
+        it->ef = it->ef * 2 < it->nodes ? it->ef * 2 : (size_t)it->nodes;
+        gsql_hnsw_hits_free(it->hits, it->nhits);
+        it->hits = NULL;
+        it->nhits = it->hpos = 0;
+        x->q->ann_widened++;
+        if (gsql_hnsw_search(x->e, x->t, &it->hnsw, it->annq, it->ef, &it->hits, &it->nhits, x->err) != GSQL_OK) {
+            return -1;
+        }
+        row_clear_scan(x, it->k);
+    }
+}
+
 static int iter_open(Iter *it, X *x, size_t k) {
     memset(it, 0, sizeof *it);
     it->x = x;
@@ -1613,6 +1776,30 @@ static int iter_open(Iter *it, X *x, size_t k) {
     if (p->access == ACC_DERIVED) {
         it->derived = 1;
         return x->sx[k].dready ? GSQL_OK : derived_rows(x, k);
+    }
+    if (p->access == ACC_ANN) {
+        int r = ann_open(it);
+        if (r < 0) {
+            return x->err->code;
+        }
+        if (r > 0) {
+            return GSQL_OK;
+        }
+        /* not a search the graph can answer as the exact one would (a NULL
+           or a vector of another dimension, a zero one under cosine, no
+           LIMIT): the exact scan, whose answer or refusal it is */
+        it->backward = 0;
+        it->index = 0;
+        it->scan = 1;
+        x->q->scans++;
+        it->tree = gsql_table_rows_tree(p->tb);
+        int rc = x->e->cursor_open(x->t, it->tree, &it->cur);
+        if (rc) {
+            it->cur = NULL;
+            return xfail(x->err, GSQL_STORAGE, 0, "a cursor could not be opened: the engine answered %s",
+                         gs_status_name(rc));
+        }
+        return GSQL_OK;
     }
     it->backward = p->backward;
     it->index = p->access == ACC_INDEX;
@@ -1677,6 +1864,22 @@ static int iter_open(Iter *it, X *x, size_t k) {
 }
 
 static void iter_close(Iter *it) {
+    if (it->ann) {
+        gsql_hnsw_hits_free(it->hits, it->nhits);
+        it->hits = NULL;
+        it->nhits = 0;
+        free(it->annq);
+        it->annq = NULL;
+        for (size_t i = 0; i < it->nseen; i++) {
+            free(it->seen[i]);
+        }
+        free(it->seen);
+        free(it->seenn);
+        it->seen = NULL;
+        it->seenn = NULL;
+        it->nseen = 0;
+        it->ann = 0;
+    }
     if (it->cur) {
         it->x->e->cursor_close(it->cur);
         it->cur = NULL;
@@ -1820,6 +2023,13 @@ static int next_row(Iter *it) {
         return 1;
     }
     const GsEngine *e = x->e;
+    if (it->ann) {
+        int r = ann_next(it);
+        if (r <= 0) {
+            it->done = 1;
+        }
+        return r;
+    }
     if (it->point) {
         it->done = 1;
         xs->rowkey.length = 0;
@@ -7468,7 +7678,7 @@ static int create_indexes(X *x, const SqlStmt *s, int *made_any) {
             pos[k] = (unsigned)c;
         }
         snprintf(name + (at < (int)sizeof name - 4 ? at : (int)sizeof name - 5), 5, "_key");
-        GsqlIndexDecl d = { name, n, pos, NULL, 1 };
+        GsqlIndexDecl d = { name, n, pos, NULL, 1, GSQL_INDEX_BTREE, 0, 0, 0 };
         rc = gsql_index_create(x->e, x->t, tb, &d, x->err);
         if (rc == GSQL_OK) {
             *made_any = 1;
@@ -8304,7 +8514,8 @@ static int run_schema_change(X *x, GsqlResult *out) {
             }
             pos[k] = (unsigned)c;
         }
-        GsqlIndexDecl d = { s->index, s->index_cols.n, pos, s->index_cols.desc, s->unique };
+        GsqlIndexDecl d = { s->index, s->index_cols.n, pos, s->index_cols.desc, s->unique, s->index_method,
+                            s->index_metric, s->index_m, s->index_efc };
         rc = gsql_index_create(x->e, x->t, tb, &d, err);
         gsql_table_close(tb);
         return rc;
@@ -9699,6 +9910,17 @@ static int dump_table_schema(X *x, Dump *d, GsqlTable *tb, GsqlError *err) {
         sql_print_name(&d->line, ix->name);
         dput(d, " ON ");
         sql_print_name(&d->line, tn);
+        if (ix->method == GSQL_INDEX_HNSW) {
+            /* restored before the rows, so the graph is built as they go in */
+            static const char *const ops[] = { "vector_l2_ops", "vector_cosine_ops", "vector_ip_ops" };
+            char b[128];
+            dput(d, " USING hnsw (");
+            sql_print_name(&d->line, gsql_table_col(tb, ix->cols[0])->name);
+            snprintf(b, sizeof b, " %s) WITH (m = %u, ef_construction = %u);\n",
+                     ops[ix->metric >= 0 && ix->metric <= 2 ? ix->metric : 0], ix->m, ix->ef_construction);
+            dput(d, b);
+            continue;
+        }
         dput(d, " (");
         for (size_t k = 0; k < ix->ncols; k++) {
             if (k) {

@@ -461,7 +461,7 @@ GSQL_OBJS :=
 CFLAGS += -DGBASIC_GSQL=0
 else
 GSQL_OBJS := src/gsql/lsm.o src/gsql/lease.o src/gsql/xsort.o src/gsql/store_common.o src/gsql/store_util.o src/gsql/io.o src/gsql/key.o \
-             src/gsql/v3.o src/gsql/table.o src/gsql/wire.o src/gsql/owner.o src/gsql/client.o \
+             src/gsql/v3.o src/gsql/table.o src/gsql/hnsw.o src/gsql/wire.o src/gsql/owner.o src/gsql/client.o \
              src/gsql/sql_parse.o src/gsql/sql_plan.o src/gsql/sql_exec.o src/gsql/sql_path.o
 CFLAGS += -DGBASIC_GSQL=1
 endif
@@ -661,7 +661,7 @@ src/parser.tab.o: src/parser.tab.c src/parser.tab.h include/ast.h include/gb_dec
 src/ast.o: src/ast.c include/ast.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
-src/gsql/%.o: src/gsql/%.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gb_decimal.h include/serialize_tags.h include/platform.h .buildswitch-stamp
+src/gsql/%.o: src/gsql/%.c $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gb_decimal.h include/gb_vector.h include/serialize_tags.h include/platform.h .buildswitch-stamp
 	$(CC) $(CFLAGS) -c $< -o $@
 
 src/eval.o: src/eval.c src/modules/vector.c src/modules/crypto_ssh.c src/vendor/bcrypt_pbkdf.c src/modules/xml.c src/modules/smtp.c src/modules/ldap.c src/modules/xlsx.c src/modules/ui.c src/modules/ui_qt.c src/modules/ui_tui.c src/modules/ui_tui_parts.c src/modules/ui_tui_editor.c src/modules/gsql.c src/modules/csv.c src/modules/net.c src/modules/zip.c src/modules/term.c include/term.h include/ksyntax.h include/gb_csv.h include/gb_decimal.h include/gb_vector.h include/gb_number_text.h include/gsql_sql.h $(wildcard src/gsql/*.h) $(wildcard include/gsql_*.h) include/gsql_owner.h include/gsql_table.h include/eval.h include/gb_jit.h include/ast.h include/builtins.h include/actor.h include/diagnostics.h include/lexer.h include/platform.h include/posix_compat.h include/qt_backend.h include/serialize_tags.h include/ui_backend.h include/window_check.h src/currency_table.h src/call_names.h third_party/yescrypt/yescrypt.h .stdlibdir-stamp .buildswitch-stamp

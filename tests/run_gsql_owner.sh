@@ -53,7 +53,7 @@ if ! command -v "$CC" >/dev/null 2>&1; then
 fi
 FLAGS="-std=c11 -Wall -Wextra -Wpedantic -Werror -Iinclude -Isrc/gsql"
 ENGINE="src/gsql/lsm.c src/gsql/lease.c src/gsql/store_common.c src/gsql/store_util.c src/gsql/io.c src/gsql/io_sim.c"
-LAYER="src/gsql/owner.c src/gsql/client.c src/gsql/wire.c src/gsql/v3.c src/gsql/table.c src/gsql/xsort.c src/gsql/key.c src/platform_posix.c"
+LAYER="src/gsql/owner.c src/gsql/client.c src/gsql/wire.c src/gsql/v3.c src/gsql/table.c src/gsql/hnsw.c src/gsql/xsort.c src/gsql/key.c src/platform_posix.c"
 SAN=""
 printf 'int main(void){return 0;}\n' > "$work/probe.c"
 # A SANITIZER MUST RUN, NOT ONLY BUILD: on riscv64 GCC 13's AddressSanitizer
