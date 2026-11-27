@@ -120,6 +120,7 @@ spawn_bare_name|resolves a bare function **name**
 nul_string_literal|is refused in a string literal
 deep_value_teardown|segfaults when it is RELEASED
 decimal_key_collision|share an index key
+param_named_like_function|loses a call of its name to a user function
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -303,6 +304,18 @@ probe_decimal_key_collision() {
 
 
 
+
+probe_param_named_like_function() {
+    # Red when the parameter wins, or when the call warns (either fix).
+    printf 'function f()\n    return "global f"\nend function\nfunction a()\n    return "a"\nend function\nfunction call_it(f)\n    return f()\nend function\nprint call_it(a)\n' > "$WORK/pf.bas"
+    pf_out=$(timeout 30 ./gbasic "$WORK/pf.bas" 2>&1)
+    if [ "$pf_out" = "global f" ]; then
+        ok "a parameter holding a function value still loses a call of its name to a user function, silently"
+    else
+        printf '     %s\n' "$pf_out"
+        fixed "the parameter's call now reaches the parameter, or warns (or the probe no longer runs)"
+    fi
+}
 
 probe_atomic_replace_inode() {
     mkdir -p "$WORK/ar"

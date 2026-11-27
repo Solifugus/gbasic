@@ -204,7 +204,7 @@ A write assigns a **record** to a path: the record's fields are the columns writ
 
 ## 5. Names
 
-**After the root, a dotted name is a table, always and only.** From the root it is any table; after that, a table joined to the one before it by exactly one foreign key. Columns appear only inside brackets (`.city`) and braces. **A method is anything followed by `(`.** The root keeps its one attribute, `max_recursion`; a table of that name is reached by `shop.table("max_recursion")`.
+**After the root, a dotted name is a table, always and only.** From the root it is any table; after that, a table joined to the one before it by exactly one foreign key. Columns appear only inside brackets (`.city`) and braces. **A method is anything followed by `(`.** The root keeps its attributes, `max_recursion` and `ef_search`; a table of either name is reached by `shop["max_recursion"]` (§8.5).
 
 **When a step cannot be taken, the refusal says what to write.** Two tables joined twice, and a table joined to itself, are where a step by table name cannot tell which key is meant (§10 A6). The program filters by the key's column instead, which is what the step would have done:
 
@@ -237,20 +237,16 @@ The parent's lookup takes two requests where a step takes one. A program that ne
 
 **Every refusal names what was there**, with a nearest match, the shape the `ui` and `load` refusals use: ``customer has no column `emial` -- did you mean `email`?``, ``shop has no table `custmer` -- did you mean `customer`?``, ``customer and line are not joined by a foreign key``. A step across a foreign key that is `NOT ENFORCED` works, since the relationship is declared even if it is not checked; one that is **unbound** (its table dropped, `gsql_fkey_design.md` §3) is refused, saying so.
 
-**A table's name chosen at run time:** `shop.table(name)` starts a path at the table whose name `name` holds, for a program that does not know its tables when it is written (§10 A8):
+**A table's name chosen at run time:** `shop["name"]` starts a path at the table a text names, as `shop.name` would, for a program that does not know its tables when it is written (§10 A8; built 2026-11-27 as brackets, which replaced the `shop.table(name)` first proposed here, §8.5):
 
 ```basic
-' an admin screen: list any table the user picks
-for each name in shop.tables()
-    print name
-next
 chosen = input("table? ")
-for each r in shop.table(chosen)
+for each r in shop[chosen]
     print r
 next
 ```
 
-`shop.tables()` is the catalog's list of table names. Everything after `shop.table(name)` is as above, so `shop.table(chosen)[.active = true]{ id }` works.
+Everything after `shop[name]` is as above, so `shop[chosen][.active = true]{ id }` works. `shop.tables()`, the catalog's list of names, is not built.
 
 ## 6. The grammar, as it stands today (measured 2026-11-16)
 
@@ -334,6 +330,16 @@ Each change below is held to **zero new conflicts** and to every existing test o
 - **One or many** with braces before the last table: one only when every table from the first braced one to the last is one, since a join from a key can still reach many (`shop.purchases[11]{ item }.customer{ name }` is one; `shop.customer[3]{ name }.purchases{ item }` is many). The client and the owner work it out alike, and the STALE check covers it.
 - **Refusals:** two tables giving one name (*`customer` and `purchases` both give `id` -- leave one out*), a name twice, a column not there (with the nearest), braces twice on one table, braces on something not a path, and any write, insert or delete through braces.
 - **Tests:** `tests/gsql/paths_braces_test.bas` (32 checks by hand, the forms `{` already had among them), and the stepdiff tier's paths now carry braces about four times in ten, against SQL the generator writes as a comma join with every column qualified, a different form from the compiler's `JOIN ... ON` (13 to 27 joins and 19 to 27 last-table braces a seed). Five perturbations, each red: the `ON` columns swapped, no join, the order by the last table only, the client's one-or-many ignoring braces, and the lexer's compound-assignment test dropped.
+
+### 8.5 As built: a table named by a value (2026-11-27)
+
+Matthew: "This also allows code to specify tables/views dynamically."
+
+- **`db["customer"]` is `db.customer`**, the same path and the same SQL, for a text: literal, computed, or held in a variable or a parameter. A name a connection's attribute takes (`db["ef_search"]` is the table, `db.ef_search` the attribute), a reserved word (`db["select"]`) and one that is no identifier (`db["order lines"]`) are reached too. The name goes to the owner as a value and is looked up in the catalog, folded to lower case as an unquoted SQL name is, so a computed name cannot become SQL.
+- **Refused, at the bracket:** a number (tables have no order; AmorphDB's numeric index has nothing to count here), anything but a text, an empty text, a text holding a NUL (never cut at it), two names, and a filter, `db[.name = "x"]`, which is kept free for a filter over the catalog. On a table, brackets are a key or filters, as before.
+- **A defect found on the way:** a brace chain whose first step was a filter on the connection, `db[.cond]{ a }`, was handed to the PATH's bracket, which read the connection as a path statement: a segfault. Both the index expression and the brace chain now give a connection to one function.
+- **Views are not reached**, by this or by a dot: a path opens tables only.
+- **Tests:** `tests/gsql/paths_name_test.bas` (41 checks by hand, writes read back by SQL; run_gsql_paths' names tier, and its valgrind tier). Four perturbations, each red: the brace chain back as it was (a segfault), the NUL check dropped, the index expression's branch dropped, two names accepted.
 
 ## 9. Not in this note
 

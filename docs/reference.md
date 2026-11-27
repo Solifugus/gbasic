@@ -3394,6 +3394,7 @@ print (shop.invoice[11].customer).name       ' a child's parent: one row
 | written | means |
 |---|---|
 | `shop.customer` | every row, a **result** |
+| `shop["customer"]`, `shop[name]` | the same path, the table a text names: computed at run time, or one a dot cannot reach (`shop["ef_search"]` is the table, `shop.ef_search` the attribute; `shop["order lines"]`). A number, a filter, two names and any value but a non-empty text are refused |
 | `shop.customer[3]`, `shop.line[17, 2]` | the row with that primary key, values in the key's order: a record, or `unknown`. Read where the path ends |
 | `shop.customer[.city = x, .active]` | the rows matching, a result; `,` is `and` |
 | `path.query()` | the rows, an array of records |
