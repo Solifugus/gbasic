@@ -3233,7 +3233,15 @@ where acl = ? order by e <=> ? limit 10`, exact, each distance the same double
 where pgvector answers NaN. A vector is never keyed (no primary key, index,
 `GROUP BY` or `DISTINCT`, and `ORDER BY e` itself is refused);
 `CAST(v AS TEXT)` is pgvector's text, read back exactly by `CAST(... AS
-VECTOR)` (`docs/gsql_vector_design.md`). If the owner exits, the
+VECTOR)`. **An HNSW index** *(after 0.12.0)*, in pgvector's spelling, `create
+index chunk_e on chunk using hnsw (e vector_cosine_ops) with (m = 16,
+ef_construction = 64)` (`vector_l2_ops`, the default, and `vector_ip_ops` too),
+answers `order by e <=> ? limit k` from a graph stored with the rows, written in
+their transaction; EXPLAIN says `HNSW Search`. Its candidates are approximate
+and their order exact; a WHERE that keeps few rows widens the search until it
+has them, and NULL vectors follow last, so it never returns fewer rows than the
+exact search would. `db.ef_search = 100` (1 to 1000, default 40) widens the first
+beam; a cosine index refuses a zero vector (`docs/gsql_vector_design.md` §9). If the owner exits, the
 request in flight fails with `LOST` and nothing is retried; the next call
 starts a new owner. An owner whose database another machine has taken writes
 nothing more and exits, so its clients see `LOST`, and their next call is

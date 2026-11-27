@@ -184,8 +184,8 @@ printf 'TIER hnsw: an HNSW graph against a model, the invariant check after ever
     "${SAN:+, under ASan and UBSan}"
 # docs/gsql_vector_design.md §9: inserts (some with no vector), vector updates,
 # primary-key moves and deletes over two graphs (l2, and cosine built over rows
-# already there); `every` is the model's vectors nearest first; recall@10 at ef
-# 64 at least 0.9; the same seed into a second database answers the same
+# already there), then three quarters deleted; `every` is the model's vectors
+# nearest first; recall@10 at ef 64 at least 0.85; the same seed into a second database answers the same
 for seed in 1 2; do
     out=$(bounded 600 "$work/table_test" hnsw "$seed" 2>&1)
     last=$(printf '%s\n' "$out" | tail -1)

@@ -1364,7 +1364,8 @@ static int layout_run(const char *dir) {
  * commit (every row's vector in each graph byte for byte, nothing for a row
  * that is not there, the count right). Then, against the model: `every` must
  * be the whole of the model's vectors, nearest first with ties by row key,
- * and a search's recall@10 at ef 64 must be at least 0.9 over 60 queries. The
+ * and a search's recall@10 at ef 64 must be at least 0.85 over 60 queries,
+ * after three quarters of the rows are deleted. The
  * same seed run twice into two databases must answer every query the same. */
 
 #define HN_DIM 8
@@ -1630,8 +1631,12 @@ static int hnsw_workload(const char *path, uint64_t seed, char **out, size_t *ou
     checks++;
     double recall = asked ? (double)hit / (double)asked : 0;
     printf("recall@10 at ef 64: %.3f over %ld answers\n", recall, asked);
-    if (recall < 0.9) {
-        mismatch("recall@10 %.3f, under 0.9", recall);
+    /* measured after three quarters of the rows were deleted, at this test's
+       small m (6 and 8): 0.90 to 1.00 over seeds 1-8 with the delete's repair
+       searching around the deleted vector, 0.62 to 0.96 with only its own
+       neighbours repaired, 0.12 with no repair */
+    if (recall < 0.85) {
+        mismatch("recall@10 %.3f, under 0.85", recall);
     }
     gsql_table_close(tb);
     uint64_t cid;

@@ -1,9 +1,9 @@
 # G-SQL: a `VECTOR` column, pgvector's distances, and search by distance
 
 **Status:** increment 2 of the AI-engineering work (docs/ai_engineering_gaps.md
-§2.2, §4), 2026-11-27. Part A, this page's §1-§8, is built: the column, the three
-operators, the functions, and exact search (`tests/run_gsql_vector.sh`). Part B,
-the approximate index (§9), is designed here and built next. Matthew's ruling on
+§2.2, §4), 2026-11-27, built: part A (§1-§8), the column, the three operators,
+the functions and exact search; part B (§9), the HNSW index
+(`tests/run_gsql_vector.sh`, and run_gsql_table's hnsw tier). Matthew's ruling on
 the gap survey's question 2 (2026-11-27, "Those were good choices"): **both**
 pgvector's operators and functions that name them.
 
@@ -109,7 +109,7 @@ select id, body from chunk where acl = ? order by e <=> ? limit 10
 ```
 
 The permission filter and the ranking are one statement, the property
-stdlib/retrieval.bas holds on pgvector. Without the index of §9 it is EXACT: each
+stdlib/retrieval.bas holds on pgvector. Without an index (§9) it is EXACT: each
 row passing the WHERE is measured and the k nearest kept. Ties come in the order
 the rows were read, which is a sort's rule for ties everywhere in G-SQL.
 
@@ -153,7 +153,7 @@ serialize v3's tag 16 is the vector's own (docs/vectors_design.md §6). G-SQL's
 walker (src/gsql/v3.c) holds a stored one to the interpreter's rules: a dimension
 from 1, the bytes present for it, every element finite.
 
-## 9. The approximate index (part B, designed here, not built)
+## 9. The approximate index (part B)
 
 pgvector's spelling, so its DDL carries over:
 
@@ -161,40 +161,96 @@ pgvector's spelling, so its DDL carries over:
 create index chunk_e on chunk using hnsw (e vector_cosine_ops) with (m = 16, ef_construction = 64)
 ```
 
-`vector_l2_ops`, `vector_cosine_ops` and `vector_ip_ops` say which distance the
-graph is built for; the column must be `VECTOR(N)`. HNSW (Malkov and Yashunin) is
-pgvector's default and the usual choice: no training step, and inserts as rows come.
+`vector_l2_ops` (the default), `vector_cosine_ops` and `vector_ip_ops` say which
+distance the graph is built for; the column must be `VECTOR(N)`; `m` is 2 to 100
+and `ef_construction` 4 to 1000 and at least twice `m`, pgvector's ranges. `USING
+btree` is the index there always was; `ivfflat` and any other method are refused by
+name. HNSW (Malkov and Yashunin) is pgvector's default: no training step, and it
+takes rows as they come. The code is src/gsql/hnsw.c, kept by the table layer
+(src/gsql/table.c) and searched by the SQL layer's ACC_ANN access path.
 
-- **Stored in the engine, as rows are.** A tree `\0h` + `be64(index id)` holds a
-  node per row, keyed by the row key: its level, its neighbours' row keys at each
-  level, and a copy of the vector, so a search reads no row it does not answer.
-  The entry point is one key of its own. Every write is the row's own
-  transaction, so crash safety, rollback and a reader's snapshot are the store's,
-  not the index's: a reader searches the graph as of its snapshot.
+- **Stored in the engine, as rows are.** The index's tree holds, per row, `'v'` +
+  row key, the vector's float32s, and `'n'` + row key, its level and its
+  neighbours' row keys at each level (src/gsql/hnsw.h has the bytes); `"e"` is
+  the entry point and `"c"` the count. Two keys a node, so an insert rewiring 16 to
+  32 neighbours rewrites their short lists, not their 6 KB vectors. Every write is
+  the row's own transaction: crash safety, rollback and a reader's snapshot are
+  the store's, not the index's, and a reader searches the graph as of its snapshot.
 - **Deterministic.** A node's level is drawn from a hash of its row key, not a
-  random source, so the same rows inserted in the same order make the same graph
-  on every machine, and a recall measured once is the recall.
-- **Deletes** remove the node; an edge to a missing node is skipped when met and
-  dropped when that list is next rewritten. An update of `e` is a delete and an
-  insert.
-- **The planner** uses the index for `ORDER BY <the index's distance>(e, q) LIMIT
-  k` with `q` a constant or parameter, ascending, and EXPLAIN says so. Anything
-  else (another distance, `DESC`, no `LIMIT`) is the exact search of §7.
-- **Filters.** The beam (`ef_search`, default 40, at least k) is searched, then
-  the WHERE applied; if fewer than k rows pass, the beam doubles and the search
-  continues, up to the whole graph, so a narrow filter returns k rows (or every
-  row that passes), never fewer silently. This is pgvector 0.8's iterative scan,
-  and the place pgvector before it answered short.
-- **The answer** is ranked by each candidate's exact distance, the same double
-  §4 gives, ties by row key; only WHICH rows are candidates is approximate.
-- **`ef_search`** is a connection option (`gsql.connect(path, { ef_search: 100 })`),
-  since G-SQL has no `SET`.
+  random source, so the same rows written in the same order make the same graph on
+  every machine (run_gsql_table's hnsw tier writes one workload into two
+  databases and holds every answer equal).
+- **Writes.** An insert links the node by the paper's neighbour heuristic
+  (Algorithm 4, the pruned kept to fill) and shrinks a neighbour's list the same
+  way past its cap (`2m` at level 0, `m` above). A delete removes the node and
+  offers each neighbour the deleted node's other neighbours, chosen by the same
+  heuristic, so a deletion does not cut a region off: with three quarters of the
+  rows deleted, recall@10 was 0.93 with this and 0.12 without it. An edge left
+  pointing at a deleted row is skipped when met. An update that changes `e`, or
+  moves the row's key, is a delete and an insert; one that leaves `e` alone does
+  nothing to the graph. A NULL vector is not in the graph. A zero vector is
+  refused by a cosine graph (*"the vector is all zeros, which has no direction, so
+  cosine index idx_cos cannot hold it"*), as `<=>` refuses one; pgvector stores it
+  and answers NaN.
+- **The planner** takes the index for `ORDER BY <its distance>(e, q) LIMIT k` over
+  one table, ascending, `q` a literal, a parameter or a CAST of one, and EXPLAIN
+  says `HNSW Search on chunk using chunk_e (nearest $1)`. Anything else (another
+  distance, `DESC`, no `LIMIT`, another term ordered first, a join, grouping,
+  `DISTINCT`, a window) is §7's exact search.
+- **A query the graph cannot answer as the exact search would** (a NULL `q`, text
+  that is no vector, another dimension, a zero `q` under cosine, `LIMIT NULL`) is
+  the exact search, so its answer and its refusal are the exact search's own.
+- **Filters, and never short.** The beam (`ef_search`, at least LIMIT + OFFSET) is
+  searched and the WHERE applied as rows come; if fewer pass than asked, the beam
+  doubles and the search goes on, and once it holds every node the graph reaches,
+  every node is measured, then the rows with no vector follow (as NULL sorts
+  last). So a narrow filter returns what the exact search returns, never fewer
+  rows. pgvector before 0.8 answered short there; 0.8's iterative scan is this.
+- **Ties.** Rows tying with the last one kept are taken too, so a second ORDER BY
+  term (`, id DESC`) chooses among them as it would in the exact search (found by
+  the differential: it chose the lower id).
+- **The answer** is ranked by each candidate's exact distance, the same double §4
+  gives; only WHICH rows are candidates is approximate.
+- **`ef_search`** is the connection's attribute, as `max_recursion` is (G-SQL has no
+  `SET`): `db.ef_search = 100`, 1 to 1000 as pgvector's `hnsw.ef_search`, unknown
+  for the default of 40. A table named `ef_search` is therefore not reachable as a
+  path, as one named `max_recursion` never was.
+- **A dump** declares the index (`USING hnsw (e vector_cosine_ops) WITH (m = 16,
+  ef_construction = 64)`) before the rows, so a restore builds the graph as they go
+  in.
 
-**Tested against the exact search as its oracle**: the same query with the index
-and with `gsql_sql_force_scan`, recall@10 by query over clustered and uniform data,
-a floor asserted and the distribution printed; the graph after a crash mid-insert
-(the store's crash harness); deletes and updates against a model; and the speed
-at 100 000 x 1536 against §7's 0.83 s.
+### 9.1 Measured (2026-11-27, this laptop, 1536 dimensions, 20 000 rows)
+
+Two data sets, 30 queries each, recall@10 against `nearest()` over the same
+vectors: **embedding-like** (clusters in a 32-dimensional latent space, projected
+to 1536 by a fixed random matrix, as real embeddings lie near a low-dimensional
+manifold) and **near-orthogonal** (sums of 500 random 1536-dimensional bases,
+nearly orthogonal to each other, so a greedy descent has little slope to follow).
+pgvector 0.7.2 on PostgreSQL 17 held the same rows with the same `m = 16,
+ef_construction = 64`:
+
+| | beam 40 | beam 100 | beam 200 |
+|---|---|---|---|
+| embedding-like, G-SQL | 1.0, 1.5 ms | 1.0, 3.0 ms | 1.0, 6.6 ms |
+| embedding-like, pgvector | 1.0, 2.3 ms | 1.0, 3.1 ms | 1.0, 4.9 ms |
+| near-orthogonal, G-SQL | 0.77, 1.2 ms | 0.87, 3.1 ms | 0.93, 5.8 ms |
+| near-orthogonal, pgvector | 0.62, 2.4 ms | 0.82, 3.0 ms | 0.95, 3.9 ms |
+
+- **Against the exact search**: §7's 0.17 s for 20 000 rows, so about 110x faster at
+  the default beam on embedding-like data with every answer right.
+- **The near-orthogonal set is hard for HNSW itself**: pgvector misses as G-SQL does,
+  within run-to-run variation (the data is drawn afresh; G-SQL's beam-40 recall was
+  0.47 in another draw). A missed answer is a real miss there, not a tie swapped:
+  the 10th returned was up to 6x the 10th true distance. Raising `ef_search` is the
+  remedy, as in pgvector.
+- **Building is slower**: 64 s for 20 000 rows (3.2 ms a row, inserted with the
+  index in place), pgvector 38 s (its graph outgrew `maintenance_work_mem` part
+  way). Not optimised yet: every node met costs an engine read.
+
+The runner's recall tier holds a smaller, seeded case (4000 x 256): recall@10 at
+least 0.95 on embedding-like data at the default beam (measured 1.0), `ef_search 1`
+below `ef_search 200` on near-orthogonal data (0.7 and 1.0), and the index at least
+5x faster than the exact search (measured ~18x).
 
 ## 10. Tests
 
@@ -214,9 +270,39 @@ at 100 000 x 1536 against §7's 0.83 s.
 - **parse:** `n<-1` is still `n < -1`, and the three operators lex without spaces.
 - **cost:** exact search within 15x of `nearest()` over the same 5000 vectors in one
   process, and the same 10 answers.
-- **valgrind:** the semantics fixture.
+- **hnsw:** `tests/gsql_vector/hnsw.bas`, 94 checks: the index declared and each
+  refusal beside its accepted neighbour; when EXPLAIN shows the planner taking it;
+  and a differential, the same rows in a table with the index and in one without,
+  every answer identical (ids and distances) through both metrics, limits from 1
+  past the rows, filters, OFFSET, NULL vectors, ties, a second ORDER BY key, the
+  writes that keep the graph (updates, a moved key, deletes, inserts), a narrow
+  filter on 300 rows that must widen a beam of 5, `ef_search`, and a dump and
+  restore.
+- **recall:** `tests/gsql_vector/recall.bas`, seeded, 4000 x 256, judged by the
+  exact search and `nearest()` (which must agree on all 30 top-10s, or the oracle is
+  in doubt), with the bounds of §9.1.
+- **valgrind:** the semantics and hnsw fixtures.
 
-Eleven perturbations were each red: `<=>` answering l2, `<#>` not negated, the
+`tests/run_gsql_table.sh`'s **hnsw** tier runs the graph alone against a model,
+under ASan and UBSan (tests/gsql/table_test.c, `hnsw SEED`): inserts (a tenth with
+no vector), vector updates, primary-key moves and deletes over an l2 graph and a
+cosine one built over rows already there, the table layer's invariant check after
+every committed batch (each row's vector in each graph byte for byte, nothing for a
+row that is not there, the count right); then three quarters deleted and checked
+again; `every` against the model's vectors, nearest first, ties by key, each
+distance the kernel's; recall@10 at ef 64 at least 0.9; and the same workload into
+a second database answering the same.
+
+Sixteen perturbations of part B were each red, two of them only after a tier was
+added for them: a deleted node's vector left behind, the count not lowered, no
+back-links, a search stopping at its first node, `every` stopping short, levels from
+a counter (not deterministic), an update skipping the graph, the delete repair off
+(green until the three-quarters deletion: recall 0.12), the beam never widened
+(green until the 300-row filter: 30 rows fit one beam), no tail of NULL rows, no
+tie continuation, the planner ignoring the metric, `ef_search` ignored, the set of
+rows yielded ignored, a zero vector admitted to a cosine graph, and `DESC` taken.
+
+Eleven perturbations of part A were each red: `<=>` answering l2, `<#>` not negated, the
 dimension check removed, the catalog dropping the dimension, the operators at `+`'s
 level, `<=>` lexed after `<=`, an element's bits read wrongly, the zero-vector
 sentence naming the wrong side, text no longer compared as a vector, the dump's

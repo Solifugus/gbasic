@@ -813,9 +813,69 @@ out:
     return rc;
 }
 
+/* x's list at `level` made again from its live neighbours and `extra`, all
+ * but `drop`, nearest to x first, chosen by the heuristic: -1 failed */
+static int refill(Ctx *c, size_t x, int level, size_t drop, const Item *extra, size_t nextra) {
+    IdxList *l = &c->nodes[x].lists[level];
+    size_t cap = level_cap(c->h, level);
+    Item *cand = malloc((l->n + nextra + 1) * sizeof *cand);
+    if (!cand) {
+        abort();
+    }
+    size_t nc = 0;
+    c->epoch++;
+    c->nodes[x].epoch = c->epoch;
+    c->nodes[drop].epoch = c->epoch;
+    for (size_t pass = 0; pass < 2; pass++) {
+        size_t n = pass == 0 ? c->nodes[x].lists[level].n : nextra;
+        for (size_t k = 0; k < n; k++) {
+            size_t i = pass == 0 ? c->nodes[x].lists[level].v[k] : extra[k].i;
+            if (c->nodes[i].epoch == c->epoch) {
+                continue;
+            }
+            c->nodes[i].epoch = c->epoch;
+            int have = node_vec(c, i);
+            if (have < 0) {
+                free(cand);
+                return -1;
+            }
+            if (have) {
+                cand[nc].i = i;
+                cand[nc].d = gb_vec_distance((GbVecMetric)c->h->metric, c->nodes[x].vec, c->nodes[i].vec, c->h->dim);
+                nc++;
+            }
+        }
+    }
+    items_sort(c, cand, nc);
+    IdxList keep = { NULL, 0, 0 };
+    select_neighbours(c, cand, nc, cap, &keep);
+    free(cand);
+    l = &c->nodes[x].lists[level];
+    free(l->v);
+    *l = keep;
+    c->nodes[x].dirty = 1;
+    return 0;
+}
+
+static int list_has(const IdxList *l, size_t v) {
+    for (size_t k = 0; k < l->n; k++) {
+        if (l->v[k] == v) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
+/* A deleted node's neighbourhood repaired, as pgvector's vacuum repairs one:
+ * a search around its own vector at each of its levels finds the nodes near
+ * it, which are the ones that point at it, and each that does drops the edge
+ * and is refilled from what the search found. Its own neighbours alone are not
+ * enough: an edge need not run both ways (a shrink drops back-links), and with
+ * three quarters of the rows deleted, recall@10 fell to 0.62 that way. */
 int gsql_hnsw_delete(const GsEngine *e, GsTxn *t, const GsqlHnsw *h, GsBytes rowkey, GsqlError *err) {
     Ctx c = { e, t, h, NULL, 0, 0, NULL, 0, 0, err };
     int rc = GSQL_OK;
+    float *q = NULL;
     size_t me = node_of(&c, rowkey.p, rowkey.n);
     int got = node_lists(&c, me);
     if (got <= 0) {
@@ -825,79 +885,38 @@ int gsql_hnsw_delete(const GsEngine *e, GsTxn *t, const GsqlHnsw *h, GsBytes row
         }
         return got == 0 ? GSQL_OK : (err && err->code ? err->code : GSQL_STORAGE);
     }
+    if (node_vec(&c, me) <= 0) {
+        ctx_free(&c);
+        return hfail(err, GSQL_CORRUPT, "a vector index holds a node with no vector");
+    }
+    q = malloc(h->dim * sizeof *q);
+    if (!q) {
+        abort();
+    }
+    memcpy(q, c.nodes[me].vec, h->dim * sizeof *q);
+    free(c.nodes[me].vec);
+    c.nodes[me].vec = NULL;
+    c.nodes[me].missing = 1;   /* from here every edge to it is dangling */
+    int mylevel = c.nodes[me].level;
     unsigned char kb[GS_MAX_KEY + 1];
     int st = e->del(t, h->tree, tagged('v', rowkey, kb));
     if (st == GS_OK) {
         st = e->del(t, h->tree, tagged('n', rowkey, kb));
     }
     if (st != GS_OK) {
-        ctx_free(&c);
-        return hstorage(err, st, "removing a node");
-    }
-    c.nodes[me].missing = 1;   /* from here every edge to it is dangling */
-    /* Each neighbour drops the edge and is offered the deleted node's other
-       neighbours instead, chosen by the heuristic, so a deletion does not cut
-       a region off. */
-    Node *mine = &c.nodes[me];
-    int mylevel = mine->level;
-    for (int l = 0; l <= mylevel && rc == GSQL_OK; l++) {
-        size_t nl = c.nodes[me].lists[l].n;
-        for (size_t j = 0; j < nl && rc == GSQL_OK; j++) {
-            size_t nb = c.nodes[me].lists[l].v[j];
-            int have = node_lists(&c, nb);
-            if (have < 0) {
-                rc = err && err->code ? err->code : GSQL_STORAGE;
-                break;
-            }
-            if (have == 0 || c.nodes[nb].level < l || node_vec(&c, nb) <= 0) {
-                continue;
-            }
-            IdxList *lst = &c.nodes[nb].lists[l];
-            size_t keep = 0;
-            int had = 0;
-            for (size_t k = 0; k < lst->n; k++) {
-                if (lst->v[k] == me) {
-                    had = 1;
-                } else {
-                    lst->v[keep++] = lst->v[k];
-                }
-            }
-            lst->n = keep;
-            if (!had) {
-                continue;
-            }
-            for (size_t k = 0; k < nl; k++) {
-                size_t other = c.nodes[me].lists[l].v[k];
-                if (other == nb) {
-                    continue;
-                }
-                int dup = 0;
-                for (size_t q = 0; q < c.nodes[nb].lists[l].n; q++) {
-                    dup |= c.nodes[nb].lists[l].v[q] == other;
-                }
-                if (!dup && node_vec(&c, other) > 0) {
-                    list_push(&c.nodes[nb].lists[l], other);
-                }
-            }
-            c.nodes[nb].dirty = 1;
-            if (shrink(&c, nb, l) < 0) {
-                rc = err && err->code ? err->code : GSQL_STORAGE;
-            }
-        }
-    }
-    for (size_t i = 0; i < c.n && rc == GSQL_OK; i++) {
-        if (c.nodes[i].dirty && i != me && !c.nodes[i].missing) {
-            rc = node_write(&c, i);
-        }
+        rc = hstorage(err, st, "removing a node");
+        goto out;
     }
     /* a new entry point when this was it: the highest-level neighbour still
        there, else any node, else none */
     size_t ep;
     int eplevel;
-    int had_entry = rc == GSQL_OK ? entry_get(&c, &ep, &eplevel) : 0;
+    int had_entry = entry_get(&c, &ep, &eplevel);
     if (had_entry < 0) {
         rc = err && err->code ? err->code : GSQL_STORAGE;
-    } else if (had_entry && ep == me) {
+        goto out;
+    }
+    if (had_entry && ep == me) {
         long best = -1;
         int best_level = -1;
         for (int l = mylevel; l >= 0 && best < 0; l--) {
@@ -915,34 +934,86 @@ int gsql_hnsw_delete(const GsEngine *e, GsTxn *t, const GsqlHnsw *h, GsBytes row
             st = e->cursor_open(t, h->tree, &cur);
             if (st != GS_OK) {
                 rc = hstorage(err, st, "opening a cursor");
+                goto out;
+            }
+            int pos = 0;
+            unsigned char n0 = 'n';
+            st = e->seek(cur, (GsBytes){ &n0, 1 }, GS_SEEK_GE, &pos);
+            GsBytes k;
+            if (st == GS_OK && pos && e->key(cur, &k) == GS_OK && k.n > 1 && k.p[0] == 'n') {
+                best = (long)node_of(&c, k.p + 1, k.n - 1);
+            }
+            e->cursor_close(cur);
+            if (best >= 0 && node_lists(&c, (size_t)best) > 0) {
+                best_level = c.nodes[best].level;
             } else {
-                int pos = 0;
-                unsigned char n0 = 'n';
-                st = e->seek(cur, (GsBytes){ &n0, 1 }, GS_SEEK_GE, &pos);
-                GsBytes k;
-                if (st == GS_OK && pos && e->key(cur, &k) == GS_OK && k.n > 1 && k.p[0] == 'n') {
-                    best = (long)node_of(&c, k.p + 1, k.n - 1);
-                }
-                e->cursor_close(cur);
-                if (best >= 0 && node_lists(&c, (size_t)best) > 0) {
-                    best_level = c.nodes[best].level;
-                } else {
-                    best = -1;
-                }
+                best = -1;
             }
         }
-        if (rc == GSQL_OK) {
-            if (best >= 0) {
-                rc = entry_put(&c, (size_t)best, best_level);
-            } else {
-                st = e->del(t, h->tree, (GsBytes){ KEY_ENTRY, 1 });
-                rc = st == GS_OK || st == GS_NOT_FOUND ? GSQL_OK : hstorage(err, st, "removing its entry point");
+        if (best >= 0) {
+            rc = entry_put(&c, (size_t)best, best_level);
+        } else {
+            st = e->del(t, h->tree, (GsBytes){ KEY_ENTRY, 1 });
+            rc = st == GS_OK || st == GS_NOT_FOUND ? GSQL_OK : hstorage(err, st, "removing its entry point");
+            had_entry = 0;
+        }
+        if (rc != GSQL_OK) {
+            goto out;
+        }
+    }
+    if (had_entry) {
+        int top;
+        Item start;
+        int d = descend(&c, q, mylevel, &start, &top);
+        if (d < 0) {
+            rc = err && err->code ? err->code : GSQL_STORAGE;
+            goto out;
+        }
+        Item *epv = malloc(sizeof *epv);
+        if (!epv) {
+            abort();
+        }
+        epv[0] = start;
+        size_t nep = d > 0 ? 1 : 0;
+        for (int l = mylevel < top ? mylevel : top; l >= 0 && nep; l--) {
+            Item *w;
+            size_t nw;
+            if (search_layer(&c, q, epv, nep, h->ef_construction, l, &w, &nw) < 0) {
+                free(epv);
+                rc = err && err->code ? err->code : GSQL_STORAGE;
+                goto out;
             }
+            /* every node read so far that points at the deleted one at this
+               level: its own neighbours were read here, and the search read
+               the ones near it */
+            for (size_t i = 0; i < c.n; i++) {
+                if (i == me || !c.nodes[i].have_lists || c.nodes[i].missing || c.nodes[i].level < l ||
+                    !list_has(&c.nodes[i].lists[l], me)) {
+                    continue;
+                }
+                if (node_vec(&c, i) <= 0 || refill(&c, i, l, me, w, nw) < 0) {
+                    free(w);
+                    free(epv);
+                    rc = err && err->code ? err->code : GSQL_CORRUPT;
+                    goto out;
+                }
+            }
+            free(epv);
+            epv = w;
+            nep = nw;
+        }
+        free(epv);
+    }
+    for (size_t i = 0; i < c.n && rc == GSQL_OK; i++) {
+        if (c.nodes[i].dirty && i != me && !c.nodes[i].missing) {
+            rc = node_write(&c, i);
         }
     }
     if (rc == GSQL_OK) {
         rc = count_add(&c, -1);
     }
+out:
+    free(q);
     ctx_free(&c);
     if (rc == GSQL_OK && err) {
         err->code = GSQL_OK;
