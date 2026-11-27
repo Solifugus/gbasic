@@ -41192,6 +41192,58 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return shape_json_schema(shape, seen, 0);
     }
 
+    if (CALL_IS(expr, convert)) {
+        /* `x:invoice = e` when the shape is a VALUE (docs/shapes_design.md
+           §6.4): a library handed a shape cannot write its lock, so this is
+           the lock's own conversion, warnings and refusals in its words */
+        if (expr->as.call.args.count != 2) {
+            runtime_error_raise("convert expects two arguments: a record and a shape, such as "
+                                "convert(row, invoice)", 1003, "shape");
+            return value_null();
+        }
+        Value v = eval_expr(expr->as.call.args.items[0]);
+        if (error_action_pending()) {
+            value_free(v);
+            return value_null();
+        }
+        Value s = eval_expr(expr->as.call.args.items[1]);
+        if (error_action_pending()) {
+            value_free(v);
+            value_free(s);
+            return value_null();
+        }
+        const struct GbShape *shape = s.kind == VALUE_RECORD ? record_shape(&s) : NULL;
+        value_free(s);
+        if (!shape) {
+            value_free(v);
+            runtime_error_raise("convert expects a shape as its second argument, such as invoice "
+                                "from `shape invoice`; a plain record has no declared form to "
+                                "convert into", 1003, "shape");
+            return value_null();
+        }
+        if (v.kind == VALUE_NULL || v.kind == VALUE_UNKNOWN ||
+            (v.kind == VALUE_RECORD && record_shape(&v) == shape)) {
+            return v;   /* absence is legal, as a lock allows; one already of it stays */
+        }
+        if (v.kind != VALUE_RECORD) {
+            char message[200];
+            const char *got = value_kind_name(v.kind);
+            snprintf(message, sizeof message, "convert: %s %s is not a record, and only a "
+                     "record converts into shape %s", strchr("aeiou", got[0]) ? "an" : "a",
+                     got, shape_name_of(shape));
+            value_free(v);
+            runtime_error_raise(message, 1003, "shape");
+            return value_null();
+        }
+        int before = error_generation;
+        Value out = shape_convert(shape, v);
+        if (error_generation != before) {
+            value_free(out);
+            return value_null();
+        }
+        return out;
+    }
+
     if (CALL_IS(expr, decode)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("decode expects one argument", 1003, "serialization");

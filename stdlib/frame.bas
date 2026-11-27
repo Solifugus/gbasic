@@ -11,7 +11,16 @@
 ' returning a NEW frame (PBI copy-on-write makes untouched columns shared).
 '
 ' Missing data is `unknown` (gBASIC's native NA): an empty cell on import
-' becomes unknown, and list stats skip it by convention.
+' becomes unknown, and list stats skip it by convention. A frame read through
+' a shape, or built from JSON or a database, holds `nothing` where a value was
+' absent instead, so the verbs that look for a missing cell take both.
+'
+' A SHAPE types a frame (docs/shapes_design.md §6.4), as Pandas' `dtype=` or a
+' pandera schema does: read_csv(path, invoice) reads each column as its field
+' instead of guessing from the cells, to_rows(df, invoice) answers invoices,
+' and conform(df, invoice) puts a frame from anywhere into the shape. Each
+' converts by the shape's own lock (core `convert`), so a frame takes nothing
+' a shaped variable would refuse.
 library frame
     ' --- Representation helpers ---
 
@@ -37,6 +46,24 @@ library frame
             c = c + 1
         end while
         return row
+    end function
+
+    ' Missing, in either spelling: `unknown` from an untyped read, `nothing`
+    ' from a shape, JSON or a database.
+    function _absent(v)
+        return is_unknown(v) or is_nothing(v)
+    end function
+
+    ' A shape's argument checked once, before any cell is read, so a plain
+    ' record (or anything else) is refused by the verb that was given it.
+    function _need_shape(verb, s)
+        on error goto next
+        probe = convert(nothing, s)
+        e = error
+        if e then
+            error ("frame." + verb + " expects a shape, such as invoice from `shape invoice`; a plain record has no declared form to read by")
+        end if
+        return s
     end function
 
     ' A new frame with the same columns as df but empty.
@@ -72,7 +99,7 @@ library frame
             t = "unknown"
             i = 0
             while i < len(col)
-                if not is_unknown(col[i]) then
+                if not _absent(col[i]) then
                     t = type(col[i])
                     break
                 end if
@@ -107,7 +134,17 @@ library frame
 
     ' --- Conversions (exact inverses for a well-formed frame) ---
 
-    function to_rows(df)
+    ' One record per row; with a shape, each row converted into it as
+    ' `r:invoice = row` would be: a column the shape lacks is dropped, a field
+    ' with no column takes its default or is nothing (warned once each, 2126
+    ' and 2127, however many rows follow), and a cell that does not convert is
+    ' refused naming its row. Columns are matched by name exactly: a frame's
+    ' names are the program's own. Reading a file's header loosely is
+    ' read_csv(path, shape)'s job.
+    function to_rows(df, shape = nothing)
+        if not is_nothing(shape) then
+            return _shaped_rows("to_rows", df, _need_shape("to_rows", shape))
+        end if
         n = _nrows(df)
         rows = []
         i = 0
@@ -116,6 +153,61 @@ library frame
             i = i + 1
         end while
         return rows
+    end function
+
+    ' The columns are judged ONCE, before any row, by converting a record of
+    ' them all into the shape: that is where 2126 and 2127 are said, even for
+    ' a frame with no rows. Its result holds each field no column fills (its
+    ' default, or nothing), and every row starts from it, so no row warns again.
+    function _shaped_rows(verb, df, shape)
+        judged = {}
+        for each name in keys(df)
+            judged[name] = nothing
+        end for
+        start = convert(judged, shape)
+        filled = []
+        for each name in keys(shape)
+            if has(df, name) then
+                append(filled, name)
+            end if
+        end for
+        n = _nrows(df)
+        rows = []
+        i = 0
+        while i < n
+            append(rows, _shaped_row(verb, start, df, filled, i))
+            i = i + 1
+        end while
+        return rows
+    end function
+
+    ' Row i's cells written into its fields, each converting as a write to the
+    ' field does. A refusal names the row, counted from 1 as csv.write does.
+    function _shaped_row(verb, row, df, filled, i)
+        on error goto refused
+        for each name in filled
+            row[name] = df[name][i]
+        end for
+        return row
+    refused:
+        error { message: "frame." + verb + ": row " + string(i + 1) + ": " + error.message, code: error.code, source: error.source }
+    end function
+
+    ' The frame put into the shape: its columns the shape's fields in declared
+    ' order, each cell converted (to_rows' rules), so a frame from xlsx, grid,
+    ' a database or an untyped read_csv holds what the shape says.
+    function conform(df, shape)
+        rows = _shaped_rows("conform", df, _need_shape("conform", shape))
+        out = {}
+        for each name in keys(shape)
+            out[name] = []
+        end for
+        for each r in rows
+            for each name in keys(shape)
+                append(out[name], r[name])
+            end for
+        end for
+        return out
     end function
 
     function from_rows(rows)
@@ -222,7 +314,7 @@ library frame
         return out
     end function
 
-    ' Retype one column to "number" or "string". Missing cells stay unknown;
+    ' Retype one column to "number" or "string". Missing cells stay as they were;
     ' values that cannot become numbers become unknown.
     function coerce(df, colname, typename)
         src = df[colname]
@@ -230,8 +322,8 @@ library frame
         i = 0
         while i < len(src)
             v = src[i]
-            if is_unknown(v) then
-                append(newcol, unknown)
+            if _absent(v) then
+                append(newcol, v)
             else
                 if typename = "number" then
                     if is_number(v) then
@@ -261,7 +353,7 @@ library frame
         newcol = []
         i = 0
         while i < len(src)
-            if is_unknown(src[i]) then
+            if _absent(src[i]) then
                 append(newcol, value)
             else
                 append(newcol, src[i])
@@ -283,7 +375,7 @@ library frame
             ok = true
             c = 0
             while c < len(names)
-                if is_unknown(df[names[c]][i]) then
+                if _absent(df[names[c]][i]) then
                     ok = false
                     break
                 end if
@@ -589,14 +681,25 @@ library frame
 
     ' --- CSV import / export ---
     '
-    ' read_csv infers each column's type: a column becomes numeric only when
+    ' read_csv(path, shape) reads each column as the shape's field, through
+    ' csv.records(f, shape): the header matched once, by name and then with
+    ' case, spaces and `_` ignored; a column no field matches dropped and a
+    ' field no column matches its default or nothing, each warned once; a cell
+    ' that does not convert refused naming its line and column; an empty cell
+    ' `nothing` outside a text field. The columns are the shape's fields, in
+    ' declared order, whatever order the file had them in.
+    '
+    ' Without a shape, read_csv infers each column's type: a column becomes numeric only when
     ' every non-empty cell is a plain decimal AND none is ID-like (leading zero
     ' or > 15 digits — kept as strings to avoid silent precision loss, §4.1).
     ' Empty cells become `unknown`. Fields are read by `csv.records`, so a quoted
     ' comma, a quoted line break and a doubled quote are one field, and a record
     ' whose field count differs from the header's raises naming its line rather
     ' than being padded or dropped (docs/csv_design.md).
-    function read_csv(path)
+    function read_csv(path, shape = nothing)
+        if not is_nothing(shape) then
+            return _read_csv_shaped(path, _need_shape("read_csv", shape))
+        end if
         source{file}= path
 
         ' Header -> trimmed column names, in order; then raw text cells per column.
@@ -673,6 +776,21 @@ library frame
         return df
     end function
 
+    function _read_csv_shaped(path, shape)
+        source{file}= path
+        names = keys(shape)
+        df = {}
+        for each name in names
+            df[name] = []
+        end for
+        for each r in csv.records(source, shape)
+            for each name in names
+                append(df[name], r[name])
+            end for
+        end for
+        return df
+    end function
+
     ' Write a frame to CSV. Missing cells are written as empty fields, and a
     ' field is quoted when it holds a comma, a quote or a line break, so the
     ' file reads back as it was written (csv.write, docs/csv_design.md §6).
@@ -697,7 +815,7 @@ library frame
     ' --- Pretty-print ---
 
     function _cell_str(v)
-        if is_unknown(v) then
+        if _absent(v) then
             return ""
         end if
         return string(v)

@@ -1,0 +1,24 @@
+["invoice_id","invoice_date","amount","paid"]
+{"invoice_id":"string","invoice_date":"datetime","amount":"money","paid":"boolean"}
+["007","A2",""]
+[12.50,3.00,nothing]
+[true,nothing,false]
+[12.5,3,unknown]
+["true",unknown,"false"]
+{"invoice_id":"007","invoice_date":2026-01-05,"amount":12.50,"paid":true}
+money 3.00
+true
+true
+["invoice_id","invoice_date","amount","paid"]
+[12.50,3.00,unknown]
+[true,unknown,false]
+[2026-01-05,2026-01-06,2026-01-07]
+[false]
+{"invoice_id":[],"invoice_date":[],"amount":[],"paid":[]}
+["007"]
+[true,false,false]
+["12.50","3.00",nothing]
+{"invoice_id":"z","invoice_date":2026-04-01,"amount":2.00,"paid":false}
+nothing
+true
+{"invoice_id":"o1","invoice_date":2026-05-01,"amount":4.00,"paid":false}

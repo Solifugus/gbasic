@@ -21,7 +21,7 @@ function check(label, got, want)
 end function
 
 ' a modifier applied by name, its refusal caught
-function convert(v, m)
+function convert_by(v, m)
     on error goto next
     if m = "date" then
         r {date}= v
@@ -39,7 +39,7 @@ function convert(v, m)
 end function
 
 function expect(label, v, m, text, precision)
-    got = convert(v, m)
+    got = convert_by(v, m)
     if has(got, "refused") then
         check(label + " {" + m + "}", "refused: " + got.refused, text)
         return nothing
@@ -50,7 +50,7 @@ function expect(label, v, m, text, precision)
 end function
 
 function refuses(label, v, m, phrase)
-    got = convert(v, m)
+    got = convert_by(v, m)
     if has(got, "refused") then
         check(label + " {" + m + "} refusal names what is missing", contains(got.refused, phrase), true)
     else
@@ -95,12 +95,12 @@ refuses("month", mo, "datetime", "a year or a month has no day to take")
 refuses("time", tsec, "datetime", "a time of day has no date to take")
 
 ' ---- the oracle: fields against the source's --------------------------
-d = convert(sec, "date").value
+d = convert_by(sec, "date").value
 check("{date} keeps the year", d.year, sec.year)
 check("{date} keeps the month", d.month, sec.month)
 check("{date} keeps the day", d.day, sec.day)
 check("{date}'s result equals the same date written as text", d = dy, true)
-t = convert(sec, "time").value
+t = convert_by(sec, "time").value
 check("{time} keeps the hour", t.hour, sec.hour)
 check("{time} keeps the minute", t.minute, sec.minute)
 check("{time} keeps the second", t.second, sec.second)
@@ -109,10 +109,10 @@ check("{time}'s result equals the same time written as text", t = tsec, true)
 ' would pass the line above; serialize writes every field, and is what G-SQL
 ' stores and keys, so a leftover date would make two equal times two keys
 check("{time}'s result is the same bytes as the text time", serialize(t) = serialize(tsec), true)
-x = convert(dy, "datetime").value
+x = convert_by(dy, "datetime").value
 check("{datetime} of a date keeps its day", x.day, dy.day)
 check("{datetime} of a date is midnight", x.hour * 3600 + x.minute * 60 + x.second, 0)
-check("{datetime} of a date equals the text form's midnight", x = convert("2026-01-05", "datetime").value, true)
+check("{datetime} of a date equals the text form's midnight", x = convert_by("2026-01-05", "datetime").value, true)
 
 ' ---- the control: the text forms are unchanged ---------------------------
 expect("text date", "2026-01-05", "date", "2026-01-05", "day")
