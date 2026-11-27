@@ -1516,6 +1516,31 @@ static int hnsw_workload(const char *path, uint64_t seed, char **out, size_t *ou
         }
     }
     printf("ops: %ld inserts, %ld vector updates, %ld key moves, %ld deletes\n", ops[0], ops[1], ops[2], ops[3]);
+    /* then most of what is left deleted, a quarter kept: the graph must still
+       reach what remains through the edges deletions rewired */
+    long heavy = 0;
+    for (int i = 1; i < next_id; i++) {
+        if (hn_rows[i].live && rnd() % 4 != 0) {
+            GsqlBuf k = {0};
+            hn_key(tb, i, &k);
+            if (gsql_row_delete(E, t, tb, (GsBytes){k.bytes, k.length}, &er) != GSQL_OK) {
+                mismatch("delete %d answered %s: %s", i, gsql_code_name(er.code), er.message);
+            }
+            gsql_buf_free(&k);
+            hn_rows[i].live = 0;
+            heavy++;
+        }
+    }
+    {
+        uint64_t cid;
+        gsql_table_close(tb);
+        E->commit(t, 1, &cid);
+        E->begin_write(db, &t);
+        GsqlError ce;
+        expect(gsql_table_check(E, t, report_line, NULL, &ce), GSQL_OK, &ce, NULL, "the check after the deletions");
+        expect(gsql_table_open(E, t, "v", &tb, &er), GSQL_OK, &er, NULL, "reopening the table");
+    }
+    printf("then %ld deleted, a quarter of the rows kept\n", heavy);
     /* the queries, against the model */
     size_t cap = 1 << 16, used = 0;
     char *text = malloc(cap);
