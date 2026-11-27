@@ -31,6 +31,12 @@
 #                 from braces before a step (inner, one row per row reached), the
 #                 refusals, and the forms `{` already had -- modifier clause,
 #                 inline modifier, record literal -- unchanged; by hand
+#   names         tests/gsql/paths_name_test.bas: `db["name"]`, the table a
+#                 text names (literal, computed, passed to a function; a name an
+#                 attribute takes, a reserved word, one with a space), keys,
+#                 filters, braces straight after it, steps and writes through
+#                 it, and the refusals (a number, a filter, two names, empty,
+#                 a NUL, nothing, unknown, a record); by hand, writes read back
 #   differential  random tables, rows and paths (tests/gsql/gen_paths_diff.py):
 #                 each path's rows against the SQL the GENERATOR writes for it
 #                 from its own model of the rules, never from sql(); a floor on
@@ -160,6 +166,15 @@ if [ -s "$work/braces.err" ]; then
     fail "braces: the fixture wrote to stderr"
 fi
 
+printf 'TIER names: db["name"], the table a text names, every answer by hand\n'
+mkdir -p "$work/names"
+GSQL_DIR="$work/names" timeout -k 5 120 ./gbasic tests/gsql/paths_name_test.bas >"$work/names.out" 2>"$work/names.err"
+verdict names "$work/names.out" $? 40
+if [ -s "$work/names.err" ]; then
+    sed 's/^/       /' "$work/names.err" | head -5
+    fail "names: the fixture wrote to stderr"
+fi
+
 printf 'TIER differential: random paths against the SQL a model of the rules writes for them\n'
 if ! command -v python3 >/dev/null 2>&1; then
     printf '  SKIP (no python3 -- the differential tier was NOT measured)\n'
@@ -286,6 +301,19 @@ if vg_available; then
         tail -3 "$work/vgs.out"
         vg_program_stderr "$work/vgs.err"
         fail "valgrind: the steps fixture did not pass under valgrind (exit $vgst)"
+    fi
+    mkdir -p "$work/vgn"
+    GSQL_DIR="$work/vgn" vg_run ./gbasic tests/gsql/paths_name_test.bas >"$work/vgn.out" 2>"$work/vgn.err"
+    vgst=$?
+    if [ "$vgst" = 0 ] && tail -1 "$work/vgn.out" | grep -q ' 0 mismatches$'; then
+        pass "valgrind: names clean over $(tail -1 "$work/vgn.out" | sed 's/^ok //')"
+    elif [ "$vgst" = "$VG_EXIT" ]; then
+        grep -m8 'Invalid\|definitely lost\|uninitialised' "$work/vgn.err"
+        fail "valgrind objected to the names fixture"
+    else
+        tail -3 "$work/vgn.out"
+        vg_program_stderr "$work/vgn.err"
+        fail "valgrind: the names fixture did not pass under valgrind (exit $vgst)"
     fi
 else
     printf '  SKIP (no valgrind -- memory was NOT measured)\n'

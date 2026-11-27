@@ -5090,6 +5090,7 @@ static char **gsql_statement_params(const char *sql, size_t *count);
 static void gsql_block_split(GsqlStatementValue *st);
 static Value gsql_path_table(Value connection, const char *table);
 static Value gsql_path_bracket(Value base, AstExpr *expr, int keep);
+static Value gsql_connection_bracket(Value connection, AstExpr *expr);
 static Value gsql_path_step(Value base, const AstExpr *expr, int keep);
 static int gsql_is_path(const Value *v);
 static int gsql_path_assign_stmt(AstStmt *stmt);
@@ -46884,6 +46885,9 @@ static GB_NOINLINE Value eval_expr_case_index(AstExpr *expr, int path_keep) {
         if (!error_action_pending() && gsql_is_path(&array)) {
             return gsql_path_bracket(array, expr, path_keep && !expr->parenthesized);
         }
+        if (!error_action_pending() && array.kind == VALUE_GSQL_CONNECTION) {
+            return gsql_connection_bracket(array, expr);
+        }
 #endif
         if (!error_action_pending() && expr_has_column(expr->as.index.index)) {
             return filter_of_value(array, expr);
@@ -47468,7 +47472,9 @@ static Value eval_pick(AstExpr *top, AstExpr **ops, size_t n, AstExpr *root, int
         for (size_t i = 0; i < n; i++) {
             int keep = i + 1 < n ? 1 : path_keep;
             if (ops[i]->kind == AST_EXPR_INDEX) {
-                v = gsql_path_bracket(v, ops[i], keep && !ops[i]->parenthesized);
+                /* `db["x"]{a}`: the first bracket may be the connection's */
+                v = v.kind == VALUE_GSQL_CONNECTION ? gsql_connection_bracket(v, ops[i])
+                                                    : gsql_path_bracket(v, ops[i], keep && !ops[i]->parenthesized);
             } else {
                 v = ops[i]->kind == AST_EXPR_FIELD ? field_of_value(v, ops[i], keep)
                                                    : project_of_value(v, ops[i], keep);

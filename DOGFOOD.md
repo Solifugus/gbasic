@@ -47,6 +47,7 @@ live list is:
 
 | | what | where |
 |---|---|---|
+| 10 | **A parameter holding a function value loses a call of its name to a user function of that name**: `function call_it(f)` / `return f()` runs the program's own `f`, not the one passed. The precedence is documented and the builtin form warns (2026-08-28); this form is silent. Workaround: name the parameter something no function is called. | 2026-11-27 entry (db["name"]) |
 | — | ~~**`xml.find_all(node, "a/b")` collects only under the first `a`**: two `<s><n/></s>` answer one for `"s/n"`, where the reference says "all matches". A path through repeated elements misses all but the first. Workaround: walk the path a step at a time, taking every match at each.~~ **FIXED 2026-11-09**: each step is taken from every element the step before reached, so `find_all` answers every element the path reaches in document order, and `find` the first of them (it too had missed an `n` only a later `s` held). A path over 1023 bytes or 64 steps, which was cut short in silence, is refused. Held by `examples/xml_find_paths_test.bas` in `tests/run_examples.sh`. | 2026-11-08 entry |
 | — | ~~**`load xlsx` says "library not found: xlsx"** where `xlsx` needs no load at all (`xlsx.new()` just works), and `load sqlite` is required beside it: the refusal reads as "this build has no xlsx", which is false, and nothing says which modules need `load`. Workaround: drop the line. The message could say xlsx is built in and needs no `load`.~~ **FIXED 2026-11-18**: a `load` naming a module that needs none (`xlsx`, `money`, `ui`, ...) says "xlsx needs no `load`: it is part of gbasic, not a library file. Remove this line"; a name that is neither still says "library not found". Held by `tests/negative_load_native` in `tests/run_negative.sh`. | 2026-11-16 entry |
 | — | ~~**A `gosub` inside an `if`, `while` or `for` returns past the whole statement**: `if c then` / `gosub s` / `print "a"` / `end if` / `print "b"` prints only `b` after `s` returns, and a `gosub` in a `while` body ends the loop. The return point is kept by the function body's loop, which sees the compound statement as one statement, so `return` resumes after it. Classic BASIC resumes at the line after the `gosub`. No error, no warning.~~ **FIXED 2026-11-23** (Matthew: a `gosub` comes back to the next statement, wherever it is): the gosub statement runs its subroutine over the body's own loop calls and is done at its bare `return`, so a goto, an absorbed raise, `return value`, a nested gosub and running off the body's end behave as before, and a `break` in the subroutine is still refused rather than breaking the loop around the gosub. Held by `examples/gosub_and_for_counter_test.bas` in `tests/run_examples.sh`, and compiled by `tests/jit/flow.bas`. | 2026-11-22 entry |
@@ -14370,3 +14371,31 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   check in run_error_model.sh (each wrong on the build before). (2) both
   oracles sum with an explicit loop (`ltr`); at 3 dimensions the control now
   counts 0, as it must.
+
+## 2026-11-27 — CC — while: `db["name"]`, a table named by a value (docs/gsql_paths_design.md)
+- **Type:** language-surprise
+- **Severity:** high
+- **What:** A parameter holding a function value is NOT what a call of its
+  name reaches when the program also defines a function of that name. Met
+  writing a probe whose helper took `f` and called `f()` while the same file
+  had a test case named `f`: all eight cases printed case `f`'s answer.
+  ```basic
+  function f()
+      return "global f"
+  end function
+  function a()
+      return "a"
+  end function
+  function call_it(f)
+      return f()
+  end function
+  print call_it(a)    ' global f
+  ```
+  The precedence (builtin, then user function, then function-valued variable)
+  is documented (reference.md, UNLEARN.md), and the BUILTIN form of this trap
+  has warned at the call site since 2026-08-28. The user-function form says
+  nothing: a plausible answer from the wrong function. A parameter is the
+  nearest binding there is, which makes it the worst place for this.
+- **Workaround:** renamed the parameter. OPEN: either the call-site warning
+  extended to a user function of the name, or the variable made to win for a
+  local binding; the second changes meaning, so it is Matthew's call.

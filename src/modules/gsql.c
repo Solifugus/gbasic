@@ -3385,6 +3385,51 @@ static void path_refuse_at(const AstExpr *e, const char *message) {
     runtime_error_raise_at(message, GSQL_ERROR_CODE, "gsql", e->line, e->column);
 }
 
+/* `db["customer"]`: the table a text names, the path `db.customer` is, so a
+ * name a connection's attribute takes (`db["ef_search"]`) or one computed
+ * at run time is reached too. A number is refused (tables have no order),
+ * and so is a filter: `db[.cond]` is kept free for one over the catalog. */
+static Value gsql_connection_bracket(Value connection, AstExpr *expr) {
+    AstExpr *in = expr->as.index.index;
+    if (expr->as.index.list || path_has_column(in)) {
+        value_free(connection);
+        path_refuse_at(expr, expr->as.index.list
+                                 ? "a connection's bracket names one table, as in db[\"customer\"]; a key or "
+                                   "filters follow it, db[\"line\"][17, 2]"
+                                 : "a connection's bracket names a table, as in db[\"customer\"]; a filter is "
+                                   "written on the table, db[\"customer\"][.city = \"Rome\"]");
+        return value_null();
+    }
+    Value name = eval_expr(in);
+    if (error_action_pending()) {
+        value_free(name);
+        value_free(connection);
+        return value_null();
+    }
+    const char *why = NULL;
+    char kind[40];
+    if (name.kind != VALUE_STRING) {
+        why = name.kind == VALUE_NUMBER ? "not a number: tables have no order"
+                                        : kind_phrase(name.kind, kind, sizeof kind);
+    } else if (string_length(name.as.string) == 0) {
+        why = "and this text is empty";
+    } else if (memchr(name.as.string, '\0', string_length(name.as.string)) != NULL) {
+        why = "and this text holds a NUL byte, which no table's name can";
+    }
+    if (why) {
+        char msg[300];
+        snprintf(msg, sizeof msg, "a connection's bracket takes a table's name, as in db[\"customer\"], %s%s",
+                 name.kind != VALUE_STRING && name.kind != VALUE_NUMBER ? "not " : "", why);
+        value_free(name);
+        value_free(connection);
+        path_refuse_at(expr, msg);
+        return value_null();
+    }
+    Value path = gsql_path_table(connection, name.as.string);
+    value_free(name);
+    return path;
+}
+
 /* A filter's expression as the tree the owner compiles: 1, or 0 with a raise.
  * A part with no column in it is the program's, evaluated now. */
 static int path_tree(AstExpr *e, Value *params, Value *out) {
