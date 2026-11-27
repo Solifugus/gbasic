@@ -42,11 +42,18 @@ def get(path):
 _, a = post("/ask", "what is the balance for a1?", "alice")
 _, b = post("/ask", "freeze card c9", "alice")
 _, c = post("/ask", "freeze card c9", "bob")
-time.sleep(2.5)
+# Wait for the read-only one to finish -- no approval has been answered, so
+# the other two can only be parked -- rather than sleeping a fixed 2.5 s: under
+# the gate's compiled lane in parallel, `a` was still awaiting its tool at 2.5 s
+# and done a moment later (2026-11-27), which is load, not the property. The
+# property is that `a` completes while b and c are parked, read in that order.
+deadline = time.time() + 30
+while time.time() < deadline and get("/run/" + a)[1].split("|")[0] != "done":
+    time.sleep(0.1)
 
+print("early_a: %s" % get("/run/" + a)[1].split("|")[0])
 print("parked_b: %s" % get("/run/" + b)[1].split("|")[0])
 print("parked_c: %s" % get("/run/" + c)[1].split("|")[0])
-print("early_a: %s" % get("/run/" + a)[1].split("|")[0])
 
 post("/approve/" + b, "yes")
 post("/approve/" + c, "no")
