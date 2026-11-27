@@ -38,7 +38,7 @@ A schema is stored as one `serialize` version 3 **record**, so `tests/serialize/
 |---|---|
 | `format` | 1. A newer one is `FORMAT`, never guessed at |
 | `id` | the table's id |
-| `columns` | an array of records: `name`, `kind` (§3.1), `currency` (text, `MONEY(CUR)` only), `not_null` (boolean), `default` (a value, absent if none), and `generator` only for a generated column: `{ kind: "serial", scope }` or `{ kind: "random", length, alphabet }` (`gsql_generated_design.md` §4) |
+| `columns` | an array of records: `name`, `kind` (§3.1), `currency` (text, `MONEY(CUR)` only), `not_null` (boolean), `default` (a value, absent if none), and `generator` only for a generated column: `{ kind: "serial", scope }` or `{ kind: "random", length, alphabet }` (`gsql_generated_design.md` §4), and `dimension` only for `VECTOR(N)` (`gsql_vector_design.md` §8) |
 | `key` | an array of column positions (0-based), empty when there is no primary key |
 | `indexes` | an array of records: `name`, `id`, `columns` (positions), `descending` (booleans, one per column), `unique` (boolean) |
 
@@ -59,6 +59,7 @@ The first release stores what `gsql_design.md` §3.4 decided (Matthew, 2026-10-2
 | `datetime` | a date-time that is not time-only, at hour precision or finer |
 | `record` | a record whose fields, at any depth, hold numbers, strings, booleans, money, date-times, records, arrays or absences |
 | `duration` | a duration, field for field; never in a key or index *(2026-11-08, `gsql_duration_design.md`)* |
+| `vector`, `vector(N)` | a vector (serialize tag 16), of N dimensions when N is given; never keyed (`gsql_vector_design.md`) |
 
 **What is refused, everywhere, including inside a record:** ~~durations (no single sort order, `gsql_storage_design.md` §3.2),~~ *(stored since 2026-11-08, in a `duration` column or a record)* files, directories, functions, regexes and actors (process-bound, §3.4). Arrays are refused **as a column's value** (§3.4) and accepted **inside a record**, which §3.5 allows.
 

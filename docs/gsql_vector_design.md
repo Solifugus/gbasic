@@ -117,8 +117,29 @@ the rows were read, which is a sort's rule for ties everywhere in G-SQL.
 `gsql.expect` holds a shape's `e:vector(1536)` to such a column; a column of any
 dimension holds a lock of one, which still checks each row read.
 
-**Measured** (20 000 rows of 1536 dimensions, this laptop, 2026-11-27): MEASUREMENTS
-PENDING.
+**Measured** (1536 dimensions, this laptop, 2026-11-27; the same 10 answers and
+distances as `nearest()` every time):
+
+| rows | `ORDER BY e <=> ? LIMIT 10` in SQL | `nearest()` in memory | ratio |
+|---|---|---|---|
+| 20 000 | 0.17 s | 0.027 s | ~6x |
+| 100 000 | 0.83 s | 0.13 s | ~6.4x |
+
+**The first measurement was 0.51 s for 20 000**, and a profile of the owner
+(callgrind) put the cosine itself at 8% of it. The rest was three readings of each
+row done one float at a time, each a rule kept, none an answer changed:
+
+- G-SQL's walker (src/gsql/v3.c) checked every float32 through a bounds-checked
+  call (41%); it now checks the bounds once and reads the exponent bytes in place.
+- The interpreter's reader made each element with a bounds-checked read (about
+  30%); it now reads in place.
+- `distance(a, b, "cosine")` took both norms to refuse a zero vector, then the
+  cosine: three passes. a.a and b.b come from the same pass as a.b
+  (`gb_vec_dot3`, the same doubles the norms square), so it is one pass now.
+
+What is left is reading 6 KB a row out of the store and through the host. The cost
+tier holds the ratio under 15x (`tests/run_gsql_vector.sh`). At a million rows exact
+search is seconds, which is what part B is for.
 
 ## 8. Compatibility
 
@@ -132,10 +153,83 @@ serialize v3's tag 16 is the vector's own (docs/vectors_design.md §6). G-SQL's
 walker (src/gsql/v3.c) holds a stored one to the interpreter's rules: a dimension
 from 1, the bytes present for it, every element finite.
 
-## 9. The approximate index (part B, next)
+## 9. The approximate index (part B, designed here, not built)
 
-PENDING: designed after part A's measurement.
+pgvector's spelling, so its DDL carries over:
+
+```sql
+create index chunk_e on chunk using hnsw (e vector_cosine_ops) with (m = 16, ef_construction = 64)
+```
+
+`vector_l2_ops`, `vector_cosine_ops` and `vector_ip_ops` say which distance the
+graph is built for; the column must be `VECTOR(N)`. HNSW (Malkov and Yashunin) is
+pgvector's default and the usual choice: no training step, and inserts as rows come.
+
+- **Stored in the engine, as rows are.** A tree `\0h` + `be64(index id)` holds a
+  node per row, keyed by the row key: its level, its neighbours' row keys at each
+  level, and a copy of the vector, so a search reads no row it does not answer.
+  The entry point is one key of its own. Every write is the row's own
+  transaction, so crash safety, rollback and a reader's snapshot are the store's,
+  not the index's: a reader searches the graph as of its snapshot.
+- **Deterministic.** A node's level is drawn from a hash of its row key, not a
+  random source, so the same rows inserted in the same order make the same graph
+  on every machine, and a recall measured once is the recall.
+- **Deletes** remove the node; an edge to a missing node is skipped when met and
+  dropped when that list is next rewritten. An update of `e` is a delete and an
+  insert.
+- **The planner** uses the index for `ORDER BY <the index's distance>(e, q) LIMIT
+  k` with `q` a constant or parameter, ascending, and EXPLAIN says so. Anything
+  else (another distance, `DESC`, no `LIMIT`) is the exact search of §7.
+- **Filters.** The beam (`ef_search`, default 40, at least k) is searched, then
+  the WHERE applied; if fewer than k rows pass, the beam doubles and the search
+  continues, up to the whole graph, so a narrow filter returns k rows (or every
+  row that passes), never fewer silently. This is pgvector 0.8's iterative scan,
+  and the place pgvector before it answered short.
+- **The answer** is ranked by each candidate's exact distance, the same double
+  §4 gives, ties by row key; only WHICH rows are candidates is approximate.
+- **`ef_search`** is a connection option (`gsql.connect(path, { ef_search: 100 })`),
+  since G-SQL has no `SET`.
+
+**Tested against the exact search as its oracle**: the same query with the index
+and with `gsql_sql_force_scan`, recall@10 by query over clustered and uniform data,
+a floor asserted and the distribution printed; the graph after a crash mid-insert
+(the store's crash harness); deletes and updates against a model; and the speed
+at 100 000 x 1536 against §7's 0.83 s.
 
 ## 10. Tests
 
-`tests/run_gsql_vector.sh`. PENDING.
+`tests/run_gsql_vector.sh`:
+
+- **semantics:** `tests/gsql_vector/sql.bas`, 85 checks, each answer worked by hand
+  from vectors chosen so every distance is exact, each refusal beside an accepted
+  neighbour, precedence, CAST and text, `gsql.columns`, `gsql.expect`, and a dump
+  and restore to the same serialize bytes.
+- **oracle:** `tests/gsql_vector/oracle.py` writes a table and 24 queries for each
+  of four seeds (3, 17, 64 and 1536 dimensions; copies for ties; every spelling; a
+  filter or none), and judges each top-k exactly from its own arithmetic. Its two
+  controls: a left-to-right sum must disagree with some answers, so exact comparison
+  proves the specified order (not at 3 dimensions, where that order IS left to
+  right); and most queries must rank differently under another metric, so a metric
+  mapped to the wrong one would be seen.
+- **parse:** `n<-1` is still `n < -1`, and the three operators lex without spaces.
+- **cost:** exact search within 15x of `nearest()` over the same 5000 vectors in one
+  process, and the same 10 answers.
+- **valgrind:** the semantics fixture.
+
+Eleven perturbations were each red: `<=>` answering l2, `<#>` not negated, the
+dimension check removed, the catalog dropping the dimension, the operators at `+`'s
+level, `<=>` lexed after `<=`, an element's bits read wrongly, the zero-vector
+sentence naming the wrong side, text no longer compared as a vector, the dump's
+vector branch removed, and an array no longer converted into the column.
+
+**Not tested:** G-SQL's walker refusing a stored NaN or infinity (§8). Nothing a
+program can send makes one, since `vector()` and the interpreter's reader refuse
+both first; the walker's check is a second wall, and the test that reaches it is a
+C test of the walker, not yet written.
+
+**Found on the way** (DOGFOOD 2026-11-27): a frame's unchecked error was lost to any
+callee that caught one of its own, so a check, a re-raise and the end-of-program
+report named the callee's handled error (fixed: `ErrorFrame.held`;
+tests/error_model/held_error.bas); and Python 3.12's `sum()` over floats is
+compensated, so the "left to right" control here and in increment 1's oracle was
+not one (both now add in a loop).

@@ -2,7 +2,10 @@
 
 Status: **survey, 2026-11-26.** Increment 1, vector values and math (§2.1),
 built 2026-11-27 (docs/vectors_design.md, run_vectors), question 1 taken as
-proposed (a value kind); the rest is not built. Written for the 1.0
+proposed (a value kind). Increment 2 part A, G-SQL's `VECTOR(N)` column,
+pgvector's operators and functions and exact search, built the same day
+(docs/gsql_vector_design.md, run_gsql_vector), question 2 ruled "both"; the HNSW
+index (part B) is designed there, not built. The rest is not built. Written for the 1.0
 order agreed with Matthew on 2026-11-26: the AI-engineering capabilities are
 built FULLY before 1.0 ("It will be important and i have not given it enough
 weight"), because building them is how the needs that touch the frozen core

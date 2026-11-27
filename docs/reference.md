@@ -3218,7 +3218,22 @@ days'`, as `CAST(... AS DURATION)` does); a number is refused, having no unit.
 It is never keyed: a primary key, `UNIQUE`, an index, `GROUP BY` and `DISTINCT`
 refuse it, since `1 month` has no order against `31 days`, so keep its
 `total_seconds` in a number column to find or sort by length
-(`docs/gsql_duration_design.md`). If the owner exits, the
+(`docs/gsql_duration_design.md`). A `vector(N)` column *(after 0.12.0)* holds vectors of N dimensions (1 to
+16000; `vector` alone, any), and takes a vector, an array of numbers or the
+text of one (`'[0.1, 0.2]'`, pgvector's form). pgvector's three distances are
+operators, smaller nearer: `e <-> q` Euclidean, `e <=> q` cosine distance
+(`1 - cosine`), `e <#> q` the negated inner product; they bind looser than `+`
+and `-` and tighter than a comparison, and text or an array beside one is read
+as a vector. Functions name them: `l2_distance`, `cosine_distance`,
+`negative_inner_product`, `inner_product` (the product itself), gBASIC's
+`distance(a, b [, 'l2'|'cosine'|'ip'])`, `vector_dims` and `vector_norm`. So the
+permission filter and the ranking are one statement: `select id from chunk
+where acl = ? order by e <=> ? limit 10`, exact, each distance the same double
+`distance()` gives in a program. A zero vector has no cosine and is refused,
+where pgvector answers NaN. A vector is never keyed (no primary key, index,
+`GROUP BY` or `DISTINCT`, and `ORDER BY e` itself is refused);
+`CAST(v AS TEXT)` is pgvector's text, read back exactly by `CAST(... AS
+VECTOR)` (`docs/gsql_vector_design.md`). If the owner exits, the
 request in flight fails with `LOST` and nothing is retried; the next call
 starts a new owner. An owner whose database another machine has taken writes
 nothing more and exits, so its clients see `LOST`, and their next call is

@@ -14344,3 +14344,29 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   conflicts, only `vector` takes a number. (2) resolved: the rule lists it, and
   make_deps_check.py now reports an included `.c` its rule leaves out, with a
   control. (3) `string()` each element; not changed here.
+
+## 2026-11-27 — CC — while: vectors increment 2 (docs/gsql_vector_design.md)
+- **Type:** bug (fixed here), test-tool surprise
+- **Severity:** high
+- **What:** (1) A frame under `on error goto next` that caught an error and
+  had not yet checked it lost that error to any callee that caught one of its
+  own: there is one current error, and the callee's replaced it. A check in
+  the frame (`if error then`, `e = error`), the re-raise when the function
+  returned unchecked, and the report at the program's end all named the
+  CALLEE's error, which had been handled, at the callee's line. Found when
+  tests/gsql_vector/sql.bas read only `error.message` after a refused
+  `gsql.expect` at its top level, then called a helper that caught a refusal
+  of its own: the program failed naming the helper's refusal, which its
+  check had passed. Reproduced in 14 lines with no G-SQL (an index error at
+  the top level, a division by zero caught in a function).
+  (2) Python 3.12 made `sum()` over floats compensated (Neumaier), so the
+  "left-to-right" control in tests/vectors/oracle.py (increment 1) and the
+  new G-SQL oracle was no plain order: at 3 dimensions, where the specified
+  order IS left to right, it still differed on 22 answers.
+- **Workaround:** resolved: (1) a frame keeps its own copy of the error it
+  absorbed (`ErrorFrame.held`), put back where it is checked, where it is
+  raised again at the frame's end, after a call returns into it, and before the
+  program's end report; tests/error_model/held_error.bas and the end-of-report
+  check in run_error_model.sh (each wrong on the build before). (2) both
+  oracles sum with an explicit loop (`ltr`); at 3 dimensions the control now
+  counts 0, as it must.
