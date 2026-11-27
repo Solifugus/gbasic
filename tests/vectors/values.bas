@@ -62,6 +62,10 @@ program main(args)
     print cosine(vector([1, 0]), vector([0, 1]))
     print cosine(vector([1, 0]), vector([5, 0]))
     print cosine(vector([1, 0]), vector([-3, 0]))
+    ' held to [-1, 1]: sqrt(3) * sqrt(3) is 2.9999999999999996, so unheld the
+    ' cosine of [1, 1, 1] with itself would be 1.0000000000000002
+    print cosine(vector([1, 1, 1]), vector([1, 1, 1]))
+    print distance(vector([1, 1, 1]), vector([1, 1, 1]), "cosine")
     print distance(vector([0, 0]), vector([3, 4]))
     print distance(vector([1, 0]), vector([0, 1]), "cosine")
     print distance(vector([0, 2]), vector([0, 7]), "cosine")

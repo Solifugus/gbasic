@@ -90,6 +90,8 @@ def gen(seed, path):
             b = [element(rng, kind) for _ in range(d)]
             if n % 11 == 0:
                 b = [0.0] * d          # a zero vector: no cosine, no normalize
+            elif n % 5 == 0:
+                b = list(a)            # itself: a cosine rounding can put past 1
             out.append("pair p%d %s %s %s" % (n, hexof(a), hexof(b), rng.choice(scales)))
             n += 1
     for r, (d, rows) in enumerate([(3, 60), (37, 200), (384, 120), (1, 30), (5, 80)]):
@@ -97,6 +99,8 @@ def gen(seed, path):
         for i in range(0, rows, 7):    # copies, so ties are broken by index
             pool[(i * 5 + 3) % rows] = list(pool[i])
         q = [element(rng, "gauss") for _ in range(d)]
+        for i in range(2, rows, 13):   # the query itself: distance 0, or past it unheld
+            pool[i] = list(q)
         k = rng.choice([1, 5, 10, rows, rows + 50])
         out.append("rank r%d %d %s %s" % (r, k, hexof(q), " ".join(hexof(v) for v in pool)))
     with open(path, "w") as f:

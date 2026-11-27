@@ -43,10 +43,14 @@ for obj, prereq in sorted(rules.items()):
     for base, h in sorted(incs):
         cands = [os.path.normpath(os.path.join(base, h)), os.path.join('include', h)]
         real = next((c for c in cands if os.path.exists(c)), None)
-        if not real or real.endswith('.c'):
-            continue   # a system header, or a .c the object's rule lists as a source
+        if not real:
+            continue   # a system header
         if real in listed or any(p.match(real) for p in pats):
             continue
+        # AN INCLUDED .c IS A PREREQUISITE TOO (2026-11-27): src/modules/vector.c
+        # was left out of eval.o's rule, so a change to it alone rebuilt nothing,
+        # and two perturbations of it were measured against the unperturbed
+        # binary -- "green" for a change that was never compiled.
         print('%s: %s includes %s, which its rule does not list' % (obj, src, real))
         gaps += 1
 print('checked %d object rules, %d gaps' % (checked, gaps))

@@ -23,5 +23,15 @@ elif python3 tests/make_deps_check.py "$tmp" | grep -q 'src/frontend.o: src/fron
 else
     printf 'FAIL control: removing lexer.h from frontend.o went unreported\n'; status=1
 fi
+# and an included module: eval.c #includes each src/modules/*.c, which is as
+# much a prerequisite as a header
+sed '/^src\/eval\.o:/ s| src/modules/vector\.c||' Makefile > "$tmp"
+if grep -q '^src/eval\.o:.*src/modules/vector\.c' "$tmp"; then
+    printf 'FAIL the control could not remove vector.c from the copy\n'; status=1
+elif python3 tests/make_deps_check.py "$tmp" | grep -q 'src/eval.o: src/eval.c includes src/modules/vector.c'; then
+    printf 'ok   control: a rule missing a module .c its source includes is reported\n'
+else
+    printf 'FAIL control: removing vector.c from eval.o went unreported\n'; status=1
+fi
 [ "$status" = 0 ] && printf 'PASS tests/run_make_deps.sh\n'
 exit "$status"
