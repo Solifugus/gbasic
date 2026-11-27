@@ -161,6 +161,7 @@ for case in 'x:vector(0) = [1]|0' 'x:vector(2.5) = [1]|2.5' 'x:vector(abc) = [1]
         *) printf '  got: %s\n' "$out"; fail "$src" ;;
     esac
 done
+refuse 'a misspelling, before anything runs' 'x:vectr = [1]' "'vectr' is neither a data type nor a shape this file declares; did you mean vector?"
 refuse 'only money and vector take an argument' 'x:number(3) = 1' 'number takes no argument; only money and vector do, as in money(USD) and vector(1536)'
 printf 'x:vector(1536) = [1]\nprint "ran"\n' >"$tmp/c1.bas"
 printf 'write({file}"%s/ran", "x")\nx:vector(0) = [1]\n' "$tmp" >"$tmp/c2.bas"

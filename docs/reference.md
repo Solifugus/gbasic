@@ -1589,7 +1589,8 @@ qty:text = "many"         ' redeclaring relocks; the change is written out
 ```
 
 The types are `number`, `string` (or `text`), `boolean`, `date`, `time`,
-`datetime`, `duration`, `money(USD)` (any currency code), `file` and `dir`.
+`datetime`, `duration`, `money(USD)` (any currency code), `file`, `dir` and
+`vector` or `vector(1536)` (any dimension, or exactly that one; see Vectors).
 One type, no chain: a lens such as `{trimmed}` stays in braces and applies
 once. The conversion **is** the brace modifier of the same name, so `x:number`
 and `{number}` cannot disagree. `boolean` takes `true`, `false`, or the text
@@ -8301,7 +8302,7 @@ cannot keep a paragraph on this page either.
 | | `type` answers |
 |---|---|
 | core | `number`, `string`, `boolean`, `array`, `record`, `nothing`, `unknown` |
-| typed values | `datetime`, `duration`, `money`, `file`, `directory` |
+| typed values | `datetime`, `duration`, `money`, `file`, `directory`, `vector` |
 | language | `function`, `regex`, `watcher`, `actor`, `process` |
 | handles | `postgres_connection`, `sqlite_connection`, `odbc_connection`, `ldap_connection`, `gsql_connection`, `gsql_statement`, `csv_source`, `xml_reader`, `http`, `net`, `workbook` |
 <!--/TYPEKINDS-->
@@ -8704,7 +8705,8 @@ count({})                      ' 0
   lowercase `t`, which gBASIC's locks refuse; `time` a pattern only (RFC 3339's
   time requires an offset, which a time lock refuses); `duration` a pattern of
   its printed text; `money(USD)` a decimal string of at most the digits the
-  currency stores (a JSON number would round it); a shaped field its shape's
+  currency stores (a JSON number would round it); `vector(N)` an array of
+  exactly N numbers (`vector` at least one); a shaped field its shape's
   object; an untyped field `{}`. Anything the schema admits converts into the
   shape with nothing refused: `tests/run_shapes.sh`'s schema tier holds 3000
   generated documents to it. A shape inside itself is refused, since the
@@ -9453,6 +9455,65 @@ size = pack_size(">B I")              ' 5
 - `unpack(format, bytes [, offset])` reads from a 0-based byte offset and
   refuses when too few bytes remain. A `Q` above 2^63-1 cannot be held exactly
   and is refused; read it as two `I` fields.
+
+### Vectors
+
+*(after 0.12.0; [vectors_design.md](vectors_design.md))* A `vector` is a
+dimension and that many float32 numbers, packed: what an embedding is. It is a
+value kind of its own (`type(v)` is `"vector"`), built by a builtin, and never
+changed in place, so copying one costs nothing however long it is.
+`tests/run_vectors.sh` holds the two reasons it exists: vectors take at most a
+fifth of the memory of the same numbers as arrays (measured: 4 bytes an
+element against about 40), and `nearest` ranks at least 50 times faster than
+the same ranking written as a gBASIC loop (measured: about 480 times; 100,000
+vectors of 1536 by cosine in 0.13 s, against 68 s for the loop).
+
+```basic
+q = vector([0.1, 0.2, 0.3])
+docs = [vector([0.1, 0.2, 0.25]), vector([-0.3, 0.1, 0.0])]
+for each hit in nearest(q, docs, 1, "cosine")
+    print string(hit.index) + " " + hit.distance
+next
+```
+
+- `vector(x)` — a vector from an array of numbers, from the text of one
+  (`"[0.1, 0.2]"`, pgvector's text form and JSON's), or from a vector. An
+  element that is not a number, not finite or past a float32 (about 3.4e38) is
+  refused by its index, and so is an empty array. Each number is rounded to
+  the nearest float32: `vector([0.1])[0]` is 0.10000000149011612, and prints as
+  `0.1`.
+- `vector_bytes(v)` — its float32s, little-endian, four bytes each: what
+  OpenAI's `encoding_format: "base64"` sends once base64-decoded.
+- `vector_from_bytes(b)` — the reverse; refused unless the bytes are a whole,
+  non-zero number of float32s, none of them NaN or infinite.
+- `array(v)` gives its numbers as an array; `len(v)` is its dimension; `v[i]`
+  reads one element (from 0); `for each x in v` binds each. `v[i] = x` is
+  refused: build a new vector.
+- `print v` shows `vector[0.1,0.2,0.3]`; `json_encode(v)` writes the JSON
+  array `[0.1,0.2,0.3]`, which decodes as an array. `=` and `!=` compare
+  dimension and every element; `<` and the other orders are refused.
+- `dot(a, b)` — the inner product.
+- `norm(v)` — the Euclidean length.
+- `cosine(a, b)` — the cosine similarity, -1 to 1. Refused when either is all
+  zeros, which has no direction.
+- `distance(a, b [, metric])` — smaller is nearer for each metric: `"l2"`
+  (the default, Euclidean), `"cosine"` (1 - cosine) and `"ip"` (the negated
+  inner product), pgvector's `<->`, `<=>` and `<#>`.
+- `normalize(v)` — `v` divided by its norm; refused for all zeros.
+- `nearest(q, vs, k [, metric])` — the `k` nearest of an array of vectors, as
+  records `{ index, distance }`, nearest first, a tie by the lower index. `k`
+  past the array answers all of them.
+- `a + b`, `a - b` (one dimension), `v * n`, `n * v` and `v / n` give a
+  vector. Anything else with a vector is refused by what it got.
+- Two vectors of different dimensions are refused everywhere, naming both.
+- **The sums are in double** over the float32 elements, in an order the
+  design fixes, so an answer is the same number on every machine.
+- **The lock** `e:vector = x` converts as `vector(x)` would, and
+  `e:vector(1536) = x` also refuses any other dimension. A shape's field
+  `embedding:vector(1536)` is an array of exactly 1536 numbers in
+  `json_schema`.
+- `serialize` carries a vector (tag 16), so an actor receives one as one.
+  A G-SQL index cannot key on one.
 
 ### Bitwise
 

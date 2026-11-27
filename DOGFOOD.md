@@ -14324,3 +14324,23 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
 - **Severity:** medium
 - **What:** (1) a library handed a shape as a value could not convert into it. A lock's name is read when the program is parsed (`x:invoice = e`), so `function to_rows(df, shape)` had no way to write `r:shape = row`, and nothing answered whether a record was shaped or which shape it had; frame.bas would have had to copy the lock's rules field by field and could not even name the shape in a warning. (2) frame's `fill_missing`, `drop_missing`, `coerce`, `dtypes` and `show` looked only for `unknown`, so a frame holding `nothing` (from a shape, JSON or a database) kept incomplete rows in `drop_missing`, had the text "nothing" written by `coerce(df, c, "string")`, and printed "nothing" in `show` (`sort_by` was fixed for this in 0.6.0, its siblings were not). Also met, not a defect: an `error {...}` raised inside a frame armed with `on error goto next` is caught by that same frame, so a catch-and-reraise helper needs `on error goto <label>`, which disarms when it fires (reference "Raising").
 - **Workaround:** resolved: (1) `r:s = row`, a lock naming a variable of its own body that holds a shape (a builtin `convert(record, shape)` was built first; Matthew preferred the lock form and it was removed before release; run_shapes' varlock tier); (2) the five verbs take both absences (`_absent`), each held by frames.bas's golden (red with `is_unknown` alone).
+
+## 2026-11-27 — CC — while: vectors increment 1 (docs/vectors_design.md)
+- **Type:** missing-feature (fixed here), bug (build, fixed here), language-surprise
+- **Severity:** medium
+- **What:** (1) A lock's argument could be a name only (`money(USD)`), so the
+  natural spelling of an embedding's type, `e:vector(1536)`, was a syntax
+  error. Found by building the shape field `embedding:vector(1536)`, which is
+  why the AI-engineering increments come before the 1.0 freeze.
+  (2) `src/modules/vector.c`, #included by eval.c, was missing from eval.o's
+  rule in the Makefile, so changing it alone rebuilt nothing: two
+  perturbations of it ran against the unperturbed binary and read as green.
+  `tests/run_make_deps.sh` checked only headers, not included `.c` files.
+  (3) `join(["a", 1.5], " ")` refuses ("join array elements must be
+  strings"): an oracle printing numbers needs `string()` around each. Known
+  and documented; noted again because "robust by default" would argue `join`
+  take a number's printed text, as `+` does.
+- **Workaround:** (1) resolved: `type_lock: IDENT LPAREN NUMBER RPAREN`, zero
+  conflicts, only `vector` takes a number. (2) resolved: the rule lists it, and
+  make_deps_check.py now reports an included `.c` its rule leaves out, with a
+  control. (3) `string()` each element; not changed here.

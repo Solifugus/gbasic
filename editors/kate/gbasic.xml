@@ -121,6 +121,7 @@
       <item>contains</item>
       <item>copy</item>
       <item>correlation</item>
+      <item>cosine</item>
       <item>count</item>
       <item>covariance</item>
       <item>decode</item>
@@ -132,6 +133,8 @@
       <item>dh_shared</item>
       <item>directory_name</item>
       <item>disk_space</item>
+      <item>distance</item>
+      <item>dot</item>
       <item>ec_keypair</item>
       <item>ec_public</item>
       <item>ecdh_shared</item>
@@ -225,6 +228,9 @@
       <item>monitor</item>
       <item>monotonic</item>
       <item>move</item>
+      <item>nearest</item>
+      <item>norm</item>
+      <item>normalize</item>
       <item>now</item>
       <item>number</item>
       <item>overwrite</item>
@@ -325,6 +331,9 @@
       <item>valid_utf8</item>
       <item>values</item>
       <item>variance</item>
+      <item>vector</item>
+      <item>vector_bytes</item>
+      <item>vector_from_bytes</item>
       <item>warning</item>
       <item>write</item>
       <item>x25519_keypair</item>

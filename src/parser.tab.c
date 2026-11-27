@@ -7763,8 +7763,14 @@ static int shape_refs_check(gb_parse_ctx *ctx) {
                 }
             }
         }
+        /* sized from the list, not a count of it: a twelfth type (vector)
+           overran a buffer sized for eleven */
+        size_t ntypes = 0;
+        while (types[ntypes]) {
+            ntypes++;
+        }
         const char **words = malloc(sizeof *words *
-                                    (ctx->shape_decl_count + ctx->bound_name_count + 12));
+                                    (ctx->shape_decl_count + ctx->bound_name_count + ntypes + 1));
         if (!words) {
             abort();
         }
@@ -7793,7 +7799,8 @@ static int shape_refs_check(gb_parse_ctx *ctx) {
             snprintf(message, sizeof message,
                      "'%s' is neither a data type nor a shape this file declares. The types are "
                      "number, string (or text), boolean, date, time, datetime, duration, "
-                     "money(USD), file and dir; a shape is declared with `shape %s ... end shape`. "
+                     "money(USD), file, dir and vector; a shape is declared with `shape %s ... "
+                     "end shape`. "
                      "A lens such as {trimmed} is written in braces", ref->name, ref->name);
         }
         free(words);
