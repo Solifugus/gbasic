@@ -213,7 +213,7 @@ printf 'TIER hnsw: the index declared, taken by the planner, and answering as th
 mkdir -p "$work/hnsw"
 (cd "$work/hnsw" && timeout -k 5 300 "$root/gbasic" "$root/tests/gsql_vector/hnsw.bas") \
     >"$work/hnsw.out" 2>"$work/hnsw.err"
-verdict hnsw "$work/hnsw.out" $? 90
+verdict hnsw "$work/hnsw.out" $? 94
 if [ -s "$work/hnsw.err" ]; then
     sed 's/^/       /' "$work/hnsw.err" | head -5
     fail "hnsw: the fixture wrote to stderr"

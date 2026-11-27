@@ -198,6 +198,26 @@ e = error
 check("text", e.message, "ef_search takes a whole number from 1 to 1000, as pgvector's hnsw.ef_search does (or unknown, for the default of 40), not a string")
 on error stop
 
+' --- a narrow filter widens the beam until it has the rows ---------------------------
+' 300 rows, 6 of them rare: from a beam of 5 the search must double and double
+' again (never answering short), and then answer as the exact search does
+db.exec("create table bidx (id integer primary key, tag text, e vector(3))")
+db.exec("create table bplain (id integer primary key, tag text, e vector(3))")
+db.exec("create index bidx_e on bidx using hnsw (e vector_l2_ops) with (m = 4, ef_construction = 8)")
+big = []
+for i = 1 to 300
+    append(big, { id: i, tag: "rare" if mod(i, 50) = 7 else "common", e: vector([mod(i * 7, 23) - 11, mod(i * 5, 17) - 8, mod(i, 13) - 6]) })
+next
+gsql.insert(db, "bidx", big)
+gsql.insert(db, "bplain", big)
+db.ef_search = 2
+for each k in [1, 3, 6, 9]
+    a = db.query("select id, e <-> '[1, 1, 1]' as d from bidx where tag = 'rare' order by e <-> '[1, 1, 1]' limit " + string(k))
+    b = db.query("select id, e <-> '[1, 1, 1]' as d from bplain where tag = 'rare' order by e <-> '[1, 1, 1]' limit " + string(k))
+    check("a narrow filter, limit " + string(k) + ", widened to the rows", a, b)
+next
+db.ef_search = unknown
+
 ' --- a dump and restore builds the graph again, answering the same ----------------------
 gsql.dump(db, "hnsw.sql")
 dumped = read("hnsw.sql")
