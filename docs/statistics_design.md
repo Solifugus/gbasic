@@ -135,6 +135,11 @@ columns are shared by reference, only a changed column forks).
 df = frame.read_csv(path)        ' per-column type inference; empty cells -> unknown
 frame.write_csv(df, path)
 ```
+With a shape (docs/shapes_design.md §6.4, 2026-11-26) nothing is guessed:
+`frame.read_csv(path, invoice)` reads each column as its field (an empty
+cell `nothing` outside text), `frame.to_rows(df, invoice)` answers invoices
+and `frame.conform(df, invoice)` puts any frame into the shape. The
+missing-cell verbs take `nothing` as well as `unknown`.
 Caution: gBASIC numbers are IEEE doubles (no exact int), so import keeps
 **ID/account-like columns as strings** to avoid silent precision loss on big
 integers — the same rule the DB module mappings already follow.

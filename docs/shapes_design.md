@@ -1,13 +1,13 @@
 # Shapes: a record's declared form
 
-Status: **ruled 2026-11-26; increments 0 to 4 built 2026-11-26**
+Status: **ruled 2026-11-26; increments 0 to 5 built 2026-11-26**
 (tests/run_reserved_forms.sh, tests/run_shapes.sh): the block, instances,
 fixed fields, writes, methods and shaped fields, the shape as a lock (§5),
 the boundaries (§6.1-§6.3: CSV, `json_schema`, G-SQL rows and
-`gsql.expect`), and field positions (§7, measured: a site's cache, which
-every record gains, not a position the shape promises). `llm.ask` with a
-shape (§6.5) goes with the AI-engineering work; frames (§6.4) are increment
-5. The concept
+`gsql.expect`), field positions (§7, measured: a site's cache, which
+every record gains, not a position the shape promises), and frames (§6.4,
+with `convert(record, shape)`, the lock when the shape is a value). `llm.ask`
+with a shape (§6.5) goes with the AI-engineering work. The concept
 was agreed by Matthew on 2026-11-25 ("It feels like a more intuitive and
 higher level C struct"), with three rulings: the word is worth having (as a
 contextual keyword, ruled the same day), fixed means fixed (§4.2), and a shape
@@ -317,12 +317,51 @@ not two).
   column, and `expect` says so. (This list first left out `time`, which G-SQL
   has: corrected when building it.)
 
-### 6.4 Frames
+### 6.4 Frames (increment 5, built 2026-11-26)
 
-`frame.read_csv(path, invoice)` types the columns by the shape instead of
-guessing from the first cell, and `frame.to_rows(df)` answers invoices: a
-shape as Pandas' `dtype=` or a pandera schema. Library work (frame.bas), after
-the core.
+```basic
+df = frame.read_csv(path, invoice)       ' each column its field's type, in declared order
+rows = frame.to_rows(df, invoice)        ' invoices
+df = frame.conform(sheet_frame, invoice) ' a frame from anywhere, put into the shape
+inv = convert(row, invoice)              ' the lock, when the shape is a value
+```
+
+A shape as Pandas' `dtype=` or a pandera schema. Built in `frame.bas`, over
+one new builtin.
+
+- **`frame.read_csv(path, shape)` reads through `csv.records(f, shape)`**,
+  so a shaped frame's header, warnings and refusals are §6.1's, word for
+  word: matched once by name, then loosely; a cell refused by line and
+  column; an empty cell `nothing` outside text. The columns are the fields,
+  in declared order, whatever order the file had them in. Without a shape it
+  guesses as before (12.50 a number 12.5, "true" text, an empty cell
+  `unknown`).
+- **`frame.to_rows(df, shape)` and `frame.conform(df, shape)` convert by the
+  shape's lock.** A frame's column names are the program's own, so they are
+  matched EXACTLY: a file's header is matched loosely by `read_csv`, where it
+  is someone else's text. The columns are judged ONCE, before any row, by
+  converting a record of them all into the shape, so a column the shape lacks
+  (2126) and a field with no column and no default (2127) are each said once
+  however many rows follow, and for a frame with none. Every row starts from
+  that judged record and writes its cells into its fields, each converting as
+  a write does; a cell that does not is refused naming its row, counted from 1
+  as `csv.write` counts.
+- **`frame.to_rows(df)` without a shape answers plain records.** The note
+  said it would answer invoices; a frame is a record of lists, and none of
+  its columns can carry a shape without becoming a field every other verb
+  would read as a column, so the shape is named where it is wanted.
+- **`convert(record, shape)` is new**: `x:invoice = e` when the shape is a
+  VALUE. A library handed a shape cannot write a lock (a lock's name is read
+  when the program is parsed), and gBASIC had no other way to ask whether a
+  record is shaped or to name its shape, so frame.bas could not do this in
+  gBASIC alone. It converts as the lock does, the same warnings and the same
+  refusals; `nothing` and `unknown` pass, as a lock lets them, and a record
+  already of the shape is returned as it is. Its name is open to Matthew.
+- **Found doing it**: `fill_missing`, `drop_missing`, `coerce`, `dtypes` and
+  `show` looked only for `unknown`, so a frame holding `nothing` (from a
+  shape, JSON or a database) kept its incomplete rows, had "nothing" written
+  into a text column by `coerce`, and printed "nothing" in `show`. They take
+  both absences now (`_absent`), as `sort_by` has since 0.6.0.
 
 ### 6.5 A model's structured answer
 
@@ -534,7 +573,7 @@ included).
    AI-engineering work.
 4. **Field positions** (§7): measured first, built as a site's cache; held
    number fields left out (§7).
-5. **Frames** (§6.4), library work.
+5. **Frames** (§6.4), library work: built, with `convert(record, shape)`.
 
 ## 11. Rulings (Matthew, 2026-11-26)
 

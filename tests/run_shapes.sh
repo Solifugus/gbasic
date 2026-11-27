@@ -69,6 +69,20 @@
 #             plain in two orders, two shapes holding the field at different
 #             positions (number in one, text in the other), a record of 21
 #             fields (hashed), one without the field, a shared record written.
+#   frames    increment 5 (§6.4): tests/shapes/frames.bas against frames.out
+#             (worked by hand, both lanes): frame.read_csv(path, shape) through
+#             csv.records(f, shape), the columns the fields in declared order;
+#             frame.to_rows(df, shape) the same invoices csv.records reads, and
+#             back by from_rows; frame.conform(df, shape) for a frame from
+#             elsewhere; the missing-cell verbs seeing a shaped frame's nothing
+#             (they saw only unknown: drop_missing kept the rows, coerce wrote
+#             "nothing"); and convert(record, shape), the lock when the shape is
+#             a value. Then the columns judged once: a dropped column and a
+#             field with none said once each for 50 rows, and for no rows;
+#             `on warning stop` refusing there in the warning's words; and the
+#             refusals, each beside its neighbour: a cell by its row (from 1,
+#             as csv.write counts), read_csv's by line, a plain record or a
+#             number for a shape, convert's own.
 #   cost      the slot found once a site, counted by callgrind: reading, and
 #             writing, the 8th of 8 fields costs what the 1st does, within 2%
 #             of the whole run (before: 8% more to read, 6% to write). Skips
@@ -349,6 +363,62 @@ case "$got" in
     *) fail "shadowed after a field read: $got" ;;
 esac
 
+echo "--- TIER frames ---"
+mkdir -p "$work/fd"
+if "$G" tests/shapes/frames.bas "$work/fd" 2>"$work/err" | cmp -s - tests/shapes/frames.out && [ ! -s "$work/err" ]; then
+    pass "frames.bas prints the hand-worked golden, nothing on stderr"
+else
+    fail "frames.bas: $(diff <("$G" tests/shapes/frames.bas "$work/fd" 2>&1) tests/shapes/frames.out | head -5)"
+fi
+if GBASIC_COMPILE=all "$G" tests/shapes/frames.bas "$work/fd" 2>/dev/null | cmp -s - tests/shapes/frames.out; then
+    pass "and compiled, the same bytes"
+else
+    fail "frames.bas compiled differs"
+fi
+FH='load frame\nshape inv\n    id:text\n    amount:money(USD)\n    paid:boolean = false\nend shape\n'
+# 50 rows with a column the shape lacks and no column for id: each said once,
+# at the columns, before the rows; and with no rows at all, the same two (a
+# program of its own: one site says one message once a run)
+fwarn() {   # fwarn <label> <file> <source> <stdout>
+    printf '%b' "$3" >"$work/$2"
+    local out rc
+    out=$(cd "$work" && "$G" "$2" 2>"$work/$2.err"); rc=$?
+    if [ $rc = 0 ] && [ "$out" = "$(printf '%b' "$4")" ] && [ "$(wc -l <"$work/$2.err")" = 2 ] &&
+       grep -q 'inv has no field note, so it was dropped converting a record into one (inv is declared at line 2) .*\[2126\]' "$work/$2.err" &&
+       grep -q 'inv.id was not given and has no default, so it is nothing (inv is declared at line 2) .*\[2127\]' "$work/$2.err"; then
+        pass "$1"
+    else
+        fail "$1: exit $rc, out [$out], stderr: $(cat "$work/$2.err")"
+    fi
+}
+fwarn "a dropped column and a field with none: said once each for 50 rows" fw.bas "${FH}df = { amount: [], note: [] }\nfor i = 1 to 50\n    append(df.amount, string(i))\n    append(df.note, \"x\")\nend for\nrows = frame.to_rows(df, inv)\nprint len(rows)\nprint rows[49].amount\n" '50\n50.00'
+fwarn "and for a frame with no rows" fz.bas "${FH}print frame.conform({ amount: [], note: [] }, inv)\n" '{"id":[],"amount":[],"paid":[]}'
+runs "the working neighbour: every field a column, nothing said" "${FH}print frame.to_rows({ id: [\"a\"], amount: [\"1\"] }, inv)\n" '[{"id":"a","amount":1.00,"paid":false}]'
+printf '%b' "on warning stop\n${FH}rows = frame.to_rows({ id: [\"a\"], amount: [\"1\"], note: [\"x\"] }, inv)\nprint \"ran\"\n" >"$work/fs.bas"
+out=$(cd "$work" && "$G" fs.bas 2>&1)
+case "$out" in
+    *ran*|*"row 1"*) fail "on warning stop let a column drop, or named a row: $out" ;;
+    *"inv has no field note, so it was dropped"*) pass "on warning stop: refused at the columns, in the warning's own words" ;;
+    *) fail "frame strict: $out" ;;
+esac
+refuse "a cell that does not convert, by its row" fr1.bas "${FH}rows = frame.to_rows({ id: [\"a\", \"b\"], amount: [\"1\", \"lots\"] }, inv)\n" "frame.to_rows: row 2: amount is locked to money by amount:money(USD) at line 4, and this value does not convert"
+refuse "and through conform" fr2.bas "${FH}df = frame.conform({ id: [\"a\"], amount: [\"lots\"] }, inv)\n" "frame.conform: row 1: amount is locked to money"
+refuse "read_csv: a cell by line and column, csv.records' own words" fr3.bas "${FH}write({file}\"in.csv\", \"id,amount\\\\na,1\\\\nb,lots\\\\n\")\ndf = frame.read_csv(\"in.csv\", inv)\n" "csv.records: line 3 (record 2), column 'amount': amount is locked to money"
+printf '%b' "${FH}write({file}\"in.csv\", \"ID,Amount,extra\\\\na,1,x\\\\nb,2,y\\\\n\")\ndf = frame.read_csv(\"in.csv\", inv)\nprint df\n" >"$work/fc.bas"
+out=$(cd "$work" && "$G" fc.bas 2>"$work/fc.err")
+[ "$out" = '{"id":["a","b"],"amount":[1.00,2.00],"paid":[false,false]}' ] &&
+   [ "$(grep -c "csv.records: column 'extra' of the header on line 1 matches no field of inv, so it was dropped" "$work/fc.err")" = 1 ] &&
+   [ "$(wc -l <"$work/fc.err")" = 1 ] &&
+    pass "read_csv: the header matched loosely, the dropped column said once" ||
+    fail "read_csv shaped: out [$out], stderr: $(cat "$work/fc.err")"
+refuse "read_csv: a plain record is no shape" fr4.bas "${FH}df = frame.read_csv(\"in.csv\", { id: 1 })\n" 'frame.read_csv expects a shape, such as invoice from `shape invoice`'
+refuse "to_rows: a plain record is no shape" fr5.bas "${FH}rows = frame.to_rows({ id: [\"a\"] }, { id: 1 })\n" 'frame.to_rows expects a shape'
+refuse "conform: a number is no shape" fr6.bas "${FH}df = frame.conform({ id: [\"a\"] }, 3)\n" 'frame.conform expects a shape'
+refuse "convert: a value that is not a record" fr7.bas "${FH}x = convert([1], inv)\n" 'convert: an array is not a record, and only a record converts into shape inv'
+refuse "convert: a plain record is no shape" fr8.bas "${FH}x = convert({ id: \"a\" }, { id: \"b\" })\n" 'convert expects a shape as its second argument'
+refuse "convert: one argument" fr9.bas "${FH}x = convert({ id: \"a\" })\n" 'convert expects two arguments: a record and a shape'
+runs "the working neighbour: convert of a record" "${FH}print convert({ id: \"a\", amount: \"1.5\" }, inv)\n" '{"id":"a","amount":1.50,"paid":false}'
+
 echo "--- TIER cost ---"
 . tests/valgrind_tier.sh
 if vg_available && command -v callgrind_annotate >/dev/null 2>&1; then
@@ -380,6 +450,7 @@ if vg_available; then
     vg_run -q "$G" tests/shapes/locks.bas >/dev/null 2>"$work/vg" || bad="$bad locks.bas"
     vg_run -q "$G" tests/shapes/sites.bas >/dev/null 2>"$work/vg" || bad="$bad sites.bas"
     vg_run -q "$G" tests/shapes/csv.bas "$work" >/dev/null 2>"$work/vg" || bad="$bad csv.bas"
+    vg_run -q "$G" tests/shapes/frames.bas "$work/fd" >/dev/null 2>"$work/vg" || bad="$bad frames.bas"
     vg_run -q "$G" tests/shapes/schema_check.bas schema >/dev/null 2>"$work/vg" || bad="$bad schema_check.bas"
     if [ "$("$G" "$work/gprobe.bas" 2>&1)" = loaded ]; then
         mkdir -p "$work/gv"

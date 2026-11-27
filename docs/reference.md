@@ -1769,6 +1769,14 @@ gsql.expect(db, "invoice", invoice)           ' the table checked, nothing run
   shape's locks convert: a kind JSON has no type for is a string held by a
   pattern no wider than its lock reads, so a model that answers within the
   schema is never refused.
+- **Frames** (`load frame`): `frame.read_csv(path, invoice)` reads through
+  `csv.records(f, invoice)` (the CSV rules above), the columns the fields in
+  declared order. `frame.to_rows(df, invoice)` answers invoices and
+  `frame.conform(df, invoice)` puts a frame from anywhere into the shape, the
+  columns matched by name exactly and judged once: a column dropped or a
+  field missing is warned once (2126, 2127) however many rows follow, and a
+  cell that does not convert is refused naming its row, from 1. Both go
+  through `convert(record, shape)`, the lock when the shape is a value.
 - **G-SQL**: a row converts into a shape as any record does
   (`for each c:customer in db.customer[.active]`), and
   `gsql.expect(db, table, shape)` checks the table against the shape when the
@@ -8689,6 +8697,14 @@ count({})                      ' 0
   shape with nothing refused: `tests/run_shapes.sh`'s schema tier holds 3000
   generated documents to it. A shape inside itself is refused, since the
   schema is written out in full.
+- `convert(record, shape)` *(after 0.12.0)* - the record converted into the
+  shape as `x:invoice = record` would convert it, for a shape held as a VALUE
+  (a library handed one cannot write its lock). A field the shape lacks is
+  dropped (2126), one missing takes its default or is `nothing` (2127), and a
+  field that does not convert is refused in its lock's words. `nothing` and
+  `unknown` pass, as a lock lets them; a record already of the shape comes
+  back as it is; anything else is refused, and so is a second argument that
+  is not a shape. `convert({ id: "a", amount: "1.5" }, invoice)`.
 - `quote(value)` - gBASIC source code literal with escaping
 - `serialize(value)` - exact binary round-trip serialization (see below).
   Every type survives and, since version 3, so does every digit: a `number`
