@@ -1,0 +1,9 @@
+inner handled division by zero
+reads saw array index out of range at line 18
+inner handled division by zero
+caller caught: array index out of range at line 29
+inner handled division by zero
+snapshot line 43
+checked here
+inner handled division by zero
+after a check: division by zero

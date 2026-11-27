@@ -39,6 +39,7 @@ positive=(
     arg_raise
     first_raise_wins
     try_expr
+    held_error
 )
 
 for name in "${positive[@]}"; do
@@ -48,6 +49,33 @@ for name in "${positive[@]}"; do
         || fail "$name (output diverged)"
     printf 'PASS %s\n' "$name"
 done
+
+# --- THE REPORT AT THE END NAMES THE UNCHECKED ERROR (DOGFOOD 2026-11-27) ---
+# The top level caught an index error and only read its message; a function
+# then caught and checked a division by zero of its own. The report at the end
+# named the division, which was handled, at the function's line.
+cat > "$scratch/held_report.bas" <<'BAS'
+function inner(x)
+    on error goto next
+    y = 1 / x
+    if error then
+        return "handled"
+    end if
+    return "ok"
+end function
+on error goto next
+z = [1][5]
+print error.message
+print inner(0)
+BAS
+if held_out="$(./gbasic "$scratch/held_report.bas" 2>&1 >/dev/null)"; then
+    fail "held report (the program exited 0 with an unchecked error)"
+fi
+case "$held_out" in
+    *"held_report.bas:10:"*"array index out of range (this error was caught, and nothing checked it"*)
+        printf 'PASS the end-of-program report names the unchecked error, not a callee'"'"'s handled one\n' ;;
+    *) printf '%s\n' "$held_out" | sed 's/^/  /'; fail "held report (it named another error)" ;;
+esac
 
 # --- THE TRACEBACK BENEATH THE DIAGNOSTIC ------------------------------------
 # `error.trace` has carried the frames since PLAT-ERR and the report threw them

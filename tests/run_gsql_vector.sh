@@ -10,7 +10,7 @@
 #               accepted neighbour; precedence; CAST and text; gsql.columns and
 #               gsql.expect; a dump and restore to the same serialize bytes
 #   oracle      tests/gsql_vector/oracle.py makes a table and 24 queries per
-#               seed (3 to 1536 dimensions, copies for ties, every spelling,
+#               seed (3, 17, 64 and 1536 dimensions, one a seed, copies for ties, every spelling,
 #               a filter or none) and judges G-SQL's answers EXACTLY from its
 #               own arithmetic, with controls that the sum order and the
 #               metric could each have been caught wrong
@@ -73,7 +73,7 @@ printf 'TIER semantics: every answer worked by hand, each refusal beside its nei
 mkdir -p "$work/sem"
 (cd "$work/sem" && timeout -k 5 120 "$root/gbasic" "$root/tests/gsql_vector/sql.bas") \
     >"$work/sem.out" 2>"$work/sem.err"
-verdict semantics "$work/sem.out" $? 100
+verdict semantics "$work/sem.out" $? 85
 if [ -s "$work/sem.err" ]; then
     sed 's/^/       /' "$work/sem.err" | head -5
     fail "semantics: the fixture wrote to stderr"

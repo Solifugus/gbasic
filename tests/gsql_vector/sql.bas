@@ -203,7 +203,8 @@ check("expect holds vector(3) to vector(3)", error, false)
 gsql.expect(db, "doc", unsized)
 check("an unsized lock to an unsized column", error, false)
 gsql.expect(db, "doc", wrong)
-check("expect refuses vector(4)", error.message,
+e = error
+check("expect refuses vector(4)", e.message,
       "gsql.expect: table doc does not hold shape wrong (wrong is declared at line 193): wrong.e is vector(4), and column e is vector(3)")
 on error stop
 rows = db.query("select id, e from doc where id = 4")

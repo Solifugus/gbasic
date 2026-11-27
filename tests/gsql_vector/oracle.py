@@ -43,6 +43,15 @@ def lanes(terms):
     return (s[0] + s[1]) + (s[2] + s[3])
 
 
+def ltr(terms):
+    """left to right, one term at a time: NOT sum(), which since Python 3.12
+    is compensated for floats and so is no plain order at all"""
+    t = 0.0
+    for x in terms:
+        t += x
+    return t
+
+
 def dot(a, b):
     return lanes(x * y for x, y in zip(a, b))
 
@@ -59,11 +68,11 @@ def distance(metric, a, b):
 def plain(metric, a, b):
     """the same distance summed left to right: the control's"""
     if metric == "cosine":
-        c = sum(x * y for x, y in zip(a, b)) / (math.sqrt(sum(x * x for x in a)) * math.sqrt(sum(y * y for y in b)))
+        c = ltr(x * y for x, y in zip(a, b)) / (math.sqrt(ltr(x * x for x in a)) * math.sqrt(ltr(y * y for y in b)))
         return 1 - max(-1.0, min(1.0, c))
     if metric == "ip":
-        return -sum(x * y for x, y in zip(a, b))
-    return math.sqrt(sum((x - y) * (x - y) for x, y in zip(a, b)))
+        return -ltr(x * y for x, y in zip(a, b))
+    return math.sqrt(ltr((x - y) * (x - y) for x, y in zip(a, b)))
 
 
 ACLS = ["staff", "board", "legal"]
@@ -73,7 +82,7 @@ SPELLINGS = {"l2": ["<->", "l2_distance", "distance"], "cosine": ["<=>", "cosine
 
 def gen(seed, path):
     rng = random.Random(seed)
-    d = rng.choice([3, 17, 64, 1536])
+    d = [17, 3, 64, 1536][seed % 4]   # every size across the runner's four seeds
     n = 400 if d < 1536 else 150
     rows = [[f32(rng.gauss(0, 1)) for _ in range(d)] for _ in range(n)]
     for i in range(0, n, 9):           # copies: their distances tie
@@ -136,12 +145,12 @@ def check(cases_path, answers_path):
                     metric_differs += 1
                     break
     nq = sum(1 for c in cases if c[0] == "query")
-    print("ok %d checks, %d mismatches; a left-to-right sum differs on %d answers; %d of %d queries rank "
-          "differently under another metric" % (checks, bad, plain_differs, metric_differs, nq))
     dim = int(next(c[1] for c in cases if c[0] == "dim"))
     if dim < 5:
         print("note: at %d dimensions the specified order IS left to right, so that control does not apply" % dim)
-    elif plain_differs == 0:
+    print("ok %d checks, %d mismatches; a left-to-right sum differs on %d answers; %d of %d queries rank "
+          "differently under another metric" % (checks, bad, plain_differs, metric_differs, nq))
+    if dim >= 5 and plain_differs == 0:
         print("MISMATCH control: no answer tells the specified sum order from a plain one")
         bad += 1
     if metric_differs < nq // 2:

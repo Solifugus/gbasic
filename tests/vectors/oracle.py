@@ -39,6 +39,15 @@ def lanes(terms):
     return (s[0] + s[1]) + (s[2] + s[3])
 
 
+def ltr(terms):
+    """left to right, one term at a time: NOT sum(), which since Python 3.12
+    is compensated for floats and so is no plain order at all"""
+    t = 0.0
+    for x in terms:
+        t += x
+    return t
+
+
 def dot(a, b):
     return lanes(x * y for x, y in zip(a, b))
 
@@ -168,7 +177,7 @@ def check(cases_path, answers_path):
             judge(printed.startswith("vector[") and len(elems) == len(a) and
                   all(shortest_ok(t, x) for t, x in zip(elems, a)),
                   "%s printed %s" % (name, printed[:80]))
-            if len(a) >= 16 and sum(x * y for x, y in zip(a, b)) != dot(a, b):
+            if len(a) >= 16 and ltr(x * y for x, y in zip(a, b)) != dot(a, b):
                 plain_differs += 1
         else:
             k, q = int(c[2]), unhex(c[3])
