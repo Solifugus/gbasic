@@ -142,10 +142,18 @@ PY
         printf 'PASS oracle (2100 values agree with python decimal, digit for digit)\n'
     fi
     echo "--- TIER held ---"
-    timeout -k 5 120 ./gbasic "$tmp/held.bas" > "$tmp/held.got" 2> "$tmp/held.err"
+    # A hang guard, not a speed claim: under GBASIC_COMPILE=all, LLVM compiles
+    # the 21 functions of ~400 statements in 34-36 s alone (2026-11-27), and
+    # under a parallel gate that passed 120 s, cutting the output short and
+    # reading as 508 wrong answers. The bound is generous, and reached it says so.
+    timeout -k 5 600 ./gbasic "$tmp/held.bas" > "$tmp/held.got" 2> "$tmp/held.err"
+    held_rc=$?
     bad="$(paste -d'|' "$tmp/held.got" "$tmp/oracle.want" | awk -F'|' '$1 != $2' | wc -l)"
     lines="$(wc -l < "$tmp/held.got")"
-    if [ "$lines" != 2100 ] || [ "$bad" != 0 ] || [ -s "$tmp/held.err" ]; then
+    if [ "$held_rc" = 124 ] || [ "$held_rc" = 137 ]; then
+        printf 'FAIL held (did not finish in 600 s: a hang, or a machine far slower; %s lines before it was stopped)\n' "$lines"
+        status=1
+    elif [ "$lines" != 2100 ] || [ "$bad" != 0 ] || [ -s "$tmp/held.err" ]; then
         paste -d'|' "$tmp/held.got" "$tmp/oracle.want" | awk -F'|' '$1 != $2' | head -5 | sed 's/^/  /'
         head -3 "$tmp/held.err" | sed 's/^/  /'
         printf 'FAIL held (%s lines, %s disagree with python decimal)\n' "$lines" "$bad"; status=1
