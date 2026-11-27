@@ -131,7 +131,7 @@ refuse 'x:USD = 1'          "a lock names a type, and money is one: write x:mone
 refuse 'x:money = 1'        "money needs its currency: write x:money(USD)"
 refuse 'x:money(usd) = 1'   "money takes a three-letter currency code, like money(USD), not 'usd'"
 refuse 'x:number(2) = 1'    "syntax error"
-refuse 'x:date(ISO) = 1'    "date takes no argument; only money does, as in money(USD)"
+refuse 'x:date(ISO) = 1'    "date takes no argument; only money and vector do, as in money(USD) and vector(1536)"
 refuse 'x:array = 1'        "'array' cannot be a lock: a lock is for a data type"
 refuse 'x:trimmed = 1'      "A lens such as {trimmed} is written in braces"
 refuse 'for each x:int in [1]

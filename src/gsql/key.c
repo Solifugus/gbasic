@@ -333,6 +333,7 @@ GsqlKeyStatus gsql_key_append(GsqlKey *key, const unsigned char *value,
     case SER_ACTOR:
     case SER_FUNCTION:
     case SER_REGEX:
+    case SER_VECTOR:   /* no order to index by (docs/vectors_design.md §6) */
         status = GSQL_KEY_NOT_INDEXABLE;
         break;
     default:

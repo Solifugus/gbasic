@@ -21,7 +21,8 @@ typedef enum {
     SER_DIR,
     SER_ACTOR,  /* spawn-args only: an actor handle, realized by an inherited fd */
     SER_FUNCTION, /* a function value: registered name (+ optional library), §10 */
-    SER_REGEX   /* a compiled regex: its pattern + flags; the receiver recompiles */
+    SER_REGEX,  /* a compiled regex: its pattern + flags; the receiver recompiles */
+    SER_VECTOR  /* a vector: its dimension, then each float32 little-endian */
 } SerTag;
 
 #endif

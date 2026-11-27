@@ -83,7 +83,8 @@ function battery()
         { name: "kwd", v: k },
         { name: "nested", v: { list: [1, [2.5, "x"], {k: "v"}], u: unknown } },
         { name: "file", v: {file}"/etc/hostname" },
-        { name: "dir", v: {dir}"/tmp" }
+        { name: "dir", v: {dir}"/tmp" },
+        { name: "vector", v: vector([1.5, -0.0, 0.1]) }
     ]
 end function
 
@@ -173,6 +174,9 @@ program main(args)
     ' (docs/exact_decimal_design.md §6): 1.5 is 15 at scale 1.
     check("an exact decimal is flag 2 + scale + mantissa LE", hexof(1.5), "674253030402" + "01" + "0f00000000000000")
     check("a decimal keeps its digits through the bytes", deserialize(serialize(0.123456789012345678)) = 0.123456789012345678, true)
+    ' A VECTOR is tag 16, its dimension as LEB128, then each float32's bits
+    ' LE (docs/vectors_design.md §6): 1.5 is 3fc00000, -2 is c0000000.
+    check("a vector is tag 16 + dimension + float32s LE", hexof(vector([1.5, -2])), "67425303" + "10" + "02" + "0000c03f" + "000000c0")
     check("a string is a LEB128 length", hexof("hi"), "6742530305" + "02" + "6869")
     check("a length past 127 takes two LEB128 bytes", left(hexof(repeat("x", 300)), 14), "6742530305" + "ac02")
     check("an array count is LEB128", hexof([true]), "6742530306" + "01" + "0301")

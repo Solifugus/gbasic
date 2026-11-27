@@ -18,7 +18,7 @@ import sys
 
 TAGS = {1: "null", 2: "unknown", 3: "bool", 4: "number", 5: "string",
         6: "array", 7: "record", 8: "datetime", 9: "duration", 10: "money",
-        11: "file", 12: "dir"}
+        11: "file", 12: "dir", 16: "vector"}
 
 
 class Reader:
@@ -91,6 +91,9 @@ class Reader:
             numeric = struct.unpack("<H", self.take(2))[0]
             code = self.take(self.u8()).decode("ascii")
             return ("money", units, exponent, numeric, code)
+        if tag == "vector":
+            dim = self.uleb()
+            return ("vector", struct.unpack("<%df" % dim, self.take(4 * dim)))
         raise ValueError("unknown tag")
 
 
@@ -136,6 +139,8 @@ EXPECTED = {
         "u": ("unknown",)}),
     "file": ("file", b"/etc/hostname"),
     "dir": ("dir", b"/tmp"),
+    # float32s: 0.1 is the float32 nearest it, as Python's struct makes it
+    "vector": ("vector", (1.5, -0.0, struct.unpack("<f", struct.pack("<f", 0.1))[0])),
 }
 
 

@@ -6,6 +6,7 @@
 #include "gb_jit.h"
 #include "builtins.h"
 #include "gb_decimal.h"
+#include "gb_vector.h"
 #include "platform.h"
 #include "actor.h"
 #include "diagnostics.h"
@@ -18,6 +19,7 @@
 #include <errno.h>
 #include <fcntl.h>
 #include <limits.h>
+#include <float.h>
 #include <math.h>
 #define PCRE2_CODE_UNIT_WIDTH 8
 #include <pcre2.h>   /* docs/regex_pcre2_design.md; static with -DPCRE2_STATIC on Windows */
@@ -328,7 +330,8 @@ typedef enum {
     VALUE_GSQL_CONNECTION,
     VALUE_GSQL_STATEMENT,
     VALUE_CSV_SOURCE,
-    VALUE_NET
+    VALUE_NET,
+    VALUE_VECTOR         /* packed float32, immutable (docs/vectors_design.md) */
 } ValueKind;
 
 typedef enum {
@@ -468,6 +471,7 @@ struct Value {
         GsqlConnectionValue *gsql_connection;
         GsqlStatementValue *gsql_statement;
         RegexValue *regex;
+        GbVector *vector;    /* shared by ref_count: never changed in place */
         /* A first-class watcher value: an index into the global watcher
          * registry. Indices are stable because unwatch TOMBSTONES an entry
          * (active = 0) rather than removing it -- the fire queue holds
@@ -811,7 +815,8 @@ typedef enum {
     LOCK_MONEY,
     LOCK_FILE,
     LOCK_DIR,
-    LOCK_SHAPE           /* a shape's name (docs/shapes_design.md §5) */
+    LOCK_SHAPE,          /* a shape's name (docs/shapes_design.md §5) */
+    LOCK_VECTOR          /* vector, or vector(N) (docs/vectors_design.md §5) */
 } LockKind;
 
 struct GbShape;
@@ -821,6 +826,7 @@ typedef struct {
     const struct GbShape *shape;   /* LOCK_SHAPE: lives until runtime_teardown */
     char currency[4];    /* LOCK_MONEY: the alphabetic code */
     unsigned short currency_code;   /* and its numeric one */
+    size_t dimension;    /* LOCK_VECTOR: the N of vector(N), or 0 for any */
     char spelled[24];    /* the type as written: "number", "text", "money(USD)" */
     int line;            /* where the lock was declared */
     int is_return;       /* a function's return type, not a variable's lock */
@@ -1393,6 +1399,8 @@ static const char *value_kind_name(ValueKind kind) {
         return "watcher";
     case VALUE_WORKBOOK:
         return "workbook";
+    case VALUE_VECTOR:
+        return "vector";
     }
     return "value";
 }
@@ -4314,6 +4322,51 @@ static int regex_parse_flags(const char *flags,
     return 1;
 }
 
+/* --- Vectors (docs/vectors_design.md) ---------------------------------------
+ * A dimension and that many float32s in one allocation, shared by reference
+ * count. Never changed once built, so sharing is sound: nothing writes to a
+ * GbVector after vector_new's caller has filled it. */
+static GbVector *vector_new(size_t dim) {
+    if (dim > (SIZE_MAX - sizeof(GbVector)) / sizeof(float)) {
+        abort();
+    }
+    GbVector *v = malloc(sizeof(GbVector) + dim * sizeof(float));
+    if (!v) {
+        abort();
+    }
+    v->ref_count = 1;
+    v->dim = dim;
+    return v;
+}
+
+static void vector_release(GbVector *v) {
+    if (v && --v->ref_count == 0) {
+        free(v);
+    }
+}
+
+static Value value_vector(GbVector *vector) {
+    Value value = {0};
+    value.kind = VALUE_VECTOR;
+    value.as.vector = vector;
+    return value;
+}
+
+/* the shortest decimal giving back the same float32, as format_number does
+   for a double */
+static void vector_format_element(char *buf, size_t n, float f) {
+    if (f == floorf(f) && fabsf(f) < 16777216.0f) {
+        snprintf(buf, n, "%.0f", (double)f);
+        return;
+    }
+    for (int p = 1; p <= 9; p++) {
+        snprintf(buf, n, "%.*g", p, (double)f);
+        if (strtof(buf, NULL) == f) {
+            return;
+        }
+    }
+}
+
 static Value value_regex(RegexValue *regex) {
     Value value = {0};
     value.kind = VALUE_REGEX;
@@ -5985,6 +6038,10 @@ static Value value_copy(Value value) {
         xlsx_workbook_retain(value.as.workbook);
         return value;
     }
+    if (value.kind == VALUE_VECTOR) {
+        value.as.vector->ref_count++;   /* immutable, so shared (vectors_design §1) */
+        return value;
+    }
     if (value.kind == VALUE_REGEX) {
         /* Share the compiled program. Sound because a RegexValue is immutable:
          * it is fully determined by (pattern, flags) and nothing ever writes to
@@ -6136,6 +6193,8 @@ static void value_free(Value value) {
         }
     } else if (value.kind == VALUE_REGEX) {
         regex_release(value.as.regex);
+    } else if (value.kind == VALUE_VECTOR) {
+        vector_release(value.as.vector);
     } else if (value.kind == VALUE_WORKBOOK) {
         xlsx_workbook_release(value.as.workbook);
     }
@@ -6342,6 +6401,8 @@ static int value_truthy(Value value, int *raised) {
         return 1;
     case VALUE_REGEX:
         return 1;
+    case VALUE_VECTOR:
+        return 1;   /* never empty: vector() refuses no elements */
     case VALUE_WATCHER:
         return 1;
     case VALUE_WORKBOOK:
@@ -7320,6 +7381,8 @@ static int lock_admits(const TypeLock *lock, const Value *v) {
     case LOCK_FILE: return v->kind == VALUE_FILE;
     case LOCK_DIR: return v->kind == VALUE_DIR;
     case LOCK_SHAPE: return v->kind == VALUE_RECORD && record_shape(v) == lock->shape;
+    case LOCK_VECTOR:
+        return v->kind == VALUE_VECTOR && (!lock->dimension || v->as.vector->dim == lock->dimension);
     default: return 0;
     }
 }
@@ -8139,6 +8202,20 @@ static int value_storage_equal(const Value *left, const Value *right) {
          * "si") equals regex(p, "is"). */
         return regex_same_pattern(left->as.regex, right->as.regex) &&
                strcmp(left->as.regex->flags, right->as.regex->flags) == 0;
+    case VALUE_VECTOR: {
+        /* By element, as numbers compare: -0 is the same as 0. No element is
+           ever NaN, which vector() refuses. */
+        const GbVector *a = left->as.vector, *b = right->as.vector;
+        if (a->dim != b->dim) {
+            return 0;
+        }
+        for (size_t i = 0; i < a->dim; i++) {
+            if (a->data[i] != b->data[i]) {
+                return 0;
+            }
+        }
+        return 1;
+    }
     case VALUE_WATCHER:
         /* IDENTITY, not structure: two watchers with the same name and targets
          * are still two registrations. Copies of one handle compare equal. */
@@ -17173,6 +17250,11 @@ static Value builtin_len_value(Value value) {
         value_free(value);
         return value_number_exact((long long)count);
     }
+    if (value.kind == VALUE_VECTOR) {
+        size_t count = value.as.vector->dim;
+        value_free(value);
+        return value_number_exact((long long)count);
+    }
     value_free(value);
     runtime_error_raise("len expects string or array", 1003, "invalid function call");
     return value_null();
@@ -18075,6 +18157,8 @@ static const char *builtin_type_name(Value value) {
         return "watcher";
     case VALUE_WORKBOOK:
         return "workbook";
+    case VALUE_VECTOR:
+        return "vector";
     }
     return "value";
 }
@@ -18530,6 +18614,20 @@ static void sb_append_text(StringBuilder *builder, const char *text) {
     }
 }
 
+/* `[0.1,0.2]`: the elements as an array of numbers prints them */
+static void vector_render(StringBuilder *builder, const GbVector *v) {
+    char number[32];
+    sb_append_char(builder, '[');
+    for (size_t i = 0; i < v->dim; i++) {
+        if (i > 0) {
+            sb_append_char(builder, ',');
+        }
+        vector_format_element(number, sizeof number, v->data[i]);
+        sb_append_text(builder, number);
+    }
+    sb_append_char(builder, ']');
+}
+
 static char *sb_take(StringBuilder *builder) {
     char *items = builder->items;
     builder->items = NULL;
@@ -18802,6 +18900,19 @@ static Value builtin_string_value(Value value) {
     case VALUE_WORKBOOK:
         value_free(value);
         return value_string("<workbook>");
+    case VALUE_VECTOR: {
+        /* `vector[0.1,0.2]`, so it is not read as an array */
+        StringBuilder vb;
+        sb_init(&vb);
+        sb_append_text(&vb, "vector");
+        vector_render(&vb, value.as.vector);
+        size_t vlen = vb.length;
+        char *vtext = sb_take(&vb);
+        Value out = value_string_n(vtext, vlen);
+        free(vtext);
+        value_free(value);
+        return out;
+    }
     }
 
     if (!used_builder) {
@@ -18898,6 +19009,19 @@ static int encode_value_to_builder(StringBuilder *builder, Value value, RenderMo
         }
         sb_append_char(builder, '}');
         return 1;
+    case VALUE_VECTOR:
+        if (mode != RENDER_DISPLAY) {
+            /* an array of numbers, which is how every service taking an
+               embedding takes it (vectors_design §3) */
+            vector_render(builder, value.as.vector);
+            return 1;
+        }
+        {
+            Value text = builtin_string_value(value_copy(value));
+            sb_append_text(builder, text.kind == VALUE_STRING ? text.as.string : "?");
+            value_free(text);
+        }
+        return 1;
     case VALUE_DATETIME:
     case VALUE_DURATION:
     case VALUE_MONEY:
@@ -18963,7 +19087,7 @@ static int json_encodable_value(Value v, int depth) {
         return 0;
     }
     switch (v.kind) {
-    case VALUE_NULL: case VALUE_BOOL: case VALUE_STRING:
+    case VALUE_NULL: case VALUE_BOOL: case VALUE_STRING: case VALUE_VECTOR:
         return 1;
     case VALUE_NUMBER:
         return isfinite(v.as.num.value) ? 1 : 0;
@@ -19465,6 +19589,17 @@ static int serialize_value(SerBuf *b, Value v, int depth) {
         serbuf_blob(b, v.as.regex->pattern, v.as.regex->pattern_len);
         serbuf_blob(b, v.as.regex->flags, strlen(v.as.regex->flags));
         return 1;
+    case VALUE_VECTOR: {
+        /* its dimension, then each float32's bits little-endian (§6) */
+        serbuf_u8(b, SER_VECTOR);
+        serbuf_uleb(b, v.as.vector->dim);
+        for (size_t i = 0; i < v.as.vector->dim; i++) {
+            uint32_t bits;
+            memcpy(&bits, &v.as.vector->data[i], 4);
+            serbuf_le(b, bits, 4);
+        }
+        return 1;
+    }
     }
     runtime_error_raise("serialize: unsupported value", 1003, "actor");
     return 0;
@@ -19933,6 +20068,29 @@ static Value deserialize_value(SerReader *r, int depth) {
             return value_null();
         }
         return value_regex(regex);
+    }
+    case SER_VECTOR: {
+        /* A dimension the bytes left cannot hold is corruption, refused
+           before anything is allocated for it; so is an element vector()
+           would have refused (empty, NaN, infinite). */
+        uint64_t dim = serread_uleb(r);
+        if (!r->ok || r->version < 3 || dim == 0 || dim > (r->len - r->pos) / 4) {
+            r->ok = 0;
+            return value_null();
+        }
+        GbVector *vec = vector_new((size_t)dim);
+        for (size_t i = 0; i < vec->dim; i++) {
+            uint32_t bits = (uint32_t)serread_le(r, 4);
+            memcpy(&vec->data[i], &bits, 4);
+            if (!isfinite(vec->data[i])) {
+                r->ok = 0;
+            }
+        }
+        if (!r->ok) {
+            vector_release(vec);
+            return value_null();
+        }
+        return value_vector(vec);
     }
     default:
         r->ok = 0;
@@ -35271,6 +35429,7 @@ static int reflect_serializable(Value v, int depth) {
     case VALUE_NULL: case VALUE_UNKNOWN: case VALUE_BOOL: case VALUE_NUMBER:
     case VALUE_STRING: case VALUE_DATETIME: case VALUE_DURATION: case VALUE_MONEY:
     case VALUE_FILE: case VALUE_DIR: case VALUE_FUNCTION: case VALUE_REGEX:
+    case VALUE_VECTOR:
         return 1;
     case VALUE_ARRAY:
         for (size_t i = 0; i < v.as.array.store->count; i++) {
@@ -37191,6 +37350,8 @@ static int pack_fits(char letter, long long v) {
     default: return 0;
     }
 }
+
+#include "modules/vector.c"
 
 static Value eval_pack_family(AstExpr *expr) {
     const char *verb = expr->as.call.name;
@@ -40033,6 +40194,11 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         if (value.kind == VALUE_ARRAY) {
             return value;
         }
+        if (value.kind == VALUE_VECTOR) {
+            Value numbers = vector_to_array(value.as.vector);
+            value_free(value);
+            return numbers;
+        }
         if (value.kind == VALUE_STRING) {
             Value decoded = builtin_decode_text(value);
             if (error_action_pending()) {
@@ -40523,6 +40689,19 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         CALL_IS(expr, unpack) ||
         CALL_IS(expr, pack_size)) {
         return eval_pack_family(expr);
+    }
+
+    /* --- vectors (docs/vectors_design.md): packed float32 and its arithmetic */
+    if (CALL_IS(expr, vector) ||
+        CALL_IS(expr, vector_bytes) ||
+        CALL_IS(expr, vector_from_bytes) ||
+        CALL_IS(expr, dot) ||
+        CALL_IS(expr, norm) ||
+        CALL_IS(expr, cosine) ||
+        CALL_IS(expr, distance) ||
+        CALL_IS(expr, normalize) ||
+        CALL_IS(expr, nearest)) {
+        return eval_vector_family(expr);
     }
 
     if (CALL_IS(expr, byte_count)) {
@@ -45461,6 +45640,20 @@ static Value eval_comparison(AstExpr *expr, Value left, Value right) {
             value_free(right);
             return value_null();
         }
+    } else if (left.kind == VALUE_VECTOR || right.kind == VALUE_VECTOR) {
+        /* Equal when both are vectors of one dimension and every element is
+         * equal; a vector against anything else is unequal, as a regex is.
+         * No order: which of two directions is "less" has no answer. */
+        if (opc == OP_EQ || opc == OP_NE) {
+            int equal = value_storage_equal(&left, &right);
+            result = opc == OP_EQ ? equal : !equal;
+        } else {
+            runtime_error_raise("vectors support only = and !=; compare their distances instead",
+                                1003, "comparison");
+            value_free(left);
+            value_free(right);
+            return value_null();
+        }
     } else if (left.kind == VALUE_REGEX || right.kind == VALUE_REGEX) {
         /* A regex compared against a non-regex: unequal, matching the function
          * and gobject rules. */
@@ -45914,6 +46107,12 @@ static GB_NOINLINE Value binary_apply(AstExpr *expr, Value left, Value right, in
         current_line = previous_line;
         current_column = previous_column;
         return result;
+    }
+
+    if (left.kind == VALUE_VECTOR || right.kind == VALUE_VECTOR) {
+        current_line = previous_line;
+        current_column = previous_column;
+        return vector_binary(opc, left, right);
     }
 
     if (left.kind == VALUE_MONEY || right.kind == VALUE_MONEY) {
@@ -46643,6 +46842,20 @@ static GB_NOINLINE Value eval_expr_case_index(AstExpr *expr, int path_keep) {
                 return value_null();
             }
             Value result = value_copy(array.as.array.store->items[position]);
+            value_free(array);
+            value_free(index);
+            return result;
+        }
+        if (array.kind == VALUE_VECTOR && index.kind == VALUE_NUMBER) {
+            double at = index.as.num.value;
+            if (!(at >= 0) || at != floor(at) || at >= (double)array.as.vector->dim) {
+                value_free(array);
+                value_free(index);
+                runtime_error_raise_at("vector index out of range", 1003, "indexing",
+                                       expr->line, expr->column);
+                return value_null();
+            }
+            Value result = value_number((double)array.as.vector->data[(size_t)at]);
             value_free(array);
             value_free(index);
             return result;
@@ -47871,6 +48084,7 @@ static const char *lock_kind_word(LockKind kind) {
     case LOCK_MONEY: return "money";
     case LOCK_FILE: return "file";
     case LOCK_DIR: return "dir";
+    case LOCK_VECTOR: return "vector";
     default: return "nothing";
     }
 }
@@ -47899,7 +48113,7 @@ static int type_lock_resolve_data(AstTypeLock a, TypeLock *out) {
         { "boolean", LOCK_BOOLEAN }, { "date", LOCK_DATE }, { "time", LOCK_TIME },
         { "datetime", LOCK_DATETIME }, { "duration", LOCK_DURATION },
         { "money", LOCK_MONEY }, { "file", LOCK_FILE }, { "dir", LOCK_DIR },
-        { NULL, LOCK_NONE }
+        { "vector", LOCK_VECTOR }, { NULL, LOCK_NONE }
     };
     memset(out, 0, sizeof *out);
     for (int i = 0; words[i].name; i++) {
@@ -47922,6 +48136,9 @@ static int type_lock_resolve_data(AstTypeLock a, TypeLock *out) {
         snprintf(out->currency, sizeof out->currency, "%s", a.arg);
         out->currency_code = numeric;
         snprintf(out->spelled, sizeof out->spelled, "money(%s)", a.arg);
+    } else if (out->kind == LOCK_VECTOR && a.arg) {
+        out->dimension = (size_t)strtoul(a.arg, NULL, 10);   /* the parser held it to digits */
+        snprintf(out->spelled, sizeof out->spelled, "vector(%zu)", out->dimension);
     } else {
         snprintf(out->spelled, sizeof out->spelled, "%s", a.name);
     }
@@ -48064,6 +48281,25 @@ static Value lock_convert(const TypeLock *lock, const char *var, Value value) {
             return value_null();
         }
         return out;
+    }
+    if (lock->kind == LOCK_VECTOR) {
+        /* as vector(x) would, then the dimension the lock names (§5) */
+        int before = error_generation;
+        GbVector *made = vector_from_value(value, "vector");
+        if (!made || error_generation != before) {
+            lock_refuse(lock, var, current_error.active && current_error.message
+                                       ? current_error.message : "it is not a vector");
+            return value_null();
+        }
+        if (lock->dimension && made->dim != lock->dimension) {
+            char cause[128];
+            snprintf(cause, sizeof cause, "it has %zu dimensions, not %zu", made->dim,
+                     lock->dimension);
+            vector_release(made);
+            lock_refuse(lock, var, cause);
+            return value_null();
+        }
+        return value_vector(made);
     }
     switch (value.kind) {
     case VALUE_NUMBER: case VALUE_STRING: case VALUE_BOOL: case VALUE_DATETIME:
@@ -48921,6 +49157,19 @@ static Value shape_json_schema(const struct GbShape *shape, const struct GbShape
                     record_set(&spec, "type", value_string("string"));
                     record_set(&spec, "pattern", schema_money_pattern(f->lock.currency));
                     break;
+                case LOCK_VECTOR: {
+                    /* an array of numbers, exactly N of them when the lock names N */
+                    Value items = value_record(NULL, 0);
+                    record_set(&items, "type", value_string("number"));
+                    record_set(&spec, "type", value_string("array"));
+                    record_set(&spec, "items", items);
+                    record_set(&spec, "minItems",
+                               value_number_exact(f->lock.dimension ? (long long)f->lock.dimension : 1));
+                    if (f->lock.dimension) {
+                        record_set(&spec, "maxItems", value_number_exact((long long)f->lock.dimension));
+                    }
+                    break;
+                }
                 default:
                     record_set(&spec, "type", value_string("string"));
                     break;
@@ -50312,6 +50561,13 @@ static Value *resolve_lvalue_ref(AstExpr *target) {
             return field->value;
         }
         value_free(index);
+        if (container->kind == VALUE_VECTOR) {
+            /* never changed in place, so a shared one cannot change under
+               another holder (vectors_design §3) */
+            runtime_error_raise("a vector is not changed in place; build a new one, such as "
+                                "vector(numbers) after changing array(v)", 1003, "assignment");
+            return NULL;
+        }
         runtime_error_raise("assignment index expects array[number] or record[string]", 1003, "assignment");
         return NULL;
     }
@@ -50422,6 +50678,13 @@ static LValueAssignResult assign_lvalue(AstExpr *target, Value value) {
             return same ? LVALUE_ASSIGN_UNCHANGED : LVALUE_ASSIGN_CHANGED;
         }
         value_free(index);
+        if (container->kind == VALUE_VECTOR) {
+            /* never changed in place, so a shared one cannot change under
+               another holder (vectors_design §3) */
+            runtime_error_raise("a vector is not changed in place; build a new one, such as "
+                                "vector(numbers) after changing array(v)", 1003, "assignment");
+            return LVALUE_ASSIGN_ERROR;
+        }
         runtime_error_raise("assignment index expects array[number] or record[string]", 1003, "assignment");
         return LVALUE_ASSIGN_ERROR;
     }
@@ -52311,6 +52574,13 @@ static int each_begin(AstStmt *stmt, EvalResult *out, const int *saved, GbEach *
         value_free(iterable);
         return each_refused(out, saved);
 #endif
+    }
+    if (iterable.kind == VALUE_VECTOR) {
+        /* a vector's elements, as the numbers array(v) gives */
+        Value numbers = vector_to_array(iterable.as.vector);
+        value_free(iterable);
+        iterable = numbers;
+        each->iterable = iterable;
     }
     if (iterable.kind != VALUE_ARRAY) {
         runtime_error_raise("for in expects an array, a file, an sql block or a csv source", 1003,

@@ -884,7 +884,7 @@ static int type_lock_check_as(gb_parse_ctx *ctx, const char *who, const char *na
                               int end_column, int shape_ok) {
     static const char *const types[] = {
         "number", "string", "text", "boolean", "date", "time", "datetime",
-        "duration", "money", "file", "dir", NULL
+        "duration", "money", "file", "dir", "vector", NULL
     };
     static const struct { const char *foreign; const char *ours; } near[] = {
         { "int", "number" }, { "integer", "number" }, { "float", "number" },
@@ -932,12 +932,13 @@ static int type_lock_check_as(gb_parse_ctx *ctx, const char *who, const char *na
                    strcmp(name, "map") == 0 || strcmp(name, "object") == 0) {
             snprintf(message, sizeof message,
                      "'%s' cannot be a lock: a lock is for a data type (number, string, "
-                     "boolean, date, time, datetime, duration, money(USD), file, dir)", name);
+                     "boolean, date, time, datetime, duration, money(USD), file, dir, "
+                     "vector)", name);
         } else {
             snprintf(message, sizeof message,
                      "'%s' is not a data type a lock can name; the types are number, string "
-                     "(or text), boolean, date, time, datetime, duration, money(USD), file "
-                     "and dir. A lens such as {trimmed} is written in braces", name);
+                     "(or text), boolean, date, time, datetime, duration, money(USD), file, "
+                     "dir and vector. A lens such as {trimmed} is written in braces", name);
         }
         report_syntax_error(ctx, line, column, end_line, end_column, message);
         return 0;
@@ -956,9 +957,23 @@ static int type_lock_check_as(gb_parse_ctx *ctx, const char *who, const char *na
             report_syntax_error(ctx, line, column, end_line, end_column, message);
             return 0;
         }
+    } else if (strcmp(name, "vector") == 0) {
+        /* any dimension, or exactly the one named (docs/vectors_design.md §5) */
+        int whole = arg && arg[0] && strlen(arg) <= 9;
+        for (const char *p = arg; whole && *p; p++) {
+            whole = isdigit((unsigned char)*p);
+        }
+        if (arg && (!whole || atol(arg) == 0)) {
+            snprintf(message, sizeof message,
+                     "vector takes its dimension, a whole number from 1, as in vector(1536), "
+                     "not '%s'", arg);
+            report_syntax_error(ctx, line, column, end_line, end_column, message);
+            return 0;
+        }
     } else if (arg) {
         snprintf(message, sizeof message,
-                 "%s takes no argument; only money does, as in money(USD)", name);
+                 "%s takes no argument; only money and vector do, as in money(USD) and "
+                 "vector(1536)", name);
         report_syntax_error(ctx, line, column, end_line, end_column, message);
         return 0;
     }
@@ -1239,6 +1254,17 @@ assignment
 type_lock
     : IDENT { $$ = ast_type_lock($1, NULL, @1.first_line, @1.first_column); }
     | IDENT LPAREN IDENT RPAREN { $$ = ast_type_lock($1, $3, @1.first_line, @1.first_column); }
+    /* a vector's dimension (docs/vectors_design.md §5): the literal as written
+       when it is a whole number, so the check can refuse anything else */
+    | IDENT LPAREN NUMBER RPAREN {
+        char digits[64];
+        if ($3.is_exact && $3.exact >= 0) {
+            snprintf(digits, sizeof digits, "%lld", $3.exact);
+        } else {
+            snprintf(digits, sizeof digits, "%.17g", $3.value);
+        }
+        $$ = ast_type_lock($1, kw_name(digits), @1.first_line, @1.first_column);
+    }
     ;
 
 compound_op
@@ -2786,7 +2812,7 @@ static int body_binds(const gb_parse_ctx *ctx, const char *name, int line) {
 static int shape_refs_check(gb_parse_ctx *ctx) {
     static const char *const types[] = {
         "number", "string", "text", "boolean", "date", "time", "datetime",
-        "duration", "money", "file", "dir", NULL
+        "duration", "money", "file", "dir", "vector", NULL
     };
     for (size_t i = 0; i < ctx->shape_ref_count; i++) {
         const struct gb_shape_ref *ref = &ctx->shape_refs[i];
