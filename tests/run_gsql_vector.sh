@@ -1,8 +1,8 @@
 #!/bin/bash
 # VECTORS IN G-SQL (docs/gsql_vector_design.md), increment 2 of the
 # AI-engineering work: a VECTOR(N) column, pgvector's three distances (<->,
-# <=>, <#>) and the functions naming them, and exact search by distance, the
-# filter and the ranking in one statement.
+# <=>, <#>) and the functions naming them, search by distance with the filter
+# and the ranking in one statement, exact and through an HNSW index.
 #
 # TIERS:
 #   semantics   tests/gsql_vector/sql.bas: every answer worked by hand (vectors
@@ -19,7 +19,18 @@
 #   cost        an exact search through SQL within 15x of nearest() over the
 #               same vectors in memory, in one process (measured ~6x), and the
 #               two agree on the answer
-#   valgrind    the semantics fixture, no invalid access, no definite leak
+#   hnsw        tests/gsql_vector/hnsw.bas: the HNSW index (§9) declared and
+#               refused, when EXPLAIN shows the planner taking it, and a
+#               differential against a twin table with no index, every answer
+#               identical (filters, OFFSET, NULL vectors, ties, a second ORDER BY
+#               key, the writes that keep the graph, ef_search, a dump and
+#               restore); the graph's own model test is run_gsql_table's hnsw tier
+#   recall      tests/gsql_vector/recall.bas, 4000 x 256, judged by the exact
+#               search and nearest(): recall@10 at least 0.95 on embedding-like
+#               data at the default beam; on near-orthogonal clusters ef_search 1
+#               below ef_search 200 (the attribute reaches the search); and the
+#               index at least 5x faster than the exact search (measured ~18x)
+#   valgrind    the semantics and hnsw fixtures, no invalid access, no definite leak
 . "$(dirname "$0")/portable.sh"
 . "$(dirname "$0")/premise.sh"   # premise_time_claims
 . "$(dirname "$0")/valgrind_tier.sh"
@@ -198,7 +209,48 @@ else
     printf '  SKIP cost: GATE_TIME_SCALE says this machine is slower, and the tier asserts a speed\n'
 fi
 
-printf 'TIER valgrind: the semantics fixture, no invalid access, no definite leak\n'
+printf 'TIER hnsw: the index declared, taken by the planner, and answering as the exact search does\n'
+mkdir -p "$work/hnsw"
+(cd "$work/hnsw" && timeout -k 5 300 "$root/gbasic" "$root/tests/gsql_vector/hnsw.bas") \
+    >"$work/hnsw.out" 2>"$work/hnsw.err"
+verdict hnsw "$work/hnsw.out" $? 90
+if [ -s "$work/hnsw.err" ]; then
+    sed 's/^/       /' "$work/hnsw.err" | head -5
+    fail "hnsw: the fixture wrote to stderr"
+fi
+
+printf 'TIER recall: the index against the exact search, on embedding-like and on hard data\n'
+mkdir -p "$work/recall"
+if out=$(cd "$work/recall" && timeout -k 5 600 "$root/gbasic" "$root/tests/gsql_vector/recall.bas" 4000 256 2>&1); then
+    latent=$(printf '%s\n' "$out" | sed -n 's/^latent //p')
+    agree=$(printf '%s\n' "$out" | sed -n 's/^agree //p')
+    read -r t_exact t_ann <<<"$(printf '%s\n' "$out" | sed -n 's/^speed //p')"
+    read -r low high <<<"$(printf '%s\n' "$out" | sed -n 's/^hard //p')"
+    if [ "$agree" != 30 ]; then
+        fail "recall: the exact SQL and nearest() agree on $agree of 30 top-10s, so the oracle is in doubt"
+    elif awk -v r="$latent" 'BEGIN { exit !(r >= 0.95) }'; then
+        pass "recall: recall@10 $latent on embedding-like data at the default beam (floor 0.95), the oracle agreeing with nearest() on all 30"
+    else
+        fail "recall: recall@10 $latent on embedding-like data, under the floor of 0.95"
+    fi
+    if awk -v l="$low" -v h="$high" 'BEGIN { exit !(l < h && h >= 0.9) }'; then
+        pass "recall: on near-orthogonal clusters $low at ef_search 1, $high at 200: the attribute reaches the search"
+    else
+        fail "recall: on near-orthogonal clusters $low at ef_search 1 and $high at 200 (want the first lower, the second at least 0.9)"
+    fi
+    if ! premise_time_claims; then
+        printf '  SKIP the speed bound: GATE_TIME_SCALE says this machine is slower\n'
+    elif awk -v e="$t_exact" -v a="$t_ann" 'BEGIN { exit !(e >= 5 * a) }'; then
+        pass "recall: $(printf '%.2f' "$t_ann") ms a query by the index, $(printf '%.2f' "$t_exact") ms exact (at least 5x)"
+    else
+        fail "recall: $(printf '%.2f' "$t_ann") ms a query by the index against $(printf '%.2f' "$t_exact") ms exact, under 5x"
+    fi
+else
+    printf '%s\n' "$out" | tail -5
+    fail "recall: the fixture failed"
+fi
+
+printf 'TIER valgrind: the semantics and hnsw fixtures, no invalid access, no definite leak\n'
 if vg_available; then
     mkdir -p "$work/vg"
     (cd "$work/vg" && vg_run "$root/gbasic" "$root/tests/gsql_vector/sql.bas") >"$work/vg.out" 2>"$work/vg.err"
@@ -211,6 +263,18 @@ if vg_available; then
     else
         tail -3 "$work/vg.out"
         fail "valgrind: the fixture did not pass under valgrind (exit $vgst)"
+    fi
+    mkdir -p "$work/vgh"
+    (cd "$work/vgh" && vg_run "$root/gbasic" "$root/tests/gsql_vector/hnsw.bas") >"$work/vgh.out" 2>"$work/vgh.err"
+    vgst=$?
+    if [ "$vgst" = 0 ] && tail -1 "$work/vgh.out" | grep -q ' 0 mismatches$'; then
+        pass "valgrind hnsw: clean over $(tail -1 "$work/vgh.out" | sed 's/^ok //')"
+    elif [ "$vgst" = "$VG_EXIT" ]; then
+        grep -m8 'Invalid\|definitely lost\|uninitialised' "$work/vgh.err"
+        fail "valgrind objected to the hnsw fixture"
+    else
+        tail -3 "$work/vgh.out"
+        fail "valgrind: the hnsw fixture did not pass under valgrind (exit $vgst)"
     fi
 else
     printf '  SKIP valgrind: not installed\n'

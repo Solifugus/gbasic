@@ -1559,6 +1559,7 @@ typedef struct {
     GsqlHnswHit *hits;
     size_t nhits, hpos, ef;
     uint64_t want, kept, nodes;
+    double last_d;      /* the distance of the last row that passed */
     unsigned char **seen;   /* the row keys yielded: open addressing, NULL empty */
     size_t *seenn, nseen, seencap;
 } Iter;
@@ -1738,11 +1739,16 @@ static int ann_next(Iter *it) {
     X *x = it->x;
     XScan *xs = &x->sx[it->k];
     for (;;) {
-        if (it->kept >= it->want) {
+        /* past LIMIT + OFFSET only while a hit ties with the last row kept:
+           a second ORDER BY term may want the one after it (an `id DESC`
+           breaking the tie the other way) */
+        int tying = it->kept >= it->want;
+        if (tying && (it->tail || (it->hpos < it->nhits && it->hits[it->hpos].d != it->last_d))) {
             return 0;
         }
         if (it->hpos < it->nhits) {
             GsqlHnswHit *h = &it->hits[it->hpos++];
+            double hd = h->d;
             if (ann_seen(it, h->key, h->n)) {
                 continue;
             }
@@ -1762,7 +1768,10 @@ static int ann_next(Iter *it) {
             if (pass < 0) {
                 return -1;
             }
-            it->kept += pass == 1;
+            if (pass == 1) {
+                it->kept++;
+                it->last_d = hd;
+            }
             return 1;
         }
         if (it->tail) {
