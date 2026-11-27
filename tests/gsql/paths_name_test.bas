@@ -124,6 +124,14 @@ function by_filter()
 end function
 check("a filter is kept free", refusal(by_filter),
       "a connection's bracket names a table, as in db[\"customer\"]; a filter is written on the table, db[\"customer\"][.city = \"Rome\"]")
+' a filter before braces is a brace chain, evaluated a step at a time: its
+' first bracket was given to the PATH's bracket, which read the connection as
+' a path (fixed with this tier)
+function by_filter_braced()
+    return db[.name = "customer"]{name}
+end function
+check("a filter before braces too", refusal(by_filter_braced),
+      "a connection's bracket names a table, as in db[\"customer\"]; a filter is written on the table, db[\"customer\"][.city = \"Rome\"]")
 function by_list()
     return db["customer", "invoice"]
 end function

@@ -169,7 +169,7 @@ fi
 printf 'TIER names: db["name"], the table a text names, every answer by hand\n'
 mkdir -p "$work/names"
 GSQL_DIR="$work/names" timeout -k 5 120 ./gbasic tests/gsql/paths_name_test.bas >"$work/names.out" 2>"$work/names.err"
-verdict names "$work/names.out" $? 40
+verdict names "$work/names.out" $? 41
 if [ -s "$work/names.err" ]; then
     sed 's/^/       /' "$work/names.err" | head -5
     fail "names: the fixture wrote to stderr"
