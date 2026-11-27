@@ -22,3 +22,5 @@ true
 nothing
 true
 {"invoice_id":"o1","invoice_date":2026-05-01,"amount":4.00,"paid":false}
+["money 1.00","money 2.00"]
+["money","number"]

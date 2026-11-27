@@ -825,6 +825,7 @@ typedef struct {
     int line;            /* where the lock was declared */
     int is_return;       /* a function's return type, not a variable's lock */
     size_t element;      /* a `for each x:T` binding its Nth element, or 0 */
+    const char *held_by; /* LOCK_SHAPE from `r:s = row`: s, interned (§6.4) */
 } TypeLock;
 
 typedef struct {
@@ -41192,58 +41193,6 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return shape_json_schema(shape, seen, 0);
     }
 
-    if (CALL_IS(expr, convert)) {
-        /* `x:invoice = e` when the shape is a VALUE (docs/shapes_design.md
-           §6.4): a library handed a shape cannot write its lock, so this is
-           the lock's own conversion, warnings and refusals in its words */
-        if (expr->as.call.args.count != 2) {
-            runtime_error_raise("convert expects two arguments: a record and a shape, such as "
-                                "convert(row, invoice)", 1003, "shape");
-            return value_null();
-        }
-        Value v = eval_expr(expr->as.call.args.items[0]);
-        if (error_action_pending()) {
-            value_free(v);
-            return value_null();
-        }
-        Value s = eval_expr(expr->as.call.args.items[1]);
-        if (error_action_pending()) {
-            value_free(v);
-            value_free(s);
-            return value_null();
-        }
-        const struct GbShape *shape = s.kind == VALUE_RECORD ? record_shape(&s) : NULL;
-        value_free(s);
-        if (!shape) {
-            value_free(v);
-            runtime_error_raise("convert expects a shape as its second argument, such as invoice "
-                                "from `shape invoice`; a plain record has no declared form to "
-                                "convert into", 1003, "shape");
-            return value_null();
-        }
-        if (v.kind == VALUE_NULL || v.kind == VALUE_UNKNOWN ||
-            (v.kind == VALUE_RECORD && record_shape(&v) == shape)) {
-            return v;   /* absence is legal, as a lock allows; one already of it stays */
-        }
-        if (v.kind != VALUE_RECORD) {
-            char message[200];
-            const char *got = value_kind_name(v.kind);
-            snprintf(message, sizeof message, "convert: %s %s is not a record, and only a "
-                     "record converts into shape %s", strchr("aeiou", got[0]) ? "an" : "a",
-                     got, shape_name_of(shape));
-            value_free(v);
-            runtime_error_raise(message, 1003, "shape");
-            return value_null();
-        }
-        int before = error_generation;
-        Value out = shape_convert(shape, v);
-        if (error_generation != before) {
-            value_free(out);
-            return value_null();
-        }
-        return out;
-    }
-
     if (CALL_IS(expr, decode)) {
         if (expr->as.call.args.count != 1) {
             runtime_error_raise("decode expects one argument", 1003, "serialization");
@@ -47929,6 +47878,9 @@ static const char *lock_kind_word(LockKind kind) {
 /* the lock as written: "money(USD)", or the shape's name, which may be
    longer than `spelled` holds */
 static const char *lock_spelled(const TypeLock *lock) {
+    if (lock->held_by) {
+        return lock->held_by;   /* written `r:s`, the shape a variable held */
+    }
     return lock->kind == LOCK_SHAPE ? shape_name_of(lock->shape) : lock->spelled;
 }
 
@@ -47987,6 +47939,38 @@ static int type_lock_resolve(AstTypeLock a, TypeLock *out) {
     }
     if (error_action_pending()) {
         return 0;
+    }
+    if (a.by_value) {
+        /* `r:s = row` with s a variable of this body (§6.4): the shape s
+           holds NOW is the lock, as a shape's name would be */
+        Symbol *held = env_find_in_frame(current_env, a.name);
+        const struct GbShape *shape =
+            held && held->value.kind == VALUE_RECORD ? record_shape(&held->value) : NULL;
+        if (!shape) {
+            char message[320];
+            const char *got = held ? value_kind_name(held->value.kind) : NULL;
+            if (!held) {
+                snprintf(message, sizeof message,
+                         "this lock names %s, which has no value here yet; give it a shape "
+                         "(such as invoice from `shape invoice`) before the lock runs", a.name);
+            } else if (held->value.kind == VALUE_RECORD) {
+                snprintf(message, sizeof message,
+                         "this lock names %s, which holds a plain record, not a shape; a "
+                         "plain record has no declared form to convert into", a.name);
+            } else {
+                snprintf(message, sizeof message,
+                         "this lock names %s, which holds %s %s, not a shape (such as invoice "
+                         "from `shape invoice`)", a.name, strchr("aeiou", got[0]) ? "an" : "a",
+                         got);
+            }
+            runtime_error_raise(message, 1003, "lock");
+            return 0;
+        }
+        out->kind = LOCK_SHAPE;
+        out->shape = shape;
+        out->held_by = name_intern(a.name);
+        snprintf(out->spelled, sizeof out->spelled, "%.*s", (int)sizeof out->spelled - 1, a.name);
+        return 1;
     }
     const struct GbShape *shape = shape_find(a.name);
     if (!shape) {

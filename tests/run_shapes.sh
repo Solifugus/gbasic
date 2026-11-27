@@ -76,13 +76,22 @@
 #             back by from_rows; frame.conform(df, shape) for a frame from
 #             elsewhere; the missing-cell verbs seeing a shaped frame's nothing
 #             (they saw only unknown: drop_missing kept the rows, coerce wrote
-#             "nothing"); and convert(record, shape), the lock when the shape is
-#             a value. Then the columns judged once: a dropped column and a
+#             "nothing"); and `r:s = row`, a lock naming a variable that holds
+#             a shape. Then the columns judged once: a dropped column and a
 #             field with none said once each for 50 rows, and for no rows;
 #             `on warning stop` refusing there in the warning's words; and the
 #             refusals, each beside its neighbour: a cell by its row (from 1,
 #             as csv.write counts), read_csv's by line, a plain record or a
-#             number for a shape, convert's own.
+#             number for a shape.
+#   varlock   `r:s = row` (§6.4): a lock in a body naming a variable of that
+#             body (a parameter, a local, a loop's) is the shape it holds when
+#             the lock line runs; `for each r:s`; the top level; the lock's own
+#             words with the lock as written (`r:s`). Run-time refusals: a
+#             number, a plain record, no value yet. Refused BEFORE anything runs
+#             (each program prints first and must not): a misspelt name (did you
+#             mean, from the body's own names), an enclosing scope's variable,
+#             a name both a shape and a variable, a parameter's lock or return
+#             type naming a parameter; --check; compiled.
 #   cost      the slot found once a site, counted by callgrind: reading, and
 #             writing, the 8th of 8 fields costs what the 1st does, within 2%
 #             of the whole run (before: 8% more to read, 6% to write). Skips
@@ -414,10 +423,40 @@ out=$(cd "$work" && "$G" fc.bas 2>"$work/fc.err")
 refuse "read_csv: a plain record is no shape" fr4.bas "${FH}df = frame.read_csv(\"in.csv\", { id: 1 })\n" 'frame.read_csv expects a shape, such as invoice from `shape invoice`'
 refuse "to_rows: a plain record is no shape" fr5.bas "${FH}rows = frame.to_rows({ id: [\"a\"] }, { id: 1 })\n" 'frame.to_rows expects a shape'
 refuse "conform: a number is no shape" fr6.bas "${FH}df = frame.conform({ id: [\"a\"] }, 3)\n" 'frame.conform expects a shape'
-refuse "convert: a value that is not a record" fr7.bas "${FH}x = convert([1], inv)\n" 'convert: an array is not a record, and only a record converts into shape inv'
-refuse "convert: a plain record is no shape" fr8.bas "${FH}x = convert({ id: \"a\" }, { id: \"b\" })\n" 'convert expects a shape as its second argument'
-refuse "convert: one argument" fr9.bas "${FH}x = convert({ id: \"a\" })\n" 'convert expects two arguments: a record and a shape'
-runs "the working neighbour: convert of a record" "${FH}print convert({ id: \"a\", amount: \"1.5\" }, inv)\n" '{"id":"a","amount":1.50,"paid":false}'
+echo "--- TIER varlock ---"
+VH='shape inv\n    id:text\n    amount:money(USD) = "0"\nend shape\nshape other\n    id:text\n    amount:number = 0\nend shape\n'
+runs "a variable holding a shape locks one in its body" "${VH}function into(row, s)\n    r:s = row\n    r = { id: \"b\", amount: \"2\" }\n    return type(r.amount) + \" \" + string(r.amount)\nend function\nprint into({ id: \"a\" }, inv)\nprint into({ id: \"a\" }, other)\n" 'money 2.00\nnumber 2'
+runs "a for each binding each element, a local, a loop's variable, the top level, a method" "${VH}function each_of(rows, s)\n    out = []\n    for each r:s in rows\n        append(out, r.amount)\n    end for\n    return out\nend function\nfunction local_of(row)\n    s = inv\n    r:s = row\n    return r.amount\nend function\nfunction per_shape(row, shapes)\n    out = []\n    for each s in shapes\n        r:s = row\n        append(out, type(r.amount))\n    end for\n    return out\nend function\nprint each_of([{ id: \"a\", amount: \"1\" }], inv)\nprint local_of({ id: \"a\", amount: \"3\" })\nprint per_shape({ id: \"a\", amount: \"4\" }, [inv, other])\nt = other\nx:t = { id: \"t\", amount: \"5\" }\nprint x.amount + 1\n" '[1.00]\n3.00\n["money","number"]\n6'
+refuse "a field that does not convert, in the lock's words as written" lv1.bas "${VH}function into(row, s)\n    r:s = row\n    return r\nend function\nx = into({ id: \"a\", amount: \"lots\" }, inv)\n" 'r is locked to inv by r:s at line 10, and this value does not convert: amount is locked to money'
+refuse "and a later plain = , as any lock" lv2.bas "${VH}function into(row, s)\n    r:s = row\n    r = 7\n    return r\nend function\nx = into({ id: \"a\" }, inv)\n" 'r is locked to inv by r:s at line 10, and this value does not convert: a number is not a record'
+refuse "a variable holding a number" lv3.bas "${VH}function into(row, s)\n    r:s = row\n    return r\nend function\nx = into({ id: \"a\" }, 5)\n" 'this lock names s, which holds a number, not a shape'
+refuse "a variable holding a plain record" lv4.bas "${VH}function into(row, s)\n    r:s = row\n    return r\nend function\nx = into({ id: \"a\" }, { id: \"plain\" })\n" 'this lock names s, which holds a plain record, not a shape'
+refuse "a variable with no value yet, though the caller has one: the function's own s" lv5.bas "${VH}function into(row)\n    r:s = row\n    s = inv\n    return r\nend function\ns = other\nx = into({ id: \"a\" })\n" 'this lock names s, which has no value here yet'
+printf '%b' "on warning stop\n${VH}function into(row, s)\n    r:s = row\n    print \"ran\"\n    return r\nend function\nx = into({ id: \"a\", note: 1 }, inv)\n" >"$work/lv6.bas"
+out=$(cd "$work" && "$G" lv6.bas 2>&1)
+case "$out" in
+    *ran*) fail "on warning stop let a field drop through r:s: $out" ;;
+    *"inv has no field note, so it was dropped"*) pass "on warning stop: refused in the warning's own words" ;;
+    *) fail "varlock strict: $out" ;;
+esac
+# refused before anything runs: each program prints first, and must not
+refuse "a misspelt variable: did you mean, from the body's own names" lp1.bas "print \"ran\"\n${VH}function into(row, shp)\n    r:shpe = row\n    return r\nend function\n" "'shpe' is neither a data type nor a shape this file declares; did you mean shp?"
+refuse "a variable of an enclosing scope" lp2.bas "print \"ran\"\n${VH}s = inv\nfunction into(row)\n    r:s = row\n    return r\nend function\n" "'s' is a variable, but not of the function this lock is written in"
+refuse "a name both a shape and a variable of the function" lp3.bas "print \"ran\"\n${VH}function into(row, inv)\n    r:inv = row\n    return r\nend function\n" "'inv' names both a shape this file declares and a variable of this function"
+refuse "a parameter's lock naming a parameter" lp4.bas "print \"ran\"\n${VH}function into(row:s, s)\n    return row\nend function\n" "'s' is a variable of this function, not a shape: a parameter's lock and a return type name a shape this file declares"
+refuse "a return type naming a parameter" lp5.bas "print \"ran\"\n${VH}function into(row, s):s\n    return row\nend function\n" "'s' is a variable of this function, not a shape"
+for f in lp1 lp2 lp3 lp4 lp5; do
+    case "$(cd "$work" && "$G" $f.bas 2>&1)" in *ran*) fail "$f.bas ran before its refusal" ;; esac
+done
+printf '%b' "${VH}function into(row, s)\n    r:s = row\n    return r\nend function\nprint into({ id: \"a\" }, inv)\n" >"$work/lc.bas"
+out=$("$G" --check "$work/lc.bas"); [ $? = 0 ] && [ -z "$out" ] && pass "--check: a lock naming a parameter is clean" || fail "--check varlock: $out"
+out=$("$G" --check "$work/lp2.bas"); [ $? = 1 ] && case "$out" in *"not of the function this lock is written in"*) true ;; *) false ;; esac &&
+    pass "--check: the enclosing-scope refusal, nothing run" || fail "--check lp2: $out"
+if GBASIC_COMPILE=all "$G" "$work/lc.bas" 2>&1 | cmp -s - <(printf '{"id":"a","amount":0.00}\n'); then
+    pass "and compiled, the same"
+else
+    fail "varlock compiled: $(GBASIC_COMPILE=all "$G" "$work/lc.bas" 2>&1)"
+fi
 
 echo "--- TIER cost ---"
 . tests/valgrind_tier.sh

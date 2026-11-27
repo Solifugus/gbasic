@@ -19,8 +19,8 @@
 ' pandera schema does: read_csv(path, invoice) reads each column as its field
 ' instead of guessing from the cells, to_rows(df, invoice) answers invoices,
 ' and conform(df, invoice) puts a frame from anywhere into the shape. Each
-' converts by the shape's own lock (core `convert`), so a frame takes nothing
-' a shaped variable would refuse.
+' converts by the shape's own lock (`r:shape = row`, the shape held in a
+' variable), so a frame takes nothing a shaped variable would refuse.
 library frame
     ' --- Representation helpers ---
 
@@ -57,13 +57,11 @@ library frame
     ' A shape's argument checked once, before any cell is read, so a plain
     ' record (or anything else) is refused by the verb that was given it.
     function _need_shape(verb, s)
-        on error goto next
-        probe = convert(nothing, s)
-        e = error
-        if e then
-            error ("frame." + verb + " expects a shape, such as invoice from `shape invoice`; a plain record has no declared form to read by")
-        end if
+        on error goto refused
+        checked:s = nothing
         return s
+    refused:
+        error ("frame." + verb + " expects a shape, such as invoice from `shape invoice`; a plain record has no declared form to read by")
     end function
 
     ' A new frame with the same columns as df but empty.
@@ -155,8 +153,8 @@ library frame
         return rows
     end function
 
-    ' The columns are judged ONCE, before any row, by converting a record of
-    ' them all into the shape: that is where 2126 and 2127 are said, even for
+    ' The columns are judged ONCE, before any row, by locking a record of
+    ' them all to the shape: that is where 2126 and 2127 are said, even for
     ' a frame with no rows. Its result holds each field no column fills (its
     ' default, or nothing), and every row starts from it, so no row warns again.
     function _shaped_rows(verb, df, shape)
@@ -164,7 +162,7 @@ library frame
         for each name in keys(df)
             judged[name] = nothing
         end for
-        start = convert(judged, shape)
+        start:shape = judged
         filled = []
         for each name in keys(shape)
             if has(df, name) then

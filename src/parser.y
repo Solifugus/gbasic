@@ -980,9 +980,57 @@ static int type_lock_check(gb_parse_ctx *ctx, const char *who, const char *name,
         }
         ctx->shape_refs = grown;
         grown[ctx->shape_ref_count++] = (struct gb_shape_ref){ kw_name(name), line, column,
-                                                               end_line, end_column };
+                                                               end_line, end_column, 0, NULL };
     }
     return ok != 0;
+}
+
+/* A variable's lock in a body (an assignment, a `for each`): the same check,
+ * and a name it leaves to shape_refs_check is marked as one that may name a
+ * variable of the body holding a shape (§6.4). *before is the ref count
+ * first, for shape_ref_slot once the AST node exists. */
+static int type_lock_check_body(gb_parse_ctx *ctx, const char *who, const char *name,
+                                const char *arg, int line, int column, int end_line,
+                                int end_column, size_t *before) {
+    *before = ctx->shape_ref_count;
+    int ok = type_lock_check(ctx, who, name, arg, line, column, end_line, end_column);
+    if (ok && ctx->shape_ref_count > *before) {
+        ctx->shape_refs[*before].in_body = 1;
+    }
+    return ok;
+}
+
+static void shape_ref_slot(gb_parse_ctx *ctx, size_t before, AstTypeLock *slot) {
+    if (ctx->shape_ref_count > before) {
+        ctx->shape_refs[before].slot = slot;
+    }
+}
+
+/* A name a body binds, and a function's or program's lines (shape_refs_check) */
+static void bound_note(gb_parse_ctx *ctx, const char *name, int line) {
+    if (!name) {
+        return;
+    }
+    struct gb_bound_name *grown = realloc(ctx->bound_names,
+                                          sizeof *grown * (ctx->bound_name_count + 1));
+    if (!grown) {
+        abort();
+    }
+    ctx->bound_names = grown;
+    grown[ctx->bound_name_count++] = (struct gb_bound_name){ kw_name(name), line };
+}
+
+static void body_note(gb_parse_ctx *ctx, AstNameList params, int first, int last) {
+    struct gb_body_span *grown = realloc(ctx->body_spans,
+                                         sizeof *grown * (ctx->body_span_count + 1));
+    if (!grown) {
+        abort();
+    }
+    ctx->body_spans = grown;
+    grown[ctx->body_span_count++] = (struct gb_body_span){ first, last };
+    for (size_t i = 0; i < params.count; i++) {
+        bound_note(ctx, params.items[i], first);
+    }
 }
 
 static void shape_decl_note(gb_parse_ctx *ctx, const char *name) {
@@ -1138,7 +1186,12 @@ statement
     ;
 
 assignment
-    : lvalue OP_EQ expression { $$ = ast_assign($1, ast_modifier_none(), $3); }
+    : lvalue OP_EQ expression {
+        if ($1->kind == AST_EXPR_IDENT) {
+            bound_note(ctx, $1->as.ident, @1.first_line);
+        }
+        $$ = ast_assign($1, ast_modifier_none(), $3);
+      }
     /* `x op= e` is exactly `x = x op e`, inheriting every type rule and every
      * refusal the operator already has -- `a += [1]` fails the way
      * `a = a + [1]` does. The operator rides the assign node rather than being
@@ -1161,11 +1214,14 @@ assignment
      * decides and the grammar stays at zero conflicts. A variable only: record
      * fields and loop variables are not locked in the first version. */
     | variable_name COLON type_lock OP_EQ expression {
-        if (!type_lock_check(ctx, $1, $3.name, $3.arg, @3.first_line, @3.first_column,
-                             @3.last_line, @3.last_column)) {
+        size_t before;
+        if (!type_lock_check_body(ctx, $1, $3.name, $3.arg, @3.first_line, @3.first_column,
+                                  @3.last_line, @3.last_column, &before)) {
             GB_REFUSE;
         }
+        bound_note(ctx, $1, @1.first_line);
         $$ = ast_assign_locked(expr_at(ast_ident($1), @1.first_line, @1.first_column), $3, $5);
+        shape_ref_slot(ctx, before, &$$->as.assign.lock);
       }
     | lvalue comparison_lens OP_EQ expression {
         if (!is_modifier_target_expr($1)) {
@@ -1331,10 +1387,12 @@ for_end
 for_each_statement
     : FOR IDENT IN expression NEWLINE statement_list for_end {
         if (!for_end_matches(ctx, $2, $7, @7.first_line, @7.first_column)) { GB_REFUSE; }
+        bound_note(ctx, $2, @2.first_line);
         $$ = ast_for_each($2, NULL, $4, $6);
       }
     | FOR EACH IDENT IN expression NEWLINE statement_list for_end {
         if (!for_end_matches(ctx, $3, $8, @8.first_line, @8.first_column)) { GB_REFUSE; }
+        bound_note(ctx, $3, @3.first_line);
         $$ = ast_for_each($3, NULL, $5, $7);
       }
     /* `for each item, i in list` -- the element AND its position.
@@ -1352,11 +1410,15 @@ for_each_statement
     | FOR IDENT COMMA IDENT IN expression NEWLINE statement_list for_end {
         if (!for_each_index_distinct(ctx, $2, $4, @4.first_line, @4.first_column)) { GB_REFUSE; }
         if (!for_end_matches(ctx, $2, $9, @9.first_line, @9.first_column)) { GB_REFUSE; }
+        bound_note(ctx, $2, @2.first_line);
+        bound_note(ctx, $4, @4.first_line);
         $$ = ast_for_each($2, $4, $6, $8);
       }
     | FOR EACH IDENT COMMA IDENT IN expression NEWLINE statement_list for_end {
         if (!for_each_index_distinct(ctx, $3, $5, @5.first_line, @5.first_column)) { GB_REFUSE; }
         if (!for_end_matches(ctx, $3, $10, @10.first_line, @10.first_column)) { GB_REFUSE; }
+        bound_note(ctx, $3, @3.first_line);
+        bound_note(ctx, $5, @5.first_line);
         $$ = ast_for_each($3, $5, $7, $9);
       }
     /* `for each x:number in xs` (Matthew, 2026-11-25): each element bound as
@@ -1364,40 +1426,56 @@ for_each_statement
      * assignment's is. COLON after the name is the one lookahead that tells
      * these from the forms above, so no conflicts. */
     | FOR IDENT COLON type_lock IN expression NEWLINE statement_list for_end {
-        if (!type_lock_check(ctx, $2, $4.name, $4.arg, @4.first_line, @4.first_column,
-                             @4.last_line, @4.last_column)) { GB_REFUSE; }
+        size_t before;
+        if (!type_lock_check_body(ctx, $2, $4.name, $4.arg, @4.first_line, @4.first_column,
+                                  @4.last_line, @4.last_column, &before)) { GB_REFUSE; }
+        bound_note(ctx, $2, @2.first_line);
         if (!for_end_matches(ctx, $2, $9, @9.first_line, @9.first_column)) { GB_REFUSE; }
         $$ = ast_for_each_locked($2, $4, NULL, $6, $8);
+        shape_ref_slot(ctx, before, &$$->as.for_each.lock);
       }
     | FOR EACH IDENT COLON type_lock IN expression NEWLINE statement_list for_end {
-        if (!type_lock_check(ctx, $3, $5.name, $5.arg, @5.first_line, @5.first_column,
-                             @5.last_line, @5.last_column)) { GB_REFUSE; }
+        size_t before;
+        if (!type_lock_check_body(ctx, $3, $5.name, $5.arg, @5.first_line, @5.first_column,
+                                  @5.last_line, @5.last_column, &before)) { GB_REFUSE; }
+        bound_note(ctx, $3, @3.first_line);
         if (!for_end_matches(ctx, $3, $10, @10.first_line, @10.first_column)) { GB_REFUSE; }
         $$ = ast_for_each_locked($3, $5, NULL, $7, $9);
+        shape_ref_slot(ctx, before, &$$->as.for_each.lock);
       }
     | FOR IDENT COLON type_lock COMMA IDENT IN expression NEWLINE statement_list for_end {
-        if (!type_lock_check(ctx, $2, $4.name, $4.arg, @4.first_line, @4.first_column,
-                             @4.last_line, @4.last_column)) { GB_REFUSE; }
+        size_t before;
+        if (!type_lock_check_body(ctx, $2, $4.name, $4.arg, @4.first_line, @4.first_column,
+                                  @4.last_line, @4.last_column, &before)) { GB_REFUSE; }
+        bound_note(ctx, $2, @2.first_line);
+        bound_note(ctx, $6, @6.first_line);
         if (!for_each_index_distinct(ctx, $2, $6, @6.first_line, @6.first_column)) { GB_REFUSE; }
         if (!for_end_matches(ctx, $2, $11, @11.first_line, @11.first_column)) { GB_REFUSE; }
         $$ = ast_for_each_locked($2, $4, $6, $8, $10);
+        shape_ref_slot(ctx, before, &$$->as.for_each.lock);
       }
     | FOR EACH IDENT COLON type_lock COMMA IDENT IN expression NEWLINE statement_list for_end {
-        if (!type_lock_check(ctx, $3, $5.name, $5.arg, @5.first_line, @5.first_column,
-                             @5.last_line, @5.last_column)) { GB_REFUSE; }
+        size_t before;
+        if (!type_lock_check_body(ctx, $3, $5.name, $5.arg, @5.first_line, @5.first_column,
+                                  @5.last_line, @5.last_column, &before)) { GB_REFUSE; }
+        bound_note(ctx, $3, @3.first_line);
+        bound_note(ctx, $7, @7.first_line);
         if (!for_each_index_distinct(ctx, $3, $7, @7.first_line, @7.first_column)) { GB_REFUSE; }
         if (!for_end_matches(ctx, $3, $12, @12.first_line, @12.first_column)) { GB_REFUSE; }
         $$ = ast_for_each_locked($3, $5, $7, $9, $11);
+        shape_ref_slot(ctx, before, &$$->as.for_each.lock);
       }
     /* Counted loop. `to` is INCLUSIVE, as every BASIC has had it, and `step`
      * defaults to 1. Distinguished from `for each`/`for ... in` by the token
      * after the name -- OP_EQ here, IN there -- so one lookahead settles it. */
     | FOR IDENT OP_EQ expression TO expression NEWLINE statement_list for_end {
         if (!for_end_matches(ctx, $2, $9, @9.first_line, @9.first_column)) { GB_REFUSE; }
+        bound_note(ctx, $2, @2.first_line);
         $$ = ast_for_range($2, $4, $6, NULL, $8);
       }
     | FOR IDENT OP_EQ expression TO expression STEP expression NEWLINE statement_list for_end {
         if (!for_end_matches(ctx, $2, $11, @11.first_line, @11.first_column)) { GB_REFUSE; }
+        bound_note(ctx, $2, @2.first_line);
         $$ = ast_for_range($2, $4, $6, $8, $10);
       }
     ;
@@ -1499,10 +1577,12 @@ consider_body_statement
 
 function_statement
     : FUNCTION IDENT LPAREN parameter_list_opt RPAREN NEWLINE statement_list END FUNCTION NEWLINE {
+        body_note(ctx, $4, @1.first_line, @10.last_line);
         $$ = ast_function($2, $4, $7);
       }
     | FUNCTION QUALIFIED_IDENT LPAREN parameter_list_opt RPAREN NEWLINE statement_list END FUNCTION NEWLINE {
         /* Dotted name: define-and-attach sugar. ast_function splits obj.method. */
+        body_note(ctx, $4, @1.first_line, @10.last_line);
         $$ = ast_function($2, $4, $7);
       }
     /* `function f(...):number`, an optional return type: every `return` with a
@@ -1515,6 +1595,7 @@ function_statement
                              @7.last_line, @7.last_column)) {
             GB_REFUSE;
         }
+        body_note(ctx, $4, @1.first_line, @12.last_line);
         $$ = ast_function_returning($2, $4, $7, $9);
       }
     | FUNCTION QUALIFIED_IDENT LPAREN parameter_list_opt RPAREN COLON type_lock NEWLINE statement_list END FUNCTION NEWLINE {
@@ -1524,6 +1605,7 @@ function_statement
                              @7.last_line, @7.last_column)) {
             GB_REFUSE;
         }
+        body_note(ctx, $4, @1.first_line, @12.last_line);
         $$ = ast_function_returning($2, $4, $7, $9);
       }
     ;
@@ -1539,6 +1621,7 @@ modifier_statement
 
 program_statement
     : PROGRAM IDENT LPAREN parameter_list_opt RPAREN NEWLINE statement_list END PROGRAM NEWLINE {
+        body_note(ctx, $4, @1.first_line, @10.last_line);
         $$ = ast_program($2, $4, $7);
       }
     ;
@@ -2668,6 +2751,35 @@ int parse_source_reentrant(const char *source, const char *path,
 
 int (*gb_parse_shape_known)(const char *name) = NULL;
 
+/* the innermost function or program whose lines hold `line`, or -1 for the
+   file's top level */
+static long body_at(const gb_parse_ctx *ctx, int line) {
+    long best = -1;
+    for (size_t i = 0; i < ctx->body_span_count; i++) {
+        const struct gb_body_span *b = &ctx->body_spans[i];
+        if (b->first <= line && line <= b->last &&
+            (best < 0 || b->last - b->first <
+                         ctx->body_spans[best].last - ctx->body_spans[best].first)) {
+            best = (long)i;
+        }
+    }
+    return best;
+}
+
+/* whether the body a lock at `line` is written in binds `name`: one of its
+   parameters, or a variable it assigns or loops over, anywhere in it. Not an
+   enclosing scope's: a lock names its own body's variable or a shape. */
+static int body_binds(const gb_parse_ctx *ctx, const char *name, int line) {
+    long body = body_at(ctx, line);
+    for (size_t i = 0; i < ctx->bound_name_count; i++) {
+        if (strcmp(ctx->bound_names[i].name, name) == 0 &&
+            body_at(ctx, ctx->bound_names[i].line) == body) {
+            return 1;
+        }
+    }
+    return 0;
+}
+
 /* EVERY LOCK THAT NAMED NO DATA TYPE names a shape this file declares, or one
  * the runtime already has (the prompt); otherwise it is refused here, before
  * anything runs, as `x:int` is. The first one only: one cause. 1 if refused. */
@@ -2682,10 +2794,52 @@ static int shape_refs_check(gb_parse_ctx *ctx) {
         for (size_t j = 0; !known && j < ctx->shape_decl_count; j++) {
             known = strcmp(ctx->shape_decls[j], ref->name) == 0;
         }
+        int bound = body_binds(ctx, ref->name, ref->line);
+        if (ref->in_body && bound) {
+            if (known) {
+                char message[400];
+                snprintf(message, sizeof message,
+                         "'%s' names both a shape this file declares and a variable of this "
+                         "function, so this lock could mean either; rename one", ref->name);
+                report_syntax_error(ctx, ref->line, ref->column, ref->end_line,
+                                    ref->end_column, message);
+                return 1;
+            }
+            if (ref->slot) {
+                ref->slot->by_value = 1;   /* a shape held in a variable (§6.4) */
+            }
+            continue;
+        }
         if (known) {
             continue;
         }
-        const char **words = malloc(sizeof *words * (ctx->shape_decl_count + 12));
+        if (bound) {
+            char message[400];
+            snprintf(message, sizeof message,
+                     "'%s' is a variable of this function, not a shape: a parameter's lock and "
+                     "a return type name a shape this file declares. Lock a variable in the "
+                     "body to the shape it holds instead, as `r:%s = row`", ref->name, ref->name);
+            report_syntax_error(ctx, ref->line, ref->column, ref->end_line, ref->end_column,
+                                message);
+            return 1;
+        }
+        if (ref->in_body) {
+            for (size_t j = 0; j < ctx->bound_name_count; j++) {
+                if (strcmp(ctx->bound_names[j].name, ref->name) == 0) {
+                    char message[512];
+                    snprintf(message, sizeof message,
+                             "'%s' is a variable, but not of the function this lock is written "
+                             "in: a lock names a shape this file declares, or a variable of its "
+                             "own function holding one, so pass %s in as a parameter",
+                             ref->name, ref->name);
+                    report_syntax_error(ctx, ref->line, ref->column, ref->end_line,
+                                        ref->end_column, message);
+                    return 1;
+                }
+            }
+        }
+        const char **words = malloc(sizeof *words *
+                                    (ctx->shape_decl_count + ctx->bound_name_count + 12));
         if (!words) {
             abort();
         }
@@ -2695,6 +2849,13 @@ static int shape_refs_check(gb_parse_ctx *ctx) {
         }
         for (size_t j = 0; j < ctx->shape_decl_count; j++) {
             words[n++] = ctx->shape_decls[j];
+        }
+        /* a body's lock may name its own variables: a misspelt one is offered */
+        long body = ref->in_body ? body_at(ctx, ref->line) : -2;
+        for (size_t j = 0; j < ctx->bound_name_count; j++) {
+            if (body_at(ctx, ctx->bound_names[j].line) == body) {
+                words[n++] = ctx->bound_names[j].name;
+            }
         }
         words[n] = NULL;
         const char *near = gb_nearest_word(ref->name, words);
@@ -2726,6 +2887,11 @@ static void shape_refs_free(gb_parse_ctx *ctx) {
         free(ctx->shape_decls[i]);
     }
     free(ctx->shape_decls);
+    for (size_t i = 0; i < ctx->bound_name_count; i++) {
+        free(ctx->bound_names[i].name);
+    }
+    free(ctx->bound_names);
+    free(ctx->body_spans);
 }
 
 /* As above, for a buffer that is an excerpt: `first_line` is the line its first
@@ -2748,6 +2914,10 @@ int parse_source_reentrant_at(const char *source, const char *path,
     ctx.shape_ref_count = 0;
     ctx.shape_decls = NULL;
     ctx.shape_decl_count = 0;
+    ctx.bound_names = NULL;
+    ctx.bound_name_count = 0;
+    ctx.body_spans = NULL;
+    ctx.body_span_count = 0;
     ctx.active_lexer = NULL;
     ctx.lexer_error_reported = 0;
     ctx.active_parse_path = path;

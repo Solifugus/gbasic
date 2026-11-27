@@ -156,6 +156,10 @@ typedef struct {
     char *arg;
     int line;
     int column;
+    /* the name is a variable of the body the lock is written in, holding a
+       shape (docs/shapes_design.md §6.4): `r:s = row` in a function handed s.
+       Set by the parser once the file is parsed; resolved when the lock runs */
+    int by_value;
 } AstTypeLock;
 
 /* ONE FIELD OF A SHAPE (docs/shapes_design.md §2): `name:type = default`,

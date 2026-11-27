@@ -341,12 +341,12 @@ AstStmt *ast_assign(AstExpr *target, AstModifierUse modifier, AstExpr *value) {
 }
 
 AstTypeLock ast_type_lock_none(void) {
-    AstTypeLock lock = { NULL, NULL, 0, 0 };
+    AstTypeLock lock = { NULL, NULL, 0, 0, 0 };
     return lock;
 }
 
 AstTypeLock ast_type_lock(char *name, char *arg, int line, int column) {
-    AstTypeLock lock = { name, arg, line, column };
+    AstTypeLock lock = { name, arg, line, column, 0 };
     return lock;
 }
 

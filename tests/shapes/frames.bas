@@ -49,13 +49,38 @@ program main(args)
     print frame.fill_missing(df, "paid", false).paid
     print frame.coerce(df, "amount", "string").amount
 
-    ' convert: the lock when the shape is a value
-    s = invoice
-    print convert({ invoice_id: "z", invoice_date: "2026-04-01", amount: "2" }, s)
-    print convert(nothing, s)
-    print convert(new invoice, s) = new invoice
-    print convert(new other, s)
+    ' a lock naming a variable that holds a shape: `r:s = row` where s was handed in
+    print into({ invoice_id: "z", invoice_date: "2026-04-01", amount: "2" }, invoice)
+    print into(nothing, invoice)
+    print into(new invoice, invoice) = new invoice
+    print into(new other, invoice)
+    print each_amount([{ invoice_id: "e1", invoice_date: "2026-04-02", amount: "1" }, { invoice_id: "e2", invoice_date: "2026-04-03", amount: 2 }], invoice)
+    print relock({ invoice_id: "r", invoice_date: "2026-04-04", amount: "5" }, [invoice, other])
 end program
+
+function into(row, s)
+    r:s = row
+    return r
+end function
+
+' each element bound as `r:s = element` would bind it
+function each_amount(rows, s)
+    out = []
+    for each r:s in rows
+        append(out, type(r.amount) + " " + string(r.amount))
+    end for
+    return out
+end function
+
+' the lock is the shape the variable holds when the lock line runs
+function relock(row, shapes)
+    out = []
+    for each s in shapes
+        r:s = row
+        append(out, type(r.amount))
+    end for
+    return out
+end function
 
 shape invoice
     invoice_id:text

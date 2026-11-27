@@ -118,10 +118,27 @@ typedef struct {
     struct gb_shape_ref {
         char *name;
         int   line, column, end_line, end_column;
+        /* a variable's lock in a body (an assignment or a `for each`), which
+           may name a variable of that body holding a shape (§6.4); `slot` is
+           the AST's lock, marked by_value when it does */
+        int   in_body;
+        AstTypeLock *slot;
     }              *shape_refs;
     size_t          shape_ref_count;
     char          **shape_decls;
     size_t          shape_decl_count;
+    /* every name a body binds (a parameter, an assignment's variable, a loop's)
+       with its line, and each function's or program's lines, so a lock is
+       matched with the names of the body it is written in */
+    struct gb_bound_name {
+        char *name;
+        int   line;
+    }              *bound_names;
+    size_t          bound_name_count;
+    struct gb_body_span {
+        int first, last;
+    }              *body_spans;
+    size_t          body_span_count;
 } gb_parse_ctx;
 
 #endif

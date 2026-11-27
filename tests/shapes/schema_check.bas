@@ -10,12 +10,12 @@ program main(args)
         print json_encode(json_schema(everything))
     else
         for each line in {file}args[1]
-            print convert_line(line)
+            print convert(line)
         end for
     end if
 end program
 
-function convert_line(line)
+function convert(line)
     on error goto next
     x:everything = json_decode(line)
     e = error
