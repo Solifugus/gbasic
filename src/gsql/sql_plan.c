@@ -131,7 +131,11 @@ static const struct {
 } functions[] = {
     { "coalesce", 1, 64 }, { "nullif", 2, 2 }, { "lower", 1, 1 }, { "upper", 1, 1 },
     { "length", 1, 1 }, { "char_length", 1, 1 }, { "abs", 1, 1 }, { "round", 1, 2 },
-    { "trim", 1, 1 }, { "mod", 2, 2 }, { "substring", 2, 3 }, { "extract", 2, 2 }, { NULL, 0, 0 }
+    { "trim", 1, 1 }, { "mod", 2, 2 }, { "substring", 2, 3 }, { "extract", 2, 2 },
+    /* vectors: pgvector's names and gBASIC's distance (docs/gsql_vector_design.md §5) */
+    { "l2_distance", 2, 2 }, { "cosine_distance", 2, 2 }, { "inner_product", 2, 2 },
+    { "negative_inner_product", 2, 2 }, { "distance", 2, 3 }, { "vector_dims", 1, 1 }, { "vector_norm", 1, 1 },
+    { NULL, 0, 0 }
 };
 
 static int bind(B *b, SqlExpr *e, int cols_allowed, const char *where);
@@ -750,7 +754,9 @@ static int bind(B *b, SqlExpr *e, int cols_allowed, const char *where) {
         if (!known) {
             return bfail(b, e->pos, GSQL_NOT_FOUND,
                          "`%s` is not a G-SQL function: the functions are coalesce, nullif, lower, upper, length, "
-                         "char_length, abs, round, trim, mod, substring and extract", e->name);
+                         "char_length, abs, round, trim, mod, substring, extract, and for vectors l2_distance, "
+                         "cosine_distance, inner_product, negative_inner_product, distance, vector_dims and vector_norm",
+                         e->name);
         }
         break;
     }
@@ -861,7 +867,8 @@ static int rangeable(const GsqlColumn *c) {
     if (c->kind == GSQL_COL_MONEY && !c->currency[0]) {
         return 0;
     }
-    return c->kind != GSQL_COL_BOOLEAN && c->kind != GSQL_COL_RECORD && c->kind != GSQL_COL_DURATION;
+    return c->kind != GSQL_COL_BOOLEAN && c->kind != GSQL_COL_RECORD && c->kind != GSQL_COL_DURATION &&
+           c->kind != GSQL_COL_VECTOR;
 }
 
 /* the constant `col = constant` (or `constant = col`) compares with, or NULL */
@@ -1421,6 +1428,8 @@ static const char *kind_text(B *b, const GsqlColumn *c) {
     char buf[32];
     if (c->kind == GSQL_COL_MONEY && c->currency[0]) {
         snprintf(buf, sizeof buf, "money(%s)", c->currency);
+    } else if (c->kind == GSQL_COL_VECTOR && c->dimension) {
+        snprintf(buf, sizeof buf, "vector(%u)", c->dimension);
     } else {
         snprintf(buf, sizeof buf, "%s", gsql_kind_name(c->kind));
     }

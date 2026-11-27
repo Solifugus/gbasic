@@ -85,7 +85,7 @@ check("no group by", outcome(db, "select d, count(*) from t group by d"), "EXPRE
 check("no distinct", outcome(db, "select distinct d from t"), "EXPRESSION: gsql.exec: a duration cannot be grouped or made DISTINCT: G-SQL has no key for it")
 check("no count(distinct)", outcome(db, "select count(distinct d) from t"), "EXPRESSION: gsql.exec: a duration cannot be grouped or made DISTINCT: G-SQL has no key for it")
 check("INTERVAL is named", outcome(db, "create table u (d interval)"),
-      "SYNTAX: gsql.exec: `interval` is not a G-SQL type: the types are NUMBER, INTEGER, TEXT, BOOLEAN, MONEY, MONEY(CUR), DATE, TIME, DATETIME, RECORD and DURATION; for INTERVAL, write DURATION")
+      "SYNTAX: gsql.exec: `interval` is not a G-SQL type: the types are NUMBER, INTEGER, TEXT, BOOLEAN, MONEY, MONEY(CUR), DATE, TIME, DATETIME, RECORD, DURATION, VECTOR and VECTOR(N); for INTERVAL, write DURATION")
 
 ' --- what works on one -------------------------------------------------------
 check("= is gBASIC's, so 24 hours = 1 day", count(db.query("select k from t where d = ?", [1 day])), 1)

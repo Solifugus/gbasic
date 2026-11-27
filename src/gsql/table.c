@@ -41,7 +41,7 @@ const char *gsql_code_name(int code) {
 }
 
 static const char *const kind_names[] = {
-    "?", "number", "integer", "string", "boolean", "money", "date", "time", "datetime", "record", "duration"
+    "?", "number", "integer", "string", "boolean", "money", "date", "time", "datetime", "record", "duration", "vector"
 };
 
 const char *gsql_kind_name(int kind) {
@@ -176,7 +176,7 @@ static void schema_encode(const GsqlTable *tb, GsqlBuf *b) {
     v3_w_array(b, tb->ncols);
     for (size_t i = 0; i < tb->ncols; i++) {
         const GsqlColumn *c = &tb->cols[i];
-        v3_w_record(b, c->gen ? 6 : 5);
+        v3_w_record(b, 5 + (c->gen ? 1 : 0) + (c->dimension ? 1 : 0));
         v3_w_name(b, "name");
         v3_w_text(b, c->name);
         v3_w_name(b, "kind");
@@ -216,6 +216,12 @@ static void schema_encode(const GsqlTable *tb, GsqlBuf *b) {
             } else {
                 v3_w_unknown(b);
             }
+        }
+        /* written only for VECTOR(N), so every other column stores as before
+           (docs/gsql_vector_design.md §8) */
+        if (c->dimension) {
+            v3_w_name(b, "dimension");
+            v3_w_int(b, c->dimension);
         }
     }
     v3_w_name(b, "key");
@@ -383,6 +389,15 @@ static int schema_decode(const char *name, const unsigned char *p, size_t n, Gsq
         const V3Field *cg = v3_field_named(cf, ncf, "generator");
         if (cg && !generator_decode(cg, c)) {
             goto bad;
+        }
+        const V3Field *cdim = v3_field_named(cf, ncf, "dimension");
+        if (cdim) {
+            uint64_t dim;
+            if (c->kind != GSQL_COL_VECTOR || !v3_read_u64(cdim->v, cdim->vlen, &dim) || dim == 0 ||
+                dim > GSQL_VECTOR_MAX_DIM) {
+                goto bad;
+            }
+            c->dimension = (uint32_t)dim;
         }
         if (!(cd->vlen == 1 && cd->v[0] == SER_UNKNOWN)) {
             unsigned char *d = malloc(cd->vlen);
@@ -651,6 +666,10 @@ static int has_serial(const GsqlTable *tb) {
                         "to find or sort by its length, keep its total_seconds in a NUMBER column beside it"
 #define NO_DURATION_KEY "so it cannot be in a key: " NO_DURATION_WHY
 
+/* Nor is a vector (docs/gsql_vector_design.md §3): its values are found by
+ * distance, which no byte order answers. */
+#define NO_VECTOR_WHY "a vector has no order; it is searched by distance, as in ORDER BY e <=> ? LIMIT 10"
+
 static int check_name(const char *what, const char *name, GsqlError *err) {
     size_t n = name ? strlen(name) : 0;
     if (n == 0) {
@@ -678,6 +697,11 @@ static int value_fits_rule(const char *table, const GsqlColumn *c, const unsigne
                     w.bad_tag == w.tag ? "" : ", and the record holds one");
     }
     const char *want = gsql_kind_name(c->kind);
+    char sized[32];
+    if (c->kind == GSQL_COL_VECTOR && c->dimension) {
+        snprintf(sized, sizeof sized, "vector(%u)", c->dimension);
+        want = sized;
+    }
     int good = 0;
     switch (c->kind) {
     case GSQL_COL_NUMBER:
@@ -719,6 +743,13 @@ static int value_fits_rule(const char *table, const GsqlColumn *c, const unsigne
         break;
     case GSQL_COL_DURATION:
         good = w.tag == SER_DURATION;
+        break;
+    case GSQL_COL_VECTOR:
+        if (w.tag == SER_VECTOR && c->dimension && w.dim != c->dimension) {
+            return fail(err, GSQL_TYPE, "%s.%s is vector(%u), and the vector has %llu dimension%s", table, c->name,
+                        c->dimension, (unsigned long long)w.dim, w.dim == 1 ? "" : "s");
+        }
+        good = w.tag == SER_VECTOR;
         break;
     }
     if (!good) {
@@ -1072,6 +1103,13 @@ static int check_column_decl(const char *table, const GsqlColumn *c, GsqlError *
     if (memchr(c->currency, 0, sizeof c->currency) == NULL) {
         return fail(err, GSQL_SCHEMA, "%s.%s: a currency code is at most 7 letters", table, c->name);
     }
+    if (c->dimension && c->kind != GSQL_COL_VECTOR) {
+        return fail(err, GSQL_SCHEMA, "%s.%s: only a vector column names a dimension", table, c->name);
+    }
+    if (c->dimension > GSQL_VECTOR_MAX_DIM) {
+        return fail(err, GSQL_SCHEMA, "%s.%s: a vector has at most %d dimensions", table, c->name,
+                    GSQL_VECTOR_MAX_DIM);
+    }
     if (c->def) {
         GsqlError e2;
         int fr = value_fits(table, c, c->def, c->def_len, &e2);
@@ -1160,6 +1198,10 @@ int gsql_table_create(const GsEngine *e, GsTxn *t, const GsqlTableDecl *d, GsqlE
         }
         if (d->cols[d->key[i]].kind == GSQL_COL_DURATION) {
             return fail(err, GSQL_SCHEMA, "%s.%s is a duration, " NO_DURATION_KEY, d->name, d->cols[d->key[i]].name);
+        }
+        if (d->cols[d->key[i]].kind == GSQL_COL_VECTOR) {
+            return fail(err, GSQL_SCHEMA, "%s.%s is a vector, so it cannot be in a key: " NO_VECTOR_WHY, d->name,
+                        d->cols[d->key[i]].name);
         }
     }
     if ((rc = ensure_trees(e, t, err))) {
@@ -1830,6 +1872,10 @@ int gsql_index_create(const GsEngine *e, GsTxn *t, GsqlTable *tb, const GsqlInde
         }
         if (tb->cols[d->cols[i]].kind == GSQL_COL_DURATION) {
             return fail(err, GSQL_SCHEMA, "%s.%s is a duration, which index %s cannot hold: " NO_DURATION_WHY,
+                        tb->name, tb->cols[d->cols[i]].name, d->name);
+        }
+        if (tb->cols[d->cols[i]].kind == GSQL_COL_VECTOR) {
+            return fail(err, GSQL_SCHEMA, "%s.%s is a vector, which index %s cannot hold: " NO_VECTOR_WHY,
                         tb->name, tb->cols[d->cols[i]].name, d->name);
         }
     }

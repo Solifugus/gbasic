@@ -231,6 +231,26 @@ int v3_walk(V3In *in, int depth, V3Walk *w) {
             w->bad_tag = tag;
         }
         return in->ok;
+    case SER_VECTOR: {
+        /* its dimension, then each float32 little-endian, every one finite,
+           as the interpreter's reader holds them (docs/vectors_design.md §6) */
+        uint64_t dim = v3_in_uleb(in);
+        if (!in->ok || dim == 0 || dim > (in->len - in->pos) / 4) {
+            return 0;
+        }
+        /* the bounds checked once: every row a search measures is walked */
+        const unsigned char *e = in->p + in->pos;
+        for (uint64_t i = 0; i < dim; i++, e += 4) {
+            if ((e[3] & 0x7f) == 0x7f && (e[2] & 0x80)) {
+                return 0;   /* the exponent all ones: an infinity or a NaN */
+            }
+        }
+        in->pos += (size_t)dim * 4;
+        if (depth == 0) {
+            w->dim = dim;
+        }
+        return in->ok;
+    }
     default:
         /* SER_ACTOR included: it is meaningful only in spawn arguments. */
         return 0;
@@ -260,6 +280,7 @@ const char *v3_tag_name(unsigned tag) {
     case SER_DIR: return "a directory";
     case SER_FUNCTION: return "a function";
     case SER_REGEX: return "a regex";
+    case SER_VECTOR: return "a vector";
     default: return "a value";
     }
 }

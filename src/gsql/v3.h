@@ -30,6 +30,7 @@ typedef struct {
     unsigned time_only;    /* datetime */
     unsigned precision;    /* datetime: 1 year .. 6 second */
     char currency[8];      /* money: the alphabetic code ("" if the writer had none) */
+    uint64_t dim;          /* vector: its dimension */
     unsigned bad_tag;      /* a kind nothing may store, found at some depth (0: none) */
     int nested_array;      /* an array somewhere below the top */
 } V3Walk;

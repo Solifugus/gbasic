@@ -102,8 +102,15 @@ static const char *tag_word(int tag) {
     case SER_DATETIME: return "a date-time";
     case SER_DURATION: return "a duration";
     case SER_MONEY: return "money";
+    case SER_VECTOR: return "a vector";
     default: return "a value G-SQL does not store";
     }
+}
+
+/* a stored vector's dimension, read from its bytes; 0 if they are not one */
+static uint64_t vector_dim_of(const unsigned char *p, size_t n) {
+    V3Walk w;
+    return v3_walk_whole(p, n, &w) && w.tag == SER_VECTOR ? w.dim : 0;
 }
 
 /* ---- one execution ------------------------------------------------------ */
@@ -609,6 +616,9 @@ static int text_reads_as(X *x, const GsqlHv *v, char cur[8]) {
     if (k == SER_NUMBER) {
         return GSQL_COL_NUMBER;
     }
+    if (k == SER_VECTOR) {
+        return GSQL_COL_VECTOR;   /* text read as vector() reads it (docs/gsql_vector_design.md §4) */
+    }
     if (k != SER_MONEY && k != SER_DATETIME) {
         return -1;
     }
@@ -639,6 +649,7 @@ static const char *col_kind_word(int kind) {
     case GSQL_COL_TIME: return "a time";
     case GSQL_COL_DATETIME: return "a date-time";
     case GSQL_COL_DURATION: return "a duration";
+    case GSQL_COL_VECTOR: return "a vector";
     default: return "that kind";
     }
 }
@@ -857,6 +868,57 @@ static int like(const char *s, size_t sn, const char *p, size_t pn) {
     return pi == pn;
 }
 
+/* One side of a distance (docs/gsql_vector_design.md §4): a vector, or text
+ * or an array read as one, as storing into a VECTOR column reads them. A new
+ * value, or NULL with err filled. */
+static GsqlHv *vector_operand(X *x, const GsqlHv *v, const char *what, const SqlExpr *e) {
+    int k = kind_of(x, v);
+    if (k == SER_VECTOR) {
+        return x->h->copy(x->h->ctx, v);
+    }
+    if (k != SER_STRING && k != SER_ARRAY) {
+        xfail(x->err, GSQL_EXPRESSION, e->pos, "%s measures between two vectors, and one side is %s", what,
+              tag_word(k));
+        return NULL;
+    }
+    return placed(x, x->h->cast(x->h->ctx, v, GSQL_COL_VECTOR, "", x->err), e);
+}
+
+/* a distance or a product of two vectors, by the host's function `fn` (one of
+ * the names gsql_h_call gives gBASIC's vector builtins); NULL in, NULL out */
+static GsqlHv *vector_measure(X *x, const char *fn, const char *what, GsqlHv *const *args, size_t n,
+                              const SqlExpr *e) {
+    for (size_t k = 0; k < n; k++) {
+        if (is_null(x, args[k])) {
+            return hv_unknown(x);
+        }
+    }
+    GsqlHv *vs[3] = { NULL, NULL, NULL };
+    GsqlHv *v = NULL;
+    size_t got = 0;
+    for (; got < n && got < 2; got++) {
+        vs[got] = vector_operand(x, args[got], what, e);
+        if (!vs[got]) {
+            break;
+        }
+    }
+    if (got == (n < 2 ? n : 2)) {
+        if (n == 3) {
+            if (kind_of(x, args[2]) != SER_STRING) {
+                xfail(x->err, GSQL_EXPRESSION, e->pos, "distance's metric is text: 'l2', 'cosine' or 'ip'");
+                goto done;
+            }
+            vs[2] = x->h->copy(x->h->ctx, args[2]);
+        }
+        v = placed(x, x->h->call(x->h->ctx, fn, vs, n, x->err), e);
+    }
+done:
+    for (size_t k = 0; k < 3; k++) {
+        rel(x, vs[k]);
+    }
+    return v;
+}
+
 static GsqlHv *eval_bin(X *x, SqlExpr *e) {
     int op = e->op;
     if (op == SQL_OP_AND || op == SQL_OP_OR) {
@@ -894,7 +956,11 @@ static GsqlHv *eval_bin(X *x, SqlExpr *e) {
         return NULL;
     }
     GsqlHv *v = NULL;
-    if (op == SQL_OP_CONCAT) {
+    if (op == SQL_OP_L2 || op == SQL_OP_COSINE || op == SQL_OP_IP) {
+        GsqlHv *args[2] = { l, r };
+        v = vector_measure(x, op == SQL_OP_L2 ? "l2_distance" : op == SQL_OP_COSINE ? "cosine_distance"
+                           : "negative_inner_product", sql_op_text(op), args, 2, e);
+    } else if (op == SQL_OP_CONCAT) {
         int kl = kind_of(x, l), kr = kind_of(x, r);
         if (null_kind(kl) || null_kind(kr)) {
             v = hv_unknown(x);
@@ -980,6 +1046,10 @@ static GsqlHv *eval_call(X *x, SqlExpr *e) {
         return a;
     }
     /* the strict functions: NULL in, NULL out, as SQL's are */
+    int vec = strcmp(e->name, "l2_distance") == 0 || strcmp(e->name, "cosine_distance") == 0 ||
+              strcmp(e->name, "inner_product") == 0 || strcmp(e->name, "negative_inner_product") == 0 ||
+              strcmp(e->name, "distance") == 0 || strcmp(e->name, "vector_dims") == 0 ||
+              strcmp(e->name, "vector_norm") == 0;
     GsqlHv *args[3] = { NULL, NULL, NULL };
     int any_null = 0;
     for (size_t k = 0; k < e->na; k++) {
@@ -993,7 +1063,10 @@ static GsqlHv *eval_call(X *x, SqlExpr *e) {
         any_null |= is_null(x, args[k]);
     }
     GsqlHv *v;
-    if (any_null) {
+    if (vec) {
+        /* pgvector's names and gBASIC's distance (docs/gsql_vector_design.md §5) */
+        v = vector_measure(x, e->name, e->name, args, e->na, e);
+    } else if (any_null) {
         v = hv_unknown(x);
     } else {
         const char *fn = e->name;
@@ -1252,6 +1325,28 @@ static GsqlHv *eval(X *x, SqlExpr *e) {
         GsqlHv *v = is_null(x, a) ? hv_unknown(x)
                                   : placed(x, x->h->cast(x->h->ctx, a, (int)e->type.kind, e->type.currency, x->err), e);
         rel(x, a);
+        if (v && e->type.kind == GSQL_COL_VECTOR && e->type.dimension && !is_null(x, v)) {
+            /* VECTOR(N): the dimension the column rule holds a stored one to */
+            GsqlColumn c;
+            memset(&c, 0, sizeof c);
+            c.name = "CAST";
+            c.kind = GSQL_COL_VECTOR;
+            c.dimension = e->type.dimension;
+            GsqlBuf b = {0};
+            GsqlError why;
+            memset(&why, 0, sizeof why);
+            if (x->h->store(x->h->ctx, v, &b, x->err) != GSQL_OK) {
+                rel(x, v);
+                v = NULL;
+            } else if (gsql_value_fits(&c, b.bytes, b.length, &why) != GSQL_OK) {
+                uint64_t has = b.length > 1 ? vector_dim_of(b.bytes, b.length) : 0;
+                xfail(x->err, GSQL_EXPRESSION, e->pos, "CAST to VECTOR(%u): the vector has %llu dimension%s",
+                      e->type.dimension, (unsigned long long)has, has == 1 ? "" : "s");
+                rel(x, v);
+                v = NULL;
+            }
+            gsql_buf_free(&b);
+        }
         return v;
     }
     }
@@ -1308,7 +1403,7 @@ static int store_convert(X *x, int kind, const char *currency, const char *table
         return rc;
     }
     if (!((temporal && tag == SER_STRING) || (kind == GSQL_COL_DURATION && tag == SER_STRING) || (kind == GSQL_COL_MONEY && (tag == SER_STRING || tag == SER_NUMBER)) ||
-          (numeric && tag == SER_STRING))) {
+          (numeric && tag == SER_STRING) || (kind == GSQL_COL_VECTOR && (tag == SER_STRING || tag == SER_ARRAY)))) {
         return GSQL_OK;
     }
     if (numeric) {
@@ -1348,11 +1443,12 @@ static int store_convert(X *x, int kind, const char *currency, const char *table
     if (!c) {
         const char *kw = kind == GSQL_COL_DATE ? "date" : kind == GSQL_COL_TIME ? "time"
                          : kind == GSQL_COL_DATETIME ? "datetime" : kind == GSQL_COL_INTEGER ? "integer"
-                         : kind == GSQL_COL_NUMBER ? "number" : kind == GSQL_COL_DURATION ? "duration" : "money";
+                         : kind == GSQL_COL_NUMBER ? "number" : kind == GSQL_COL_DURATION ? "duration"
+                         : kind == GSQL_COL_VECTOR ? "vector" : "money";
         int rc = xfail(x->err, GSQL_TYPE, 0, "%s.%s is %s%s%s%s, and the %s given does not read as one: %.300s",
                        table, col, kind == GSQL_COL_MONEY ? "money" : kw, kind == GSQL_COL_MONEY && currency[0] ? "(" : "",
                        kind == GSQL_COL_MONEY ? currency : "", kind == GSQL_COL_MONEY && currency[0] ? ")" : "",
-                       tag == SER_STRING ? "text" : "number", why.message);
+                       tag == SER_STRING ? "text" : tag == SER_ARRAY ? "array" : "number", why.message);
         gsql_error_about(x->err, table, col, NULL);
         return rc;
     }
@@ -3471,7 +3567,7 @@ static int win_kinds(SqlCursor *c, const WinRow *w) {
                 continue;
             }
             int kind = kind_of(x, v);
-            if (kind == SER_DURATION || kind == SER_ARRAY || kind == SER_RECORD) {
+            if (kind == SER_DURATION || kind == SER_ARRAY || kind == SER_RECORD || kind == SER_VECTOR) {
                 c->wunkeyed = 1;
             }
             if (!c->wfirst[at]) {
@@ -4711,7 +4807,7 @@ static int sort_kinds(SqlCursor *c, const SortRow *r) {
             continue;
         }
         int kind = kind_of(x, v);
-        if (kind == SER_DURATION || kind == SER_ARRAY || kind == SER_RECORD) {
+        if (kind == SER_DURATION || kind == SER_ARRAY || kind == SER_RECORD || kind == SER_VECTOR) {
             c->unkeyed = 1;
         }
         if (!c->first[k]) {
@@ -7948,6 +8044,7 @@ static int run_schema_change(X *x, GsqlResult *out) {
             cols[k].name = d->name;
             cols[k].kind = d->type.kind;
             memcpy(cols[k].currency, d->type.currency, sizeof cols[k].currency);
+            cols[k].dimension = d->type.dimension;
             cols[k].not_null = d->not_null;
             gen_column(&cols[k], d);
             rc = default_bytes(x, s->table, d, &defs[k]);
@@ -8143,6 +8240,7 @@ static int run_schema_change(X *x, GsqlResult *out) {
         c.name = d->name;
         c.kind = d->type.kind;
         memcpy(c.currency, d->type.currency, sizeof c.currency);
+        c.dimension = d->type.dimension;
         c.not_null = d->not_null;
         gen_column(&c, d);
         GsqlBuf def = {0};
@@ -9438,7 +9536,7 @@ static int dflush(Dump *d, GsqlError *err) {
 }
 
 static const char *const dump_kind_names[] = {
-    "?", "NUMBER", "INTEGER", "TEXT", "BOOLEAN", "MONEY", "DATE", "TIME", "DATETIME", "RECORD", "DURATION"
+    "?", "NUMBER", "INTEGER", "TEXT", "BOOLEAN", "MONEY", "DATE", "TIME", "DATETIME", "RECORD", "DURATION", "VECTOR"
 };
 
 /* one stored value as its literal; a record through the host's `encode` */
@@ -9492,6 +9590,29 @@ static int dump_value(X *x, Dump *d, const unsigned char *v, size_t n, const cha
         gsql_buf_free(&text);
         return GSQL_OK;
     }
+    if (n && v[0] == SER_VECTOR) {
+        /* pgvector's text, each element the shortest that reads back as the
+           same float32 (docs/gsql_vector_design.md §6) */
+        GsqlHv *hv = x->h->load(x->h->ctx, v, n, err);
+        GsqlHv *t = hv ? x->h->cast(x->h->ctx, hv, GSQL_COL_STRING, "", err) : NULL;
+        if (hv) {
+            rel(x, hv);
+        }
+        GsqlBuf text = {0};
+        int rc = t ? x->h->store(x->h->ctx, t, &text, err) : (err->code ? err->code : GSQL_EXPRESSION);
+        if (t) {
+            rel(x, t);
+        }
+        if (rc != GSQL_OK) {
+            gsql_buf_free(&text);
+            return rc;
+        }
+        dput(d, "CAST(");
+        sql_print_value(&d->line, text.bytes, text.length);
+        dput(d, " AS VECTOR)");
+        gsql_buf_free(&text);
+        return GSQL_OK;
+    }
     if (!sql_print_value(&d->line, v, n)) {
         return xfail(err, GSQL_TYPE, 0, "DUMP TO: `%.80s.%.80s` holds %s, which has no SQL literal that reads back "
                      "as the same value", table, col, tag_word(n ? v[0] : 0));
@@ -9513,6 +9634,9 @@ static int dump_table_schema(X *x, Dump *d, GsqlTable *tb, GsqlError *err) {
         dput(d, " ");
         if (c->kind == GSQL_COL_MONEY && c->currency[0]) {
             snprintf(b, sizeof b, "MONEY(%s)", c->currency);
+            dput(d, b);
+        } else if (c->kind == GSQL_COL_VECTOR && c->dimension) {
+            snprintf(b, sizeof b, "VECTOR(%u)", c->dimension);
             dput(d, b);
         } else {
             dput(d, dump_kind_names[c->kind >= 1 && c->kind <= GSQL_COL_LAST ? c->kind : 0]);

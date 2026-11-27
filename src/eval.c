@@ -923,6 +923,13 @@ typedef struct ErrorFrame {
      * warning-mode lookup, which must not let a dependency soften a policy the
      * program set. */
     int in_library;
+    /* THE ERROR THIS FRAME ABSORBED, its own copy while `pending` (DOGFOOD
+     * 2026-11-27): there is one current_error, and a callee that catches a
+     * raise of its own replaces it, so a check here, the re-raise at this
+     * frame's end, or the report at the program's end named the callee's
+     * error, which was handled, instead of this one, which was not. Put back
+     * by error_frame_restore. Owned; NULL when nothing is pending. */
+    struct RuntimeErrorHeld *held;
     struct ErrorFrame *parent;
 } ErrorFrame;
 
@@ -5219,6 +5226,59 @@ static void error_clear_state(void) {
     memset(&current_error, 0, sizeof(current_error));
 }
 
+/* A frame's own copy of the error it absorbed (ErrorFrame.held). */
+struct RuntimeErrorHeld {
+    RuntimeError e;
+};
+
+static void runtime_error_copy_into(RuntimeError *to, const RuntimeError *from) {
+    *to = *from;
+    to->message = from->message ? copy_string(from->message) : NULL;
+    to->source = from->source ? copy_string(from->source) : NULL;
+    to->path = from->path ? copy_string(from->path) : NULL;
+    to->details = value_copy(from->details);
+    to->trace = value_copy(from->trace);
+}
+
+static void error_frame_hold(ErrorFrame *f) {
+    if (!f->held) {
+        f->held = malloc(sizeof *f->held);
+        if (!f->held) {
+            abort();
+        }
+    } else {
+        free(f->held->e.message);
+        free(f->held->e.source);
+        free(f->held->e.path);
+        value_free(f->held->e.details);
+        value_free(f->held->e.trace);
+    }
+    runtime_error_copy_into(&f->held->e, &current_error);
+}
+
+static void error_frame_release(ErrorFrame *f) {
+    if (!f->held) {
+        return;
+    }
+    free(f->held->e.message);
+    free(f->held->e.source);
+    free(f->held->e.path);
+    value_free(f->held->e.details);
+    value_free(f->held->e.trace);
+    free(f->held);
+    f->held = NULL;
+}
+
+/* the frame's pending error made the current one again, if a callee's
+ * replaced it */
+static void error_frame_restore(ErrorFrame *f) {
+    if (!f->pending || !f->held) {
+        return;
+    }
+    error_clear_state();
+    runtime_error_copy_into(&current_error, &f->held->e);
+}
+
 static const char *runtime_error_path(void) {
     if (current_import_path && current_import_path[0]) {
         return current_import_path;
@@ -5839,6 +5899,7 @@ static int error_frame_absorb(char **jump_label) {
     }
     if (frame->mode == EFRAME_GOTO_NEXT) {
         frame->pending = 1;
+        error_frame_hold(frame);
         raise_in_flight = 0;
         error_generation = frame->entry_generation;
         return 1;
@@ -7480,6 +7541,8 @@ static Value env_get_key(const char *name, const char *key) {
         if (!current_error_frame->pending && !current_error_frame->tried) {
             return value_bool(0);
         }
+        error_frame_restore(current_error_frame);
+        error_frame_release(current_error_frame);
         current_error_frame->pending = 0;
         current_error_frame->tried = 0;
         return value_error_object();
@@ -16986,8 +17049,15 @@ static Value invoke_frame(AstStmt *stmt, Value *args, size_t argc, Value *receiv
      * ever VANISH. Forgetting a check produces noise, never silence, which is
      * the whole reason this model is not the VB6 one. */
     int reraise = frame.pending;
+    if (reraise) {
+        error_frame_restore(&frame);
+    }
+    error_frame_release(&frame);
     free(frame.label);
     current_error_frame = frame.parent;
+    if (!reraise && !raise_in_flight) {
+        error_frame_restore(current_error_frame);   /* the caller's, if a raise here replaced it */
+    }
     if (call_stack_depth > 0) {
         call_stack_depth--;
     }
@@ -20078,14 +20148,18 @@ static Value deserialize_value(SerReader *r, int depth) {
             r->ok = 0;
             return value_null();
         }
+        /* read in place, the bounds checked once above: a stored vector is
+           read for every row a G-SQL search measures */
         GbVector *vec = vector_new((size_t)dim);
-        for (size_t i = 0; i < vec->dim; i++) {
-            uint32_t bits = (uint32_t)serread_le(r, 4);
+        const unsigned char *p = (const unsigned char *)r->data + r->pos;
+        for (size_t i = 0; i < vec->dim; i++, p += 4) {
+            uint32_t bits = (uint32_t)p[0] | (uint32_t)p[1] << 8 | (uint32_t)p[2] << 16 | (uint32_t)p[3] << 24;
             memcpy(&vec->data[i], &bits, 4);
-            if (!isfinite(vec->data[i])) {
-                r->ok = 0;
+            if ((bits & 0x7f800000u) == 0x7f800000u) {
+                r->ok = 0;   /* an infinity or a NaN */
             }
         }
+        r->pos += vec->dim * 4;
         if (!r->ok) {
             vector_release(vec);
             return value_null();
@@ -21777,6 +21851,9 @@ int eval_run_actor(AstStmtList program, const char *entry,
      * old model the raise reported itself at raise time and set
      * runtime_stopped; reporting is now deferred to whoever declines, and here
      * that is us.) */
+    if (!raise_in_flight) {
+        error_frame_restore(&base_error_frame);
+    }
     if (raise_in_flight || base_error_frame.pending) {
         raise_report_fatal();
     }
@@ -38416,6 +38493,7 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
          * itself, but leaving the flag set would re-raise at frame exit under
          * rule 2 -- clearing an error you deliberately discarded must not
          * resurrect it. */
+        error_frame_release(current_error_frame);
         current_error_frame->pending = 0;
         current_error_frame->tried = 0;
         error_clear_state();
@@ -49229,7 +49307,7 @@ static Value shape_table_problems(const struct GbShape *shape, const Value *colu
         } else if (f->kind == SHAPE_FIELD_TYPED) {
             const char *want = NULL;
             int ok;
-            char money[16];
+            char money[32];
             switch (f->lock.kind) {
             case LOCK_NUMBER:
                 ok = strcmp(kind, "number") == 0 || strcmp(kind, "integer") == 0;
@@ -49245,6 +49323,18 @@ static Value shape_table_problems(const struct GbShape *shape, const Value *colu
                 snprintf(money, sizeof money, "money(%s)", f->lock.currency);
                 ok = strcmp(kind, money) == 0;
                 want = money;
+                break;
+            case LOCK_VECTOR:
+                /* a column of any dimension may hold the lock's; the lock
+                   still checks each row read (docs/gsql_vector_design.md §7) */
+                if (f->lock.dimension) {
+                    snprintf(money, sizeof money, "vector(%zu)", f->lock.dimension);
+                    ok = strcmp(kind, money) == 0 || strcmp(kind, "vector") == 0;
+                    want = money;
+                } else {
+                    ok = strncmp(kind, "vector", 6) == 0;
+                    want = "vector";
+                }
                 break;
             default:
                 ok = 0;
@@ -53609,6 +53699,7 @@ static EvalResult eval_stmt_list(AstStmtList statements) {
  * -- worse -- leave a listener bound after the session ended. */
 static void runtime_teardown(void) {
     shapes_teardown();
+    error_frame_release(&base_error_frame);
     free(base_error_frame.label);
     memset(&base_error_frame, 0, sizeof(base_error_frame));
     current_error_frame = &base_error_frame;
@@ -53905,6 +53996,7 @@ int eval_program(AstStmtList program) {
     if (result.did_raise || raise_in_flight) {
         raise_report_fatal();
     } else if (base_error_frame.pending) {
+        error_frame_restore(&base_error_frame);
         g_unchecked_generation = error_generation;
         raise_report_fatal();
     }
@@ -54038,6 +54130,7 @@ void gb_session_open(void) {
  * because the previous one failed is not a prompt. Deliberately NOT the
  * environment: that is the whole point of a session. */
 static void session_reset_after_chunk(void) {
+    error_frame_release(&base_error_frame);
     free(base_error_frame.label);
     memset(&base_error_frame, 0, sizeof(base_error_frame));
     current_error_frame = &base_error_frame;

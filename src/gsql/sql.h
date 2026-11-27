@@ -65,7 +65,9 @@ typedef enum {
     SQL_OP_OR = 1, SQL_OP_AND,
     SQL_OP_EQ, SQL_OP_NE, SQL_OP_LT, SQL_OP_LE, SQL_OP_GT, SQL_OP_GE,
     SQL_OP_CONCAT,
-    SQL_OP_ADD, SQL_OP_SUB, SQL_OP_MUL, SQL_OP_DIV, SQL_OP_MOD
+    SQL_OP_ADD, SQL_OP_SUB, SQL_OP_MUL, SQL_OP_DIV, SQL_OP_MOD,
+    /* pgvector's distances, the SQL layer's own (docs/gsql_vector_design.md §4) */
+    SQL_OP_L2, SQL_OP_COSINE, SQL_OP_IP
 } SqlOp;
 
 /* the window functions that are not aggregates; numbered apart from SqlAgg */
@@ -85,10 +87,12 @@ typedef enum { SQL_FRAME_DEFAULT = 0, SQL_FRAME_ROWS, SQL_FRAME_RANGE } SqlFrame
 
 const char *sql_op_text(int op);     /* "=", "<>", "AND", "||" ... as SQL spells it */
 
-/* A column type as written: the table layer's kind plus a currency. */
+/* A column type as written: the table layer's kind plus a currency, or a
+ * vector's dimension (0: any). */
 typedef struct {
     GsqlColKind kind;
     char currency[8];
+    uint32_t dimension;
 } SqlType;
 
 typedef struct SqlExpr SqlExpr;

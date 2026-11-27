@@ -408,6 +408,20 @@ static void next(P *p) {
         t->text = sql_strndup(p->arena, p->src + s, t->len);
         return;
     }
+    /* pgvector's three distances, before `<=` can take two of their bytes
+       (docs/gsql_vector_design.md §4) */
+    static const char *const three[] = { "<->", "<=>", "<#>", NULL };
+    for (int k = 0; three[k]; k++) {
+        if (p->i + 2 < p->n && memcmp(p->src + p->i, three[k], 3) == 0) {
+            advance_byte(p);
+            advance_byte(p);
+            advance_byte(p);
+            t->kind = T_SYM;
+            t->len = 3;
+            t->text = (char *)three[k];
+            return;
+        }
+    }
     static const char *const two[] = { "<=", ">=", "<>", "!=", "||", NULL };
     for (int k = 0; two[k]; k++) {
         if (p->i + 1 < p->n && p->src[p->i] == two[k][0] && p->src[p->i + 1] == two[k][1]) {
@@ -1333,14 +1347,21 @@ static SqlExpr *add(P *p) {
     }
 }
 
+/* `||` and pgvector's distances, at PostgreSQL's level for an operator it has
+ * no other place for: looser than + and -, tighter than a comparison, so
+ * `e <=> ? < 0.2` is the distance compared */
 static SqlExpr *concat(P *p) {
     SqlExpr *l = add(p);
-    while (!p->failed && at_sym(p, "||")) {
+    for (;;) {
+        int op = at_sym(p, "||") ? SQL_OP_CONCAT : at_sym(p, "<->") ? SQL_OP_L2 : at_sym(p, "<=>") ? SQL_OP_COSINE
+                 : at_sym(p, "<#>") ? SQL_OP_IP : 0;
+        if (!op || p->failed) {
+            return l;
+        }
         uint32_t pos = p->tok.pos;
         next(p);
-        l = binary(p, SQL_OP_CONCAT, l, add(p), pos);
+        l = binary(p, op, l, add(p), pos);
     }
-    return l;
 }
 
 static int cmp_op(P *p) {
@@ -1501,7 +1522,8 @@ static int parse_type(P *p, SqlType *t) {
         { "string", GSQL_COL_STRING }, { "varchar", GSQL_COL_STRING }, { "boolean", GSQL_COL_BOOLEAN },
         { "bool", GSQL_COL_BOOLEAN }, { "money", GSQL_COL_MONEY }, { "date", GSQL_COL_DATE },
         { "time", GSQL_COL_TIME }, { "datetime", GSQL_COL_DATETIME }, { "timestamp", GSQL_COL_DATETIME },
-        { "record", GSQL_COL_RECORD }, { "duration", GSQL_COL_DURATION }, { NULL, 0 }
+        { "record", GSQL_COL_RECORD }, { "duration", GSQL_COL_DURATION }, { "vector", GSQL_COL_VECTOR },
+        { NULL, 0 }
     };
     if (strcmp(w, "double") == 0) {
         if (!accept_kw(p, "precision")) {
@@ -1518,7 +1540,7 @@ static int parse_type(P *p, SqlType *t) {
     if (!t->kind) {
         return fail_at(p, pos, GSQL_SYNTAX,
                        "`%s` is not a G-SQL type: the types are NUMBER, INTEGER, TEXT, BOOLEAN, MONEY, MONEY(CUR), "
-                       "DATE, TIME, DATETIME, RECORD and DURATION%s", w,
+                       "DATE, TIME, DATETIME, RECORD, DURATION, VECTOR and VECTOR(N)%s", w,
                        strcmp(w, "interval") == 0 ? "; for INTERVAL, write DURATION" : "");
     }
     if (at_sym(p, "(")) {
@@ -1531,6 +1553,20 @@ static int parse_type(P *p, SqlType *t) {
             for (int k = 0; k < 3; k++) {
                 t->currency[k] = (char)toupper((unsigned char)p->tok.text[k]);
             }
+            next(p);
+            return expect_sym(p, ")");
+        }
+        if (t->kind == GSQL_COL_VECTOR) {
+            next(p);
+            uint32_t dpos = p->tok.pos;
+            if (p->tok.kind != T_NUMBER || strspn(p->tok.text, "0123456789") != strlen(p->tok.text)) {
+                return expected(p, "the vector's dimension, a whole number, as in VECTOR(1536)");
+            }
+            unsigned long d = strlen(p->tok.text) > 6 ? 9999999 : strtoul(p->tok.text, NULL, 10);
+            if (d < 1 || d > GSQL_VECTOR_MAX_DIM) {
+                return fail_at(p, dpos, GSQL_SYNTAX, "a vector has 1 to %d dimensions", GSQL_VECTOR_MAX_DIM);
+            }
+            t->dimension = (uint32_t)d;
             next(p);
             return expect_sym(p, ")");
         }
@@ -1549,11 +1585,14 @@ static int parse_type(P *p, SqlType *t) {
 
 const char *sql_type_name(const SqlType *t, char *buf, size_t cap) {
     static const char *const names[] = {
-        "?", "NUMBER", "INTEGER", "TEXT", "BOOLEAN", "MONEY", "DATE", "TIME", "DATETIME", "RECORD", "DURATION"
+        "?", "NUMBER", "INTEGER", "TEXT", "BOOLEAN", "MONEY", "DATE", "TIME", "DATETIME", "RECORD", "DURATION",
+        "VECTOR"
     };
     const char *n = t->kind >= 1 && t->kind <= GSQL_COL_LAST ? names[t->kind] : "?";
     if (t->kind == GSQL_COL_MONEY && t->currency[0]) {
         snprintf(buf, cap, "MONEY(%s)", t->currency);
+    } else if (t->kind == GSQL_COL_VECTOR && t->dimension) {
+        snprintf(buf, cap, "VECTOR(%u)", t->dimension);
     } else {
         snprintf(buf, cap, "%s", n);
     }
@@ -3213,8 +3252,9 @@ int sql_parse(const char *text, size_t length, SqlParsed *out, GsqlError *err) {
 /* ---- printing -------------------------------------------------------- */
 
 const char *sql_op_text(int op) {
-    static const char *const t[] = { "?", "OR", "AND", "=", "<>", "<", "<=", ">", ">=", "||", "+", "-", "*", "/", "%" };
-    return op >= 1 && op <= SQL_OP_MOD ? t[op] : "?";
+    static const char *const t[] = { "?", "OR", "AND", "=", "<>", "<", "<=", ">", ">=", "||", "+", "-", "*", "/", "%",
+                                     "<->", "<=>", "<#>" };
+    return op >= 1 && op <= SQL_OP_IP ? t[op] : "?";
 }
 
 static void puts_(GsqlBuf *o, const char *s) {

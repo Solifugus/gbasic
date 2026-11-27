@@ -381,11 +381,17 @@ static Value eval_vector_family(AstExpr *expr) {
     if (CALL_IS(expr, dot)) {
         result = value_number(gb_vec_dot(a->data, b->data, a->dim));
     } else if (CALL_IS(expr, cosine) || metric == GB_VEC_COSINE) {
-        if (vector_has_direction(verb, a, "the first vector") &&
-            vector_has_direction(verb, b, "the second vector")) {
-            result = value_number(is_distance
-                                      ? gb_vec_distance(GB_VEC_COSINE, a->data, b->data, a->dim)
-                                      : gb_vec_cosine(a->data, b->data, a->dim));
+        /* one pass: a.a and b.b are the squares of the norms the direction
+           rule asks of, the same doubles (gb_vec_dot3), so a zero vector is
+           refused without two passes more (G-SQL measures every row this way) */
+        double ab, aa, bb;
+        gb_vec_dot3(a->data, b->data, a->dim, &ab, &aa, &bb);
+        if (!(aa > 0) || !(bb > 0)) {
+            raise_fmt(1003, "vector", "%s: %s is all zeros, which has no direction, so no cosine",
+                      verb, !(aa > 0) ? "the first vector" : "the second vector");
+        } else {
+            double c = gb_vec_cosine_of(ab, aa, bb);
+            result = value_number(is_distance ? 1 - c : c);
         }
     } else {
         result = value_number(gb_vec_distance(metric, a->data, b->data, a->dim));

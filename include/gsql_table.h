@@ -72,10 +72,14 @@ typedef enum {
     GSQL_COL_TIME,
     GSQL_COL_DATETIME,
     GSQL_COL_RECORD,
-    GSQL_COL_DURATION   /* stored exactly, never keyed (docs/gsql_duration_design.md) */
+    GSQL_COL_DURATION,  /* stored exactly, never keyed (docs/gsql_duration_design.md) */
+    GSQL_COL_VECTOR     /* packed float32, never keyed (docs/gsql_vector_design.md) */
 } GsqlColKind;
 
-#define GSQL_COL_LAST GSQL_COL_DURATION
+#define GSQL_COL_LAST GSQL_COL_VECTOR
+
+/* VECTOR(N)'s largest N: pgvector's limit for a stored vector */
+#define GSQL_VECTOR_MAX_DIM 16000
 
 const char *gsql_kind_name(int kind);
 
@@ -100,6 +104,7 @@ typedef struct {
     const char *const *scope;
     uint32_t length;           /* RANDOM: characters, or an integer's digits; 0 the default */
     const char *alphabet;      /* RANDOM on text: NULL the URL-safe default */
+    uint32_t dimension;        /* VECTOR(N): N; 0 any dimension, and for every other kind */
 } GsqlColumn;
 
 typedef struct {

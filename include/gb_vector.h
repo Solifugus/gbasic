@@ -68,11 +68,16 @@ static inline void gb_vec_dot3(const float *a, const float *b, size_t n, double 
 /* The cosine similarity, held to [-1, 1] as pgvector holds it: rounding can
  * put two equal directions at 1.0000000000000002. NaN when either norm is
  * zero; the caller refuses that before asking. */
+/* the cosine from gb_vec_dot3's three sums, clamped to [-1, 1] */
+static inline double gb_vec_cosine_of(double ab, double aa, double bb) {
+    double c = ab / (sqrt(aa) * sqrt(bb));
+    return c > 1 ? 1 : c < -1 ? -1 : c;
+}
+
 static inline double gb_vec_cosine(const float *a, const float *b, size_t n) {
     double ab, aa, bb;
     gb_vec_dot3(a, b, n, &ab, &aa, &bb);
-    double c = ab / (sqrt(aa) * sqrt(bb));
-    return c > 1 ? 1 : c < -1 ? -1 : c;
+    return gb_vec_cosine_of(ab, aa, bb);
 }
 
 /* The same cosine, for ranking many b against one a whose a.a is known:

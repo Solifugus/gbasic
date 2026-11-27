@@ -173,6 +173,7 @@ static GsqlHv *gsql_apply(const char *source, const Value *const *args, size_t n
         gsql_host_warned(current_warning.code, current_warning.message);
         warning_clear_state();
     }
+    error_frame_release(&frame_err);
     free(frame_err.label);
     current_line = line;
     current_column = column;
@@ -253,6 +254,7 @@ static int gsql_h_kind(void *ctx, const GsqlHv *v) {
     case VALUE_MONEY: return SER_MONEY;
     case VALUE_FILE: return SER_FILE;
     case VALUE_DIR: return SER_DIR;
+    case VALUE_VECTOR: return SER_VECTOR;
     default: return 0;
     }
 }
@@ -398,16 +400,37 @@ static GsqlHv *gsql_h_call(void *ctx, const char *name, GsqlHv *const *args, siz
     if (strcmp(name, "extract") == 0) {
         return gsql_h_extract(args, n, err);
     }
+    /* pgvector's names for gBASIC's vector builtins (docs/gsql_vector_design.md
+       §5): inner_product is the product itself, as pgvector's is, and <#>
+       its negation, which is gBASIC's "ip" distance */
+    static const char *const vector_names[][2] = {
+        { "l2_distance", "distance(sql_a, sql_b, \"l2\")" },
+        { "cosine_distance", "distance(sql_a, sql_b, \"cosine\")" },
+        { "negative_inner_product", "distance(sql_a, sql_b, \"ip\")" },
+        { "inner_product", "dot(sql_a, sql_b)" },
+        { "vector_dims", "len(sql_a)" },
+        { "vector_norm", "norm(sql_a)" },
+    };
+    const char *template = NULL;
+    for (size_t k = 0; k < sizeof vector_names / sizeof vector_names[0]; k++) {
+        if (strcmp(name, vector_names[k][0]) == 0) {
+            template = vector_names[k][1];
+        }
+    }
     char source[64];
-    if (n == 1) {
+    if (template) {
+        snprintf(source, sizeof source, "%s", template);
+    } else if (n == 1) {
         snprintf(source, sizeof source, "%s(sql_a)", name);
     } else if (n == 2) {
         snprintf(source, sizeof source, "%s(sql_a, sql_b)", name);
+    } else if (n == 3) {
+        snprintf(source, sizeof source, "%s(sql_a, sql_b, sql_c)", name);
     } else {
-        gsql_host_fail(err, GSQL_MISUSE, "the host calls with one or two arguments");
+        gsql_host_fail(err, GSQL_MISUSE, "the host calls with one to three arguments");
         return NULL;
     }
-    const Value *vs[2] = { &args[0]->v, n > 1 ? &args[1]->v : NULL };
+    const Value *vs[3] = { &args[0]->v, n > 1 ? &args[1]->v : NULL, n > 2 ? &args[2]->v : NULL };
     return gsql_apply(source, vs, n, err);
 }
 
@@ -436,6 +459,18 @@ static GsqlHv *gsql_h_cast(void *ctx, const GsqlHv *v, int kind, const char *cur
         return r;
     }
     case GSQL_COL_STRING:
+        if (v->v.kind == VALUE_VECTOR) {
+            /* pgvector's text, `[0.1,0.2]`, which CAST AS VECTOR reads back
+               as the same float32s (docs/gsql_vector_design.md §6) */
+            StringBuilder sb;
+            sb_init(&sb);
+            vector_render(&sb, v->v.as.vector);
+            size_t len = sb.length;
+            char *text = sb_take(&sb);
+            Value t = value_string_n(text, len);
+            free(text);
+            return gsql_hv(t);
+        }
         if (v->v.kind == VALUE_MONEY) {
             /* a cast moves data, so money keeps every digit it holds, where
                string() shows the currency's precision (gdash S1) */
@@ -509,6 +544,18 @@ static GsqlHv *gsql_h_cast(void *ctx, const GsqlHv *v, int kind, const char *cur
         }
         return gsql_hv(d);
     }
+    case GSQL_COL_VECTOR: {
+        /* what vector() reads: a vector, an array of numbers, or the text of
+           one (docs/gsql_vector_design.md §2) */
+        GbVector *made = vector_from_value(value_copy(v->v), "a vector");
+        if (gsql_host_caught(err) || !made) {
+            if (made) {
+                vector_release(made);
+            }
+            return NULL;
+        }
+        return gsql_hv(value_vector(made));
+    }
     default:
         gsql_host_fail(err, GSQL_MISUSE, "CAST to an unknown kind");
         return NULL;
@@ -526,6 +573,10 @@ static int gsql_h_order(void *ctx, const GsqlHv *a, const GsqlHv *b, int *cmp, G
     }
     if (a->v.kind == VALUE_RECORD || a->v.kind == VALUE_ARRAY) {
         return gsql_host_fail(err, GSQL_EXPRESSION, "a %s has no order", builtin_type_name(a->v));
+    }
+    if (a->v.kind == VALUE_VECTOR) {
+        return gsql_host_fail(err, GSQL_EXPRESSION, "a vector has no order; sort by its distance to another, "
+                              "as in ORDER BY e <=> ? LIMIT 10");
     }
     Value pair[1] = { a->v };
     if (!values_all_sort_comparable(pair, 1, "ORDER BY")) {
