@@ -74,8 +74,8 @@ bounded() { timeout -k 5 "$1" "${@:2}"; }
 
 printf 'TIER build: the owner, the client and their test, -Wpedantic -Werror\n'
 # shellcheck disable=SC2086
-if "$CC" $FLAGS -g -O1 $SAN -o "$work/owner_test" tests/gsql/owner_test.c $LAYER $ENGINE 2> "$work/build.err" &&
-   "$CC" $FLAGS -O2 -o "$work/owner_cost" tests/gsql/owner_test.c $LAYER $ENGINE 2>> "$work/build.err"; then
+if "$CC" $FLAGS -g -O1 $SAN -o "$work/owner_test" tests/gsql/owner_test.c $LAYER $ENGINE -lm 2> "$work/build.err" &&
+   "$CC" $FLAGS -O2 -o "$work/owner_cost" tests/gsql/owner_test.c $LAYER $ENGINE -lm 2>> "$work/build.err"; then
     pass "owner_test${SAN:+ (under ASan and UBSan)} and owner_cost (-O2)"
 else
     head -8 "$work/build.err"

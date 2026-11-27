@@ -116,6 +116,10 @@ static uint64_t vector_dim_of(const unsigned char *p, size_t n) {
     return v3_walk_whole(p, n, &w) && w.tag == SER_VECTOR ? w.dim : 0;
 }
 
+/* how wide an HNSW search's first beam is unless the connection says
+   (docs/gsql_vector_design.md §9); it is at least LIMIT + OFFSET */
+#define ANN_EF_DEFAULT 40
+
 /* ---- one execution ------------------------------------------------------ */
 
 typedef struct X {
@@ -149,6 +153,9 @@ typedef struct X {
     /* WITH RECURSIVE's round limit for this statement, which its subqueries,
        derived tables and compound sides share (docs/gsql_recursive_design.md §3) */
     uint64_t rec_limit;
+    /* an HNSW search's first beam: the connection's ef_search, else 40
+       (docs/gsql_vector_design.md §9) */
+    size_t ann_ef;
     /* a grouping set's group: which GROUP BY expressions its set holds
        (docs/gsql_rollup_design.md); NULL for a plain GROUP BY */
     const unsigned char *gset;
@@ -348,6 +355,7 @@ static void x_init(X *x, GsqlSql *q, const GsEngine *e, GsTxn *t, SqlPlan *p, Gs
     x->p = p;
     x->err = err;
     x->rec_limit = q->rec_limit;
+    x->ann_ef = ANN_EF_DEFAULT;
     x->nsx = p->nscans ? p->nscans : 1;
     x->sx = calloc(x->nsx, sizeof(XScan));
     if (!x->sx) {
@@ -1545,13 +1553,13 @@ typedef struct {
        the rows yielded so far, and how many passed the WHERE, against the
        `want` LIMIT and OFFSET ask for; `every` once the beam has been widened
        to every node (docs/gsql_vector_design.md §9) */
-    int ann, every;
+    int ann, every, tail;   /* tail: past every node, the rows with no vector, as the exact search ends */
     float *annq;
     GsqlHnsw hnsw;
     GsqlHnswHit *hits;
     size_t nhits, hpos, ef;
     uint64_t want, kept, nodes;
-    unsigned char **seen;
+    unsigned char **seen;   /* the row keys yielded: open addressing, NULL empty */
     size_t *seenn, nseen, seencap;
 } Iter;
 
@@ -1613,9 +1621,6 @@ static int bound_key(Iter *it, SqlExpr *e, size_t j, GsqlKey *key) {
     return fits;
 }
 
-/* how wide a search's first beam is, at least LIMIT + OFFSET */
-#define ANN_EF_DEFAULT 40
-
 /* the vector an ACC_ANN scan searches from, and its first beam: 1 searching,
    0 the exact scan instead, -1 failed */
 static int ann_open(Iter *it) {
@@ -1666,7 +1671,7 @@ static int ann_open(Iter *it) {
     if (gsql_hnsw_count(x->e, x->t, &it->hnsw, &it->nodes, x->err) != GSQL_OK) {
         return -1;
     }
-    it->ef = it->want > ANN_EF_DEFAULT ? (size_t)(it->want < it->nodes ? it->want : it->nodes) : ANN_EF_DEFAULT;
+    it->ef = it->want > x->ann_ef ? (size_t)(it->want < it->nodes ? it->want : it->nodes) : x->ann_ef;
     x->q->seeks++;
     if (gsql_hnsw_search(x->e, x->t, &it->hnsw, q, it->ef, &it->hits, &it->nhits, x->err) != GSQL_OK) {
         return -1;
@@ -1674,26 +1679,52 @@ static int ann_open(Iter *it) {
     return 1;
 }
 
-static int ann_seen(Iter *it, const unsigned char *k, size_t n) {
-    for (size_t i = 0; i < it->nseen; i++) {
-        if (it->seenn[i] == n && memcmp(it->seen[i], k, n) == 0) {
-            return 1;
-        }
+static size_t ann_slot(unsigned char *const *seen, const size_t *seenn, size_t cap, const unsigned char *k,
+                       size_t n) {
+    uint64_t h = 1469598103934665603ULL;
+    for (size_t i = 0; i < n; i++) {
+        h = (h ^ k[i]) * 1099511628211ULL;
     }
-    if (it->nseen == it->seencap) {
-        it->seencap = it->seencap ? it->seencap * 2 : 64;
-        it->seen = realloc(it->seen, it->seencap * sizeof *it->seen);
-        it->seenn = realloc(it->seenn, it->seencap * sizeof *it->seenn);
-        if (!it->seen || !it->seenn) {
+    size_t at = (size_t)(h & (cap - 1));
+    while (seen[at] && !(seenn[at] == n && memcmp(seen[at], k, n) == 0)) {
+        at = (at + 1) & (cap - 1);
+    }
+    return at;
+}
+
+/* whether row key k was yielded already; noted as yielded if not */
+static int ann_seen(Iter *it, const unsigned char *k, size_t n) {
+    if (2 * (it->nseen + 1) > it->seencap) {
+        size_t cap = it->seencap ? it->seencap * 2 : 128;
+        unsigned char **seen = calloc(cap, sizeof *seen);
+        size_t *seenn = calloc(cap, sizeof *seenn);
+        if (!seen || !seenn) {
             abort();
         }
+        for (size_t i = 0; i < it->seencap; i++) {
+            if (it->seen[i]) {
+                size_t at = ann_slot(seen, seenn, cap, it->seen[i], it->seenn[i]);
+                seen[at] = it->seen[i];
+                seenn[at] = it->seenn[i];
+            }
+        }
+        free(it->seen);
+        free(it->seenn);
+        it->seen = seen;
+        it->seenn = seenn;
+        it->seencap = cap;
     }
-    it->seen[it->nseen] = malloc(n ? n : 1);
-    if (!it->seen[it->nseen]) {
+    size_t at = ann_slot(it->seen, it->seenn, it->seencap, k, n);
+    if (it->seen[at]) {
+        return 1;
+    }
+    it->seen[at] = malloc(n ? n : 1);
+    if (!it->seen[at]) {
         abort();
     }
-    memcpy(it->seen[it->nseen], k, n);
-    it->seenn[it->nseen++] = n;
+    memcpy(it->seen[at], k, n);
+    it->seenn[at] = n;
+    it->nseen++;
     return 0;
 }
 
@@ -1734,9 +1765,55 @@ static int ann_next(Iter *it) {
             it->kept += pass == 1;
             return 1;
         }
+        if (it->tail) {
+            /* the rows the graph does not hold: a NULL vector, whose
+               distance is NULL and so sorts last, as in the exact search */
+            int pos = 0, rc;
+            if (!it->cur) {
+                rc = x->e->cursor_open(x->t, gsql_table_rows_tree(it->sc->tb), &it->cur);
+                if (rc) {
+                    it->cur = NULL;
+                    xfail(x->err, GSQL_STORAGE, 0, "a cursor could not be opened: the engine answered %s",
+                          gs_status_name(rc));
+                    return -1;
+                }
+                rc = x->e->first(it->cur, &pos);
+            } else {
+                rc = x->e->next(it->cur, &pos);
+            }
+            GsBytes key, val;
+            if (!rc && pos) {
+                rc = x->e->key(it->cur, &key);
+                if (!rc) {
+                    rc = x->e->value(it->cur, &val);
+                }
+            }
+            if (rc) {
+                xfail(x->err, GSQL_STORAGE, 0, "a cursor failed: the engine answered %s", gs_status_name(rc));
+                return -1;
+            }
+            if (!pos) {
+                return 0;
+            }
+            if (ann_seen(it, key.p, key.n)) {
+                continue;
+            }
+            xs->rowkey.length = 0;
+            v3_put(&xs->rowkey, key.p, key.n);
+            xs->row.length = 0;
+            v3_put(&xs->row, val.p, val.n);
+            xs->have_row = 1;
+            int pass = check(x, it->sc, 0, it->sc->nconj);
+            if (pass < 0) {
+                return -1;
+            }
+            it->kept += pass == 1;
+            return 1;
+        }
         if (it->every || it->ef >= it->nodes) {
             if (it->every) {
-                return 0;
+                it->tail = 1;
+                continue;
             }
             /* the graph's beam has held every node it reaches: every node,
                so a node the graph cannot reach is not left out */
@@ -1870,7 +1947,7 @@ static void iter_close(Iter *it) {
         it->nhits = 0;
         free(it->annq);
         it->annq = NULL;
-        for (size_t i = 0; i < it->nseen; i++) {
+        for (size_t i = 0; i < it->seencap; i++) {
             free(it->seen[i]);
         }
         free(it->seen);
@@ -9065,6 +9142,7 @@ static int side_rows(SqlCursor *c, SqlPlan *p, const GsEngine *e, GsTxn *t, RowS
     k->x.params = c->x.params;
     k->x.paramslen = c->x.paramslen;
     k->x.rec_limit = c->x.rec_limit;
+    k->x.ann_ef = c->x.ann_ef;
     k->x.outer = c->x.outer;   /* a side is at its compound's level */
     k->limit = UINT64_MAX;
     int rc = select_start(k);
@@ -9164,6 +9242,7 @@ static SqlCursor *sub_open(X *x, SqlPlan *p, X *outer) {
     k->x.paramslen = x->paramslen;
     k->x.pidx = x->pidx;
     k->x.rec_limit = x->rec_limit;
+    k->x.ann_ef = x->ann_ef;
     k->x.outer = outer;
     k->limit = UINT64_MAX;
     SqlStmt *s = p->s;
@@ -10462,6 +10541,9 @@ static int svc_run(void *ctx, const GsEngine *e, GsTxn *t, const GsqlStatement *
     c->x.paramslen = st->parameters_length;
     if (st->max_recursion) {
         c->x.rec_limit = st->max_recursion;   /* the connection's max_recursion */
+    }
+    if (st->ef_search) {
+        c->x.ann_ef = st->ef_search;          /* the connection's ef_search */
     }
     SqlStmt *s = c->parsed.stmt;
     if (st->describe) {

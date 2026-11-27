@@ -20,6 +20,8 @@
 #include "gsql_table.h"
 #include "serialize_tags.h"
 #include "../../src/gsql/v3.h"
+#include "../../src/gsql/hnsw.h"
+#include "gb_vector.h"
 
 #include <stdarg.h>
 #include <stdio.h>
@@ -667,7 +669,7 @@ static int model_run(const char *dir) {
                                 same_key(mt, mt->rows[a].v, mt->rows[b].v, got, cols))
                                 want = GSQL_DUPLICATE;
                 }
-                GsqlIndexDecl d = {name, (size_t)got, cols, desc, unique};
+                GsqlIndexDecl d = {name, (size_t)got, cols, desc, unique, GSQL_INDEX_BTREE, 0, 0, 0};
                 rc = gsql_index_create(E, t, tb, &d, &er);
                 CHECK(rc == want, "index %s on %s answered %s, the model %s (%s)", name, SPECS[s].name,
                       gsql_code_name(rc), gsql_code_name(want), er.message);
@@ -971,16 +973,16 @@ static int refuse_run(void) {
 
     /* a unique index the rows break, beside one they do not */
     unsigned on_name[1] = {1}, on_id[1] = {0}, on_info[1] = {2};
-    GsqlIndexDecl ix = {"by_name", 1, on_name, NULL, 1};
+    GsqlIndexDecl ix = {"by_name", 1, on_name, NULL, 1, GSQL_INDEX_BTREE, 0, 0, 0};
     expect(gsql_index_create(E, t, tb, &ix, &er), GSQL_DUPLICATE, &er, "cannot be unique", "a unique index on two equal names");
     checks++;
     if (gsql_table_nindexes(tb) != 0) mismatch("a refused index stayed on the handle");
     ix.unique = 0;
     expect(gsql_index_create(E, t, tb, &ix, &er), GSQL_OK, &er, NULL, "the same index, not unique");
     expect(gsql_index_create(E, t, tb, &ix, &er), GSQL_EXISTS, &er, "already has an index", "the same index twice");
-    GsqlIndexDecl ix2 = {"by_id", 1, on_id, NULL, 1};
+    GsqlIndexDecl ix2 = {"by_id", 1, on_id, NULL, 1, GSQL_INDEX_BTREE, 0, 0, 0};
     expect(gsql_index_create(E, t, tb, &ix2, &er), GSQL_OK, &er, NULL, "a unique index the rows keep");
-    GsqlIndexDecl ix3 = {"by_info", 1, on_info, NULL, 0};
+    GsqlIndexDecl ix3 = {"by_info", 1, on_info, NULL, 0, GSQL_INDEX_BTREE, 0, 0, 0};
     expect(gsql_index_create(E, t, tb, &ix3, &er), GSQL_SCHEMA, &er, "is a record", "an index on a record");
 
     /* UNIQUE lets several rows hold an absence (NULLS DISTINCT) */
@@ -994,7 +996,7 @@ static int refuse_run(void) {
     expect(gsql_table_create(E, t, &ud, &er), GSQL_OK, &er, NULL, "a second table");
     GsqlTable *ut;
     gsql_table_open(E, t, "u", &ut, &er);
-    GsqlIndexDecl uix = {"uu", 1, on_name, NULL, 1};
+    GsqlIndexDecl uix = {"uu", 1, on_name, NULL, 1, GSQL_INDEX_BTREE, 0, 0, 0};
     expect(gsql_index_create(E, t, ut, &uix, &er), GSQL_OK, &er, NULL, "a unique index on an empty table");
     Val one = v_int(1), two = v_int(2), five = v_int(5);
     GsqlIn r1[2] = {{1, one.b, one.n}, {1, unk.b, unk.n}};
@@ -1284,7 +1286,7 @@ static int layout_run(const char *dir) {
     rc |= gsql_table_open(E, t, "accounts", &tb, &er);
     unsigned on_owner[1] = {1};
     int desc[1] = {1};
-    GsqlIndexDecl ix = {"by_owner", 1, on_owner, desc, 0};
+    GsqlIndexDecl ix = {"by_owner", 1, on_owner, desc, 0, GSQL_INDEX_BTREE, 0, 0, 0};
     rc |= gsql_index_create(E, t, tb, &ix, &er);
     Val id7 = v_int(7), ada = v_str("Ada", 3), b = v_money(1250000, "USD"), nothing = v_tag(SER_NULL);
     GsqlIn r1[3] = {{1, id7.b, id7.n}, {1, ada.b, ada.n}, {1, b.b, b.n}};
@@ -1354,6 +1356,284 @@ static int layout_run(const char *dir) {
     return 0;
 }
 
+/* ---- an HNSW index against a model (docs/gsql_vector_design.md §9) ------
+ *
+ * A random workload over a VECTOR(8) column with two graphs on it, l2 and
+ * cosine: inserts (a tenth with no vector), vector updates, primary-key moves
+ * and deletes, committed in batches, with the invariant check after each
+ * commit (every row's vector in each graph byte for byte, nothing for a row
+ * that is not there, the count right). Then, against the model: `every` must
+ * be the whole of the model's vectors, nearest first with ties by row key,
+ * and a search's recall@10 at ef 64 must be at least 0.9 over 60 queries. The
+ * same seed run twice into two databases must answer every query the same. */
+
+#define HN_DIM 8
+#define HN_MAX 4000
+
+typedef struct {
+    int live, has_vec;
+    float v[HN_DIM];
+} HnRow;
+
+static HnRow hn_rows[HN_MAX];
+
+static Val v_vec(const float *f) {
+    Val v = {{0}, 0};
+    vb(&v, SER_VECTOR);
+    vleb(&v, HN_DIM);
+    for (int i = 0; i < HN_DIM; i++) {
+        uint32_t bits;
+        memcpy(&bits, &f[i], 4);
+        vle(&v, bits, 4);
+    }
+    return v;
+}
+
+static float hn_gauss(void) {
+    /* a sum of four uniforms: enough of a bell, exact everywhere */
+    double s = 0;
+    for (int i = 0; i < 4; i++) {
+        s += (double)(rnd() >> 11) / 9007199254740992.0;
+    }
+    return (float)(s - 2.0);
+}
+
+static void hn_vec(float *f) {
+    /* clustered: one of 12 centres and a little noise, never all zeros */
+    uint64_t c = rnd() % 12;
+    for (int i = 0; i < HN_DIM; i++) {
+        f[i] = (float)((double)((c * 7 + (uint64_t)i * 13) % 11) - 5.0) + hn_gauss() * 0.3f;
+    }
+    f[0] += 0.001f;
+}
+
+static int hn_key(GsqlTable *tb, int id, GsqlBuf *k) {
+    Val iv = v_int(id);
+    GsqlIn in = {1, iv.b, iv.n};
+    GsqlError er;
+    return gsql_row_key(tb, &in, k, &er);
+}
+
+/* one run of the workload: the hits of every query, as text, into `out` */
+static int hnsw_workload(const char *path, uint64_t seed, char **out, size_t *outn) {
+    rng = seed * 2654435761u + 7;
+    memset(hn_rows, 0, sizeof hn_rows);
+    GsqlIo *io = gsql_io_sim();
+    GsStore *db = fresh(io, path);
+    GsTxn *t;
+    E->begin_write(db, &t);
+    GsqlError er;
+    GsqlColumn cols[3];
+    memset(cols, 0, sizeof cols);
+    cols[0].name = "id";
+    cols[0].kind = GSQL_COL_INTEGER;
+    cols[1].name = "tag";
+    cols[1].kind = GSQL_COL_STRING;
+    cols[2].name = "e";
+    cols[2].kind = GSQL_COL_VECTOR;
+    cols[2].dimension = HN_DIM;
+    unsigned key0[1] = {0}, on_e[1] = {2};
+    GsqlTableDecl d = {"v", 3, cols, 1, key0};
+    expect(gsql_table_create(E, t, &d, &er), GSQL_OK, &er, NULL, "the vector table");
+    GsqlTable *tb = NULL;
+    expect(gsql_table_open(E, t, "v", &tb, &er), GSQL_OK, &er, NULL, "opening it");
+    GsqlIndexDecl l2 = {"by_l2", 1, on_e, NULL, 0, GSQL_INDEX_HNSW, GB_VEC_L2, 6, 24};
+    GsqlIndexDecl cs = {"by_cos", 1, on_e, NULL, 0, GSQL_INDEX_HNSW, GB_VEC_COSINE, 8, 32};
+    expect(gsql_index_create(E, t, tb, &l2, &er), GSQL_OK, &er, NULL, "an l2 graph");
+    long ops[4] = {0, 0, 0, 0};
+    int next_id = 1;
+    for (int op = 0; op < 2400; op++) {
+        uint64_t r = rnd() % 100;
+        int id = next_id > 1 ? (int)(rnd() % (uint64_t)(next_id - 1)) + 1 : 1;
+        if (op == 600) {
+            /* the second graph built over the rows already there */
+            expect(gsql_index_create(E, t, tb, &cs, &er), GSQL_OK, &er, NULL, "a cosine graph over existing rows");
+        }
+        if (r < 55 || next_id == 1) {
+            if (next_id >= HN_MAX) {
+                continue;
+            }
+            HnRow *row = &hn_rows[next_id];
+            row->has_vec = rnd() % 10 != 0;
+            if (row->has_vec) {
+                hn_vec(row->v);
+            }
+            Val iv = v_int(next_id), tv = v_str("x", 1), ev = row->has_vec ? v_vec(row->v) : v_tag(SER_UNKNOWN);
+            GsqlIn in[3] = {{1, iv.b, iv.n}, {1, tv.b, tv.n}, {1, ev.b, ev.n}};
+            if (gsql_row_insert(E, t, tb, in, NULL, &er) != GSQL_OK) {
+                mismatch("insert %d answered %s: %s", next_id, gsql_code_name(er.code), er.message);
+            }
+            row->live = 1;
+            next_id++;
+            ops[0]++;
+        } else if (r < 75 && hn_rows[id].live) {
+            HnRow *row = &hn_rows[id];
+            row->has_vec = rnd() % 10 != 0;
+            if (row->has_vec) {
+                hn_vec(row->v);
+            }
+            Val ev = row->has_vec ? v_vec(row->v) : v_tag(SER_UNKNOWN);
+            GsqlIn in[3] = {{0, NULL, 0}, {0, NULL, 0}, {1, ev.b, ev.n}};
+            GsqlBuf k = {0};
+            hn_key(tb, id, &k);
+            if (gsql_row_update(E, t, tb, (GsBytes){k.bytes, k.length}, in, NULL, &er) != GSQL_OK) {
+                mismatch("update %d answered %s: %s", id, gsql_code_name(er.code), er.message);
+            }
+            gsql_buf_free(&k);
+            ops[1]++;
+        } else if (r < 85 && hn_rows[id].live && next_id < HN_MAX) {
+            /* the primary key moves: the graph's node with it */
+            int to = next_id++;
+            Val iv = v_int(to);
+            GsqlIn in[3] = {{1, iv.b, iv.n}, {0, NULL, 0}, {0, NULL, 0}};
+            GsqlBuf k = {0};
+            hn_key(tb, id, &k);
+            if (gsql_row_update(E, t, tb, (GsBytes){k.bytes, k.length}, in, NULL, &er) != GSQL_OK) {
+                mismatch("moving %d answered %s: %s", id, gsql_code_name(er.code), er.message);
+            }
+            gsql_buf_free(&k);
+            hn_rows[to] = hn_rows[id];
+            hn_rows[id].live = 0;
+            ops[2]++;
+        } else if (hn_rows[id].live) {
+            GsqlBuf k = {0};
+            hn_key(tb, id, &k);
+            if (gsql_row_delete(E, t, tb, (GsBytes){k.bytes, k.length}, &er) != GSQL_OK) {
+                mismatch("delete %d answered %s: %s", id, gsql_code_name(er.code), er.message);
+            }
+            gsql_buf_free(&k);
+            hn_rows[id].live = 0;
+            ops[3]++;
+        }
+        if (op % 300 == 299) {
+            uint64_t cid;
+            gsql_table_close(tb);
+            E->commit(t, 1, &cid);
+            E->begin_write(db, &t);
+            GsqlError ce;
+            expect(gsql_table_check(E, t, report_line, NULL, &ce), GSQL_OK, &ce, NULL, "the check after a batch");
+            expect(gsql_table_open(E, t, "v", &tb, &er), GSQL_OK, &er, NULL, "reopening the table");
+        }
+    }
+    printf("ops: %ld inserts, %ld vector updates, %ld key moves, %ld deletes\n", ops[0], ops[1], ops[2], ops[3]);
+    /* the queries, against the model */
+    size_t cap = 1 << 16, used = 0;
+    char *text = malloc(cap);
+    if (!text) {
+        abort();
+    }
+    long hit = 0, asked = 0;
+    for (size_t ix = 0; ix < gsql_table_nindexes(tb); ix++) {
+        GsqlHnsw h;
+        gsql_index_hnsw_of(tb, ix, &h);
+        for (int qn = 0; qn < 60; qn++) {
+            float q[HN_DIM];
+            hn_vec(q);
+            /* the model's answer: every live vector, nearest first, ties by key */
+            GsqlHnswHit *all = NULL, *got = NULL;
+            size_t nall = 0, ngot = 0;
+            expect(gsql_hnsw_every(E, t, &h, q, &all, &nall, &er), GSQL_OK, &er, NULL, "every node");
+            expect(gsql_hnsw_search(E, t, &h, q, 64, &got, &ngot, &er), GSQL_OK, &er, NULL, "a search");
+            size_t live = 0;
+            for (int i = 1; i < next_id; i++) {
+                live += hn_rows[i].live && hn_rows[i].has_vec;
+            }
+            checks++;
+            if (nall != live) {
+                mismatch("every node is %zu nodes for %zu rows with a vector", nall, live);
+            }
+            for (size_t k = 0; k + 1 < nall; k++) {
+                int c = memcmp(all[k].key, all[k + 1].key, all[k].n < all[k + 1].n ? all[k].n : all[k + 1].n);
+                if (all[k].d > all[k + 1].d || (all[k].d == all[k + 1].d && c > 0)) {
+                    mismatch("every node is not nearest first, ties by key, at %zu", k);
+                    break;
+                }
+            }
+            for (size_t k = 0; k < nall; k++) {
+                /* each one's distance is the kernel's, from the model's vector */
+                GsqlBuf kk = {0};
+                int found = 0;
+                for (int i = 1; i < next_id && !found; i++) {
+                    if (!hn_rows[i].live || !hn_rows[i].has_vec) {
+                        continue;
+                    }
+                    hn_key(tb, i, &kk);
+                    if (kk.length == all[k].n && memcmp(kk.bytes, all[k].key, kk.length) == 0) {
+                        found = 1;
+                        double want = gb_vec_distance((GbVecMetric)h.metric, q, hn_rows[i].v, HN_DIM);
+                        if (want != all[k].d) {
+                            mismatch("row %d's distance %.17g, the model's %.17g", i, all[k].d, want);
+                        }
+                    }
+                }
+                gsql_buf_free(&kk);
+                if (!found) {
+                    mismatch("every node names a row the model does not hold");
+                }
+                if (k > 40) {
+                    break;   /* the head is what a search returns; the count above covers the rest */
+                }
+            }
+            size_t top = nall < 10 ? nall : 10;
+            for (size_t k = 0; k < top && k < ngot; k++) {
+                for (size_t j = 0; j < top; j++) {
+                    if (got[k].n == all[j].n && memcmp(got[k].key, all[j].key, got[k].n) == 0) {
+                        hit++;
+                        break;
+                    }
+                }
+            }
+            asked += (long)top;
+            for (size_t k = 0; k < ngot && k < 10; k++) {
+                if (used + 64 + 2 * got[k].n > cap) {
+                    cap *= 2;
+                    text = realloc(text, cap);
+                    if (!text) {
+                        abort();
+                    }
+                }
+                for (size_t b = 0; b < got[k].n; b++) {
+                    used += (size_t)sprintf(text + used, "%02x", got[k].key[b]);
+                }
+                used += (size_t)sprintf(text + used, ":%.17g ", got[k].d);
+            }
+            text[used++] = '\n';
+            gsql_hnsw_hits_free(all, nall);
+            gsql_hnsw_hits_free(got, ngot);
+        }
+    }
+    checks++;
+    double recall = asked ? (double)hit / (double)asked : 0;
+    printf("recall@10 at ef 64: %.3f over %ld answers\n", recall, asked);
+    if (recall < 0.9) {
+        mismatch("recall@10 %.3f, under 0.9", recall);
+    }
+    gsql_table_close(tb);
+    uint64_t cid;
+    E->commit(t, 1, &cid);
+    E->close(db);
+    gsql_io_free(io);
+    *out = text;
+    *outn = used;
+    return 0;
+}
+
+static int hnsw_run(uint64_t seed) {
+    pool_build();
+    char *a = NULL, *b = NULL;
+    size_t an = 0, bn = 0;
+    hnsw_workload("h1/db", seed, &a, &an);
+    hnsw_workload("h2/db", seed, &b, &bn);
+    checks++;
+    if (an != bn || memcmp(a, b, an) != 0) {
+        mismatch("the same workload twice answered differently: the graph is not deterministic");
+    }
+    free(a);
+    free(b);
+    printf("ok %ld checks, %ld mismatches\n", checks, mismatches);
+    return mismatches ? 1 : 0;
+}
+
 int main(int argc, char **argv) {
     if (argc >= 3 && !strcmp(argv[1], "kinds")) return kinds_run(argv[2]);
     if (argc >= 2 && !strcmp(argv[1], "refuse")) return refuse_run();
@@ -1368,6 +1648,7 @@ int main(int argc, char **argv) {
         return model_run(argc >= 4 ? argv[3] : NULL);
     }
     if (argc >= 3 && !strcmp(argv[1], "layout")) return layout_run(argv[2]);
-    fprintf(stderr, "usage: table_test kinds FILE | refuse | model SEED [DIR] | layout DIR\n");
+    if (argc >= 3 && !strcmp(argv[1], "hnsw")) return hnsw_run(strtoull(argv[2], NULL, 10));
+    fprintf(stderr, "usage: table_test kinds FILE | refuse | model SEED [DIR] | layout DIR | hnsw SEED\n");
     return 2;
 }

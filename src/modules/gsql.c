@@ -817,17 +817,25 @@ static void gsql_trace(unsigned type) {
 /* ---- a connection's attributes (docs/gsql_recursive_design.md §3) --------
  *
  * `bank.max_recursion = 2000`: WITH RECURSIVE's round limit for every
- * statement run on the connection, sent with each request. The only
- * attribute a connection has; a name it lacks is refused naming it. */
+ * statement run on the connection, sent with each request; and
+ * `bank.ef_search = 100`, an HNSW search's first beam (docs/gsql_vector_design.md
+ * §9). A name a connection lacks is refused naming both. */
+
+#define GSQL_EF_SEARCH_DEFAULT 40
 
 static void gsql_attr_refuse(const char *name, int set) {
-    char msg[300];
-    snprintf(msg, sizeof msg, "a database has no attribute `%s` to %s: its one attribute is max_recursion, the rounds a "
-             "WITH RECURSIVE query may run (and its verbs are called, as db.close())", name, set ? "set" : "read");
+    char msg[400];
+    snprintf(msg, sizeof msg, "a database has no attribute `%s` to %s: its attributes are max_recursion, the rounds a "
+             "WITH RECURSIVE query may run, and ef_search, how wide a vector index's search begins (and its verbs "
+             "are called, as db.close())", name, set ? "set" : "read");
     runtime_error_raise(msg, 1003, set ? "assignment" : "field access");
 }
 
 static int gsql_connection_attr_get(const GsqlConnectionValue *c, const char *name, Value *out) {
+    if (strcmp(name, "ef_search") == 0) {
+        *out = value_number_exact((long long)(c->ef_search ? c->ef_search : GSQL_EF_SEARCH_DEFAULT));
+        return 1;
+    }
     if (strcmp(name, "max_recursion") != 0) {
         gsql_attr_refuse(name, 0);
         return 0;
@@ -839,6 +847,25 @@ static int gsql_connection_attr_get(const GsqlConnectionValue *c, const char *na
 static int gsql_connection_attr_set(GsqlConnectionValue *c, const char *name, Value v) {
     /* refused, `v` stays the caller's, which frees it (assign_lvalue's
        contract: only a change takes the value) */
+    if (strcmp(name, "ef_search") == 0) {
+        if (v.kind == VALUE_UNKNOWN) {
+            c->ef_search = 0;   /* back to the default */
+            value_free(v);
+            return 1;
+        }
+        double d = v.kind == VALUE_NUMBER ? (v.as.num.is_exact ? (double)v.as.num.exact : v.as.num.value) : 0;
+        if (v.kind != VALUE_NUMBER || d < 1 || d > 1000 || d != floor(d)) {
+            char phrase[48], msg[220];
+            snprintf(msg, sizeof msg, "ef_search takes a whole number from 1 to 1000, as pgvector's hnsw.ef_search "
+                     "does (or unknown, for the default of %d), not %s", GSQL_EF_SEARCH_DEFAULT,
+                     v.kind == VALUE_NUMBER ? "that number" : kind_phrase(v.kind, phrase, sizeof phrase));
+            runtime_error_raise(msg, 1003, "assignment");
+            return 0;
+        }
+        c->ef_search = (uint32_t)d;
+        value_free(v);
+        return 1;
+    }
     if (strcmp(name, "max_recursion") != 0) {
         gsql_attr_refuse(name, 1);
         return 0;
@@ -886,6 +913,9 @@ static int gsql_request_ex(GsqlConnectionValue *c, unsigned type, Value body, co
         /* the connection's max_recursion, on each statement it runs
            (docs/gsql_recursive_design.md §3) */
         record_set(&body, "max_recursion", value_number_exact((int64_t)c->max_recursion));
+    }
+    if (type == GSQL_M_QUERY && c->ef_search) {
+        record_set(&body, "ef_search", value_number_exact((int64_t)c->ef_search));
     }
     SerBuf sb;
     serbuf_init(&sb);
@@ -3912,7 +3942,7 @@ static int gsql_path_assign(Value target, Value rec) {
         int bare = lv->count == 1 && lv->items[0].as.record.count == 1;   /* `db.name`, nothing after */
         snprintf(msg, sizeof msg, "a path is written with a record of its columns, `= { email: v }`, not %s%s%s%s",
                  value_kind_name(rec.kind), bare ? "; if `" : "", bare ? st->path_table : "",
-                 bare ? "` was meant as the connection's attribute, its one attribute is max_recursion" : "");
+                 bare ? "` was meant as the connection's attribute, its attributes are max_recursion and ef_search" : "");
         value_free(target);
         value_free(rec);
         gsql_module_raise(who, "TYPE", msg, 0, NULL);

@@ -787,6 +787,8 @@ static int do_query(Owner *o, Conn *c, Req *r) {
     s.batch = field_u64(f, nf, "batch", &batch) && batch > 0 ? (batch > UINT32_MAX ? UINT32_MAX : (uint32_t)batch) : 100;
     uint64_t rounds = 0;
     s.max_recursion = field_u64(f, nf, "max_recursion", &rounds) ? rounds : 0;
+    uint64_t ef = 0;
+    s.ef_search = field_u64(f, nf, "ef_search", &ef) && ef <= 1000 ? (uint32_t)ef : 0;
     const V3Field *dx = v3_field_named(f, nf, "describe");
     s.describe = 0;
     if (dx && !v3_read_bool(dx->v, dx->vlen, &s.describe)) {

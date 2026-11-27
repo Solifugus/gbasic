@@ -127,7 +127,7 @@ if "$CC" $FLAGS -g -O1 $SAN -o "$work/parse_test" tests/gsql/sql_parse_test.c sr
         2>"$work/build.err" &&
    "$CC" $FLAGS -g -o "$work/sql_test" tests/gsql/sql_test.c libgbasic.a $LIBS 2>>"$work/build.err" &&
    "$CC" $FLAGS -g -O1 $SAN -D_POSIX_C_SOURCE=200809L -o "$work/owner_test" tests/gsql/sql_owner_test.c \
-        src/gsql/client.c src/gsql/owner.c src/platform_posix.c $LAYER $ENGINE 2>>"$work/build.err" &&
+        src/gsql/client.c src/gsql/owner.c src/platform_posix.c $LAYER $ENGINE -lm 2>>"$work/build.err" &&
    "$CC" $FLAGS -g -O2 -D_POSIX_C_SOURCE=200809L -o "$work/stall_test" tests/gsql/sql_stall_test.c \
         libgbasic.a $LIBS 2>>"$work/build.err"; then
     pass "parse_test${SAN:+ (under ASan and UBSan)}, sql_test (linked to libgbasic.a) and owner_test"

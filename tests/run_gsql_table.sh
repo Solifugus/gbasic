@@ -92,7 +92,7 @@ bounded() { timeout -k 5 "$1" "${@:2}"; }
 
 printf 'TIER build: the layer and its test, -Wpedantic -Werror\n'
 # shellcheck disable=SC2086
-if "$CC" $FLAGS -g -O1 $SAN -o "$work/table_test" tests/gsql/table_test.c $LAYER $ENGINE 2> "$work/build.err"; then
+if "$CC" $FLAGS -g -O1 $SAN -o "$work/table_test" tests/gsql/table_test.c $LAYER $ENGINE -lm 2> "$work/build.err"; then
     pass "table_test"
 else
     head -8 "$work/build.err"
@@ -179,6 +179,25 @@ if command -v python3 >/dev/null 2>&1; then
 else
     printf '  SKIP the independent reader (no python3): the layout was cross-checked by NOTHING but the layer'"'"'s own reader\n'
 fi
+
+printf 'TIER hnsw: an HNSW graph against a model, the invariant check after every batch%s\n' \
+    "${SAN:+, under ASan and UBSan}"
+# docs/gsql_vector_design.md §9: inserts (some with no vector), vector updates,
+# primary-key moves and deletes over two graphs (l2, and cosine built over rows
+# already there); `every` is the model's vectors nearest first; recall@10 at ef
+# 64 at least 0.9; the same seed into a second database answers the same
+for seed in 1 2; do
+    out=$(bounded 600 "$work/table_test" hnsw "$seed" 2>&1)
+    last=$(printf '%s\n' "$out" | tail -1)
+    if printf '%s\n' "$out" | grep -q 'runtime error\|ERROR: AddressSanitizer'; then
+        printf '%s\n' "$out" | grep -m3 'runtime error\|ERROR: AddressSanitizer'
+        fail "hnsw seed $seed: the sanitizers objected"
+    fi
+    case "$last" in
+        "ok "*" 0 mismatches") pass "hnsw seed $seed: $(printf '%s\n' "$out" | grep -m1 '^ops'); $(printf '%s\n' "$out" | grep -m1 '^recall'); twice, the same answers; $last" ;;
+        *) printf '%s\n' "$out" | grep MISMATCH | head -8; fail "hnsw seed $seed: $last" ;;
+    esac
+done
 
 if [ "$status" = 0 ]; then
     printf 'run_gsql_table: all checks passed\n'

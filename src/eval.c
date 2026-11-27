@@ -568,6 +568,9 @@ struct GsqlConnectionValue {
     /* `bank.max_recursion = n`: WITH RECURSIVE's round limit for every
      * statement run on it; 0, the owner's default (docs/gsql_recursive_design.md §3) */
     uint64_t max_recursion;
+    /* `bank.ef_search = n`: an HNSW search's first beam on every statement
+     * run on it; 0, the owner's default of 40 (docs/gsql_vector_design.md §9) */
+    uint32_t ef_search;
     /* the database's foreign keys, [{ name, child, parent, bound }], which a
      * G-SQL path decides one or many from before it sends anything; fetched
      * on first use and again whenever the owner says they have changed
@@ -35872,10 +35875,16 @@ static int receiver_is_path(const AstExpr *recv) {
 #endif
 
 #if GBASIC_GSQL
+/* A connection's attributes, which a path cannot name: `bank.max_recursion`
+ * and `bank.ef_search` (docs/gsql_vector_design.md §9). */
+static int gsql_attr_name(const char *name) {
+    return strcmp(name, "max_recursion") == 0 || strcmp(name, "ef_search") == 0;
+}
+
 /* An assignment's target that is a G-SQL path, by the same test: anything
- * after a connection but its one attribute, `bank.max_recursion = 2000`. */
+ * after a connection but its attributes, `bank.max_recursion = 2000`. */
 static int assign_target_is_path(const AstExpr *target) {
-    if (target->kind == AST_EXPR_FIELD && strcmp(target->as.field.field, "max_recursion") == 0 &&
+    if (target->kind == AST_EXPR_FIELD && gsql_attr_name(target->as.field.field) &&
         target->as.field.object->kind == AST_EXPR_IDENT) {
         Symbol *sym = env_find(target->as.field.object->as.ident);
         if (sym && sym->value.kind == VALUE_GSQL_CONNECTION) {
@@ -47753,7 +47762,7 @@ static Value field_of_value(Value object, AstExpr *expr, int path_keep) {
             return value_array(items, n);
         }
 #if GBASIC_GSQL
-        if (object.kind == VALUE_GSQL_CONNECTION && strcmp(expr->as.field.field, "max_recursion") != 0) {
+        if (object.kind == VALUE_GSQL_CONNECTION && !gsql_attr_name(expr->as.field.field)) {
             /* `shop.customer`: a table, the start of a path
                (docs/gsql_paths_design.md §3.1) */
             return gsql_path_table(object, expr->as.field.field);

@@ -31,6 +31,9 @@ typedef struct {
     /* WITH RECURSIVE's round limit for this statement: the connection's
        max_recursion (docs/gsql_recursive_design.md §3); 0: the service's */
     uint64_t max_recursion;
+    /* an HNSW search's first beam: the connection's ef_search
+       (docs/gsql_vector_design.md §9); 0: the service's */
+    uint32_t ef_search;
     /* the caller can resume a statement in slices: run may answer it
        `working` (docs/gsql_slicing_design.md). 0: run answers whole. */
     int sliced;
