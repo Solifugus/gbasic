@@ -1738,6 +1738,18 @@ for each r:account in rows          ' each element; refused by its number
   the nearest type or shape offered (`x:nubmer`: "did you mean number?").
   Without a `program` block a shape is declared when its line is reached, as
   a function is, so a lock above it is refused when it runs.
+- **A lock may name a variable holding a shape** (2026-11-27), so code handed
+  a shape as a value locks to it: `function into(row, s)` then `r:s = row`, or
+  `for each r:s in rows`. The variable is one of the body the lock is written
+  in (a parameter, a local, a loop's variable, or the top level's own), and
+  the lock is the shape it holds when the lock line runs: a lock line run
+  again with another shape relocks. Before anything runs, a name that is no
+  type, no shape and no variable of that body is refused (with "did you mean"
+  from all three), and so are a variable of an enclosing scope (pass it in),
+  a name that is both a shape and a variable of the function, and a
+  parameter's lock or a return type naming a variable (those name a declared
+  shape). When the lock runs, a variable holding something other than a
+  shape, or nothing yet, is refused. At the prompt a lock names a shape.
 
 **A shape at the edges** (increment 3, 2026-11-26): where data comes in and
 goes out.
@@ -1775,8 +1787,8 @@ gsql.expect(db, "invoice", invoice)           ' the table checked, nothing run
   `frame.conform(df, invoice)` puts a frame from anywhere into the shape, the
   columns matched by name exactly and judged once: a column dropped or a
   field missing is warned once (2126, 2127) however many rows follow, and a
-  cell that does not convert is refused naming its row, from 1. Both go
-  through `convert(record, shape)`, the lock when the shape is a value.
+  cell that does not convert is refused naming its row, from 1. Both convert
+  by the shape's lock, written `r:shape = row` with the shape handed in.
 - **G-SQL**: a row converts into a shape as any record does
   (`for each c:customer in db.customer[.active]`), and
   `gsql.expect(db, table, shape)` checks the table against the shape when the
@@ -8697,14 +8709,6 @@ count({})                      ' 0
   shape with nothing refused: `tests/run_shapes.sh`'s schema tier holds 3000
   generated documents to it. A shape inside itself is refused, since the
   schema is written out in full.
-- `convert(record, shape)` *(after 0.12.0)* - the record converted into the
-  shape as `x:invoice = record` would convert it, for a shape held as a VALUE
-  (a library handed one cannot write its lock). A field the shape lacks is
-  dropped (2126), one missing takes its default or is `nothing` (2127), and a
-  field that does not convert is refused in its lock's words. `nothing` and
-  `unknown` pass, as a lock lets them; a record already of the shape comes
-  back as it is; anything else is refused, and so is a second argument that
-  is not a shape. `convert({ id: "a", amount: "1.5" }, invoice)`.
 - `quote(value)` - gBASIC source code literal with escaping
 - `serialize(value)` - exact binary round-trip serialization (see below).
   Every type survives and, since version 3, so does every digit: a `number`

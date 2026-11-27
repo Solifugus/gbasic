@@ -6,7 +6,7 @@ fixed fields, writes, methods and shaped fields, the shape as a lock (§5),
 the boundaries (§6.1-§6.3: CSV, `json_schema`, G-SQL rows and
 `gsql.expect`), field positions (§7, measured: a site's cache, which
 every record gains, not a position the shape promises), and frames (§6.4,
-with `convert(record, shape)`, the lock when the shape is a value). `llm.ask`
+with `r:s = row`, a lock naming a variable that holds a shape). `llm.ask`
 with a shape (§6.5) goes with the AI-engineering work. The concept
 was agreed by Matthew on 2026-11-25 ("It feels like a more intuitive and
 higher level C struct"), with three rulings: the word is worth having (as a
@@ -323,11 +323,11 @@ not two).
 df = frame.read_csv(path, invoice)       ' each column its field's type, in declared order
 rows = frame.to_rows(df, invoice)        ' invoices
 df = frame.conform(sheet_frame, invoice) ' a frame from anywhere, put into the shape
-inv = convert(row, invoice)              ' the lock, when the shape is a value
+r:s = row                                ' in a function handed s: the lock, by a variable
 ```
 
 A shape as Pandas' `dtype=` or a pandera schema. Built in `frame.bas`, over
-one new builtin.
+a lock that names a variable holding a shape (below).
 
 - **`frame.read_csv(path, shape)` reads through `csv.records(f, shape)`**,
   so a shaped frame's header, warnings and refusals are §6.1's, word for
@@ -337,8 +337,8 @@ one new builtin.
   guesses as before (12.50 a number 12.5, "true" text, an empty cell
   `unknown`).
 - **`frame.to_rows(df, shape)` and `frame.conform(df, shape)` convert by the
-  shape's lock.** A frame's column names are the program's own, so they are
-  matched EXACTLY: a file's header is matched loosely by `read_csv`, where it
+  shape's lock**, written `start:shape = judged` in frame.bas. A frame's
+  column names are the program's own, so they are matched EXACTLY: a file's header is matched loosely by `read_csv`, where it
   is someone else's text. The columns are judged ONCE, before any row, by
   converting a record of them all into the shape, so a column the shape lacks
   (2126) and a field with no column and no default (2127) are each said once
@@ -350,13 +350,41 @@ one new builtin.
   said it would answer invoices; a frame is a record of lists, and none of
   its columns can carry a shape without becoming a field every other verb
   would read as a column, so the shape is named where it is wanted.
-- **`convert(record, shape)` is new**: `x:invoice = e` when the shape is a
-  VALUE. A library handed a shape cannot write a lock (a lock's name is read
-  when the program is parsed), and gBASIC had no other way to ask whether a
-  record is shaped or to name its shape, so frame.bas could not do this in
-  gBASIC alone. It converts as the lock does, the same warnings and the same
-  refusals; `nothing` and `unknown` pass, as a lock lets them, and a record
-  already of the shape is returned as it is. Its name is open to Matthew.
+- **A lock may name a variable holding a shape: `r:s = row`** (Matthew,
+  2026-11-27, over a builtin `convert(record, shape)` built first and
+  removed before release: "from a programmer's perspective, the `r:s = row`
+  form is best"). A library handed a shape could not lock to it, since a
+  lock's name was a declared shape's, and gBASIC had no other way to ask
+  whether a record is shaped or to name its shape. The plain `myshape =
+  myrecord` was considered and refused: a variable's lock would then come
+  from whatever value it last held. What the parser can know, it decides
+  once the file is parsed, as it does for a shape's name:
+  1. A lock in a body (an assignment, a `for each`) whose name is no type and
+     no declared shape names a variable OF THAT BODY: a parameter, a local
+     assigned anywhere in it, a loop's variable, or the top level's own. Each
+     function's and program's lines are recorded, and each name a body
+     binds, so the lock is matched with its own body (src/parser.y,
+     `body_binds`). A misspelling is refused with "did you mean" from the
+     types, the shapes and that body's names.
+  2. A variable of an ENCLOSING scope is refused ("pass s in as a
+     parameter"); gBASIC has no closures, and the 2104 rule already says a
+     read from an enclosing frame is suspect.
+  3. A name both a declared shape and a variable of the body is refused:
+     either winning silently would be a rule to remember.
+  4. A parameter's lock and a return type name a declared shape only
+     (`function f(x:s, s)` is refused), until there is a reason.
+  5. The lock is the shape the variable holds WHEN THE LOCK LINE RUNS, so a
+     lock line run again with another shape relocks; after it, `r = other`
+     converts as any lock does. A variable holding anything but a shape, or
+     nothing yet, is refused there; the variable is the frame's own, never
+     a caller's of the same name. Refusals quote the lock as written
+     (`r is locked to invoice by r:s`).
+  6. At the prompt a lock names a shape: a parse of one line cannot see the
+     session's variables, and a hook that could would also be seen by a
+     library loaded mid-run.
+  It is the same lock, so conversion, the two warnings and every refusal are
+  §5's. The form was a syntax error before, so it costs nothing after 1.0
+  either; the grammar is unchanged (zero conflicts).
 - **Found doing it**: `fill_missing`, `drop_missing`, `coerce`, `dtypes` and
   `show` looked only for `unknown`, so a frame holding `nothing` (from a
   shape, JSON or a database) kept its incomplete rows, had "nothing" written
@@ -573,7 +601,7 @@ included).
    AI-engineering work.
 4. **Field positions** (§7): measured first, built as a site's cache; held
    number fields left out (§7).
-5. **Frames** (§6.4), library work: built, with `convert(record, shape)`.
+5. **Frames** (§6.4), library work: built, with `r:s = row`.
 
 ## 11. Rulings (Matthew, 2026-11-26)
 
