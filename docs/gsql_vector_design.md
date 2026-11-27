@@ -183,10 +183,15 @@ takes rows as they come. The code is src/gsql/hnsw.c, kept by the table layer
 - **Writes.** An insert links the node by the paper's neighbour heuristic
   (Algorithm 4, the pruned kept to fill) and shrinks a neighbour's list the same
   way past its cap (`2m` at level 0, `m` above). A delete removes the node and
-  offers each neighbour the deleted node's other neighbours, chosen by the same
-  heuristic, so a deletion does not cut a region off: with three quarters of the
-  rows deleted, recall@10 was 0.93 with this and 0.12 without it. An edge left
-  pointing at a deleted row is skipped when met. An update that changes `e`, or
+  repairs its neighbourhood as pgvector's vacuum does: a search around the
+  deleted vector, at each of its levels with the build's beam, finds the nodes
+  near it, and each one pointing at it drops that edge and is refilled from what
+  the search found, by the same heuristic. Its own neighbours alone are not
+  enough, since an edge need not run both ways (a shrink drops back-links).
+  Measured with three quarters of the rows deleted (run_gsql_table's hnsw tier,
+  seeds 1-8, `m` 6 and 8): recall@10 0.90 to 1.00 this way; 0.62 to 0.96
+  repairing only the deleted node's own neighbours, which was built first; 0.18
+  with no repair. An edge left pointing at a deleted row is skipped when met. An update that changes `e`, or
   moves the row's key, is a delete and an insert; one that leaves `e` alone does
   nothing to the graph. A NULL vector is not in the graph. A zero vector is
   refused by a cosine graph (*"the vector is all zeros, which has no direction, so
@@ -297,7 +302,8 @@ Sixteen perturbations of part B were each red, two of them only after a tier was
 added for them: a deleted node's vector left behind, the count not lowered, no
 back-links, a search stopping at its first node, `every` stopping short, levels from
 a counter (not deterministic), an update skipping the graph, the delete repair off
-(green until the three-quarters deletion: recall 0.12), the beam never widened
+(green until the three-quarters deletion; then recall 0.12, and 0.18 against the
+search-based repair that replaced the first), the beam never widened
 (green until the 300-row filter: 30 rows fit one beam), no tail of NULL rows, no
 tie continuation, the planner ignoring the metric, `ef_search` ignored, the set of
 rows yielded ignored, a zero vector admitted to a cosine graph, and `DESC` taken.
