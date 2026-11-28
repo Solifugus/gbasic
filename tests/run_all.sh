@@ -390,6 +390,7 @@ done
 
 pass=0; fail=0; skip=0
 failed_names=()
+times=()
 skipped_names=()
 
 # ------------------------------------------------------------ one suite's verdict
@@ -410,8 +411,14 @@ run_one() {
     local rc before after
     before=""
     [ "${guard_binary:-0}" = "1" ] && before="$(bin_sig)"
+    local t0
+    t0=$(date +%s)
     timeout "$timeout_s" bash "$path" >"$log" 2>&1
     rc=$?
+    # ITS WALL TIME, beside the verdict rather than in it: a parallel suite's
+    # time is taken among its neighbours, so it is a share of a loaded machine,
+    # and the serial lanes' are the ones that stand alone.
+    printf '%d\n' "$(( $(date +%s) - t0 ))" >"$logdir/$1.secs"
     if [ -n "$before" ]; then
         after="$(bin_sig)"
         if [ "$before" != "$after" ]; then
@@ -453,10 +460,13 @@ report_one() {
         fail=$((fail + 1)); failed_names+=("$name"); return
     fi
     IFS=$'\t' read -r verdict detail extra < "$res"
+    local secs="?"
+    [ -f "$logdir/$name.secs" ] && read -r secs < "$logdir/$name.secs"
+    times+=("$secs"$'\t'"${name%.sh}"$'\t'"$verdict")
     case "$verdict" in
-        OK)   printf 'OK\n'; pass=$((pass + 1)) ;;
-        SKIP) printf 'SKIP  %s\n' "$detail"; skip=$((skip + 1)); skipped_names+=("$name") ;;
-        *)    printf 'FAIL (%s) -> %s\n' "$detail" "$logdir/$name.log"
+        OK)   printf 'OK  (%s s)\n' "$secs"; pass=$((pass + 1)) ;;
+        SKIP) printf 'SKIP  %s  (%s s)\n' "$detail" "$secs"; skip=$((skip + 1)); skipped_names+=("$name") ;;
+        *)    printf 'FAIL (%s, %s s) -> %s\n' "$detail" "$secs" "$logdir/$name.log"
               [ -n "${extra:-}" ] && printf '%34s%s\n' '' "$extra"
               fail=$((fail + 1)); failed_names+=("$name") ;;
     esac
@@ -591,6 +601,19 @@ fi
 if [ "$narrowed" -gt 0 ]; then
     printf '\n*** THIS IS NOT THE GATE: %d suite(s) were not run, selected from what changed.\n' "$narrowed"
     printf '*** Run tests/run_all.sh with no --changed before pushing.\n'
+fi
+
+# WHERE THE TIME WENT, every run: the slowest suites of this lane, and with
+# GATE_TIMES=FILE each suite's `name<TAB>verdict<TAB>seconds`, since the log
+# directory of a passing gate is removed. A parallel suite's seconds were
+# shared with its neighbours (run_one).
+if [ "${#times[@]}" -gt 0 ]; then
+    printf '\nslowest suites (wall seconds; the parallel lane'"'"'s under load):\n'
+    printf '%s\n' "${times[@]}" | sort -t$'\t' -k1,1nr | head -20 |
+        while IFS=$'\t' read -r secs nm verdict; do printf '  %6s  %s\n' "$secs" "$nm"; done
+    if [ -n "${GATE_TIMES:-}" ]; then
+        printf '%s\n' "${times[@]}" | awk -F'\t' -v OFS='\t' '{ print $2, $3, $1 }' >"$GATE_TIMES"
+    fi
 fi
 
 printf '\n%d passed, %d failed, %d skipped entirely' "$pass" "$fail" "$skip"
