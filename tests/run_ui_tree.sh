@@ -182,9 +182,15 @@ else
     # A REFRESH REBUILDS EVERY ITEM, so the old ones are deleted while the
     # window is open -- the path where a stale pointer would be a
     # use-after-free that a correct answer would not reveal.
+    # RUN FROM A COPY IN THIS RUN'S OWN DIRECTORY, so the path is a marker
+    # no other process has: run_ui_reentry runs tests/qt_tree_test.bas too, in
+    # the same parallel lane, and the absence check below matched ITS live
+    # process (lane 2, 2026-11-28). The fixture loads nothing beside itself.
+    vg_fixture="$work/qt_tree_vg.bas"
+    cp tests/qt_tree_test.bas "$vg_fixture"
     set +e
     QT_ENABLE_REGEXP_JIT=0 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib \
-        vg_run_access_only ./gbasic tests/qt_tree_test.bas \
+        vg_run_access_only ./gbasic "$vg_fixture" \
         >/dev/null 2>"$work/vg.err" &
     vg_pid=$!
     vg_killed=0
@@ -195,7 +201,7 @@ else
                 kill -9 "$vg_kid" 2>/dev/null
             done
             kill -9 "$vg_pid" 2>/dev/null
-            pkill -KILL -f "gbasic tests/qt_tree_test.bas" 2>/dev/null
+            pkill -KILL -f "gbasic $vg_fixture" 2>/dev/null
             vg_killed=1
             break
         fi
@@ -213,8 +219,8 @@ else
     fi
     # THE ABSENCE IS ASSERTED, the lesson run_ui_dialog.sh and run_ui_modal.sh
     # both paid for: a bound that kills the waiter orphans the child.
-    if pgrep -f "gbasic tests/qt_tree_test.bas" >/dev/null 2>&1; then
-        pkill -KILL -f "gbasic tests/qt_tree_test.bas" 2>/dev/null
+    if pgrep -f "gbasic $vg_fixture" >/dev/null 2>&1; then
+        pkill -KILL -f "gbasic $vg_fixture" 2>/dev/null
         fail "the valgrind tier left a gbasic process behind"
     else
         pass "and nothing was left running afterwards"

@@ -334,9 +334,15 @@ else
     # and a restoreState -- which rebuilds the whole dock layout under a live
     # window, the place a stale pointer would be a use-after-free a correct
     # answer would not reveal.
+    # A COPY IN THIS RUN'S DIRECTORY, so the path is a marker no other process
+    # has: run_ui_reentry runs tests/qt_frame_test.bas in the same parallel
+    # lane, and the absence check below could match ITS live process
+    # (run_ui_tree failed that way, 2026-11-28). The fixture loads nothing.
+    vg_fixture="$work/qt_frame_vg.bas"
+    cp tests/qt_frame_test.bas "$vg_fixture"
     set +e
     QT_ENABLE_REGEXP_JIT=0 QT_QPA_PLATFORM=offscreen GBASIC_PATH=stdlib \
-        vg_run_access_only ./gbasic tests/qt_frame_test.bas \
+        vg_run_access_only ./gbasic "$vg_fixture" \
         >/dev/null 2>"$work/vg.err" &
     vg_pid=$!
     vg_killed=0
@@ -350,7 +356,7 @@ else
                 kill -9 "$vg_kid" 2>/dev/null
             done
             kill -9 "$vg_pid" 2>/dev/null
-            pkill -KILL -f "gbasic tests/qt_frame_test.bas" 2>/dev/null
+            pkill -KILL -f "gbasic $vg_fixture" 2>/dev/null
             vg_killed=1
             break
         fi
@@ -367,8 +373,8 @@ else
         pass "no invalid access across docks, a float, a restore and teardown"
     fi
     # THE ABSENCE IS ASSERTED, because the leak is invisible from inside.
-    if pgrep -f "gbasic tests/qt_frame_test.bas" >/dev/null 2>&1; then
-        pkill -KILL -f "gbasic tests/qt_frame_test.bas" 2>/dev/null
+    if pgrep -f "gbasic $vg_fixture" >/dev/null 2>&1; then
+        pkill -KILL -f "gbasic $vg_fixture" 2>/dev/null
         fail "the valgrind tier left a gbasic process behind"
     else
         pass "and nothing was left running afterwards"
