@@ -87,6 +87,9 @@
 # re-ran the gosub, and the first perturbation of this suite hung it). The
 # valgrind tier runs only after the bounded compiled run has passed.
 #   valgrind  the compiled runs of flow.bas, held.bas, calls.bas,
+#             (and examples/chart_test.bas and tests/rules_test.bas, standing
+#             for every other suite's tier, which valgrind_tier.sh runs
+#             interpreted),
 #             loops.bas and values.bas under memcheck (the JIT is disposed at exit, or each
 #             body's unwinding tables read as definitely lost), and
 #             loops.bas interpreted (its loops' state is the compiled ones').
@@ -278,35 +281,57 @@ echo "--- TIER valgrind ---"
 if [ "$compiled_ok" = 0 ]; then
     printf 'SKIP valgrind: the compiled run failed above, and might not end\n'
 elif vg_available; then
-    GBASIC_COMPILE=all vg_run ./gbasic tests/jit/flow.bas >/dev/null 2>"$tmp/vg.err" </dev/null
+    VG_COMPILED=1 GBASIC_COMPILE=all vg_run ./gbasic tests/jit/flow.bas >/dev/null 2>"$tmp/vg.err" </dev/null
     if [ $? = "$VG_EXIT" ]; then
         sed 's/^/  /' "$tmp/vg.err" | tail -30; fail "valgrind: flow.bas compiled"
     else
         pass "valgrind: flow.bas compiled (no definite leak or invalid access)"
     fi
-    GBASIC_COMPILE=all vg_run ./gbasic tests/jit/held.bas >/dev/null 2>"$tmp/vgh.err" </dev/null
+    VG_COMPILED=1 GBASIC_COMPILE=all vg_run ./gbasic tests/jit/held.bas >/dev/null 2>"$tmp/vgh.err" </dev/null
     if [ $? = "$VG_EXIT" ]; then
         sed 's/^/  /' "$tmp/vgh.err" | tail -30; fail "valgrind: held.bas compiled"
     else
         pass "valgrind: held.bas compiled (no definite leak or invalid access)"
     fi
-    GBASIC_COMPILE=all vg_run ./gbasic tests/jit/calls.bas >/dev/null 2>"$tmp/vgc.err" </dev/null
+    VG_COMPILED=1 GBASIC_COMPILE=all vg_run ./gbasic tests/jit/calls.bas >/dev/null 2>"$tmp/vgc.err" </dev/null
     if [ $? = "$VG_EXIT" ]; then
         sed 's/^/  /' "$tmp/vgc.err" | tail -30; fail "valgrind: calls.bas compiled"
     else
         pass "valgrind: calls.bas compiled (no definite leak or invalid access)"
     fi
-    GBASIC_COMPILE=all vg_run ./gbasic tests/jit/loops.bas >/dev/null 2>"$tmp/vgl.err" </dev/null
+    VG_COMPILED=1 GBASIC_COMPILE=all vg_run ./gbasic tests/jit/loops.bas >/dev/null 2>"$tmp/vgl.err" </dev/null
     if [ $? = "$VG_EXIT" ]; then
         sed 's/^/  /' "$tmp/vgl.err" | tail -30; fail "valgrind: loops.bas compiled"
     else
         pass "valgrind: loops.bas compiled (no definite leak or invalid access)"
     fi
-    GBASIC_COMPILE=all vg_run ./gbasic tests/jit/values.bas >/dev/null 2>"$tmp/vgv.err" </dev/null
+    VG_COMPILED=1 GBASIC_COMPILE=all vg_run ./gbasic tests/jit/values.bas >/dev/null 2>"$tmp/vgv.err" </dev/null
     if [ $? = "$VG_EXIT" ]; then
         sed 's/^/  /' "$tmp/vgv.err" | tail -30; fail "valgrind: values.bas compiled"
     else
         pass "valgrind: values.bas compiled (no definite leak or invalid access)"
+    fi
+    # TWO LARGE PROGRAMS COMPILED, for every other suite's valgrind tier:
+    # those run interpreted since 2026-11-28 (tests/valgrind_tier.sh), so a
+    # library's code under the compiler and valgrind together is held here,
+    # once, rather than at LLVM's cost in 162 suites
+    VG_COMPILED=1 GBASIC_COMPILE=all vg_run ./gbasic examples/chart_test.bas >"$tmp/vgch.out" 2>"$tmp/vgch.err" </dev/null
+    vgst=$?
+    if [ "$vgst" = "$VG_EXIT" ]; then
+        sed 's/^/  /' "$tmp/vgch.err" | tail -30; fail "valgrind: examples/chart_test.bas compiled"
+    elif [ "$vgst" != 0 ] || ! cmp -s "$tmp/vgch.out" examples/chart_test.out; then
+        fail "valgrind: examples/chart_test.bas compiled did not give its golden (exit $vgst)"
+    else
+        pass "valgrind: examples/chart_test.bas compiled, its golden (no definite leak or invalid access)"
+    fi
+    VG_COMPILED=1 GBASIC_COMPILE=all vg_run ./gbasic tests/rules_test.bas >"$tmp/vgru.out" 2>"$tmp/vgru.err" </dev/null
+    vgst=$?
+    if [ "$vgst" = "$VG_EXIT" ]; then
+        sed 's/^/  /' "$tmp/vgru.err" | tail -30; fail "valgrind: tests/rules_test.bas compiled"
+    elif [ "$vgst" != 0 ] || grep -q MISMATCH "$tmp/vgru.out" || ! grep -q '^checks: ' "$tmp/vgru.out"; then
+        fail "valgrind: tests/rules_test.bas compiled did not pass its own checks (exit $vgst)"
+    else
+        pass "valgrind: tests/rules_test.bas compiled, $(sed -n 's/^checks: //p' "$tmp/vgru.out") checks (no definite leak or invalid access)"
     fi
     GBASIC_COMPILE=0 vg_run ./gbasic tests/jit/loops.bas >/dev/null 2>"$tmp/vgli.err" </dev/null
     if [ $? = "$VG_EXIT" ]; then

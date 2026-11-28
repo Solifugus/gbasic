@@ -16,6 +16,7 @@
 #   vg_run PROG ARGS...              the ordinary tier
 #   vg_run_access_only PROG ARGS...  no leak claim at all -- see below
 #   vg_available                     is valgrind installed
+#   VG_COMPILED=1                    keep GBASIC_COMPILE (run_jit); else interpreted
 #   $VG_EXIT                         the exit code a valgrind failure produces
 #   $VG_EXTRA                        extra flags, e.g. a suppression file
 #
@@ -53,11 +54,26 @@ VG_FLAGS="$VG_FLAGS --suppressions=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 VG_ACCESS_FLAGS="$VG_ACCESS_FLAGS --suppressions=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/qt_hash.supp"
 vg_available() { command -v valgrind >/dev/null 2>&1; }
 
-# shellcheck disable=SC2086
-vg_run() { valgrind $VG_FLAGS ${VG_EXTRA:-} "$@"; }
+# INTERPRETED UNLESS ASKED (2026-11-28): the gate's second lane sets
+# GBASIC_COMPILE=all for every suite, and under valgrind that ran LLVM's
+# compiler too -- examples/chart_test.bas took 35 s against 1.4 s interpreted,
+# in 260 valgrind runs across 162 suites, the largest part of a lane that took
+# twice the first's 28 minutes. So a valgrind run is interpreted, as in the
+# first lane, and every suite still gets its verdict; compiled code under
+# valgrind is run_jit's, which asks with VG_COMPILED=1.
+vg_compile() {
+    if [ -n "${VG_COMPILED:-}" ]; then
+        printf '%s' "${GBASIC_COMPILE:-}"
+    else
+        printf '0'
+    fi
+}
 
 # shellcheck disable=SC2086
-vg_run_access_only() { valgrind $VG_ACCESS_FLAGS ${VG_EXTRA:-} "$@"; }
+vg_run() { GBASIC_COMPILE="$(vg_compile)" valgrind $VG_FLAGS ${VG_EXTRA:-} "$@"; }
+
+# shellcheck disable=SC2086
+vg_run_access_only() { GBASIC_COMPILE="$(vg_compile)" valgrind $VG_ACCESS_FLAGS ${VG_EXTRA:-} "$@"; }
 
 # INSTRUCTIONS, NOT MEMORY: callgrind's count of the instructions a program ran,
 # printed as one number (empty if valgrind gave none). It is here, not typed
