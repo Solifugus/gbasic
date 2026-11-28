@@ -120,6 +120,8 @@ spawn_bare_name|resolves a bare function **name**
 nul_string_literal|is refused in a string literal
 deep_value_teardown|segfaults when it is RELEASED
 decimal_key_collision|share an index key
+doc_csv_records|has no entry for
+stats_design_lambda|shows frame calls that do not parse
 "
 
 # Bullets that no program can decide, each with the reason. This list is the
@@ -303,6 +305,26 @@ probe_decimal_key_collision() {
 
 
 
+
+probe_doc_csv_records() {
+    # Red when --doc answers csv.records (and so the heading form is indexed).
+    dc_out=$(timeout 30 ./gbasic --doc csv.records 2>&1 | head -1)
+    if [ "$dc_out" = "no entry for csv.records" ]; then
+        ok "gbasic --doc still has no entry for csv.records"
+    else
+        printf '     %s\n' "$dc_out"
+        fixed "--doc now answers csv.records (check sort's by:/descending: too)"
+    fi
+}
+
+probe_stats_design_lambda() {
+    # Red when the page stops showing the two forms gBASIC cannot parse.
+    if grep -q 'function(row) return' docs/statistics_design.md && grep -q 'on: "id")' docs/statistics_design.md; then
+        ok "docs/statistics_design.md still shows an inline function and a named argument"
+    else
+        fixed "docs/statistics_design.md no longer shows the unparseable frame calls"
+    fi
+}
 
 probe_atomic_replace_inode() {
     mkdir -p "$WORK/ar"
