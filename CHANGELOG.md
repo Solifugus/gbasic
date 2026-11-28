@@ -16,6 +16,12 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **`frame.summarize` and `frame.join` by hash** (2026-11-28): both scanned,
+  so 10,000 rows in 10,000 groups took 83 s and a 10,000-by-10,000 join did
+  not finish in 300 s; now 1.0 s and 1.3 s, each mostly reading the file. The
+  answers and their order are unchanged. `tests/run_frame.sh`; the benchmark
+  that found it is `tools/bench_analytics`, its findings
+  `docs/columnar_analytics_design.md`.
 - **A variable holding a function value wins a call of its name**
   (2026-11-27, Matthew's ruling), ahead of a builtin and of a function the
   program defines. **This changes what existing code means**: `first = my_fn`

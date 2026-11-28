@@ -1,6 +1,6 @@
 # Columnar analytics: what is slow, measured, and what to build
 
-**Status: Proposal.** Nothing below §5 exists. §2–§4 are measurements, rerun
+**Status: Partial.** §5 A is built (tests/run_frame.sh); B and C do not exist. §2–§4 are measurements, rerun
 with `tools/bench_analytics/run.sh WORKDIR`.
 
 Matthew, 2026-11-27: "the item that bothers me most is Numeric speed on large
@@ -21,7 +21,8 @@ column kind, and whether it needs any grammar, which decides before or after
   (one, month, is faster than pandas).
 - **frame.bas cannot be used past about 10,000 rows** for grouping by
   something with many values, or for a join: its `summarize` and `join` are
-  O(n × groups) and O(n × m). That is an algorithm, not the language.
+  O(n × groups) and O(n × m). That is an algorithm, not the language, and
+  it was fixed the same day (§5 A).
 - **The time is the interpreter's cost per operation** (about half a
   microsecond a statement), not how a value is stored, and the compiler does
   not change it (§4).
@@ -113,7 +114,11 @@ values in C. That, not a faster interpreter, is the difference to close.
 
 ## 5. What to build, in order
 
-**A. frame.bas by hash (library; no grammar; any time).** `summarize` keyed by
+**A. frame.bas by hash (library; no grammar; any time). BUILT 2026-11-28**
+(tests/run_frame.sh): at 10,000 rows `bycust` 83 s → 1.0 s, `join` past 300 s →
+1.3 s, `month` 8.9 s → 1.2 s, each process mostly `read_csv`; at 25,000 →
+100,000 rows in as many groups the time grows 3.8x where the scans grew 19x;
+the old code answers the suite's 14 checks identically. As proposed: `summarize` keyed by
 a record (`groups[sig]`, as loop.bas does) and `join` by an index of the right
 frame's keys: both O(n). Expected from loop.bas's own times: `bycust` at 10,000
 rows from 83 s to well under a second, and `join` from beyond 300 s to the

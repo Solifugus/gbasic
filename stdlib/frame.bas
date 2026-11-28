@@ -532,13 +532,8 @@ library frame
         return false
     end function
 
-    ' Value equality that also works for `unknown` and mixed kinds (compares
-    ' canonical serializations), used for grouping and join keys.
-    function _same(a, b)
-        return _sig(a) = _sig(b)
-    end function
-
-    ' A grouping signature. `serialize` records whether a number is EXACT since
+    ' A grouping signature, for grouping and join keys: equal keys have equal
+    ' signatures, so a record keyed by one is their hash map. `serialize` records whether a number is EXACT since
     ' version 3, and `=` does not ask: an exact 3 and a computed 3.0 are equal
     ' and must be one group. So a number the double holds without loss is
     ' signed by its double, and one it cannot hold (an exact integer past 2^53)
@@ -565,16 +560,28 @@ library frame
         names = keys(df)
         n = _nrows(df)
 
-        ' Distinct group keys in first-seen order, tracked by signature.
-        sigs = []
+        ' One pass: each row to its group's sub-frame, the group found by its
+        ' signature in a record (a hash), in first-seen order. It was a scan of
+        ' every row per group and a `contains` per row: 83 s for 10,000 rows in
+        ' 10,000 groups (docs/columnar_analytics_design.md §3.3).
+        slot = {}
         groupkeys = []
+        subs = []
         i = 0
         while i < n
             s = _sig(df[by][i])
-            if not contains(sigs, s) then
-                append(sigs, s)
+            g = slot[s]
+            if is_unknown(g) then
+                g = len(groupkeys)
+                slot[s] = g
                 append(groupkeys, df[by][i])
+                append(subs, _empty_like(df))
             end if
+            c = 0
+            while c < len(names)
+                append(subs[g][names[c]], df[names[c]][i])
+                c = c + 1
+            end while
             i = i + 1
         end while
 
@@ -589,19 +596,7 @@ library frame
 
         g = 0
         while g < len(groupkeys)
-            gsig = sigs[g]
-            sub = _empty_like(df)
-            i = 0
-            while i < n
-                if _sig(df[by][i]) = gsig then
-                    c = 0
-                    while c < len(names)
-                        append(sub[names[c]], df[names[c]][i])
-                        c = c + 1
-                    end while
-                end if
-                i = i + 1
-            end while
+            sub = subs[g]
             append(out[by], groupkeys[g])
             a = 0
             while a < len(aggnames)
@@ -651,26 +646,41 @@ library frame
 
         ln = _nrows(left)
         rcount = _nrows(right)
+        ' The right frame's rows by their key's signature, in order, so each left
+        ' row meets only its own matches: it compared every pair, and 10,000
+        ' rows against 10,000 did not finish in 300 s (columnar_analytics §3.3).
+        ' Rows come out as before: left order, then each left row's matches in
+        ' right order.
+        index = {}
+        j = 0
+        while j < rcount
+            s = _sig(right[key][j])
+            if is_unknown(index[s]) then
+                index[s] = []
+            end if
+            append(index[s], j)
+            j = j + 1
+        end while
         i = 0
         while i < ln
             lk = left[key][i]
-            j = 0
-            while j < rcount
-                if _same(lk, right[key][j]) then
-                    c = 0
-                    while c < len(lnames)
-                        append(out[lnames[c]], left[lnames[c]][i])
-                        c = c + 1
-                    end while
-                    c = 0
-                    while c < len(rnames)
-                        if rnames[c] != key then
-                            append(out[routnames[c]], right[rnames[c]][j])
-                        end if
-                        c = c + 1
-                    end while
-                end if
-                j = j + 1
+            matches = default(index[_sig(lk)], [])
+            m = 0
+            while m < len(matches)
+                j = matches[m]
+                m = m + 1
+                c = 0
+                while c < len(lnames)
+                    append(out[lnames[c]], left[lnames[c]][i])
+                    c = c + 1
+                end while
+                c = 0
+                while c < len(rnames)
+                    if rnames[c] != key then
+                        append(out[routnames[c]], right[rnames[c]][j])
+                    end if
+                    c = c + 1
+                end while
             end while
             i = i + 1
         end while
