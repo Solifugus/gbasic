@@ -16,6 +16,19 @@ since the last tag — and is a floor on what changed, never a ceiling: it sees
 only messages a golden pins. This section is the curated half and is the one a
 reader sees.
 
+- **A variable holding a function value wins a call of its name**
+  (2026-11-27, Matthew's ruling), ahead of a builtin and of a function the
+  program defines. **This changes what existing code means**: `first = my_fn`
+  then `first(xs)` used to run the builtin `first` (with warning 2102), and a
+  parameter `f` holding a function value lost `f()` to the program's own `f`,
+  silently. A variable holding anything else changes nothing. The 2102 warning
+  for the builtin case is gone with the order it warned about.
+- **`db["name"]`: a G-SQL table named by a value** (2026-11-27), the path
+  `db.name` is, for a name computed at run time or one a dot cannot reach
+  (`db["ef_search"]` is the table, `db.ef_search` the attribute; reserved
+  words; spaces). A number, a filter, two names and anything but a non-empty
+  text are refused. It also fixes a segfault: `db[.cond]{ a }` read the
+  connection as a path. `tests/run_gsql_paths.sh` (tier names).
 - **Builtins found by number, not by name** (2026-11-21), the first slice of
   increment 1 of `docs/llvm_backend_design.md`. A call's name, and a module
   call's qualifier, are looked up once per call site and kept on the node, so

@@ -473,12 +473,13 @@ day — so assume you will hit them too.
   statement" at a column where no statement is possible. Writing `dim x` still
   gets the advice it was always meant to give.
 
-- **A function value in a variable named after a builtin is unreachable
-  (warned since 2026-08-28).** Precedence is builtin → user function →
-  function-valued variable, so `first = my_fn` then `first(xs)` runs the
-  BUILTIN and returns an element of `xs`: a plausible value from the wrong
-  function. It warns at the call site now. Holding such a variable is fine
-  (`list = [1,2]`); only calling it is the mistake. A record field is immune.
+- **A variable holding a function value wins a call of its name (2026-11-27).**
+  `first = my_fn` then `first(xs)` calls `my_fn`, not the builtin, and a
+  parameter `f` holding a function value is what `f()` calls even when the file
+  defines a function `f`. Before that date builtins won, then functions, and
+  the variable came last: the builtin case warned (2102), the function case ran
+  the wrong function silently. A variable holding a NON-function changes
+  nothing (`len = 5` still leaves `len(x)` the builtin).
 
 - **A function from another library MUST be qualified** (0.1.0). An unqualified
   name reaches only two things: the library whose code is running, and the root

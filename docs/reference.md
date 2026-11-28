@@ -1444,13 +1444,14 @@ receiver.
 Calling a function value straight out of a **subscript** does not parse —
 `table[0](7)` — so bind it first. A field call (`reg.beat(3)`) is fine.
 
-**Do not name such a variable after a builtin.** Precedence is builtin → user
-function → function-valued variable, so `first = my_fn` followed by `first(xs)`
-runs the **builtin** `first` and returns an element of `xs` — a plausible value
-from the wrong function. That warns now, at the call site, once per site.
-Holding a builtin-named variable is fine (`list = [1, 2]`); only *calling* it
-is the mistake, which is why the warning fires on the call and not on the
-assignment. A record field is immune — `r.first(2)` is not a bare name.
+**A variable holding a function value wins a call of its name**, over a
+builtin and over a function of the program (since 2026-11-27): `first = my_fn`
+then `first(xs)` calls `my_fn`, and a parameter `f` holding a function value
+is what `f()` calls even where the file defines its own `f`. A variable holding
+anything else changes nothing — `list = [1, 2]` leaves `list(...)`, and
+`len = 5` leaves `len(x)`, the builtin's. Until then the order was builtin,
+function, variable, which warned (2102) for a builtin and was silent for a
+function.
 
 Function values can be stored in variables, records, and arrays, passed as
 arguments, returned, and called. Equality is same-reference (`d = double` is

@@ -112,12 +112,12 @@ function v_changes_kind()
     return out
 end function
 
-' a builtin's name wins over a value of that name, with the warning
+' a value wins over a builtin of its name (Matthew, 2026-11-27), each pass
 function v_shadowed()
     first = double
     total = 0
     for i = 1 to 2
-        total = total + first([10, 20])
+        total = total + first(10)
     end for
     return total
 end function

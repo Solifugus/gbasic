@@ -9842,14 +9842,6 @@ static GB_INLINE FunctionDef *qualified_call_function(AstExpr *expr) {
     return function;
 }
 
-/* gbasic_has_builtin for the call's name, kept like call_is_registered. */
-static int call_has_builtin(AstExpr *expr) {
-    if (expr->as.call.has_builtin == 0) {
-        expr->as.call.has_builtin = gbasic_has_builtin(expr->as.call.name) ? 2 : 1;
-    }
-    return expr->as.call.has_builtin == 2;
-}
-
 static FunctionDef *function_resolve(const char *library, const char *name) {
     if (library) {
         for (size_t i = function_count; i > 0; i--) {
@@ -16392,10 +16384,10 @@ void gbrt_eval(AstExpr *x, void *out) {
 static GB_INLINE FunctionDef *call_plain_target(AstExpr *expr);
 static GB_INLINE int call_arity_refused(AstExpr *expr, FunctionDef *function, Value *bound_ctx);
 
-static GB_INLINE void call_value_shadowed(AstExpr *expr);
 static GB_INLINE int call_method_target(AstExpr *expr, Value **receiver, FunctionDef **method,
                                         Value **bound_ctx);
 static GB_INLINE int call_value_target(AstExpr *expr, FunctionDef **target, Value **bound_ctx);
+static GB_INLINE int call_value_first(AstExpr *expr, FunctionDef **target, Value **bound_ctx);
 static const char *handle_method_module(const Value *v);
 
 /* The gBASIC function a call that is not plain reaches, as eval_call_rest
@@ -16424,14 +16416,21 @@ static int call_reached_target(AstExpr *x, FunctionDef **function, Value **recei
     if (x->as.call.reached != CALL_REACHED_VALUE) {
         return 0;
     }
-    call_value_shadowed(x);
     return call_value_target(x, function, bound_ctx);
 }
 
 int gbrt_call_enter(AstExpr *x, void **target, void *out) {
-    FunctionDef *function = call_plain_target(x);
+    FunctionDef *function = NULL;
     Value *receiver = NULL;
     Value *bound_ctx = NULL;
+    int by_value = call_value_first(x, &function, &bound_ctx);
+    if (by_value < 0) {
+        *(Value *)out = value_null();
+        return -1;
+    }
+    if (!by_value) {
+        function = call_plain_target(x);
+    }
     if (!function) {
         int found = call_reached_target(x, &function, &receiver, &bound_ctx);
         if (found <= 0) {
@@ -37896,33 +37895,6 @@ static Value builtin_transcode(AstExpr *expr) {
  * function, then a function of the program. */
 static Value eval_call_rest(AstExpr *expr);
 
-/* eval_call_rest's warning for `f(...)` naming a variable that holds a
- * function value where a builtin of that name is what the call reaches */
-static GB_INLINE void call_value_shadowed(AstExpr *expr) {
-    /* A VARIABLE holding a function value, whose name is also a builtin. The
-     * precedence is deliberate and documented -- builtins win, and the
-     * function-valued variable is the last fallback -- but it was SILENT, so
-     * `first = my_fn` followed by `first(xs)` quietly ran the builtin `first`
-     * and returned an element of xs. No error, a plausible value, and nothing
-     * to see.
-     *
-     * The library form of this has warned for a long time ("has same name as a
-     * built-in"); the variable form had nothing. Warned HERE rather than at
-     * assignment, because `list = [1, 2]` is a perfectly good variable and only
-     * CALLING it is the mistake -- which also means this cannot fire on the
-     * common harmless case. Once per call site: the trap lives in loops and
-     * handlers, and advice repeated ten thousand times is advice nobody reads. */
-    Symbol *shadowed = env_find_known(CALL_NAME_KEY(expr));
-    if (shadowed && shadowed->value.kind == VALUE_FUNCTION &&
-        call_has_builtin(expr) &&
-        warn_site_first_time(expr->line, expr->column)) {
-        warn_fmt(2102, "override",
-                 "'%s' holds a function value, but the call reaches the BUILT-IN of that name; "
-                 "rename the variable to call the function value",
-                 expr->as.call.name);
-    }
-}
-
 /* `X.y(args)`'s receiver and, when X is a record whose field y holds a
  * function value, the method: 1 with *method and *bound_ctx (the value's
  * `bound` context or NULL), 0 when it is no record's method (*receiver still
@@ -38003,31 +37975,39 @@ static GB_INLINE int call_value_target(AstExpr *expr, FunctionDef **target, Valu
 }
 
 /* The gBASIC function a plain call `f(...)` reaches, or NULL for anything
- * else (a builtin, a method, a qualified call, a function value), with the
- * warning eval_call_rest gives a function value shadowed by a builtin's
- * name given here too, since this call never reaches it. Shared with the
- * compiled code (gbrt_call_enter). */
+ * else (a builtin, a method, a qualified call, a function value). Shared
+ * with the compiled code (gbrt_call_enter). */
 static GB_INLINE FunctionDef *call_plain_target(AstExpr *expr) {
     if (expr->as.call.receiver || expr->as.call.library ||
         CALL_IS(expr, warning) || CALL_IS(expr, error_clear)) {
         return NULL;
     }
-    FunctionDef *function = call_function(expr);
-    if (function) {
-        Symbol *shadowed = env_find_known(CALL_NAME_KEY(expr));
-        if (shadowed && shadowed->value.kind == VALUE_FUNCTION &&
-            call_has_builtin(expr) &&
-            warn_site_first_time(expr->line, expr->column)) {
-            warn_fmt(2102, "override",
-                     "'%s' holds a function value, but the call reaches the BUILT-IN of that name; "
-                     "rename the variable to call the function value",
-                     expr->as.call.name);
-        }
+    return call_function(expr);
+}
+
+/* `f(args)` where a variable f holds a function value calls that value,
+ * ahead of a builtin or a function of the name (Matthew, 2026-11-27: "let
+ * the variable win"): it got there only on purpose, and it is the nearest
+ * binding. A variable holding anything else changes nothing, so `len = 5`
+ * leaves `len(x)` the builtin. Until then the order was builtin, function,
+ * variable, and a parameter `f` lost `f()` to the program's own `f` with no
+ * word (DOGFOOD 2026-11-27). 1 with *target and *bound_ctx, 0, -1 raised.
+ * Shared with the compiled code (gbrt_call_enter). */
+static GB_INLINE int call_value_first(AstExpr *expr, FunctionDef **target, Value **bound_ctx) {
+    if (expr->as.call.receiver || expr->as.call.library ||
+        CALL_IS(expr, warning) || CALL_IS(expr, error_clear)) {
+        return 0;
     }
-    return function;
+    return call_value_target(expr, target, bound_ctx);
 }
 
 static Value eval_call(AstExpr *expr) {
+    FunctionDef *value_target = NULL;
+    Value *bound_ctx = NULL;
+    int by_value = call_value_first(expr, &value_target, &bound_ctx);
+    if (by_value) {
+        return by_value < 0 ? value_null() : eval_user_function_bound(expr, value_target, NULL, bound_ctx);
+    }
     FunctionDef *function = call_plain_target(expr);
     if (function) {
         return eval_user_function(expr, function);
@@ -38058,10 +38038,6 @@ static Value eval_call_rest_profiled(AstExpr *expr) {
 static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
     if (expr->as.call.receiver) {
         return eval_method_call(expr);
-    }
-    /* builtins win over a variable holding a function value, and say so */
-    if (!expr->as.call.library) {
-        call_value_shadowed(expr);
     }
     if (expr->as.call.library) {
         Value *receiver_value = NULL;
@@ -44674,9 +44650,9 @@ static GB_NOINLINE Value eval_call_rest(AstExpr *expr) {
         return eval_user_function(expr, function);
     }
 
-    /* A variable bound to a function value, called like `f(args)`. Functions and
-     * builtins above take precedence; this is the fallback once nothing else
-     * matched the name (first_class_functions_design.md §3). */
+    /* A variable bound to a function value, called like `f(args)`: eval_call
+     * and gbrt_call_enter call it before anything else (call_value_first);
+     * reached here only from a caller that did not ask first. */
     expr->as.call.reached = CALL_REACHED_VALUE;
     {
         FunctionDef *target = NULL;

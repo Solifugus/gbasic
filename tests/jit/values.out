@@ -7,7 +7,7 @@ refused: f expects 3 arguments, got 2
 refused: g expects 3 arguments, got 4 (including the bound context)
 10
 [undefined function: h -- no function, library function or builtin of that name is in scope at this call (has_builtin("h") asks without raising)] 4 [undefined function: h -- no function, library function or builtin of that name is in scope at this call (has_builtin("h") asks without raising)] 
-20
+40
 argument raised: division by zero
 argument raised: division by zero
 evaluated then

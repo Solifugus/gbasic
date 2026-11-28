@@ -208,11 +208,11 @@ print too_deep()
 print passes_held()
 print param_reused(1)
 
-' a function value shadowed by a builtin's name, called: the builtin, and
-' warning 2102 once
+' a function value in a variable named like a builtin, called: the VALUE
+' (Matthew, 2026-11-27: the variable wins), with no warning
 function shadow_warned()
     abs = add3
-    return abs(0 - 7)
+    return abs(0 - 7, 2, 1)
 end function
 print shadow_warned()
 
