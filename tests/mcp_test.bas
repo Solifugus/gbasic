@@ -349,12 +349,15 @@ check("a forged one: 404, so the client initializes again", h4.status, 404)
 check("and session_of answers nothing for it", mcp.session_of(hopts, hreq("POST", "", forged)), nothing)
 other = { name: "bank-mcp", version: "1.0.0", origins: [], session_secret: "another secret of thirty-two bytes!" }
 check("a session signed with another secret is no session", mcp.session_of(other, hreq("POST", "", with_sid)), nothing)
-short = { name: "bank-mcp", version: "1.0.0", origins: [], session_secret: "0123456789abcdef0123456789abcdef", session_seconds: 1 }
+' 3 seconds, not 1: the clock counts whole seconds, so a 1-second session ends
+' at the next tick, which can come at once; under valgrind on a loaded gate a
+' tick fell between issuing and reading (lane 1, 2026-11-28)
+short = { name: "bank-mcp", version: "1.0.0", origins: [], session_secret: "0123456789abcdef0123456789abcdef", session_seconds: 3 }
 hs = mcp.handle_http(srv, short, hreq("POST", init_body, {}))
 expiring = {}
 expiring["mcp-session-id"] = hs.headers["Mcp-Session-Id"]
 check("a session is good until it expires", mcp.session_of(short, hreq("POST", "", expiring)).client, "claude-desktop")
-sleep(2.1)
+sleep(4.1)
 check("and none after", mcp.session_of(short, hreq("POST", "", expiring)), nothing)
 note = mcp.handle_http(srv, hopts, hreq("POST", json_encode({ jsonrpc: "2.0", method: "notifications/initialized" }), with_sid))
 check("a notification: 202", note.status, 202)
