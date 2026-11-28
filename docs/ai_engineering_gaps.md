@@ -189,3 +189,16 @@ answer: whether it needs core grammar (an inline predicate or expression form).
    table shipped and dated?
 4. **Local tokenizer**: worth a vocabulary file in the tree, or provider count
    endpoints only to start?
+
+**Ruled (Matthew, 2026-11-28, "yes, agree with both"):** 3. prices are the
+caller's, a table per model (input, output, cache read, cache write); with no
+price a call's cost is `unknown`, never estimated, and its tokens (from the
+response's own usage) are recorded either way; a cost is exact `money`. A
+dated example price file may sit in the docs, never loaded by default.
+4. the providers' count endpoints first, and for chunking and fitting an
+estimate calibrated from the program's own reported usage (characters a token,
+per provider) in place of nlq's fixed 2.5; no vocabulary in the tree. A local
+BPE tokenizer (exact only for OpenAI-style models, since Claude's tokenizer is
+not published) waits for a program that needs it, its vocabulary a file the
+user names, C or gBASIC decided by measurement. Questions 1 and 2 were ruled
+2026-11-27 and are built (docs/vectors_design.md, docs/gsql_vector_design.md).

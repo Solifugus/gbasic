@@ -47,6 +47,7 @@ db.exec("insert into ef_search values (1, 40)")
 db.exec("insert into max_recursion values (1, 7)")
 db.exec("insert into \"select\" values (1, 's')")
 db.exec("insert into \"order lines\" values (1, 'ol')")
+db.exec("create view rome as select id, name from customer where city = 'Rome'")
 
 function rows_of(text)
     return db.query(text)
@@ -167,6 +168,20 @@ function misspelled()
 end function
 check("a table no database has, with the nearest name", refusal(misspelled),
       "path custmer: the database has no table `custmer` -- did you mean `customer`? [NOT_FOUND]")
+
+' a view: named for what it is, not as a misspelling (it has no key, foreign
+' key or order for a path to follow); the SQL beside it reads it
+function by_view()
+    return db.rome.query()
+end function
+check("a view by a dot", refusal(by_view),
+      "path rome: `rome` is a view, and a path reaches tables: a view has no key, no foreign key and no order to follow; read it in SQL, as in select * from rome [NOT_FOUND]")
+function by_view_bracket()
+    return db["ROME"].query()
+end function
+check("a view by brackets, folded as SQL stores it", refusal(by_view_bracket),
+      "path ROME: `ROME` is a view, and a path reaches tables: a view has no key, no foreign key and no order to follow; read it in SQL, as in select * from ROME [NOT_FOUND]")
+check("...and SQL reads it", rows_of("select name from rome order by id").name, ["Ana", "Cy"])
 
 db.close()
 print "ok " + string(checks.n) + " checks, " + string(checks.bad) + " mismatches"

@@ -152,6 +152,23 @@ static int open_table(const GsEngine *e, GsTxn *t, const char *name, GsqlTable *
             return GSQL_OK;
         }
     }
+    /* a view has no key, no foreign key and no order, which is what a path
+       is made of, so it is read in SQL; saying "no table" sent the reader to
+       look for a misspelling (2026-11-28) */
+    GsqlBuf view = {0};
+    int is_view = gsql_view_get(e, t, name, &view, &quiet) == GSQL_OK;
+    if (!is_view && n < sizeof low && strcmp(low, name) != 0) {
+        gsql_buf_free(&view);
+        is_view = gsql_view_get(e, t, low, &view, &quiet) == GSQL_OK;
+    }
+    if (is_view) {
+        gsql_buf_free(&view);
+        pfail(err, GSQL_NOT_FOUND, "`%s` is a view, and a path reaches tables: a view has no key, no foreign "
+              "key and no order to follow; read it in SQL, as in select * from %s", name, name);
+        snprintf(err->table, sizeof err->table, "%s", name);
+        return GSQL_NOT_FOUND;
+    }
+    gsql_buf_free(&view);
     Nearest near;
     nearest_init(&near, name);
     gsql_table_list(e, t, nearest_table, &near, &quiet);
