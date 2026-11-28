@@ -94,7 +94,13 @@ run() { GBASIC_PATH=stdlib ./gbasic "$@"; }
 start_sink() { # transcript count [extra args...]
     local transcript="$1"; shift
     local count="$1"; shift
-    local portfile="$scratch/port.$RANDOM"
+    # A NEW EMPTY FILE, never `port.$RANDOM`: a name an earlier sink of this
+    # run had already filled made this loop see the old port, then read the
+    # file after the new sink's `>` emptied it, "the sink did not start (got
+    # '')" in 3 s (lane 1, 2026-11-28; not reproduced in 240 runs, and the
+    # only way found to an empty answer once the file was non-empty)
+    local portfile
+    portfile="$(mktemp "$scratch/port.XXXXXX")"
     python3 tests/smtp_sink.py --transcript "$transcript" --count "$count" "$@" \
         >"$portfile" 2>"$portfile.err" &
     sinks+=("$!")

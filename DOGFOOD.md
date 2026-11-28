@@ -14401,3 +14401,27 @@ fumble"), so each mistake below is a finding about where a newcomer trips.
   its name over a builtin and a function alike (call_value_first in
   src/eval.c, the interpreter and the compiled code), and the builtin form's
   warning went with the order it warned about.
+
+## 2026-11-28 — CC — while: the analytics benchmark (docs/ai_engineering_gaps.md, columnar analytics)
+- **Type:** doc-gap (three), and one language question
+- **Severity:** medium
+- **What:** (1) `gbasic --doc csv.records` answers "no entry" (`--doc records`:
+  "did you mean: record"), though START-HERE tells an agent to ask `--doc`
+  first. The entry is in reference.md as a `####` heading ("Reading a delimited
+  file — `for each item, at in csv.records(f)`"), which src/docindex_gen.c does
+  not index; csv.parse, csv.line and csv.write sit in its bullets the same way.
+  (2) `gbasic --doc sort` prints one line, "`reverse(array)` / `unique(array)` /
+  `sort(array [, options])`", and none of `by:` / `descending:`, which live in
+  reference.md's own "Sorting records" heading: the options a sort of records
+  needs. (3) docs/statistics_design.md §4, whose frame verbs it says have
+  shipped, shows `frame.filter(df, function(row) return row.age >= 40 end
+  function)` and `frame.join(left, right, on: "id")`; gBASIC has no inline
+  function and no named argument, so both are syntax errors ("unexpected
+  `function`", "unexpected `on`"). The working forms are a named function passed
+  as a value and `frame.join(left, right, "id")`. run_doc_examples does not read
+  that page. (4) `join(db.query(q).id, " ")` raises "join array elements must
+  be strings", where `"a" + 1` makes text; Python refuses it too, but
+  "robust by default" may say `join` should take a number.
+- **Workaround:** read reference.md for (1) and (2); named functions and the
+  third argument for (3); a loop of `string()` for (4). OPEN: (1)-(3) are fixes
+  to make; (4) is Matthew's call.
